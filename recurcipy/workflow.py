@@ -7,6 +7,7 @@ from recurcipy import Job
 class Workflow:
     class Event:
         PULL_REQUEST = "pull_request"
+        PUSH = "push"
 
     @dataclass
     class Config:
@@ -16,6 +17,9 @@ class Workflow:
 
         def is_event_pull_request(self):
             return self.event == Workflow.Event.PULL_REQUEST
+
+        def is_event_push(self):
+            return self.event == Workflow.Event.PUSH
 
         def get_job(self, name: str) -> Optional[Job.Config]:
             for job in self.jobs:

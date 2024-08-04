@@ -16,7 +16,7 @@ def _get_workflows(name=None) -> List[Workflow.Config]:
         res = []  # type: List[Workflow.Config]
         for py_file in directory.glob('*.py'):
             module_name = py_file.name.removeprefix('.py')
-            spec = importlib.util.spec_from_file_location(module_name, f"./ci/{module_name}")
+            spec = importlib.util.spec_from_file_location(module_name, f"{Settings.CONFIG_DIRECTORY}/{module_name}")
             foo = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(foo)
             try:
