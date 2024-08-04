@@ -1,40 +1,32 @@
-# cipy
+# RecurCIPY
 
-experimental max' repo
+Provides Py interface to Configure CI for GitHub.
 
-# To integrate recurcipy in your GitHub project
+## How to begin:
 
 ```sh
-git checkout -b recurcipy
+git checkout -b my_yaml_ci_written_in_python
+pip install recurcipy
 
-mkdir -p .github/workflows
-touch github/workflows/pull_request.yml
+# Generate you first configuration from template
+python -m recurcipy --hello-world
 
-cat>.github/workflows/pull_request.yml<<EOF
-name: Pull Request
+# see generated files
+git diff HEAD
 
-on:
-  pull_request:
-    branches:
-      - main
+git add ./ci/*
+git add ./.github/*
+git commit -m "Hello World"
+git push --set-upstream my_yaml_ci_written_in_python
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
+# Create PR for the pushed branch - Enjoy Your Hello World CI
+```
 
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+## How to continue:
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.x'
+```git
+# Play around with generated py configuration in ./ci/* and later on automatically update yaml files with:
+python -m recurcipy --renerate
 
-    - name: Install dependencies
-      run: |
-        python -m recurcipy
-EOF
-
-git add ./.github/workflows/pull_request.yml
+# commit, push, repeat
 ```

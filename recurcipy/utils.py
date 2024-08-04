@@ -7,37 +7,43 @@ from pathlib import Path
 from typing import Iterator, Union, Optional
 
 
-class GHEnvs:
-    GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY", "ClickHouse/ClickHouse")
-    GITHUB_WORKFLOW = os.getenv("GITHUB_WORKFLOW", "")
+class Envs:
+    LOCAL_EXECUTION = True if os.getenv("GITHUB_REPOSITORY", "0") else False
+    REPOSITORY = os.getenv("GITHUB_REPOSITORY")
+    WORKFLOW_NAME = os.getenv("GITHUB_WORKFLOW")
+    JOB_NAME = os.getenv("JOB_NAME")
 
 
-class WithIter(type):
-    def __iter__(cls):
-        return (v for k, v in cls.__dict__.items() if not k.startswith("_"))
+class MetaClasses:
+    class WithIter(type):
+        def __iter__(cls):
+            return (v for k, v in cls.__dict__.items() if not k.startswith("_"))
 
 
-@contextmanager
-def cd(to: Optional[Union[Path, str]] = None) -> Iterator[None]:
-    """
-    changes current workin directory to @path or `git root` if @path is None
-    :param to:
-    :return:
-    """
-    if not to:
-        to = Shell.get_output_or_raise("git rev-parse --show-toplevel")
-    oldpwd = os.getcwd()
-    os.chdir(to)
-    try:
-        yield
-    finally:
-        os.chdir(oldpwd)
+class ContextManager:
+
+    @staticmethod
+    @contextmanager
+    def cd(to: Optional[Union[Path, str]] = None) -> Iterator[None]:
+        """
+        changes current workin directory to @path or `git root` if @path is None
+        :param to:
+        :return:
+        """
+        if not to:
+            to = Shell.get_output_or_raise("git rev-parse --show-toplevel")
+        oldpwd = os.getcwd()
+        os.chdir(to)
+        try:
+            yield
+        finally:
+            os.chdir(oldpwd)
 
 
 class Shell:
     @classmethod
     def get_output_or_raise(cls, command):
-        return cls.get_output(command, strict=True)
+        return cls.get_output(command, strict=True).strip()
 
     @classmethod
     def get_output(cls, command, strict=False):
@@ -49,7 +55,7 @@ class Shell:
             text=True,
             check=strict,
         )
-        return res.stdout.strip()
+        return res.stdout
 
     @classmethod
     def check(
@@ -87,6 +93,36 @@ class Shell:
         if strict:
             assert proc.returncode == 0
         return proc.returncode == 0
+
+    @classmethod
+    def run(
+            cls,
+            command,
+            strict=False,
+            stdin_str=None,
+            **kwargs,
+    ):
+        proc = subprocess.Popen(
+            command,
+            shell=True,
+            stderr=subprocess.STDOUT,
+            stdout=subprocess.PIPE,
+            stdin=subprocess.PIPE if stdin_str else None,
+            universal_newlines=True,
+            start_new_session=True,
+            bufsize=1,
+            errors="backslashreplace",
+            **kwargs,
+        )
+        if stdin_str:
+            proc.communicate(input=stdin_str)
+        elif proc.stdout:
+            for line in proc.stdout:
+                sys.stdout.write(line)
+        proc.wait()
+        if strict:
+            assert proc.returncode == 0
+        return proc.returncode
 
 
 class Utils:
