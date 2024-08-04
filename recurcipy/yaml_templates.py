@@ -4,7 +4,7 @@ class Templates:
 name: {NAME}
 
 on:
-  pull_request:
+  {EVENT}:
     branches:
       - {BASE_BRANCH}
 

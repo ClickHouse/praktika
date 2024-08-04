@@ -11,13 +11,8 @@ pip install recurcipy
 # Generate you first configuration from template
 python -m recurcipy --hello-world
 
-# see generated files
-git diff HEAD
-
-git add ./ci/*
-git add ./.github/*
 git commit -m "Hello World"
-git push --set-upstream my_yaml_ci_written_in_python
+git push --set-upstream origin my_yaml_ci_written_in_python
 
 # Create PR for the pushed branch - Enjoy Your Hello World CI
 ```

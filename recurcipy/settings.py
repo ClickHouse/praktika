@@ -2,4 +2,4 @@
 class Settings:
     MAIN_BRANCH_NAME = "main"
     WORKFLOW_PATH_PREFIX = "./.github/workflows"
-    CONFIG_DIRECTORY = "./ci"
+    CONFIG_DIRECTORY = "./ci/configs"

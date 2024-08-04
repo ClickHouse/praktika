@@ -4,7 +4,7 @@ from typing import Optional, List
 from recurcipy import Workflow, Job, ContextManager
 from recurcipy.mangle import _get_workflows
 from recurcipy.settings import Settings
-from recurcipy.utils import Utils
+from recurcipy.utils import Utils, Shell
 from recurcipy.yaml_templates import Templates
 
 
@@ -12,12 +12,7 @@ class YamlGenerator:
     def __init__(self, workflows: Optional[List[Workflow.Config]] = None):
         with ContextManager.cd():
             Path(Settings.WORKFLOW_PATH_PREFIX).mkdir(parents=True, exist_ok=True)
-
-        if not workflows:
-            self.py_workflows = _get_workflows()
-        else:
-            self.py_workflows = workflows
-        assert self.py_workflows
+        self.py_workflows = []  # type: List[Workflow.Config]
 
     @classmethod
     def _get_workflow_file_name(cls, workflow_name):
@@ -25,20 +20,27 @@ class YamlGenerator:
 
     def hello_world(self):
         with ContextManager.cd():
-            Path("./ci").mkdir(parents=True, exist_ok=True)
-            with open("./ci/hello_world.py", "w") as f:
+            Path(Settings.CONFIG_DIRECTORY).mkdir(parents=True, exist_ok=True)
+            with open(f"{Settings.CONFIG_DIRECTORY}/hello_world.py", "w") as f:
                 f.write(HELLO_WORLD_EXAMPLE_PY)
+            Shell.check("git add ./ci/*.py")
         self.generate()
 
     def generate(self):
+        if not self.py_workflows:
+            self.py_workflows = _get_workflows()
+            assert self.py_workflows
         aux_configs_all = []
         for workflow_config in self.py_workflows:
             print(f"Generate workflow [{workflow_config.name}]")
             if workflow_config.is_event_pull_request():
-                yaml_workflow, aux_configs = PullRequestYamlGen(workflow_config).generate()
+                yaml_workflow, aux_configs = PullRequestPushYamlGen(workflow_config).generate()
+                aux_configs_all += aux_configs
+            elif workflow_config.is_event_push():
+                yaml_workflow, aux_configs = PullRequestPushYamlGen(workflow_config).generate()
                 aux_configs_all += aux_configs
             else:
-                assert False
+                raise NotImplemented(f"Workflow event not yet supported [{workflow_config.event}]")
 
             with ContextManager.cd():
                 with open(self._get_workflow_file_name(workflow_config.name), "w") as f:
@@ -51,16 +53,20 @@ class YamlGenerator:
                 with open(aux_config.get_aux_workflow_name(), "w") as f:
                     f.write(yaml_workflow.strip() + "\n")
 
+        Shell.check("git add ./.github/workflows/*.yaml")
 
-class PullRequestYamlGen:
+
+class PullRequestPushYamlGen:
     def __init__(self, workflow_config: Workflow.Config):
         self.workflow_config = workflow_config
 
     def generate(self):
         required_aux_workflow_configs = []
-        template_1 = Templates.TEMPLATE_PULL_REQUEST_0.strip().format(NAME=self.workflow_config.name,
-                                                                      JOBS="{}" * len(self.workflow_config.jobs),
-                                                                      BASE_BRANCH=Settings.MAIN_BRANCH_NAME)
+        template_1 = Templates.TEMPLATE_PULL_REQUEST_0.strip().format(
+            NAME=self.workflow_config.name,
+            EVENT=self.workflow_config.event,
+            JOBS="{}" * len(self.workflow_config.jobs),
+            BASE_BRANCH=Settings.MAIN_BRANCH_NAME)
         template_1_args = []
         for i, job in enumerate(self.workflow_config.jobs):
             aux_workflow_name = job.job_requirements.get_aux_workflow_name()
@@ -137,9 +143,10 @@ class WorkflowNames(MetaClasses.WithIter):
     Workflow names
     """
     PULL_REQUEST = "Pull Request"
+    MASTER = "Main"
 
 
-w1 = Workflow.Config(
+workflow_pr = Workflow.Config(
     name=WorkflowNames.PULL_REQUEST,
     event=Workflow.Event.PULL_REQUEST,
     jobs=[
@@ -156,8 +163,29 @@ w1 = Workflow.Config(
     ]
 )
 
-# this is only variable recurcipy cares about
+workflow_master = Workflow.Config(
+    name=WorkflowNames.MASTER,
+    event=Workflow.Event.PUSH,
+    jobs=[
+        Job.Config(
+            name=JobNames.JOB_HELLO_WORLD,
+            command="echo Hello Hello World",
+            job_requirements=Job.Requirements(python_requirements="requirements.txt")
+        ),
+        Job.Config(
+            name=JobNames.JOB_LINT,
+            command="yamllint . --config-file=.yamllint",
+            job_requirements=Job.Requirements(python_requirements="requirements.txt")
+        ),
+    ]
+)
+
+"""
+recurCIPY entry-point for generating yaml configs
+each item ends up in workflow yaml file
+"""
 WORKFLOWS = [
-    w1,
+    workflow_pr,
+    workflow_master,
 ]  # type: List[Workflow.Config]
 '''
