@@ -13,7 +13,8 @@ jobs:
 """
 
     TEMPLATE_JOB = """
-  {JOB_NAME_YAML}:
+  {JOB_NAME}:
+    needs: [{NEEDS}]
     uses: {AUX_WORKFLOW}
     with:
       job_name: {JOB_NAME}
