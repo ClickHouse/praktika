@@ -40,7 +40,6 @@ class WorkflowConfigParser:
             if job.requires:
                 for artifact in job.requires:
                     assert artifact in self.provides_all, f"Names in @requires must exist in @provides for other jobs or be a valid job names, check workflow/job config [{self.workflow_name}/{job.name}]"
-                    assert artifact not in self.requires_all, f"Names in @provides must be uniq per workflow, check workflow/job config [{self.workflow_name}/{job.name}]"
                     self.requires_all.append(artifact)
                     self.artifact_to_job_requires_map[artifact] = job.name
 
