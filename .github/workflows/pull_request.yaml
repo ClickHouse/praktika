@@ -21,8 +21,15 @@ jobs:
       job_name: Hello_RecurCIPY
       requirements_txt: requirements.txt
 
+  Unit_Tests:
+    needs: [Hello_World]
+    uses: ./.github/workflows/aux_job_py.yaml
+    with:
+      job_name: Unit_Tests
+      requirements_txt: requirements.txt
+
   Yaml_Lint:
-    needs: [Hello_RecurCIPY]
+    needs: [Unit_Tests]
     uses: ./.github/workflows/aux_job_py.yaml
     with:
       job_name: Yaml_Lint
