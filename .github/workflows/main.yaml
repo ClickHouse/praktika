@@ -7,14 +7,16 @@ on:
 
 jobs:
 
-  j0:
+  Hello_World:
+    needs: []
     uses: ./.github/workflows/aux_job_py.yaml
     with:
-      job_name: Hello World
+      job_name: Hello_World
       requirements_txt: requirements.txt
 
-  j1:
+  Yaml_Lint:
+    needs: []
     uses: ./.github/workflows/aux_job_py.yaml
     with:
-      job_name: Yaml Lint
+      job_name: Yaml_Lint
       requirements_txt: requirements.txt

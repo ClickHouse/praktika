@@ -20,7 +20,7 @@ git push --set-upstream origin my_yaml_ci_written_in_python
 ## How to continue:
 
 ```git
-# Play around with generated py configuration in ./ci/* and later on automatically update yaml files with:
+# Play around with generated py configuration in ./ci/configs/* and update yaml files:
 python -m recurcipy --renerate
 
 # commit, push, repeat

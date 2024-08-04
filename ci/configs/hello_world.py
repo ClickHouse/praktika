@@ -1,4 +1,5 @@
 
+
 from typing import List
 
 from recurcipy import Job, Workflow
@@ -9,8 +10,16 @@ class JobNames(MetaClasses.WithIter):
     """
     Inclusive List of Job names
     """
-    JOB_HELLO_WORLD = "Hello World"
-    JOB_LINT = "Yaml Lint"
+    JOB_HELLO_WORLD = "Hello_World"
+    JOB_HELLO_RECURCIPY = "Hello_RecurCIPY"
+    JOB_LINT = "Yaml_Lint"
+
+
+class ArtifactNames(MetaClasses.WithIter):
+    """
+    Predefined names of artifacts
+    """
+    GREET = "greet"
 
 
 class WorkflowNames(MetaClasses.WithIter):
@@ -28,11 +37,19 @@ workflow_pr = Workflow.Config(
         Job.Config(
             name=JobNames.JOB_HELLO_WORLD,
             command="echo Hello World",
+            provides=[ArtifactNames.GREET],
+            job_requirements=Job.Requirements(python_requirements="requirements.txt")
+        ),
+        Job.Config(
+            name=JobNames.JOB_HELLO_RECURCIPY,
+            command="echo Hello World",
+            requires=[ArtifactNames.GREET],
             job_requirements=Job.Requirements(python_requirements="requirements.txt")
         ),
         Job.Config(
             name=JobNames.JOB_LINT,
             command="yamllint . --config-file=.yamllint",
+            requires=[JobNames.JOB_HELLO_RECURCIPY],
             job_requirements=Job.Requirements(python_requirements="requirements.txt")
         ),
     ]
