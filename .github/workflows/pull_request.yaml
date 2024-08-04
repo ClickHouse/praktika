@@ -1,0 +1,20 @@
+name: Pull Request
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+
+  j0:
+    uses: ./.github/workflows/aux_job_py.yaml
+    with:
+      job_name: Hello World
+      requirements_txt: requirements.txt
+
+  j1:
+    uses: ./.github/workflows/aux_job_py.yaml
+    with:
+      job_name: Yaml Lint
+      requirements_txt: requirements.txt
