@@ -9,7 +9,7 @@ git checkout -b my_yaml_ci_written_in_python
 pip install recurcipy
 
 # Generate you first configuration from template
-python -m recurcipy --hello-world
+python -m recurcipy --generate-from-example hello_world
 
 git commit -m "Hello World"
 git push --set-upstream origin my_yaml_ci_written_in_python
@@ -20,8 +20,10 @@ git push --set-upstream origin my_yaml_ci_written_in_python
 ## How to continue:
 
 ```git
-# Play around with generated py configuration in ./ci/configs/* and update yaml files:
+# 1. Play around with generated py configuration for CI in ./ci/configs/hello_world.py:
+
+# 2. Once new CI config is ready to try, generate pipelines with:
 python -m recurcipy --generate
 
-# commit, push, repeat
+# 3. commit, push, repeat
 ```

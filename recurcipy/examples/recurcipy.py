@@ -1,5 +1,3 @@
-
-
 from typing import List
 
 from recurcipy import Job, Workflow
@@ -43,7 +41,7 @@ workflow_pr = Workflow.Config(
         ),
         Job.Config(
             name=JobNames.JOB_HELLO_RECURCIPY,
-            command="echo Hello RecurCIPY",
+            command="echo Hello World",
             requires=[ArtifactNames.GREET],
             job_requirements=Job.Requirements(python_requirements="requirements.txt")
         ),
