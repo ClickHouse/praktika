@@ -1,3 +1,5 @@
+
+
 from typing import List
 
 from recurcipy import Job, Workflow
@@ -25,8 +27,8 @@ class WorkflowNames(MetaClasses.WithIter):
     """
     Workflow names
     """
-    PULL_REQUEST = "PR"
-    MASTER = "Main"
+    PULL_REQUEST = "PR Hello World CI"
+    MASTER = "Main Hello World CI"
 
 
 workflow_pr = Workflow.Config(
@@ -41,7 +43,7 @@ workflow_pr = Workflow.Config(
         ),
         Job.Config(
             name=JobNames.JOB_HELLO_RECURCIPY,
-            command="echo Hello World",
+            command="echo Hello RecurCIPY",
             requires=[ArtifactNames.GREET],
             job_requirements=Job.Requirements(python_requirements="requirements.txt")
         ),

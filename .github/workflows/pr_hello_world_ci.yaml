@@ -1,0 +1,36 @@
+name: PR Hello World CI
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+
+  Hello_World:
+    needs: []
+    uses: ./.github/workflows/aux_job_py.yaml
+    with:
+      job_name: Hello_World
+      requirements_txt: requirements.txt
+
+  Hello_RecurCIPY:
+    needs: [Hello_World]
+    uses: ./.github/workflows/aux_job_py.yaml
+    with:
+      job_name: Hello_RecurCIPY
+      requirements_txt: requirements.txt
+
+  Unit_Tests:
+    needs: [Hello_World]
+    uses: ./.github/workflows/aux_job_py.yaml
+    with:
+      job_name: Unit_Tests
+      requirements_txt: requirements.txt
+
+  Yaml_Lint:
+    needs: [Unit_Tests]
+    uses: ./.github/workflows/aux_job_py.yaml
+    with:
+      job_name: Yaml_Lint
+      requirements_txt: requirements.txt

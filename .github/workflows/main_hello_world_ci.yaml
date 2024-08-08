@@ -1,0 +1,22 @@
+name: Main Hello World CI
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+
+  Hello_World:
+    needs: []
+    uses: ./.github/workflows/aux_job_py.yaml
+    with:
+      job_name: Hello_World
+      requirements_txt: requirements.txt
+
+  Yaml_Lint:
+    needs: []
+    uses: ./.github/workflows/aux_job_py.yaml
+    with:
+      job_name: Yaml_Lint
+      requirements_txt: requirements.txt
