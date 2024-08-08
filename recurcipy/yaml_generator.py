@@ -19,10 +19,13 @@ class YamlGenerator:
     def _get_workflow_file_name(cls, workflow_name):
         return f"{Settings.WORKFLOW_PATH_PREFIX}/{Utils.normalize_string(workflow_name)}.yaml"
 
-    def hello_world(self):
+    def generate_from_example(self, example):
         with ContextManager.cd():
+            example = example.removesuffix(".py")
+            example_path = f"{Settings.EXAMPLES_DIRECTORY}/{example}.py"
+            assert Path(example_path).exists(), f"Example [{example}] does not exist"
             Path(Settings.CONFIG_DIRECTORY).mkdir(parents=True, exist_ok=True)
-            Shell.check(f"cp {Settings.EXAMPLES_DIRECTORY}/hello_world.py {Settings.CONFIG_DIRECTORY}/")
+            Shell.check(f"cp {example_path} {Settings.CONFIG_DIRECTORY}/")
             Shell.check(f"git add {Settings.CONFIG_DIRECTORY}/*.py")
         self.generate()
 
