@@ -3,12 +3,12 @@ import sys
 
 from recurcipy import Shell
 from recurcipy.mangle import _get_workflows
-from recurcipy.utils import Envs
+from recurcipy.environment import Environment
 
 
 class Runner:
 
-    def pre_run(self, job_name):
+    def pre_run(self, job_name, workflow_name):
         print(f"Pre-run script [{job_name}]")
         envs = {
             "JOB_NAME": job_name
@@ -19,12 +19,8 @@ class Runner:
         Shell.check("cat $GITHUB_ENV")
         pass
 
-    def run(self, job_name):
-        if not Envs.LOCAL_EXECUTION:
-            workflow = _get_workflows(name=Envs.WORKFLOW_NAME)[0]
-        else:
-            # TODO: for local tests
-            workflow = _get_workflows()[0]
+    def run(self, job_name, workflow_name):
+        workflow = _get_workflows(name=workflow_name)[0]
         print(f"Run script [{job_name}], workflow [{workflow.name}]")
 
         if not workflow:
@@ -34,7 +30,7 @@ class Runner:
         print(f"Run command [{job.command}]")
         return Shell.run(job.command)
 
-    def post_run(self, job_name):
+    def post_run(self, job_name, workflow_name):
         print(f"Post-run script [{job_name}]")
         pass
 
@@ -43,6 +39,11 @@ def parse_args():
     parser = argparse.ArgumentParser("RecurCIPY")
     parser.add_argument(
         "--job-name",
+        required=True,
+        type=str,
+    )
+    parser.add_argument(
+        "--workflow-name",
         required=True,
         type=str,
     )
@@ -69,11 +70,11 @@ if __name__ == '__main__':
     res = 0
 
     if args.pre_run:
-        res = Runner().pre_run(args.job_name)
+        res = Runner().pre_run(args.job_name, args.workflow_name)
     elif args.run:
-        res = Runner().run(args.job_name)
+        res = Runner().run(args.job_name, args.workflow_name)
     elif args.post_run:
-        res = Runner().post_run(args.job_name)
+        res = Runner().post_run(args.job_name, args.workflow_name)
     else:
         assert False
 

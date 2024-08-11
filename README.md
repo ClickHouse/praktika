@@ -14,7 +14,7 @@ git checkout -b my_yaml_ci_written_in_python
 # 3. Use hello_world example to create your CI configuration
 python -m recurcipy --generate-from-example hello_world
 # Following files must be created/updated:
-#   ./ci/configs/hello_world.py - CI configuration written in python
+#   ./ci/configs/github_artifact.py - CI configuration written in python
 #   ./.github/workflows/*.yaml - generated yaml pipelines 
 
 # 4. Commit and Push updates to remote:

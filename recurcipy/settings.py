@@ -4,3 +4,6 @@ class Settings:
     WORKFLOW_PATH_PREFIX = "./.github/workflows"
     CONFIG_DIRECTORY = "./ci/configs"
     EXAMPLES_DIRECTORY = "./recurcipy/examples"
+
+
+
