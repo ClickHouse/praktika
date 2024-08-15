@@ -7,13 +7,6 @@ from pathlib import Path
 from typing import Iterator, Union, Optional
 
 
-class Envs:
-    LOCAL_EXECUTION = True if os.getenv("GITHUB_REPOSITORY", "0") else False
-    REPOSITORY = os.getenv("GITHUB_REPOSITORY")
-    WORKFLOW_NAME = os.getenv("GITHUB_WORKFLOW")
-    JOB_NAME = os.getenv("JOB_NAME")
-
-
 class MetaClasses:
     class WithIter(type):
         def __iter__(cls):

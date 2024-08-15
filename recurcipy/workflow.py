@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from recurcipy import Job
+from recurcipy.artifact import Artifact
 
 
 class Workflow:
@@ -14,6 +15,7 @@ class Workflow:
         name: str
         event: str
         jobs: List[Job.Config]
+        artifacts: Optional[List[Artifact.Config]] = None
 
         def is_event_pull_request(self):
             return self.event == Workflow.Event.PULL_REQUEST

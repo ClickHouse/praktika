@@ -9,18 +9,6 @@ class Job:
     class Requirements:
         python_requirements: str = ""
 
-        def get_aux_workflow_name(self):
-            suffix = ""
-            if self.python_requirements:
-                suffix += "_py"
-            return f"{Settings.WORKFLOW_PATH_PREFIX}/aux_job{suffix}.yaml"
-
-        def get_aux_workflow_input(self):
-            res = ""
-            if self.python_requirements:
-                res += f"      requirements_txt: {self.python_requirements}"
-            return res
-
     @dataclass
     class Config:
         # Job Name
@@ -40,6 +28,3 @@ class Job:
         job_requirements: Optional["Job.Requirements"] = None
 
         auto_dependencies: List[str] = None
-
-        def set_dependencies(self, dependencies):
-            self.auto_dependencies = dependencies

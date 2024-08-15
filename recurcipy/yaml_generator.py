@@ -1,9 +1,10 @@
+import dataclasses
 from pathlib import Path
 from typing import Optional, List
 
-from recurcipy import Workflow, Job, ContextManager
+from recurcipy import Workflow, Job, ContextManager, Artifact, Environment
 from recurcipy.mangle import _get_workflows
-from recurcipy.parser import WorkflowConfigParser
+from recurcipy.parser import WorkflowConfigParser, WorkflowYaml, AddonType
 from recurcipy.settings import Settings
 from recurcipy.utils import Utils, Shell
 from recurcipy.yaml_templates import Templates
@@ -33,67 +34,101 @@ class YamlGenerator:
         if not self.py_workflows:
             self.py_workflows = _get_workflows()
             assert self.py_workflows
-        aux_configs_all = []
         for workflow_config in self.py_workflows:
             print(f"Generate workflow [{workflow_config.name}]")
-            WorkflowConfigParser(workflow_config).parse()
-            if workflow_config.is_event_pull_request():
-                yaml_workflow, aux_configs = PullRequestPushYamlGen(workflow_config).generate()
-                aux_configs_all += aux_configs
-            elif workflow_config.is_event_push():
-                yaml_workflow, aux_configs = PullRequestPushYamlGen(workflow_config).generate()
-                aux_configs_all += aux_configs
+            parser = WorkflowConfigParser(workflow_config).parse()
+            if workflow_config.is_event_pull_request() or workflow_config.is_event_push():
+                yaml_workflow_str = PullRequestPushYamlGen(parser).generate()
             else:
-                raise NotImplemented(f"Workflow event not yet supported [{workflow_config.event}]")
+                assert False, f"Workflow event not yet supported [{workflow_config.event}]"
 
             with ContextManager.cd():
                 with open(self._get_workflow_file_name(workflow_config.name), "w") as f:
-                    f.write(yaml_workflow)
+                    f.write(yaml_workflow_str)
 
-        for aux_config in aux_configs_all:  # type: Job.Requirements
-            print(f"Generating aux workflow [{aux_config}]")
-            yaml_workflow = AuxYamlGen(aux_config).generate()
-            with ContextManager.cd():
-                with open(aux_config.get_aux_workflow_name(), "w") as f:
-                    f.write(yaml_workflow.strip() + "\n")
-
-        Shell.check("git add ./.github/workflows/*.yaml")
+        with ContextManager.cd():
+            Shell.check("git add ./.github/workflows/*.yaml")
 
 
 class PullRequestPushYamlGen:
-    def __init__(self, workflow_config: Workflow.Config):
-        self.workflow_config = workflow_config
+    def __init__(self, parser: WorkflowConfigParser):
+        self.workflow_config = parser.workflow_yaml_config
+        self.parser = parser
 
     def generate(self):
         required_aux_workflow_configs = []
         template_1 = Templates.TEMPLATE_PULL_REQUEST_0.strip().format(
             NAME=self.workflow_config.name,
             EVENT=self.workflow_config.event,
-            JOBS="{}" * len(self.workflow_config.jobs),
+            JOBS="{}\n" * len(self.workflow_config.jobs),
             BASE_BRANCH=Settings.MAIN_BRANCH_NAME)
-        template_1_args = []
-        for i, job in enumerate(self.workflow_config.jobs):
-            aux_workflow_name = job.job_requirements.get_aux_workflow_name()
-            aux_workflow_input = job.job_requirements.get_aux_workflow_input()
-            needs_line=",".join(job.auto_dependencies) if job.auto_dependencies else ""
-            needs_line.removeprefix(",")
-            required_aux_workflow_configs.append(job.job_requirements)
-            template_1_args.append(
-                Templates.TEMPLATE_JOB.format(
-                    JOB_NAME=job.name,
-                    NEEDS=needs_line,
-                    AUX_WORKFLOW=aux_workflow_name,
-                    AUX_INPUT=aux_workflow_input
-                )
-            )
-        yaml_workflow = template_1.format(*template_1_args)
 
-        return yaml_workflow, required_aux_workflow_configs
+        job_items = []
+        setup_envs = Templates.TEMPLATE_SETUP_ENV.format(
+            TEMP_DIR=Environment.TEMP_DIR,
+            INPUT_DIR=Environment.INPUT_DIR,
+            OUTPUT_DIR=Environment.OUTPUT_DIR,
+        )
+        for i, job in enumerate(self.workflow_config.jobs):
+            job_name_normalized = Utils.normalize_string(job.name)
+            needs = ", ".join(map(Utils.normalize_string, job.needs))
+            job_name = job.name
+            job_addons = []
+            for addon in job.addons:
+                if addon.type == AddonType.PY:
+                    job_addons.append(Templates.TEMPLATE_PY_ADDONS.format(REQUIREMENT_PATH=addon.path))
+            uploads_github = []
+            for artifact in job.artifacts_gh_provides:
+                uploads_github.append(Templates.TEMPLATE_GH_UPLOAD.format(NAME=artifact.name, PATH=artifact.path))
+            downloads_github = []
+            for artifact in job.artifacts_gh_requires:
+                downloads_github.append(Templates.TEMPLATE_GH_DOWNLOAD.format(NAME=artifact.name, PATH=Environment.INPUT_DIR))
+            job_item = Templates.TEMPLATE_JOB_0.format(
+                JOB_NAME_NORMALIZED=job_name_normalized,
+                NEEDS=needs,
+                JOB_NAME=job_name,
+                WORKFLOW_NAME=self.workflow_config.name,
+                SETUP_ENVS=setup_envs,
+                JOB_ADDONS="\n".join(job_addons),
+                DOWNLOADS_GITHUB="\n".join(downloads_github),
+                UPLOADS_GITHUB="\n".join(uploads_github)
+            )
+            job_items.append(job_item.rstrip('\n'))
+        res = template_1.format(*job_items)
+
+        return res
+
+
+@dataclasses.dataclass
+class AuxConfig:
+    # defines aux step to install dependencies
+    addon: Job.Requirements
+    # defines aux step(s) to upload GH artifacts
+    uploads_gh: List[Artifact.Config]
+    # defines aux step(s) to download GH artifacts
+    downloads_gh: List[Artifact.Config]
+
+    def get_aux_workflow_name(self):
+        suffix = ""
+        if self.addon.python_requirements:
+            suffix += "_py"
+        for _ in self.uploads_gh:
+            suffix += "_uplgh"
+        for _ in self.downloads_gh:
+            suffix += "_dnlgh"
+        return f"{Settings.WORKFLOW_PATH_PREFIX}/aux_job{suffix}.yaml"
+
+    def get_aux_workflow_input(self):
+        res = ""
+        if self.addon.python_requirements:
+            res += f"      requirements_txt: {self.addon.python_requirements}"
+        return res
 
 
 class AuxYamlGen:
-    def __init__(self, addon: Job.Requirements):
-        self.addon = addon
+    def __init__(self, aux_config: AuxConfig):
+        self.addon = aux_config.addon
+        self.config = aux_config
 
     def generate(self):
         addon_inputs = []
