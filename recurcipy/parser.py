@@ -11,11 +11,11 @@ class AddonType:
 
 @dataclasses.dataclass
 class WorkflowYaml:
-
     @dataclasses.dataclass
     class JobYaml:
         name: str
         needs: List[str]
+        runs_on: List[str]
         artifacts_gh_requires: List["WorkflowYaml.ArtifactYaml"]
         artifacts_gh_provides: List["WorkflowYaml.ArtifactYaml"]
         addons: List["WorkflowYaml.JobAddonYaml"]
@@ -41,7 +41,6 @@ class WorkflowYaml:
 
 
 class WorkflowConfigParser:
-
     def __init__(self, config: Workflow.Config):
         self.workflow_name = config.name
         self.config = config
@@ -55,7 +54,13 @@ class WorkflowConfigParser:
         self.job_to_provides_artifacts = {}  # type: Dict[str, List[Artifact.Config]]
         self.job_to_requires_artifacts = {}  # type: Dict[str, List[Artifact.Config]]
 
-        self.workflow_yaml_config = WorkflowYaml(name=self.workflow_name, event=config.event, jobs=[], job_to_config={}, artifact_to_config={})
+        self.workflow_yaml_config = WorkflowYaml(
+            name=self.workflow_name,
+            event=config.event,
+            jobs=[],
+            job_to_config={},
+            artifact_to_config={},
+        )
 
     # def _build_dependencies(self):
     #     for job in self.config.jobs:
@@ -69,106 +74,138 @@ class WorkflowConfigParser:
     def parse(self):
         # populate WorkflowYaml.artifact_to_config with phony artifacts
         for job in self.config.jobs:
-            assert job.name not in self.workflow_yaml_config.artifact_to_config, f"Not uniq Job name [{job.name}], workflow [{self.workflow_name}]"
-            self.workflow_yaml_config.artifact_to_config[job.name] = WorkflowYaml.ArtifactYaml(name=job.name, provided_by=job.name, required_by=[], path="", type=Artifact.Type.PHONY)
+            assert (
+                job.name not in self.workflow_yaml_config.artifact_to_config
+            ), f"Not uniq Job name [{job.name}], workflow [{self.workflow_name}]"
+            self.workflow_yaml_config.artifact_to_config[
+                job.name
+            ] = WorkflowYaml.ArtifactYaml(
+                name=job.name,
+                provided_by=job.name,
+                required_by=[],
+                path="",
+                type=Artifact.Type.PHONY,
+            )
 
         # populate jobs
         for job in self.config.jobs:
-            job_yaml_config = WorkflowYaml.JobYaml(name=job.name, addons=[], artifacts_gh_requires=[], artifacts_gh_provides=[], needs=[])
+            job_yaml_config = WorkflowYaml.JobYaml(
+                name=job.name,
+                addons=[],
+                artifacts_gh_requires=[],
+                artifacts_gh_provides=[],
+                needs=[],
+                runs_on=[],
+            )
             self.workflow_yaml_config.jobs.append(job_yaml_config)
-            assert job.name not in self.workflow_yaml_config.job_to_config, f"Job name [{job.name}] is not uniq, workflow [{self.workflow_name}]"
+            assert (
+                job.name not in self.workflow_yaml_config.job_to_config
+            ), f"Job name [{job.name}] is not uniq, workflow [{self.workflow_name}]"
             self.workflow_yaml_config.job_to_config[job.name] = job_yaml_config
 
         # populate WorkflowYaml.artifact_to_config
         if self.config.artifacts:
             for artifact in self.config.artifacts:
-                assert artifact.name not in self.workflow_yaml_config.artifact_to_config, f"Artifact name [{artifact.name}] is not uniq, workflow [{self.workflow_name}]"
-                artifact_yaml_config = WorkflowYaml.ArtifactYaml(name=artifact.name, provided_by="", required_by=[], path=artifact.path, type=artifact.type)
-                self.workflow_yaml_config.artifact_to_config[artifact.name] = artifact_yaml_config
+                assert (
+                    artifact.name not in self.workflow_yaml_config.artifact_to_config
+                ), f"Artifact name [{artifact.name}] is not uniq, workflow [{self.workflow_name}]"
+                artifact_yaml_config = WorkflowYaml.ArtifactYaml(
+                    name=artifact.name,
+                    provided_by="",
+                    required_by=[],
+                    path=artifact.path,
+                    type=artifact.type,
+                )
+                self.workflow_yaml_config.artifact_to_config[
+                    artifact.name
+                ] = artifact_yaml_config
 
         # populate ArtifactYaml.provided_by
         for job in self.config.jobs:
             if job.provides:
                 for artifact_name in job.provides:
-                    assert artifact_name in self.workflow_yaml_config.artifact_to_config, f"Artifact [{artifact_name}] has no config, job [{job.name}], workflow [{self.workflow_name}]"
-                    assert not self.workflow_yaml_config.artifact_to_config[artifact_name].provided_by, f"Artifact [{artifact_name}] provided by multiple jobs [{self.workflow_yaml_config.artifact_to_config[artifact_name].provided_by}] and [{job.name}]"
-                    self.workflow_yaml_config.artifact_to_config[artifact_name].provided_by = job.name
+                    assert (
+                        artifact_name in self.workflow_yaml_config.artifact_to_config
+                    ), f"Artifact [{artifact_name}] has no config, job [{job.name}], workflow [{self.workflow_name}]"
+                    assert not self.workflow_yaml_config.artifact_to_config[
+                        artifact_name
+                    ].provided_by, f"Artifact [{artifact_name}] provided by multiple jobs [{self.workflow_yaml_config.artifact_to_config[artifact_name].provided_by}] and [{job.name}]"
+                    self.workflow_yaml_config.artifact_to_config[
+                        artifact_name
+                    ].provided_by = job.name
 
         # populate ArtifactYaml.required_by
         for job in self.config.jobs:
             if job.requires:
                 for artifact_name in job.requires:
-                    assert artifact_name in self.workflow_yaml_config.artifact_to_config, f"Artifact [{artifact_name}] has no config, job [{job.name}], workflow [{self.workflow_name}]"
-                    assert self.workflow_yaml_config.artifact_to_config[artifact_name].provided_by, f"Artifact [{artifact_name}] has no job providing it, required by job [{job.name}], workflow [{self.workflow_name}]"
-                    self.workflow_yaml_config.artifact_to_config[artifact_name].required_by.append(job.name)
+                    assert (
+                        artifact_name in self.workflow_yaml_config.artifact_to_config
+                    ), f"Artifact [{artifact_name}] has no config, job [{job.name}], workflow [{self.workflow_name}]"
+                    assert self.workflow_yaml_config.artifact_to_config[
+                        artifact_name
+                    ].provided_by, f"Artifact [{artifact_name}] has no job providing it, required by job [{job.name}], workflow [{self.workflow_name}]"
+                    self.workflow_yaml_config.artifact_to_config[
+                        artifact_name
+                    ].required_by.append(job.name)
 
         # populate JobYaml.addons
         for job in self.config.jobs:
             if job.job_requirements:
                 if job.job_requirements.python_requirements:
-                    addon_yaml = WorkflowYaml.JobAddonYaml(type=AddonType.PY, path=job.job_requirements.python_requirements)
-                    self.workflow_yaml_config.job_to_config[job.name].addons.append(addon_yaml)
+                    addon_yaml = WorkflowYaml.JobAddonYaml(
+                        type=AddonType.PY, path=job.job_requirements.python_requirements
+                    )
+                    self.workflow_yaml_config.job_to_config[job.name].addons.append(
+                        addon_yaml
+                    )
                 else:
                     assert False, "only py addon/requirement supported"
 
+        # populate JobYaml.runs_on
+        for job in self.config.jobs:
+            self.workflow_yaml_config.job_to_config[job.name].runs_on = job.runs_on
+
         # populate JobYaml.artifacts_gh_requires, JobYaml.artifacts_gh_provides and JobYaml.needs
-        for artifact_name, artifact in self.workflow_yaml_config.artifact_to_config.items():
-            assert artifact.provided_by and artifact.provided_by in self.workflow_yaml_config.job_to_config, f"Artifact [{artifact_name}] has no valid job providing it [{artifact.provided_by}]"
+        for (
+            artifact_name,
+            artifact,
+        ) in self.workflow_yaml_config.artifact_to_config.items():
+            assert (
+                artifact.provided_by
+                and artifact.provided_by in self.workflow_yaml_config.job_to_config
+            ), f"Artifact [{artifact_name}] has no valid job providing it [{artifact.provided_by}]"
             for job_name in artifact.required_by:
-                if artifact.provided_by not in self.workflow_yaml_config.job_to_config[job_name].needs:
-                    self.workflow_yaml_config.job_to_config[job_name].needs.append(artifact.provided_by)
+                if (
+                    artifact.provided_by
+                    not in self.workflow_yaml_config.job_to_config[job_name].needs
+                ):
+                    self.workflow_yaml_config.job_to_config[job_name].needs.append(
+                        artifact.provided_by
+                    )
                 if artifact.type == Artifact.Type.GH:
-                    self.workflow_yaml_config.job_to_config[job_name].artifacts_gh_requires.append(artifact)
+                    self.workflow_yaml_config.job_to_config[
+                        job_name
+                    ].artifacts_gh_requires.append(artifact)
                 elif artifact.type == Artifact.Type.PHONY:
                     pass
                 else:
-                    assert False, f"Artifact [{artifact_name}] has unsupported type [{artifact.type}]"
+                    assert (
+                        False
+                    ), f"Artifact [{artifact_name}] has unsupported type [{artifact.type}]"
             if not artifact.required_by and artifact.type != Artifact.Type.PHONY:
-                print(f"WARNING: Artifact [{artifact_name}] provided by job [{artifact.provided_by}] not required by any job in workflow [{self.workflow_name}]")
+                print(
+                    f"WARNING: Artifact [{artifact_name}] provided by job [{artifact.provided_by}] not required by any job in workflow [{self.workflow_name}]"
+                )
             if artifact.type == Artifact.Type.GH:
-                self.workflow_yaml_config.job_to_config[artifact.provided_by].artifacts_gh_provides.append(artifact)
-
-        # if self.config.artifacts:
-        #     for artifact in self.config.artifacts:
-        #         self.artifact_map[artifact.name] = artifact
-        #
-        # for job in self.config.jobs:
-        #     assert job.name not in self.job_names_all, f"Job Name must be uniq per workflow, check workflow config for [{self.workflow_name}]"
-        #     self.job_names_all.append(job.name)
-        #     self.artifact_map[job.name] = None
-        #     self.job_to_provides_artifacts[job.name] = []
-        #     self.job_to_requires_artifacts[job.name] = []
-        #
-        # for job in self.config.jobs:
-        #     if job.provides:
-        #         for artifact in job.provides:
-        #             assert artifact not in self.provides_all, f"Names in @Job.Config.provides must be uniq per workflow, check workflow/job config [{self.workflow_name}/{job.name}]"
-        #             assert artifact in self.artifact_map, f"Artifact [{artifact}] must be configured in @Workflow.Config.artifacts [{self.workflow_name}]"
-        #             self.provides_all.append(artifact)
-        #             self.artifact_to_providing_job_map[artifact] = job.name
-        #             self.job_to_provides_artifacts[job.name].append(self.artifact_map[artifact])
-        #
-        # for job in self.job_names_all:
-        #     if job not in self.provides_all:
-        #         self.provides_all.append(job)
-        #         self.artifact_to_providing_job_map[job] = job
-        #
-        # for job in self.config.jobs:
-        #     if job.requires:
-        #         for artifact in job.requires:
-        #             assert artifact in self.provides_all, f"Names in @requires must exist in @provides for other jobs or be a valid job names, check workflow/job config [{self.workflow_name}/{job.name}]"
-        #             self.requires_all.append(artifact)
-        #             self.artifact_to_job_requires_map[artifact] = job.name
-        #             self.job_to_requires_artifacts[job.name].append(self.artifact_map[artifact])
-        #
-        # self._build_dependencies()
+                self.workflow_yaml_config.job_to_config[
+                    artifact.provided_by
+                ].artifacts_gh_provides.append(artifact)
 
         return self
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # test
     workflows = _get_workflows()
     for workflow in workflows:
         WorkflowConfigParser(workflow).parse()
-

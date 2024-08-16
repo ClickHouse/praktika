@@ -14,7 +14,6 @@ class MetaClasses:
 
 
 class ContextManager:
-
     @staticmethod
     @contextmanager
     def cd(to: Optional[Union[Path, str]] = None) -> Iterator[None]:
@@ -52,13 +51,13 @@ class Shell:
 
     @classmethod
     def check(
-            cls,
-            command,
-            strict=False,
-            verbose=False,
-            dry_run=False,
-            stdin_str=None,
-            **kwargs,
+        cls,
+        command,
+        strict=False,
+        verbose=False,
+        dry_run=False,
+        stdin_str=None,
+        **kwargs,
     ):
         if dry_run:
             print(f"Dry-ryn. Would run command [{command}]")
@@ -89,11 +88,11 @@ class Shell:
 
     @classmethod
     def run(
-            cls,
-            command,
-            strict=False,
-            stdin_str=None,
-            **kwargs,
+        cls,
+        command,
+        strict=False,
+        stdin_str=None,
+        **kwargs,
     ):
         proc = subprocess.Popen(
             command,
@@ -132,7 +131,7 @@ class Utils:
     @staticmethod
     def is_killed_with_oom():
         if Shell.check(
-                "sudo dmesg -T | grep -q -e 'Out of memory: Killed process' -e 'oom_reaper: reaped process' -e 'oom-kill:constraint=CONSTRAINT_NONE'"
+            "sudo dmesg -T | grep -q -e 'Out of memory: Killed process' -e 'oom_reaper: reaped process' -e 'oom-kill:constraint=CONSTRAINT_NONE'"
         ):
             return True
         return False
@@ -153,12 +152,12 @@ class Utils:
     def normalize_string(string: str) -> str:
         res = string.lower()
         for r in (
-                (" ", "_"),
-                ("(", "_"),
-                (")", "_"),
-                (",", "_"),
-                ("/", "_"),
-                ("-", "_"),
+            (" ", "_"),
+            ("(", "_"),
+            (")", "_"),
+            (",", "_"),
+            ("/", "_"),
+            ("-", "_"),
         ):
             res = res.replace(*r)
         return res

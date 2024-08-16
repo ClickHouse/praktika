@@ -8,7 +8,7 @@ on:
 jobs:
 
   unit_tests:
-    runs-on: ubuntu-latest
+    runs-on: [ubuntu-latest]
     needs: []
     name: Unit Tests
     steps:
@@ -48,7 +48,7 @@ jobs:
           python -m recurcipy.runner --post-run --job-name "Unit Tests" --workflow-name "My PR CI"
 
   yaml_lint:
-    runs-on: ubuntu-latest
+    runs-on: [ubuntu-latest]
     needs: []
     name: Yaml Lint
     steps:

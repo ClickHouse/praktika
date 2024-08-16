@@ -14,6 +14,9 @@ class Job:
         # Job Name
         name: str
 
+        # Machine's label to run job on. For instance [ubuntu-latest] for free gh runner
+        runs_on: List[str]
+
         # Job Run Command
         command: str
 

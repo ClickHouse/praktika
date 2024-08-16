@@ -8,7 +8,7 @@ on:
 jobs:
 
   job_a_starting_at_the_beginning:
-    runs-on: ubuntu-latest
+    runs-on: [ubuntu-latest]
     needs: []
     name: Job A starting at the beginning
     steps:
@@ -48,7 +48,7 @@ jobs:
           python -m recurcipy.runner --post-run --job-name "Job A starting at the beginning" --workflow-name "Job Dependencies Example"
 
   job_b_starting_at_the_beginning:
-    runs-on: ubuntu-latest
+    runs-on: [ubuntu-latest]
     needs: []
     name: Job B starting at the beginning
     steps:
@@ -88,7 +88,7 @@ jobs:
           python -m recurcipy.runner --post-run --job-name "Job B starting at the beginning" --workflow-name "Job Dependencies Example"
 
   job_c_starting_after_job_a_and_b_is_done:
-    runs-on: ubuntu-latest
+    runs-on: [ubuntu-latest]
     needs: [job_a_starting_at_the_beginning, job_b_starting_at_the_beginning]
     name: Job C starting after Job A and B is done
     steps:
@@ -128,7 +128,7 @@ jobs:
           python -m recurcipy.runner --post-run --job-name "Job C starting after Job A and B is done" --workflow-name "Job Dependencies Example"
 
   job_d_starting_after_job_c_is_done:
-    runs-on: ubuntu-latest
+    runs-on: [ubuntu-latest]
     needs: [job_c_starting_after_job_a_and_b_is_done]
     name: Job D starting after Job C is done
     steps:

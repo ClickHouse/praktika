@@ -1,6 +1,7 @@
 import argparse
 
 from recurcipy.yaml_generator import YamlGenerator
+from recurcipy.machine_init import run
 
 
 def parse_args():
@@ -16,15 +17,22 @@ def parse_args():
         default="",
         help="--generate-from-example <EXAMPLE>. Generates CI pipeline from <EXAMPLE>",
     )
+    parser.add_argument(
+        "--run",
+        action="store_true",
+        help="Run init script. To be used on CI runner machine",
+    )
     return parser.parse_args(), parser
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     args, parser = parse_args()
 
     if args.generate_from_example:
         YamlGenerator().generate_from_example(example=args.generate_from_example)
     elif args.generate:
         YamlGenerator().generate()
+    elif args.run:
+        run()
     else:
         assert False

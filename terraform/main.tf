@@ -65,7 +65,7 @@ resource "aws_launch_template" "maxs-template" {
 # Auto Scaling Group
 resource "aws_autoscaling_group" "maxs-small" {
   name = "maxs-small"
-  desired_capacity     = 0
+  desired_capacity     = 1
   max_size             = 2
   min_size             = 0
   launch_template {
