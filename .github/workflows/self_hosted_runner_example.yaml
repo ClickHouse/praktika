@@ -1,16 +1,16 @@
-name: My Main CI
+name: Self Hosted Runner Example
 
 on:
-  push:
+  pull_request:
     branches:
       - main
 
 jobs:
 
-  unit_tests:
-    runs-on: [ubuntu-latest]
+  job_a:
+    runs-on: [maxs-test-small]
     needs: []
-    name: Unit Tests
+    name: Job A
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -37,20 +37,20 @@ jobs:
 
       - name: Pre
         run: |
-          python -m recurcipy.runner --pre-run --job-name "Unit Tests" --workflow-name "My Main CI"
+          python -m recurcipy.runner --pre-run --job-name "Job A" --workflow-name "Self Hosted Runner Example"
 
       - name: Run
         run: |
-          python -m recurcipy.runner --run --job-name "Unit Tests" --workflow-name "My Main CI"
+          python -m recurcipy.runner --run --job-name "Job A" --workflow-name "Self Hosted Runner Example"
 
       - name: Post
         run: |
-          python -m recurcipy.runner --post-run --job-name "Unit Tests" --workflow-name "My Main CI"
+          python -m recurcipy.runner --post-run --job-name "Job A" --workflow-name "Self Hosted Runner Example"
 
-  yaml_lint:
-    runs-on: [ubuntu-latest]
+  job_b:
+    runs-on: [maxs-test-small]
     needs: []
-    name: Yaml Lint
+    name: Job B
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -77,12 +77,12 @@ jobs:
 
       - name: Pre
         run: |
-          python -m recurcipy.runner --pre-run --job-name "Yaml Lint" --workflow-name "My Main CI"
+          python -m recurcipy.runner --pre-run --job-name "Job B" --workflow-name "Self Hosted Runner Example"
 
       - name: Run
         run: |
-          python -m recurcipy.runner --run --job-name "Yaml Lint" --workflow-name "My Main CI"
+          python -m recurcipy.runner --run --job-name "Job B" --workflow-name "Self Hosted Runner Example"
 
       - name: Post
         run: |
-          python -m recurcipy.runner --post-run --job-name "Yaml Lint" --workflow-name "My Main CI"
+          python -m recurcipy.runner --post-run --job-name "Job B" --workflow-name "Self Hosted Runner Example"

@@ -1,5 +1,3 @@
-
-
 from typing import List
 
 from recurcipy import Job, Workflow, Artifact
@@ -31,15 +29,15 @@ workflow_pr = Workflow.Config(
     jobs=[
         Job.Config(
             name=JobNames.JOB_UPLOADING_ARTIFACT,
-            command="echo \"Hello World\" > ./hello_world.txt",
+            command='echo "Hello World" > ./hello_world.txt',
             provides=[ArtifactNames.GREET],
-            job_requirements=Job.Requirements(python_requirements="requirements.txt")
+            job_requirements=Job.Requirements(python_requirements="requirements.txt"),
         ),
         Job.Config(
             name=JobNames.JOB_REQUIRING_ARTIFACT,
             command=f"cat {Environment.INPUT_DIR}/hello_world.txt",
             requires=[ArtifactNames.GREET],
-            job_requirements=Job.Requirements(python_requirements="requirements.txt")
+            job_requirements=Job.Requirements(python_requirements="requirements.txt"),
         ),
     ],
     artifacts=artifacts,

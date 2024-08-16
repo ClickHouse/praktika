@@ -1,5 +1,3 @@
-
-
 from typing import List
 
 from recurcipy import Job, Workflow, Artifact
@@ -15,6 +13,7 @@ class WorkflowNames(MetaClasses.WithIter):
     """
     Workflow names
     """
+
     PULL_REQUEST = "My PR CI"
     MAIN = "My Main CI"
 
@@ -26,12 +25,14 @@ workflow_pr = Workflow.Config(
         Job.Config(
             name=JobNames.JOB_UNIT_TESTS,
             command="python -m unittest discover -s ./ci/tests -p 'test_*.py'",
-            job_requirements=Job.Requirements(python_requirements="requirements.txt")
+            job_requirements=Job.Requirements(python_requirements="requirements.txt"),
+            runs_on=["ubuntu-latest"],
         ),
         Job.Config(
             name=JobNames.JOB_LINT,
             command="yamllint . --config-file=.yamllint",
-            job_requirements=Job.Requirements(python_requirements="requirements.txt")
+            job_requirements=Job.Requirements(python_requirements="requirements.txt"),
+            runs_on=["ubuntu-latest"],
         ),
     ],
 )
@@ -43,18 +44,17 @@ workflow_main = Workflow.Config(
         Job.Config(
             name=JobNames.JOB_UNIT_TESTS,
             command="python -m unittest discover -s ./ci/tests -p 'test_*.py'",
-            job_requirements=Job.Requirements(python_requirements="requirements.txt")
+            job_requirements=Job.Requirements(python_requirements="requirements.txt"),
+            runs_on=["ubuntu-latest"],
         ),
         Job.Config(
             name=JobNames.JOB_LINT,
             command="yamllint . --config-file=.yamllint",
-            job_requirements=Job.Requirements(python_requirements="requirements.txt")
+            job_requirements=Job.Requirements(python_requirements="requirements.txt"),
+            runs_on=["ubuntu-latest"],
         ),
     ],
 )
 
 
-WORKFLOWS = [
-    workflow_pr,
-    workflow_main
-]  # type: List[Workflow.Config]
+WORKFLOWS = [workflow_pr, workflow_main]  # type: List[Workflow.Config]

@@ -1,4 +1,3 @@
-
 class Templates:
     TEMPLATE_PULL_REQUEST_0 = """\
 name: {NAME}
@@ -14,7 +13,7 @@ jobs:
 
     TEMPLATE_JOB_0 = """
   {JOB_NAME_NORMALIZED}:
-    runs-on: ubuntu-latest
+    runs-on: [{RUNS_ON}]
     needs: [{NEEDS}]
     name: {JOB_NAME}
     steps:
@@ -76,6 +75,8 @@ jobs:
           name: {NAME}
           path: {PATH}
 """
+
+
 #
 #     TEMPLATE_JOB_NESTED = """\
 #   {JOB_NAME}:
@@ -130,4 +131,3 @@ jobs:
 #         required: true
 #         type:
 # """
-

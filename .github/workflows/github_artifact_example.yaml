@@ -8,7 +8,7 @@ on:
 jobs:
 
   provide_artifact:
-    runs-on: ubuntu-latest
+    runs-on: [ubuntu-latest]
     needs: []
     name: Provide Artifact
     steps:
@@ -54,7 +54,7 @@ jobs:
           path: ./hello_world.txt
 
   consume_artifact:
-    runs-on: ubuntu-latest
+    runs-on: [ubuntu-latest]
     needs: [provide_artifact]
     name: Consume Artifact
     steps:

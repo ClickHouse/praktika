@@ -5,7 +5,6 @@ from recurcipy.settings import Settings
 
 
 class Artifact:
-
     class Type:
         GH = "github"
         PHONY = "phony"
@@ -17,6 +16,7 @@ class Artifact:
         @type artifact type, see Artifact.Type
         @path file path or glob, e.g. "path/**/[abc]rtifac?/*"
         """
+
         name: str
         type: str
         path: str

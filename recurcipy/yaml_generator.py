@@ -37,10 +37,15 @@ class YamlGenerator:
         for workflow_config in self.py_workflows:
             print(f"Generate workflow [{workflow_config.name}]")
             parser = WorkflowConfigParser(workflow_config).parse()
-            if workflow_config.is_event_pull_request() or workflow_config.is_event_push():
+            if (
+                workflow_config.is_event_pull_request()
+                or workflow_config.is_event_push()
+            ):
                 yaml_workflow_str = PullRequestPushYamlGen(parser).generate()
             else:
-                assert False, f"Workflow event not yet supported [{workflow_config.event}]"
+                assert (
+                    False
+                ), f"Workflow event not yet supported [{workflow_config.event}]"
 
             with ContextManager.cd():
                 with open(self._get_workflow_file_name(workflow_config.name), "w") as f:
@@ -61,7 +66,8 @@ class PullRequestPushYamlGen:
             NAME=self.workflow_config.name,
             EVENT=self.workflow_config.event,
             JOBS="{}\n" * len(self.workflow_config.jobs),
-            BASE_BRANCH=Settings.MAIN_BRANCH_NAME)
+            BASE_BRANCH=Settings.MAIN_BRANCH_NAME,
+        )
 
         job_items = []
         setup_envs = Templates.TEMPLATE_SETUP_ENV.format(
@@ -76,24 +82,35 @@ class PullRequestPushYamlGen:
             job_addons = []
             for addon in job.addons:
                 if addon.type == AddonType.PY:
-                    job_addons.append(Templates.TEMPLATE_PY_ADDONS.format(REQUIREMENT_PATH=addon.path))
+                    job_addons.append(
+                        Templates.TEMPLATE_PY_ADDONS.format(REQUIREMENT_PATH=addon.path)
+                    )
             uploads_github = []
             for artifact in job.artifacts_gh_provides:
-                uploads_github.append(Templates.TEMPLATE_GH_UPLOAD.format(NAME=artifact.name, PATH=artifact.path))
+                uploads_github.append(
+                    Templates.TEMPLATE_GH_UPLOAD.format(
+                        NAME=artifact.name, PATH=artifact.path
+                    )
+                )
             downloads_github = []
             for artifact in job.artifacts_gh_requires:
-                downloads_github.append(Templates.TEMPLATE_GH_DOWNLOAD.format(NAME=artifact.name, PATH=Environment.INPUT_DIR))
+                downloads_github.append(
+                    Templates.TEMPLATE_GH_DOWNLOAD.format(
+                        NAME=artifact.name, PATH=Environment.INPUT_DIR
+                    )
+                )
             job_item = Templates.TEMPLATE_JOB_0.format(
                 JOB_NAME_NORMALIZED=job_name_normalized,
+                RUNS_ON=", ".join(job.runs_on),
                 NEEDS=needs,
                 JOB_NAME=job_name,
                 WORKFLOW_NAME=self.workflow_config.name,
                 SETUP_ENVS=setup_envs,
                 JOB_ADDONS="\n".join(job_addons),
                 DOWNLOADS_GITHUB="\n".join(downloads_github),
-                UPLOADS_GITHUB="\n".join(uploads_github)
+                UPLOADS_GITHUB="\n".join(uploads_github),
             )
-            job_items.append(job_item.rstrip('\n'))
+            job_items.append(job_item.rstrip("\n"))
         res = template_1.format(*job_items)
 
         return res
@@ -148,7 +165,7 @@ class AuxYamlGen:
         return result
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     G = YamlGenerator()
     WFS = [
         Workflow.Config(
@@ -157,9 +174,11 @@ if __name__ == '__main__':
             jobs=[
                 Job.Config(
                     name="Hello World",
-                    job_requirements=Job.Requirements(python_requirements="./requirement.txt")
+                    job_requirements=Job.Requirements(
+                        python_requirements="./requirement.txt"
+                    ),
                 )
-            ]
+            ],
         )
     ]
     G.generate()

@@ -7,15 +7,12 @@ from recurcipy.environment import Environment
 
 
 class Runner:
-
     def pre_run(self, job_name, workflow_name):
         print(f"Pre-run script [{job_name}]")
-        envs = {
-            "JOB_NAME": job_name
-        }
+        envs = {"JOB_NAME": job_name}
         print(f"Exporting env variables [{envs}]")
         for k, v in envs.items():
-            Shell.check(f"echo {k}=\"{v}\" >> $GITHUB_ENV")
+            Shell.check(f'echo {k}="{v}" >> $GITHUB_ENV')
         Shell.check("cat $GITHUB_ENV")
         pass
 
@@ -65,7 +62,7 @@ def parse_args():
     return parser.parse_args(), parser
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     args, parser = parse_args()
     res = 0
 
