@@ -47,7 +47,9 @@ class Shell:
             text=True,
             check=strict,
         )
-        return res.stdout
+        if res.stderr:
+            print(f"WARNING: stderr: {res.stderr.strip()}")
+        return res.stdout.strip()
 
     @classmethod
     def check(
@@ -58,6 +60,18 @@ class Shell:
         dry_run=False,
         stdin_str=None,
         **kwargs,
+    ):
+        return cls.run(command, strict, verbose, dry_run, stdin_str, **kwargs) == 0
+
+    @classmethod
+    def run(
+            cls,
+            command,
+            strict=False,
+            verbose=False,
+            dry_run=False,
+            stdin_str=None,
+            **kwargs,
     ):
         if dry_run:
             print(f"Dry-ryn. Would run command [{command}]")
@@ -84,13 +98,12 @@ class Shell:
         proc.wait()
         if strict:
             assert proc.returncode == 0
-        return proc.returncode == 0
+        return proc.returncode
 
     @classmethod
-    def run(
+    def run_async(
         cls,
         command,
-        strict=False,
         stdin_str=None,
         **kwargs,
     ):
@@ -106,15 +119,7 @@ class Shell:
             errors="backslashreplace",
             **kwargs,
         )
-        if stdin_str:
-            proc.communicate(input=stdin_str)
-        elif proc.stdout:
-            for line in proc.stdout:
-                sys.stdout.write(line)
-        proc.wait()
-        if strict:
-            assert proc.returncode == 0
-        return proc.returncode
+        return proc
 
 
 class Utils:
@@ -158,6 +163,7 @@ class Utils:
             (",", "_"),
             ("/", "_"),
             ("-", "_"),
+            (":", ""),
         ):
             res = res.replace(*r)
         return res

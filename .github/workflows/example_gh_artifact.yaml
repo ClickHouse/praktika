@@ -1,4 +1,4 @@
-name: GitHub Artifact Example
+name: Example GH Artifact
 
 on:
   pull_request:
@@ -37,15 +37,15 @@ jobs:
 
       - name: Pre
         run: |
-          python -m recurcipy.runner --pre-run --job-name "Provide Artifact" --workflow-name "GitHub Artifact Example"
+          python -m recurcipy.runner --pre-run --job-name "Provide Artifact" --workflow-name "Example GH Artifact"
 
       - name: Run
         run: |
-          python -m recurcipy.runner --run --job-name "Provide Artifact" --workflow-name "GitHub Artifact Example"
+          python -m recurcipy.runner --run --job-name "Provide Artifact" --workflow-name "Example GH Artifact"
 
       - name: Post
         run: |
-          python -m recurcipy.runner --post-run --job-name "Provide Artifact" --workflow-name "GitHub Artifact Example"
+          python -m recurcipy.runner --post-run --job-name "Provide Artifact" --workflow-name "Example GH Artifact"
 
       - name: Upload artifact greet
         uses: actions/upload-artifact@v3
@@ -89,12 +89,12 @@ jobs:
 
       - name: Pre
         run: |
-          python -m recurcipy.runner --pre-run --job-name "Consume Artifact" --workflow-name "GitHub Artifact Example"
+          python -m recurcipy.runner --pre-run --job-name "Consume Artifact" --workflow-name "Example GH Artifact"
 
       - name: Run
         run: |
-          python -m recurcipy.runner --run --job-name "Consume Artifact" --workflow-name "GitHub Artifact Example"
+          python -m recurcipy.runner --run --job-name "Consume Artifact" --workflow-name "Example GH Artifact"
 
       - name: Post
         run: |
-          python -m recurcipy.runner --post-run --job-name "Consume Artifact" --workflow-name "GitHub Artifact Example"
+          python -m recurcipy.runner --post-run --job-name "Consume Artifact" --workflow-name "Example GH Artifact"

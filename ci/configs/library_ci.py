@@ -14,8 +14,8 @@ class WorkflowNames(MetaClasses.WithIter):
     Workflow names
     """
 
-    PULL_REQUEST = "My PR CI"
-    MAIN = "My Main CI"
+    PULL_REQUEST = "Library PR CI"
+    MAIN = "Library Main CI"
 
 
 workflow_pr = Workflow.Config(
@@ -26,11 +26,13 @@ workflow_pr = Workflow.Config(
             name=JobNames.JOB_UNIT_TESTS,
             command="python -m unittest discover -s ./ci/tests -p 'test_*.py'",
             job_requirements=Job.Requirements(python_requirements="requirements.txt"),
+            runs_on=["ubuntu-latest"],
         ),
         Job.Config(
             name=JobNames.JOB_LINT,
             command="yamllint . --config-file=.yamllint",
             job_requirements=Job.Requirements(python_requirements="requirements.txt"),
+            runs_on=["ubuntu-latest"],
         ),
     ],
 )
@@ -43,11 +45,13 @@ workflow_main = Workflow.Config(
             name=JobNames.JOB_UNIT_TESTS,
             command="python -m unittest discover -s ./ci/tests -p 'test_*.py'",
             job_requirements=Job.Requirements(python_requirements="requirements.txt"),
+            runs_on=["ubuntu-latest"],
         ),
         Job.Config(
             name=JobNames.JOB_LINT,
             command="yamllint . --config-file=.yamllint",
             job_requirements=Job.Requirements(python_requirements="requirements.txt"),
+            runs_on=["ubuntu-latest"],
         ),
     ],
 )

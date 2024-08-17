@@ -8,4 +8,4 @@ class Environment:
     WORKFLOW_NAME = os.getenv("GITHUB_WORKFLOW", "NA")
     JOB_NAME = os.getenv("JOB_NAME", "NA")
     REPOSITORY = os.getenv("GITHUB_REPOSITORY", "")
-    LOCAL_EXECUTION = os.getenv("GITHUB_REPOSITORY", "") == ""
+    LOCAL_EXECUTION = os.getenv("CLOUD", "0") == "0"
