@@ -19,5 +19,5 @@ variable "key_name" {
 }
 
 variable "runner_small" {
-  default = "maxs-test-small"
+  default = "maxs-small"
 }

@@ -4,7 +4,7 @@ from recurcipy.utils import MetaClasses
 
 
 class RunnerLabels(MetaClasses.WithIter):
-    SMALL = "maxs-test-small"
+    SMALL = "maxs-small"
 
 
 class JobNames(MetaClasses.WithIter):
@@ -21,7 +21,7 @@ class WorkflowNames(MetaClasses.WithIter):
     Workflow names
     """
 
-    PULL_REQUEST = "Self Hosted Runner Example"
+    PULL_REQUEST = "Example Self-hosted Runners"
 
 
 workflow_pr = Workflow.Config(

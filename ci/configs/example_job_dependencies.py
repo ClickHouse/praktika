@@ -19,7 +19,7 @@ class WorkflowNames(MetaClasses.WithIter):
     Workflow names
     """
 
-    PULL_REQUEST = "Job Dependencies Example"
+    PULL_REQUEST = "Example Job Dependencies"
 
 
 workflow_pr = Workflow.Config(
@@ -30,23 +30,27 @@ workflow_pr = Workflow.Config(
             name=JobNames.JOB_A,
             command="echo Dzień dobry wszystkim",
             job_requirements=Job.Requirements(python_requirements="requirements.txt"),
+            runs_on=["ubuntu-latest"],
         ),
         Job.Config(
             name=JobNames.JOB_B,
             command="echo Доброго ранку всім",
             job_requirements=Job.Requirements(python_requirements="requirements.txt"),
+            runs_on=["ubuntu-latest"],
         ),
         Job.Config(
             name=JobNames.JOB_C,
             command="echo Добро јутро свима",
             requires=[JobNames.JOB_A, JobNames.JOB_B],
             job_requirements=Job.Requirements(python_requirements="requirements.txt"),
+            runs_on=["ubuntu-latest"],
         ),
         Job.Config(
             name=JobNames.JOB_D,
             command="echo Jó reggelt mindenkinek",
             requires=[JobNames.JOB_C],
             job_requirements=Job.Requirements(python_requirements="requirements.txt"),
+            runs_on=["ubuntu-latest"],
         ),
     ],
 )

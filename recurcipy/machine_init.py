@@ -1,11 +1,94 @@
 import os
 import platform
 import signal
+import time
 
 import requests
 
 from recurcipy import Shell, ContextManager, Environment
 from recurcipy.settings import Settings
+
+
+class StateMachine:
+    class StateNames:
+        INIT = "init"
+        WAIT = "wait"
+        RUN = "run"
+
+    def __init__(self):
+        self.state = self.StateNames.INIT
+        self.scale_type = Settings.DEFAULT_RUNNER_SCALING_TYPE
+        self.machine = Machine(scaling_type=self.scale_type).update_instance_info()
+        self.state_updated_at = int(time.time())
+        self.forked = False
+
+    def kick(self):
+        if self.state == self.StateNames.INIT:
+            self.machine.config_actions().run_actions_async()
+            self.state = self.StateNames.WAIT
+            self.state_updated_at = int(time.time())
+        elif self.state == self.StateNames.WAIT:
+            res = self.machine.check_job_assigned()
+            if res:
+                self.state = self.StateNames.RUN
+                self.state_updated_at = int(time.time())
+                self.check_scale_up()
+            else:
+                self.check_scale_down()
+        elif self.state == self.StateNames.RUN:
+            res = self.machine.check_job_running()
+            if res:
+                pass
+            else:
+                self.state = self.StateNames.INIT
+                self.state_updated_at = int(time.time())
+
+    def check_scale_down(self):
+        if self.scale_type not in (
+            Settings.ScalingType.AUTOMATIC_SCALE_DOWN,
+            Settings.ScalingType.AUTOMATIC_SCALE_UP_DOWN,
+        ):
+            return
+        if Settings.ScalingType.AUTOMATIC_SCALE_UP_DOWN and not self.forked:
+            print(f"Scaling type is AUTOMATIC_SCALE_UP_DOWN and machine has not run a job - do not scale down")
+            return
+        if (
+            int(time.time()) - self.state_updated_at
+            > Settings.MAX_WAIT_TIME_BEFORE_SCALE_DOWN_SEC
+        ):
+            print(
+                f"No job assigned for more than MAX_WAIT_TIME_BEFORE_SCALE_DOWN_SEC [{Settings.MAX_WAIT_TIME_BEFORE_SCALE_DOWN_SEC}] - scale down the instance"
+            )
+            if not Environment.LOCAL_EXECUTION:
+                self.machine.self_terminate(decrease_capacity=True)
+            else:
+                print("Local execution - skip scaling operation")
+
+    def check_scale_up(self):
+        if self.scale_type not in (Settings.ScalingType.AUTOMATIC_SCALE_UP_DOWN,):
+            return
+        if self.forked:
+            print("This instance already forked once - do not scale up")
+            return
+        self.machine.self_fork()
+        self.forked = True
+
+    def run(self):
+        while True:
+            self.kick()
+            time.sleep(5)
+
+    def terminate(self):
+        self.machine.unconfig_actions()
+        if not Environment.LOCAL_EXECUTION:
+            if self.machine is not None:
+                self.machine.self_terminate(decrease_capacity=False)
+                time.sleep(10)
+                # wait termination
+            print("ERROR: failed to terminate instance via aws cli - try os call")
+            os.system("sudo shutdown now")
+        else:
+            print("NOTE: Local execution - machine won't be terminated")
 
 
 class Machine:
@@ -20,7 +103,7 @@ class Machine:
             print(f"Failed to get the latest release: {response.status_code}")
             return None
 
-    def __init__(self):
+    def __init__(self, scaling_type):
         self.os_name = platform.system().lower()
         assert self.os_name == "linux", f"Unsupported OS [{self.os_name}]"
         if platform.machine() == "x86_64":
@@ -31,11 +114,15 @@ class Machine:
             assert False, f"Unsupported arch [{platform.machine()}]"
         self.gh_token = None
         self.instance_id = None
+        self.asg_name = None
         self.runner_api_endpoint = None
         self.runner_type = None
         self.labels = []
+        self.proc = None
+        assert scaling_type in Settings.ScalingType
+        self.scaling_type = scaling_type
 
-    def _install_gh_actions_runner(self):
+    def install_gh_actions_runner(self):
         gh_actions_version = self.get_latest_gh_actions_release()
         assert self.os_name and gh_actions_version and self.arch
         Shell.check(
@@ -67,17 +154,55 @@ class Machine:
     def update_instance_info(self):
         self.instance_id = Shell.get_output_or_raise("ec2metadata --instance-id")
         assert self.instance_id
+        self.asg_name = Shell.get_output(
+            f"aws ec2 describe-instances --instance-id {self.instance_id} --query \"Reservations[].Instances[].Tags[?Key=='aws:autoscaling:groupName'].Value\" --output text"
+        )
+        # self.runner_type = Shell.get_output_or_raise(
+        #     f'/usr/local/bin/aws ec2 describe-tags --filters "Name=resource-id,Values={self.instance_id}" --query "Tags[?Key==\'github:runner-type\'].Value" --output text'
+        # )
+        self.runner_type = self.asg_name
+        if self.scaling_type != Settings.ScalingType.DISABLED and not Environment.LOCAL_EXECUTION:
+            assert (
+                self.asg_name and self.runner_type
+            ), f"Failed to retrieve ASG name, which is required for scaling_type [{self.scaling_type}]"
         org = os.getenv("MY_ORG", "")
         assert (
             org
         ), "MY_ORG env variable myst be set to use init script for runner machine"
         self.runner_api_endpoint = f"https://github.com/{org}"
-        self.runner_type = Shell.get_output_or_raise(
-            f'/usr/local/bin/aws ec2 describe-tags --filters "Name=resource-id,Values={self.instance_id}" --query "Tags[?Key==\'github:runner-type\'].Value" --output text'
-        )
-        assert self.runner_type
+
+
         self.labels = ["self-hosted", self.runner_type]
         return self
+
+    @classmethod
+    def check_job_assigned(cls):
+        runner_pid = Shell.get_output_or_raise("pgrep Runner.Listener")
+        if not runner_pid:
+            print("check_job_assigned: No runner pid")
+            return False
+        log_file = Shell.get_output_or_raise(
+            f"lsof -p {runner_pid} | grep -o {Settings.GH_ACTIONS_DIRECTORY}/_diag/Runner.*log"
+        )
+        if not log_file:
+            print("check_job_assigned: No log file")
+            return False
+        res = Shell.check(f"grep -q 'Terminal] .* Running job:' {log_file}")
+        if not res:
+            print("check_job_assigned: No job assigned")
+        return res
+
+    def check_job_running(self):
+        if self.proc is None:
+            print(f"WARNING: No job started")
+            return False
+        exit_code = self.proc.poll()
+        if exit_code is None:
+            return True
+        else:
+            print(f"Job runner finished with [{exit_code}]")
+            self.proc = None
+            return False
 
     def config_actions(self):
         if not self.instance_id:
@@ -90,31 +215,58 @@ class Machine:
             and self.runner_api_endpoint
             and self.labels
         )
-        command = f"sudo -u ubuntu {Settings.GH_ACTIONS_DIRECTORY}/config.sh --token {self.gh_token}\
-            --url {self.runner_api_endpoint} --ephemeral --unattended --replace\
+        Shell.check("pwd")
+        command = f"sudo -u ubuntu {Settings.GH_ACTIONS_DIRECTORY}/config.sh --token {self.gh_token} \
+            --url {self.runner_api_endpoint} --ephemeral --unattended --replace \
             --runnergroup Default --labels {','.join(self.labels)} --work wd --name {self.instance_id}"
         Shell.check(command, strict=True, verbose=True)
+        return self
 
     def unconfig_actions(self):
         if not self.gh_token:
             self._get_gh_token_from_ssm()
         command = f"sudo -u ubuntu {Settings.GH_ACTIONS_DIRECTORY}/config.sh remove --token {self.gh_token}"
         Shell.check(command, strict=True, verbose=True)
+        return self
 
-    def run_actions(self):
+    def run_actions_async(self):
         if not self.gh_token:
             self._get_gh_token_from_ssm()
         command = f"sudo -u ubuntu {Settings.GH_ACTIONS_DIRECTORY}/run.sh"
-        Shell.check(command, strict=True, verbose=True)
+        self.proc = Shell.run_async(command)
+        assert self.proc is not None
+        return self
 
-    def self_terminate(self):
+    def self_terminate(self, decrease_capacity):
         if not self.instance_id:
             self.update_instance_info()
         assert self.instance_id
+        command = f"aws autoscaling terminate-instance-in-auto-scaling-group --instance-id {self.instance_id}"
+        if decrease_capacity:
+            command += " --should-decrement-desired-capacity"
         Shell.check(
-            f"aws autoscaling terminate-instance-in-auto-scaling-group --instance-id {self.instance_id}",
+            command=command,
             verbose=True,
         )
+
+    def self_fork(self):
+        current_capacity = Shell.get_output(
+            f'aws autoscaling describe-auto-scaling-groups --auto-scaling-group-name {self.asg_name} \
+                --query "AutoScalingGroups[0].DesiredCapacity" --output text'
+        )
+        current_capacity = int(current_capacity)
+        if not current_capacity:
+            print("ERROR: failed to get current capacity - cannot scale up")
+            return
+        desired_capacity = current_capacity + 1
+        command = f"aws autoscaling set-desired-capacity --auto-scaling-group-name {self.asg_name} --desired-capacity {desired_capacity}"
+        print(f"Increase capacity [{current_capacity} -> {desired_capacity}]")
+        res = Shell.check(
+            command=command,
+            verbose=True,
+        )
+        if not res:
+            print("ERROR: failed to increase capacity - cannot scale up")
 
 
 def handle_signal(signum, _frame):
@@ -127,20 +279,12 @@ def run():
     signal.signal(signal.SIGTERM, handle_signal)
     m = None
     try:
-        m = Machine().update_instance_info()
-        m.config_actions()
-        m.run_actions()
+        m = StateMachine()
+        m.run()
     except Exception as e:
         print(f"FATAL: Exception [{e}] - terminate instance")
-        Machine().unconfig_actions()
-        if not Environment.LOCAL_EXECUTION:
-            if m is not None:
-                m.self_terminate()
-            else:
-                print("ERROR: failed to initialize aws env - terminate via os")
-                os.system("sudo shutdown now")
-        else:
-            print("NOTE: Local execution - machin won't ne terminated")
+        m.terminate()
+        raise e
 
 
 if __name__ == "__main__":

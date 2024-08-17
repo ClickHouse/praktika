@@ -1,4 +1,4 @@
-name: My PR CI
+name: Example Self-hosted Runners
 
 on:
   pull_request:
@@ -7,10 +7,10 @@ on:
 
 jobs:
 
-  unit_tests:
-    runs-on: [ubuntu-latest]
+  job_a:
+    runs-on: [maxs-small]
     needs: []
-    name: Unit Tests
+    name: Job A
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -37,20 +37,20 @@ jobs:
 
       - name: Pre
         run: |
-          python -m recurcipy.runner --pre-run --job-name "Unit Tests" --workflow-name "My PR CI"
+          python -m recurcipy.runner --pre-run --job-name "Job A" --workflow-name "Example Self-hosted Runners"
 
       - name: Run
         run: |
-          python -m recurcipy.runner --run --job-name "Unit Tests" --workflow-name "My PR CI"
+          python -m recurcipy.runner --run --job-name "Job A" --workflow-name "Example Self-hosted Runners"
 
       - name: Post
         run: |
-          python -m recurcipy.runner --post-run --job-name "Unit Tests" --workflow-name "My PR CI"
+          python -m recurcipy.runner --post-run --job-name "Job A" --workflow-name "Example Self-hosted Runners"
 
-  yaml_lint:
-    runs-on: [ubuntu-latest]
+  job_b:
+    runs-on: [maxs-small]
     needs: []
-    name: Yaml Lint
+    name: Job B
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -77,12 +77,12 @@ jobs:
 
       - name: Pre
         run: |
-          python -m recurcipy.runner --pre-run --job-name "Yaml Lint" --workflow-name "My PR CI"
+          python -m recurcipy.runner --pre-run --job-name "Job B" --workflow-name "Example Self-hosted Runners"
 
       - name: Run
         run: |
-          python -m recurcipy.runner --run --job-name "Yaml Lint" --workflow-name "My PR CI"
+          python -m recurcipy.runner --run --job-name "Job B" --workflow-name "Example Self-hosted Runners"
 
       - name: Post
         run: |
-          python -m recurcipy.runner --post-run --job-name "Yaml Lint" --workflow-name "My PR CI"
+          python -m recurcipy.runner --post-run --job-name "Job B" --workflow-name "Example Self-hosted Runners"

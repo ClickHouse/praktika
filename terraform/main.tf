@@ -64,9 +64,9 @@ resource "aws_launch_template" "maxs-template" {
 
 # Auto Scaling Group
 resource "aws_autoscaling_group" "maxs-small" {
-  name = "maxs-small"
+  name = var.runner_small
   desired_capacity     = 1
-  max_size             = 2
+  max_size             = 10
   min_size             = 0
   launch_template {
     id      = aws_launch_template.maxs-template.id

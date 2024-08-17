@@ -1,7 +1,7 @@
-name: My Main CI
+name: Library PR CI
 
 on:
-  push:
+  pull_request:
     branches:
       - main
 
@@ -37,15 +37,15 @@ jobs:
 
       - name: Pre
         run: |
-          python -m recurcipy.runner --pre-run --job-name "Unit Tests" --workflow-name "My Main CI"
+          python -m recurcipy.runner --pre-run --job-name "Unit Tests" --workflow-name "Library PR CI"
 
       - name: Run
         run: |
-          python -m recurcipy.runner --run --job-name "Unit Tests" --workflow-name "My Main CI"
+          python -m recurcipy.runner --run --job-name "Unit Tests" --workflow-name "Library PR CI"
 
       - name: Post
         run: |
-          python -m recurcipy.runner --post-run --job-name "Unit Tests" --workflow-name "My Main CI"
+          python -m recurcipy.runner --post-run --job-name "Unit Tests" --workflow-name "Library PR CI"
 
   yaml_lint:
     runs-on: [ubuntu-latest]
@@ -77,12 +77,12 @@ jobs:
 
       - name: Pre
         run: |
-          python -m recurcipy.runner --pre-run --job-name "Yaml Lint" --workflow-name "My Main CI"
+          python -m recurcipy.runner --pre-run --job-name "Yaml Lint" --workflow-name "Library PR CI"
 
       - name: Run
         run: |
-          python -m recurcipy.runner --run --job-name "Yaml Lint" --workflow-name "My Main CI"
+          python -m recurcipy.runner --run --job-name "Yaml Lint" --workflow-name "Library PR CI"
 
       - name: Post
         run: |
-          python -m recurcipy.runner --post-run --job-name "Yaml Lint" --workflow-name "My Main CI"
+          python -m recurcipy.runner --post-run --job-name "Yaml Lint" --workflow-name "Library PR CI"

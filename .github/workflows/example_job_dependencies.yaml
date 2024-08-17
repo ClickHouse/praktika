@@ -1,4 +1,4 @@
-name: Job Dependencies Example
+name: Example Job Dependencies
 
 on:
   pull_request:
@@ -37,15 +37,15 @@ jobs:
 
       - name: Pre
         run: |
-          python -m recurcipy.runner --pre-run --job-name "Job A starting at the beginning" --workflow-name "Job Dependencies Example"
+          python -m recurcipy.runner --pre-run --job-name "Job A starting at the beginning" --workflow-name "Example Job Dependencies"
 
       - name: Run
         run: |
-          python -m recurcipy.runner --run --job-name "Job A starting at the beginning" --workflow-name "Job Dependencies Example"
+          python -m recurcipy.runner --run --job-name "Job A starting at the beginning" --workflow-name "Example Job Dependencies"
 
       - name: Post
         run: |
-          python -m recurcipy.runner --post-run --job-name "Job A starting at the beginning" --workflow-name "Job Dependencies Example"
+          python -m recurcipy.runner --post-run --job-name "Job A starting at the beginning" --workflow-name "Example Job Dependencies"
 
   job_b_starting_at_the_beginning:
     runs-on: [ubuntu-latest]
@@ -77,15 +77,15 @@ jobs:
 
       - name: Pre
         run: |
-          python -m recurcipy.runner --pre-run --job-name "Job B starting at the beginning" --workflow-name "Job Dependencies Example"
+          python -m recurcipy.runner --pre-run --job-name "Job B starting at the beginning" --workflow-name "Example Job Dependencies"
 
       - name: Run
         run: |
-          python -m recurcipy.runner --run --job-name "Job B starting at the beginning" --workflow-name "Job Dependencies Example"
+          python -m recurcipy.runner --run --job-name "Job B starting at the beginning" --workflow-name "Example Job Dependencies"
 
       - name: Post
         run: |
-          python -m recurcipy.runner --post-run --job-name "Job B starting at the beginning" --workflow-name "Job Dependencies Example"
+          python -m recurcipy.runner --post-run --job-name "Job B starting at the beginning" --workflow-name "Example Job Dependencies"
 
   job_c_starting_after_job_a_and_b_is_done:
     runs-on: [ubuntu-latest]
@@ -117,15 +117,15 @@ jobs:
 
       - name: Pre
         run: |
-          python -m recurcipy.runner --pre-run --job-name "Job C starting after Job A and B is done" --workflow-name "Job Dependencies Example"
+          python -m recurcipy.runner --pre-run --job-name "Job C starting after Job A and B is done" --workflow-name "Example Job Dependencies"
 
       - name: Run
         run: |
-          python -m recurcipy.runner --run --job-name "Job C starting after Job A and B is done" --workflow-name "Job Dependencies Example"
+          python -m recurcipy.runner --run --job-name "Job C starting after Job A and B is done" --workflow-name "Example Job Dependencies"
 
       - name: Post
         run: |
-          python -m recurcipy.runner --post-run --job-name "Job C starting after Job A and B is done" --workflow-name "Job Dependencies Example"
+          python -m recurcipy.runner --post-run --job-name "Job C starting after Job A and B is done" --workflow-name "Example Job Dependencies"
 
   job_d_starting_after_job_c_is_done:
     runs-on: [ubuntu-latest]
@@ -157,12 +157,12 @@ jobs:
 
       - name: Pre
         run: |
-          python -m recurcipy.runner --pre-run --job-name "Job D starting after Job C is done" --workflow-name "Job Dependencies Example"
+          python -m recurcipy.runner --pre-run --job-name "Job D starting after Job C is done" --workflow-name "Example Job Dependencies"
 
       - name: Run
         run: |
-          python -m recurcipy.runner --run --job-name "Job D starting after Job C is done" --workflow-name "Job Dependencies Example"
+          python -m recurcipy.runner --run --job-name "Job D starting after Job C is done" --workflow-name "Example Job Dependencies"
 
       - name: Post
         run: |
-          python -m recurcipy.runner --post-run --job-name "Job D starting after Job C is done" --workflow-name "Job Dependencies Example"
+          python -m recurcipy.runner --post-run --job-name "Job D starting after Job C is done" --workflow-name "Example Job Dependencies"
