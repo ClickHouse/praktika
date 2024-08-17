@@ -1,23 +1,23 @@
 import importlib.util
 from pathlib import Path
-from typing import List
+from typing import List, Dict, Any
 
 from recurcipy import ContextManager, Workflow
-from recurcipy.settings import Settings
+from recurcipy.defaultsettings import DefaultSettings, _USER_DEFINED_SETTINGS
 
 
 def _get_workflows(name=None) -> List[Workflow.Config]:
     """
-    Gets CI python configuration from user's repo
-    :return:
+    Gets user's workflow configs
     """
+    res = []  # type: List[Workflow.Config]
+
     with ContextManager.cd():
-        directory = Path(Settings.CONFIG_DIRECTORY)
-        res = []  # type: List[Workflow.Config]
+        directory = Path(DefaultSettings.WORKFLOWS_DIRECTORY)
         for py_file in directory.glob("*.py"):
             module_name = py_file.name.removeprefix(".py")
             spec = importlib.util.spec_from_file_location(
-                module_name, f"{Settings.CONFIG_DIRECTORY}/{module_name}"
+                module_name, f"{DefaultSettings.WORKFLOWS_DIRECTORY}/{module_name}"
             )
             foo = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(foo)
@@ -36,4 +36,29 @@ def _get_workflows(name=None) -> List[Workflow.Config]:
                 return [wf]
         else:
             return []
+    return res
+
+
+def _get_user_settings() -> Dict[str, Any]:
+    """
+    Gets user's settings
+    """
+    res = {}  # type: Dict[str, Any]
+
+    with ContextManager.cd():
+        directory = Path(DefaultSettings.SETTINGS_DIRECTORY)
+        for py_file in directory.glob("*.py"):
+            module_name = py_file.name.removeprefix(".py")
+            spec = importlib.util.spec_from_file_location(
+                module_name, f"{DefaultSettings.SETTINGS_DIRECTORY}/{module_name}"
+            )
+            foo = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(foo)
+            for setting in _USER_DEFINED_SETTINGS:
+                try:
+                    value = getattr(foo, setting)
+                    res[setting] = value
+                    print(f"Apply user defined setting [{setting} = {value}]")
+                except Exception as e:
+                    pass
     return res

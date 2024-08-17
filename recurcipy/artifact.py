@@ -1,12 +1,10 @@
 from dataclasses import dataclass
-from typing import Optional, List
-
-from recurcipy.settings import Settings
 
 
 class Artifact:
     class Type:
         GH = "github"
+        S3 = "s3"
         PHONY = "phony"
 
     @dataclass
@@ -20,6 +18,9 @@ class Artifact:
         name: str
         type: str
         path: str
+
+        def is_s3_artifact(self):
+            return self.type == Artifact.Type.S3
 
     @classmethod
     def define_artifact(cls, name, type, path):

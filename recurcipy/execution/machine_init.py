@@ -5,8 +5,8 @@ import time
 
 import requests
 
-from recurcipy import Shell, ContextManager, Environment
-from recurcipy.settings import Settings
+from recurcipy import Shell, ContextManager
+from recurcipy.execution.execution_settings import ExecutionSettings, ScalingType
 
 
 class StateMachine:
@@ -17,7 +17,7 @@ class StateMachine:
 
     def __init__(self):
         self.state = self.StateNames.INIT
-        self.scale_type = Settings.DEFAULT_RUNNER_SCALING_TYPE
+        self.scale_type = ExecutionSettings.RUNNER_SCALING_TYPE
         self.machine = Machine(scaling_type=self.scale_type).update_instance_info()
         self.state_updated_at = int(time.time())
         self.forked = False
@@ -45,27 +45,29 @@ class StateMachine:
 
     def check_scale_down(self):
         if self.scale_type not in (
-            Settings.ScalingType.AUTOMATIC_SCALE_DOWN,
-            Settings.ScalingType.AUTOMATIC_SCALE_UP_DOWN,
+            ScalingType.AUTOMATIC_SCALE_DOWN,
+            ScalingType.AUTOMATIC_SCALE_UP_DOWN,
         ):
             return
-        if Settings.ScalingType.AUTOMATIC_SCALE_UP_DOWN and not self.forked:
-            print(f"Scaling type is AUTOMATIC_SCALE_UP_DOWN and machine has not run a job - do not scale down")
+        if ScalingType.AUTOMATIC_SCALE_UP_DOWN and not self.forked:
+            print(
+                f"Scaling type is AUTOMATIC_SCALE_UP_DOWN and machine has not run a job - do not scale down"
+            )
             return
         if (
             int(time.time()) - self.state_updated_at
-            > Settings.MAX_WAIT_TIME_BEFORE_SCALE_DOWN_SEC
+            > ExecutionSettings.MAX_WAIT_TIME_BEFORE_SCALE_DOWN_SEC
         ):
             print(
-                f"No job assigned for more than MAX_WAIT_TIME_BEFORE_SCALE_DOWN_SEC [{Settings.MAX_WAIT_TIME_BEFORE_SCALE_DOWN_SEC}] - scale down the instance"
+                f"No job assigned for more than MAX_WAIT_TIME_BEFORE_SCALE_DOWN_SEC [{ExecutionSettings.MAX_WAIT_TIME_BEFORE_SCALE_DOWN_SEC}] - scale down the instance"
             )
-            if not Environment.LOCAL_EXECUTION:
+            if not ExecutionSettings.LOCAL_EXECUTION:
                 self.machine.self_terminate(decrease_capacity=True)
             else:
                 print("Local execution - skip scaling operation")
 
     def check_scale_up(self):
-        if self.scale_type not in (Settings.ScalingType.AUTOMATIC_SCALE_UP_DOWN,):
+        if self.scale_type not in (ScalingType.AUTOMATIC_SCALE_UP_DOWN,):
             return
         if self.forked:
             print("This instance already forked once - do not scale up")
@@ -80,7 +82,7 @@ class StateMachine:
 
     def terminate(self):
         self.machine.unconfig_actions()
-        if not Environment.LOCAL_EXECUTION:
+        if not ExecutionSettings.LOCAL_EXECUTION:
             if self.machine is not None:
                 self.machine.self_terminate(decrease_capacity=False)
                 time.sleep(10)
@@ -119,17 +121,21 @@ class Machine:
         self.runner_type = None
         self.labels = []
         self.proc = None
-        assert scaling_type in Settings.ScalingType
+        assert scaling_type in ScalingType
         self.scaling_type = scaling_type
 
     def install_gh_actions_runner(self):
         gh_actions_version = self.get_latest_gh_actions_release()
         assert self.os_name and gh_actions_version and self.arch
         Shell.check(
-            f"rm -rf {Settings.GH_ACTIONS_DIRECTORY}", strict=True, verbose=True
+            f"rm -rf {ExecutionSettings.GH_ACTIONS_DIRECTORY}",
+            strict=True,
+            verbose=True,
         )
-        Shell.check(f"mkdir {Settings.GH_ACTIONS_DIRECTORY}", strict=True, verbose=True)
-        with ContextManager.cd(Settings.GH_ACTIONS_DIRECTORY):
+        Shell.check(
+            f"mkdir {ExecutionSettings.GH_ACTIONS_DIRECTORY}", strict=True, verbose=True
+        )
+        with ContextManager.cd(ExecutionSettings.GH_ACTIONS_DIRECTORY):
             Shell.check(
                 f"curl -O -L https://github.com/actions/runner/releases/download/v{gh_actions_version}/actions-runner-{self.os_name}-{self.arch}-{gh_actions_version}.tar.gz",
                 strict=True,
@@ -139,7 +145,7 @@ class Machine:
             Shell.check(f"rm -f *tar.gz", strict=True, verbose=True)
             Shell.check(f"sudo ./bin/installdependencies.sh", strict=True, verbose=True)
             Shell.check(
-                f"chown -R ubuntu:ubuntu {Settings.GH_ACTIONS_DIRECTORY}",
+                f"chown -R ubuntu:ubuntu {ExecutionSettings.GH_ACTIONS_DIRECTORY}",
                 strict=True,
                 verbose=True,
             )
@@ -161,7 +167,10 @@ class Machine:
         #     f'/usr/local/bin/aws ec2 describe-tags --filters "Name=resource-id,Values={self.instance_id}" --query "Tags[?Key==\'github:runner-type\'].Value" --output text'
         # )
         self.runner_type = self.asg_name
-        if self.scaling_type != Settings.ScalingType.DISABLED and not Environment.LOCAL_EXECUTION:
+        if (
+            self.scaling_type != ScalingType.DISABLED
+            and not ExecutionSettings.LOCAL_EXECUTION
+        ):
             assert (
                 self.asg_name and self.runner_type
             ), f"Failed to retrieve ASG name, which is required for scaling_type [{self.scaling_type}]"
@@ -170,7 +179,6 @@ class Machine:
             org
         ), "MY_ORG env variable myst be set to use init script for runner machine"
         self.runner_api_endpoint = f"https://github.com/{org}"
-
 
         self.labels = ["self-hosted", self.runner_type]
         return self
@@ -182,7 +190,7 @@ class Machine:
             print("check_job_assigned: No runner pid")
             return False
         log_file = Shell.get_output_or_raise(
-            f"lsof -p {runner_pid} | grep -o {Settings.GH_ACTIONS_DIRECTORY}/_diag/Runner.*log"
+            f"lsof -p {runner_pid} | grep -o {ExecutionSettings.GH_ACTIONS_DIRECTORY}/_diag/Runner.*log"
         )
         if not log_file:
             print("check_job_assigned: No log file")
@@ -216,7 +224,7 @@ class Machine:
             and self.labels
         )
         Shell.check("pwd")
-        command = f"sudo -u ubuntu {Settings.GH_ACTIONS_DIRECTORY}/config.sh --token {self.gh_token} \
+        command = f"sudo -u ubuntu {ExecutionSettings.GH_ACTIONS_DIRECTORY}/config.sh --token {self.gh_token} \
             --url {self.runner_api_endpoint} --ephemeral --unattended --replace \
             --runnergroup Default --labels {','.join(self.labels)} --work wd --name {self.instance_id}"
         Shell.check(command, strict=True, verbose=True)
@@ -225,14 +233,14 @@ class Machine:
     def unconfig_actions(self):
         if not self.gh_token:
             self._get_gh_token_from_ssm()
-        command = f"sudo -u ubuntu {Settings.GH_ACTIONS_DIRECTORY}/config.sh remove --token {self.gh_token}"
+        command = f"sudo -u ubuntu {ExecutionSettings.GH_ACTIONS_DIRECTORY}/config.sh remove --token {self.gh_token}"
         Shell.check(command, strict=True, verbose=True)
         return self
 
     def run_actions_async(self):
         if not self.gh_token:
             self._get_gh_token_from_ssm()
-        command = f"sudo -u ubuntu {Settings.GH_ACTIONS_DIRECTORY}/run.sh"
+        command = f"sudo -u ubuntu {ExecutionSettings.GH_ACTIONS_DIRECTORY}/run.sh"
         self.proc = Shell.run_async(command)
         assert self.proc is not None
         return self

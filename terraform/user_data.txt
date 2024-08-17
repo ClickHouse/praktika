@@ -95,8 +95,8 @@ echo "CloudWatch installed"
 cd ~
 aws s3 cp --recursive s3://clickhouse-builds/max_test/recurcipy ./recurcipy
 
-python3 -m recurcipy --run
-
+export RUNNER_SCALING_TYPE=scale
+python3 -m recurcipy.execution
 
 ## install docker
 #curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg

@@ -27,35 +27,37 @@ git push --set-upstream origin my_yaml_ci_written_in_python
 # 8. Enjoy Your Hello World CI
 ```
 
-#### CI Platform features:
-|                       | GitHub | GitLab | comment                                   |
-|-----------------------|--------|--------|-------------------------------------------|
-| pull_request workflow | Y      | N      |                                           |
-| push workflow         | Y      | N      |                                           |
-| merge_queue workflow  | N, TBD | N      |                                           |
-| scheduled workflow    | N, TBD | N      |                                           |
-| job artifacts         | Y      | N      | upload/download native platform artifacts |
-| platform runners      | Y      | N      | free ubuntu-latest GH runner              |
-| self-hosted runners   | Y      | N      | using your own CI runners (AWS EC2)       |
-
+#### CI Platform features
+|                         | GitHub | GitLab | BitBucket | comment                                   |
+|-------------------------|--------|--------|-----------|-------------------------------------------|
+| pull_request workflow   | Y      |        |           |                                           |
+| push workflow           | Y      |        |           |                                           |
+| merge_queue workflow    | N      |        |           |                                           |
+| scheduled workflow      | N      |        |           |                                           |
+| dispatch workflow       | N      |        |           |                                           |
+| job artifacts           | Y      |        |           | Upload/download native platform artifacts |
+| platform runners        | Y      |        |           | Free ubuntu-latest GH runner              |
+| self-hosted runners     | Y      |        |           | Using your own CI runners (AWS EC2)       |
 
 #### Cloud Compute features
-|                     | AWS    | Azure | comment                                         |
-|---------------------|--------|-------|-------------------------------------------------|
-| EC2 as a CI runner  | Y      | N     |                                                 |
-| ASG auto scale down | Y      | N     | Self scaling down upon job completion           |
-| ASG auto scale up   | Y      | N     | Requires 1+ EC2 instance in reserve permanently |
-| Artifacts on s3     | N, TBD | N     |                                                 |
+|                         | AWS    | Azure | GCP   | comment                                        |
+|-------------------------|--------|-------|-------|------------------------------------------------|
+| EC2 as a CI runner      | Y      |       |       |                                                |
+| ASG self-scale down     | Y      |       |       | Self scaling down upon job completion          |
+| ASG self-scale up       | Y      |       |       | Requires 1+ EC2 instance in reserve            |
+| S3 for artifacts        | N      |       |       |                                                |
 
 #### Library features
-|                         |        | comment                                                                            |
-|-------------------------|--------|------------------------------------------------------------------------------------|
-| Pythonic CI pipelines   | Y      | 100% python interface to write pipelines for GH within supported platform features |
-| CI cache                | N, TBD | Skip not-affected job/artifacts automatically                                      |
-| CI customization        | N, TBD | Support for manual CI customization within a CI run                                |
-| Docker as execution env | N, TBD | Support running jobs in docker natively                                            |
-| Automatic job report    | N, TBD | building HTML report for CI jobs                                                   |
-| ClickHouse CI DB        | N, TBD | results reporting to CI DB for analytics and observability                         |
-| Observability           | N, TBD | Integration with observability platform, Grafana                                   |
-| Slack app               | N, TBD | Slack app to subscribe to CI events, Posting alarms, notification                  |
-| Automatic Backporting   | N, TBD | Automatic PR backports to release ranches                                          |
+|                         |     | comment                                                           |
+|-------------------------|-----|-------------------------------------------------------------------|
+| Pythonic CI pipelines   | Y   | 100% python interface for creating CI pipelines                   |
+| Pre-requisites: python  | Y   | Install python dependencies as a pre-requisite job step           |
+| Artifacts               | Y   | Upload/download artifacts in a pre/post job step (GH, S3)         |
+| Reports                 | N   | Building HTML report for CI jobs                                  |
+| ClickHouse CI DB        | N   | Export results to CI DB for analytics and observability           |
+| CI Cache                | N   | Skip not-affected job/artifacts automatically                     |
+| CI Customization        | N   | Support for manual CI customization within a CI run               |
+| Docker as execution env | N   | Support running jobs in docker natively                           |
+| Observability           | N   | Integration with observability platform, Grafana                  |
+| Slack app               | N   | Slack app to subscribe to CI events, Alarms, etc                  |
+| Automatic Backporting   | N   | Automatic PR backports to release ranches                         |

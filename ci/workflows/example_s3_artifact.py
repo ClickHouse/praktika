@@ -1,7 +1,7 @@
 from typing import List
 
 from recurcipy import Job, Workflow, Artifact
-from recurcipy.environment import Environment
+from recurcipy.settings import Settings
 from recurcipy.utils import MetaClasses
 
 
@@ -15,11 +15,17 @@ class ArtifactNames(MetaClasses.WithIter):
 
 
 class WorkflowNames(MetaClasses.WithIter):
-    PULL_REQUEST = "Example GH Artifact"
+    PULL_REQUEST = "Example S3 Artifact"
+
+
+class RunnerLabels:
+    SMALL = "maxs-small"
 
 
 artifacts = [
-    Artifact.define_gh_artifact(name=ArtifactNames.GREET, path="./hello_world.txt"),
+    Artifact.Config(
+        name=ArtifactNames.GREET, type=Artifact.Type.S3, path="./hello_world.txt"
+    ),
 ]  # type: List[Artifact.Config]
 
 
@@ -29,15 +35,15 @@ workflow_pr = Workflow.Config(
     jobs=[
         Job.Config(
             name=JobNames.JOB_UPLOADING_ARTIFACT,
-            runs_on=["ubuntu-latest"],
+            runs_on=[RunnerLabels.SMALL],
             command='echo "Hello World" > ./hello_world.txt',
             provides=[ArtifactNames.GREET],
             job_requirements=Job.Requirements(python_requirements="requirements.txt"),
         ),
         Job.Config(
             name=JobNames.JOB_REQUIRING_ARTIFACT,
-            runs_on=["ubuntu-latest"],
-            command=f"cat {Environment.INPUT_DIR}/hello_world.txt",
+            runs_on=[RunnerLabels.SMALL],
+            command=f"cat {Settings.INPUT_DIR}/hello_world.txt",
             requires=[ArtifactNames.GREET],
             job_requirements=Job.Requirements(python_requirements="requirements.txt"),
         ),

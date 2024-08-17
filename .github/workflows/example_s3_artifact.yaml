@@ -1,16 +1,16 @@
-name: Library Main CI
+name: Example S3 Artifact
 
 on:
-  push:
+  pull_request:
     branches:
       - main
 
 jobs:
 
-  unit_tests:
-    runs-on: [ubuntu-latest]
+  provide_artifact:
+    runs-on: [maxs-small]
     needs: []
-    name: Unit Tests
+    name: Provide Artifact
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -37,20 +37,20 @@ jobs:
 
       - name: Pre
         run: |
-          python -m recurcipy.runner --pre-run --job-name "Unit Tests" --workflow-name "Library Main CI"
+          python -m recurcipy.runner --pre-run --job-name "Provide Artifact" --workflow-name "Example S3 Artifact"
 
       - name: Run
         run: |
-          python -m recurcipy.runner --run --job-name "Unit Tests" --workflow-name "Library Main CI"
+          python -m recurcipy.runner --run --job-name "Provide Artifact" --workflow-name "Example S3 Artifact"
 
       - name: Post
         run: |
-          python -m recurcipy.runner --post-run --job-name "Unit Tests" --workflow-name "Library Main CI"
+          python -m recurcipy.runner --post-run --job-name "Provide Artifact" --workflow-name "Example S3 Artifact"
 
-  yaml_lint:
-    runs-on: [ubuntu-latest]
-    needs: []
-    name: Yaml Lint
+  consume_artifact:
+    runs-on: [maxs-small]
+    needs: [provide_artifact]
+    name: Consume Artifact
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -77,12 +77,12 @@ jobs:
 
       - name: Pre
         run: |
-          python -m recurcipy.runner --pre-run --job-name "Yaml Lint" --workflow-name "Library Main CI"
+          python -m recurcipy.runner --pre-run --job-name "Consume Artifact" --workflow-name "Example S3 Artifact"
 
       - name: Run
         run: |
-          python -m recurcipy.runner --run --job-name "Yaml Lint" --workflow-name "Library Main CI"
+          python -m recurcipy.runner --run --job-name "Consume Artifact" --workflow-name "Example S3 Artifact"
 
       - name: Post
         run: |
-          python -m recurcipy.runner --post-run --job-name "Yaml Lint" --workflow-name "Library Main CI"
+          python -m recurcipy.runner --post-run --job-name "Consume Artifact" --workflow-name "Example S3 Artifact"
