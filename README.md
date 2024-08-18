@@ -40,24 +40,29 @@ git push --set-upstream origin my_yaml_ci_written_in_python
 | self-hosted runners     | Y      |        |           | Using your own CI runners (AWS EC2)       |
 
 #### Cloud Compute features
-|                         | AWS    | Azure | GCP   | comment                                        |
-|-------------------------|--------|-------|-------|------------------------------------------------|
-| EC2 as a CI runner      | Y      |       |       |                                                |
-| ASG self-scale down     | Y      |       |       | Self scaling down upon job completion          |
-| ASG self-scale up       | Y      |       |       | Requires 1+ EC2 instance in reserve            |
-| S3 for artifacts        | N      |       |       |                                                |
+|                                     | AWS | Azure | GCP   | comment                               |
+|-------------------------------------|-----|-------|-------|---------------------------------------|
+| EC2 as a CI runner                  | Y   |       |       |                                       |
+| ASG self-scale down                 | Y   |       |       | Self scaling down upon job completion |
+| ASG self-scale up                   | Y   |       |       | Requires 1+ EC2 instance in reserve   |
+| ASG zero-capacity-overhead scale up | N   |       |       | for instance: GH webhook + lambda     |
+| ASG fixed size                      | Y   |       |       | no auto scaling                       |
+| S3 for artifacts                    | Y   |       |       |                                       |
+| CloudWatch runner logs              | N   |       |       |                                       |
+| prebuild runner image (terraform)   | N   |       |       |                                       |
 
 #### Library features
-|                         |     | comment                                                           |
-|-------------------------|-----|-------------------------------------------------------------------|
-| Pythonic CI pipelines   | Y   | 100% python interface for creating CI pipelines                   |
-| Pre-requisites: python  | Y   | Install python dependencies as a pre-requisite job step           |
-| Artifacts               | Y   | Upload/download artifacts in a pre/post job step (GH, S3)         |
-| Reports                 | N   | Building HTML report for CI jobs                                  |
-| ClickHouse CI DB        | N   | Export results to CI DB for analytics and observability           |
-| CI Cache                | N   | Skip not-affected job/artifacts automatically                     |
-| CI Customization        | N   | Support for manual CI customization within a CI run               |
-| Docker as execution env | N   | Support running jobs in docker natively                           |
-| Observability           | N   | Integration with observability platform, Grafana                  |
-| Slack app               | N   | Slack app to subscribe to CI events, Alarms, etc                  |
-| Automatic Backporting   | N   | Automatic PR backports to release ranches                         |
+|                         |               | comment                                                   |
+|-------------------------|---------------|-----------------------------------------------------------|
+| Pythonic CI pipelines   | Y             | 100% python interface for creating CI pipelines           |
+| Pre-requisites: python  | Y             | Install python dependencies as a pre-requisite job step   |
+| Artifacts               | Y             | Upload/download artifacts in a pre/post job step (GH, S3) |
+| Reports                 | N (High Prio) | Building HTML report for CI jobs                          |
+| ClickHouse CI DB        | N (High Prio) | Export results to CI DB for analytics and observability   |
+| CI Cache                | Y             | Skip not-affected job, reuse artifacts                    |
+| CI Customization        | N             | Support for manual CI customization within a CI run       |
+| Docker as execution env | N             | Support running jobs in docker natively                   |
+| Observability           | N             | Integration with observability platform, Grafana          |
+| Slack app               | N             | Slack app to subscribe to CI events, Alarms, etc          |
+| Automatic Backporting   | N             | Automatic PR backports to release ranches                 |
+| Mergeable Check logic   | N (High Prio) | Automatic PR backports to release ranches                 |

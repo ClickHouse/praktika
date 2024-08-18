@@ -14,7 +14,10 @@ class YamlGenerator:
     def __init__(self, workflows: Optional[List[Workflow.Config]] = None):
         with ContextManager.cd():
             Path(Settings.WORKFLOW_PATH_PREFIX).mkdir(parents=True, exist_ok=True)
-        self.py_workflows = []  # type: List[Workflow.Config]
+        if not workflows:
+            self.py_workflows = []  # type: List[Workflow.Config]
+        else:
+            self.py_workflows = workflows
 
     @classmethod
     def _get_workflow_file_name(cls, workflow_name):
@@ -51,8 +54,8 @@ class PullRequestPushYamlGen:
         self.parser = parser
 
     def generate(self):
-        required_aux_workflow_configs = []
-        template_1 = Templates.TEMPLATE_PULL_REQUEST_0.strip().format(
+        base_template = Templates.TEMPLATE_PULL_REQUEST_0
+        template_1 = base_template.strip().format(
             NAME=self.workflow_config.name,
             BRANCHES=", ".join(self.workflow_config.branches),
             EVENT=self.workflow_config.event,
@@ -73,9 +76,19 @@ class PullRequestPushYamlGen:
             job_addons = []
             for addon in job.addons:
                 if addon.type == AddonType.PY:
-                    job_addons.append(
-                        Templates.TEMPLATE_PY_ADDONS.format(REQUIREMENT_PATH=addon.path)
-                    )
+                    if addon.path:
+                        job_addons.append(
+                            Templates.TEMPLATE_PY_WITH_REQUIREMENTS.format(
+                                PYTHON_VERSION=Settings.PYTHON_VERSION,
+                                REQUIREMENT_PATH=addon.path,
+                            )
+                        )
+                    else:
+                        job_addons.append(
+                            Templates.TEMPLATE_PY_INSTALL.format(
+                                PYTHON_VERSION=Settings.PYTHON_VERSION
+                            )
+                        )
             uploads_github = []
             for artifact in job.artifacts_gh_provides:
                 uploads_github.append(
@@ -90,13 +103,32 @@ class PullRequestPushYamlGen:
                         NAME=artifact.name, PATH=Settings.INPUT_DIR
                     )
                 )
+
+            config_job_name_normalized = Utils.normalize_string(
+                Settings.CACHE_CONFIG_JOB_NAME
+            )
+
+            if (
+                self.workflow_config.enable_cache
+                and job_name_normalized != config_job_name_normalized
+            ):
+                if_expression = Templates.TEMPLATE_IF_EXPRESSION.format(
+                    WORKFLOW_CONFIG_JOB_NAME=config_job_name_normalized,
+                    JOB_NAME=job_name,
+                )
+            else:
+                if_expression = ""
+
             job_item = Templates.TEMPLATE_JOB_0.format(
                 JOB_NAME_NORMALIZED=job_name_normalized,
+                WORKFLOW_CONFIG_JOB_NAME=config_job_name_normalized,
+                IF_EXPRESSION=if_expression,
                 RUNS_ON=", ".join(job.runs_on),
                 NEEDS=needs,
                 JOB_NAME=job_name,
                 WORKFLOW_NAME=self.workflow_config.name,
                 SETUP_ENVS=setup_envs,
+                WORKFLOW_RUN_CONFIG_FILE=Settings.WORKFLOW_RUN_CONFIG_FILE,
                 JOB_ADDONS="\n".join(job_addons),
                 DOWNLOADS_GITHUB="\n".join(downloads_github),
                 UPLOADS_GITHUB="\n".join(uploads_github),
@@ -118,7 +150,7 @@ class AuxConfig:
 
     def get_aux_workflow_name(self):
         suffix = ""
-        if self.addon.python_requirements:
+        if self.addon.python_requirements_txt:
             suffix += "_py"
         for _ in self.uploads_gh:
             suffix += "_uplgh"
@@ -128,8 +160,8 @@ class AuxConfig:
 
     def get_aux_workflow_input(self):
         res = ""
-        if self.addon.python_requirements:
-            res += f"      requirements_txt: {self.addon.python_requirements}"
+        if self.addon.python_requirements_txt:
+            res += f"      requirements_txt: {self.addon.python_requirements_txt}"
         return res
 
 
@@ -142,7 +174,7 @@ class AuxYamlGen:
         addon_inputs = []
         addon_steps = []
 
-        if self.addon.python_requirements:
+        if self.addon.python_requirements_txt:
             addon_inputs.append(Templates.ADDON_PY_INPUT)
             addon_steps.append(Templates.ADDON_PY_STEPS)
 
@@ -157,7 +189,6 @@ class AuxYamlGen:
 
 
 if __name__ == "__main__":
-    G = YamlGenerator()
     WFS = [
         Workflow.Config(
             name="PR",
@@ -165,11 +196,15 @@ if __name__ == "__main__":
             jobs=[
                 Job.Config(
                     name="Hello World",
+                    runs_on=["foo"],
+                    command="bar",
                     job_requirements=Job.Requirements(
-                        python_requirements="./requirement.txt"
+                        python_requirements_txt="./requirement.txt"
                     ),
                 )
             ],
+            enable_cache=True,
         )
     ]
+    G = YamlGenerator(workflows=WFS)
     G.generate()

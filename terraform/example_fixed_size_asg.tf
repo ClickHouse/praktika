@@ -1,6 +1,6 @@
 # Launch Template with Ubuntu AMI
-resource "aws_launch_template" "maxs-template" {
-  name_prefix   = "maxs-template"
+resource "aws_launch_template" "maxs-template-fixed-size" {
+  name_prefix   = "maxs-template-fixed-size"
   image_id      = "ami-0c14ff330901e49ff"  # Ubuntu 24.04 LTS, arm, AMI us-east-1
   instance_type = "t4g.small"
 
@@ -16,7 +16,7 @@ resource "aws_launch_template" "maxs-template" {
   }
 
   # User data to install a package upon launch
-  user_data = base64encode(data.local_file.user_data.content)
+  user_data = base64encode(data.local_file.user_data_fixed_size_asg.content)
 
   iam_instance_profile {
     name = "ec2_admin"
@@ -36,40 +36,33 @@ resource "aws_launch_template" "maxs-template" {
     resource_type = "instance"
 
     tags = {
-      "github:runner-type" = var.runner_small
+      "github:runner-type" = var.runner_small_fixed
     }
   }
   tag_specifications {
     resource_type = "volume"
 
     tags = {
-      "github:runner-type" = var.runner_small
+      "github:runner-type" = var.runner_small_fixed
     }
   }
   tag_specifications {
     resource_type = "network-interface"
 
     tags = {
-      "github:runner-type" = var.runner_small
+      "github:runner-type" = var.runner_small_fixed
     }
   }
-  #  tag_specifications {
-  #    resource_type = "instance"
-  #
-  #    tags = {
-  #      "github:init-environment" = "production"
-  #    }
-  #  }
 }
 
 # Auto Scaling Group
-resource "aws_autoscaling_group" "maxs-small" {
-  name = var.runner_small
-  desired_capacity     = 1
+resource "aws_autoscaling_group" "maxs-fixed-size" {
+  name = var.runner_small_fixed
+  desired_capacity     = 2
   max_size             = 10
   min_size             = 0
   launch_template {
-    id      = aws_launch_template.maxs-template.id
+    id      = aws_launch_template.maxs-template-fixed-size.id
     version = "$Latest"
   }
 
@@ -84,11 +77,11 @@ resource "aws_autoscaling_group" "maxs-small" {
   suspended_processes = ["AZRebalance"]
 }
 
-# Outputs
-output "asg_name" {
-  value = aws_autoscaling_group.maxs-small.name
-}
-
-output "launch_template_id" {
-  value = aws_launch_template.maxs-template.id
-}
+# # Outputs
+# output "asg_name" {
+#   value = aws_autoscaling_group.maxs-fixed-size.name
+# }
+#
+# output "launch_template_id" {
+#   value = aws_launch_template.maxs-template-fixed-size.id
+# }

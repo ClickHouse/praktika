@@ -21,3 +21,7 @@ variable "key_name" {
 variable "runner_small" {
   default = "maxs-small"
 }
+
+variable "runner_small_fixed" {
+  default = "maxs-small-fixed"
+}

@@ -2,19 +2,18 @@ from typing import List
 
 from recurcipy import Job, Workflow, Artifact
 from recurcipy.settings import Settings
-from recurcipy.utils import MetaClasses
 
 
-class JobNames(MetaClasses.WithIter):
+class JobNames:
     JOB_A = "Job A"
     JOB_B = "Job B"
 
 
-class ArtifactNames(MetaClasses.WithIter):
+class ArtifactNames:
     GREET = "greet"
 
 
-class WorkflowNames(MetaClasses.WithIter):
+class WorkflowNames:
     NAME = "Example On Push, S3, sh"
 
 
@@ -38,14 +37,18 @@ workflow_pr = Workflow.Config(
             runs_on=[RunnerLabels.SMALL],
             command='echo "Hello World" > ./hello_world.txt',
             provides=[ArtifactNames.GREET],
-            job_requirements=Job.Requirements(python_requirements="requirements.txt"),
+            job_requirements=Job.Requirements(
+                python_requirements_txt="requirements.txt"
+            ),
         ),
         Job.Config(
             name=JobNames.JOB_B,
             runs_on=[RunnerLabels.SMALL],
             command=f"cat {Settings.INPUT_DIR}/hello_world.txt",
             requires=[ArtifactNames.GREET],
-            job_requirements=Job.Requirements(python_requirements="requirements.txt"),
+            job_requirements=Job.Requirements(
+                python_requirements_txt="requirements.txt"
+            ),
         ),
     ],
     branches=["parse_gh_env", "test**"],

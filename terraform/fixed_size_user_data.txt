@@ -22,10 +22,10 @@ date
 
 echo "export MY_ORG=ClickHouse" >> /etc/profile.d/myvars.sh
 echo "export CLOUD=1" >> /etc/profile.d/myvars.sh
-echo "export RUNNER_SCALING_TYPE=scale" >> /etc/profile.d/myvars.sh
+echo "export RUNNER_SCALING_TYPE=disabled" >> /etc/profile.d/myvars.sh
 export MY_ORG=ClickHouse
 export CLOUD=1
-export RUNNER_SCALING_TYPE=scale
+export RUNNER_SCALING_TYPE=disabled
 
 # INIT_ENVIRONMENT=$(/usr/local/bin/aws ec2 describe-tags --filters "Name=resource-id,Values=$INSTANCE_ID" --query "Tags[?Key=='github:init-environment'].Value" --output text)
 # echo "Downloading and using $INIT_ENVIRONMENT cloud-init.sh"

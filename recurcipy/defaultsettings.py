@@ -1,4 +1,5 @@
 import dataclasses
+from typing import Optional, List
 
 from recurcipy.utils import MetaClasses
 
@@ -21,9 +22,22 @@ class DefaultSettings:
     ######################################
     ###      CI workspace settings     ###
     ######################################
-    TEMP_DIR: str = "~/tmp_ci"
+    TEMP_DIR: str = "/tmp/tmp_ci"
     OUTPUT_DIR: str = f"{TEMP_DIR}/output"
     INPUT_DIR: str = f"{TEMP_DIR}/input"
+    PYTHON_INTERPRETER: str = "python3"
+    PYTHON_VERSION: str = "3.9"
+    WORKFLOW_RUN_CONFIG_FILE: str = "/tmp/workflow_config.json"
+
+    ######################################
+    ###      CI Cache settings         ###
+    ######################################
+    CACHE_VERSION: int = 1
+    CACHE_DIGEST_LEN: int = 20
+    CACHE_CONFIG_RUNS_ON: Optional[List[str]] = None
+    CACHE_CONFIG_JOB_NAME = "WorkflowConfig"
+    CACHE_S3_PATH: str = ""
+    CACHE_LOCAL_PATH: str = f"{TEMP_DIR}/ci_cache"
 
 
 _USER_DEFINED_SETTINGS = [
@@ -35,6 +49,12 @@ _USER_DEFINED_SETTINGS = [
     "TEMP_DIR",
     "OUTPUT_DIR",
     "INPUT_DIR",
+    "CACHE_CONFIG_RUNS_ON",
+    "CACHE_CONFIG_JOB_NAME",
+    "PYTHON_INTERPRETER",
+    "PYTHON_VERSION",
+    "WORKFLOW_RUN_CONFIG_FILE",
+    "CACHE_S3_PATH",
 ]
 
 

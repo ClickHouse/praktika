@@ -21,6 +21,7 @@ class Workflow:
         jobs: List[Job.Config]
         artifacts: Optional[List[Artifact.Config]] = None
         branches: Optional[List[str]] = None
+        enable_cache: bool = False
 
         def is_event_pull_request(self):
             return self.event == Workflow.Event.PULL_REQUEST

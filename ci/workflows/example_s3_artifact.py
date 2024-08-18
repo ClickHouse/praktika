@@ -1,30 +1,26 @@
 from typing import List
 
+from ci.settings.user_defined_settings import RunnerLabels
 from recurcipy import Job, Workflow, Artifact
 from recurcipy.settings import Settings
-from recurcipy.utils import MetaClasses
 
 
-class JobNames(MetaClasses.WithIter):
+class JobNames:
     JOB_UPLOADING_ARTIFACT = "Provide Artifact"
     JOB_REQUIRING_ARTIFACT = "Consume Artifact"
 
 
-class ArtifactNames(MetaClasses.WithIter):
+class ArtifactNames:
     GREET = "greet"
 
 
-class WorkflowNames(MetaClasses.WithIter):
+class WorkflowNames:
     PULL_REQUEST = "Example S3 Artifact"
-
-
-class RunnerLabels:
-    SMALL = "maxs-small"
 
 
 artifacts = [
     Artifact.Config(
-        name=ArtifactNames.GREET, type=Artifact.Type.S3, path="./hello_world.txt"
+        name=ArtifactNames.GREET, type=Artifact.Type.S3, path="./artifact.txt"
     ),
 ]  # type: List[Artifact.Config]
 
@@ -36,16 +32,20 @@ workflow_pr = Workflow.Config(
         Job.Config(
             name=JobNames.JOB_UPLOADING_ARTIFACT,
             runs_on=[RunnerLabels.SMALL],
-            command='echo "Hello World" > ./hello_world.txt',
+            command='echo "Hello World" > ./artifact.txt',
             provides=[ArtifactNames.GREET],
-            job_requirements=Job.Requirements(python_requirements="requirements.txt"),
+            job_requirements=Job.Requirements(
+                python_requirements_txt="requirements.txt"
+            ),
         ),
         Job.Config(
             name=JobNames.JOB_REQUIRING_ARTIFACT,
             runs_on=[RunnerLabels.SMALL],
-            command=f"cat {Settings.INPUT_DIR}/hello_world.txt",
+            command=f"cat {Settings.INPUT_DIR}/artifact.txt",
             requires=[ArtifactNames.GREET],
-            job_requirements=Job.Requirements(python_requirements="requirements.txt"),
+            job_requirements=Job.Requirements(
+                python_requirements_txt="requirements.txt"
+            ),
         ),
     ],
     artifacts=artifacts,

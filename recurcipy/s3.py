@@ -24,7 +24,7 @@ class S3Utils:
 
     @classmethod
     def copy_artifact_to_s3(cls, pr_number, branch, sha, path):
-        assert Path(path), f"Artifact [{path}] doe not exist"
+        assert Path(path), f"Artifact [{path}] does not exist"
         assert Path(
             path
         ).is_file(), (
@@ -32,5 +32,28 @@ class S3Utils:
         )
         return Shell.check(
             f"aws s3 cp {path} s3://{Settings.S3_ARTIFACT_PATH}/{cls.get_prefix(pr_number, branch, sha)}/{Path(path).name}",
+            verbose=True,
+        )
+
+    @classmethod
+    def copy_file_to_s3(cls, s3_path, local_path):
+        assert Path(local_path), f"Path [{local_path}] does not exist"
+        assert Path(s3_path), f"Invalid S3 Path [{s3_path}]"
+        assert Path(
+            local_path
+        ).is_file(), f"Path [{local_path}] is not file. Only files are supported"
+        return Shell.check(
+            f"aws s3 cp {local_path} s3://{s3_path}/{Path(local_path).name}",
+            verbose=True,
+        )
+
+    @classmethod
+    def copy_file_from_s3(cls, s3_path, local_path):
+        assert Path(local_path), f"Path [{local_path}] does not exist"
+        assert Path(s3_path), f"Invalid S3 Path [{s3_path}]"
+        if Path(local_path).is_dir():
+            local_path = Path(local_path) / Path(s3_path).name
+        return Shell.check(
+            f"aws s3 cp s3://{s3_path} {Path(local_path)}",
             verbose=True,
         )
