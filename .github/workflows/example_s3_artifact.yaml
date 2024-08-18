@@ -2,8 +2,7 @@ name: Example S3 Artifact
 
 on:
   pull_request:
-    branches:
-      - main
+    branches: [main]
 
 jobs:
 
@@ -23,6 +22,7 @@ jobs:
           echo "INPUT_DIR=$(readlink -f ~/tmp_ci/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f ~/tmp_ci/output)" >> "$GITHUB_ENV"
           env | grep GITHUB
+          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -63,6 +63,7 @@ jobs:
           echo "INPUT_DIR=$(readlink -f ~/tmp_ci/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f ~/tmp_ci/output)" >> "$GITHUB_ENV"
           env | grep GITHUB
+          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
 
       - name: Set up Python
         uses: actions/setup-python@v5

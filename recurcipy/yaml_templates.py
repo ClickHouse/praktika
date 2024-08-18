@@ -4,8 +4,7 @@ name: {NAME}
 
 on:
   {EVENT}:
-    branches:
-      - {BASE_BRANCH}
+    branches: [{BRANCHES}]
 
 jobs:
 {JOBS}\
@@ -24,6 +23,7 @@ jobs:
         run: |
 {SETUP_ENVS}
           env | grep GITHUB
+          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
 {JOB_ADDONS}{DOWNLOADS_GITHUB}
       - name: Pre
         run: |
@@ -62,7 +62,7 @@ jobs:
 
     TEMPLATE_GH_UPLOAD = """
       - name: Upload artifact {NAME}
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: {NAME}
           path: {PATH}
@@ -70,7 +70,7 @@ jobs:
 
     TEMPLATE_GH_DOWNLOAD = """
       - name: Download artifact {NAME}
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: {NAME}
           path: {PATH}

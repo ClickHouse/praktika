@@ -4,6 +4,7 @@ import sys
 from recurcipy import Shell, Artifact
 from recurcipy.mangle import _get_workflows
 from recurcipy.s3 import S3Utils
+from recurcipy.settings import Environment
 
 
 class Runner:
@@ -31,7 +32,12 @@ class Runner:
         if required_artifacts:
             print(f"Job requires s3 artifacts [{required_artifacts}]")
             for artifact in required_artifacts:
-                assert S3Utils.copy_artifact_from_s3(sha="0000", name=artifact.path)
+                assert S3Utils.copy_artifact_from_s3(
+                    branch=Environment.BRANCH,
+                    pr_number=Environment.Event.PR_NUMBER,
+                    sha=Environment.Event.REF_SHA,
+                    name=artifact.path,
+                )
 
     def run(self, job_name, workflow_name):
         workflow = _get_workflows(name=workflow_name)[0]
@@ -65,7 +71,12 @@ class Runner:
                 assert Shell.check(
                     f"ls -l {artifact.path}", verbose=True
                 ), f"Artifact {artifact.path} not found"
-                assert S3Utils.copy_artifact_to_s3(sha="0000", path=artifact.path)
+                assert S3Utils.copy_artifact_to_s3(
+                    branch=Environment.BRANCH,
+                    pr_number=Environment.Event.PR_NUMBER,
+                    sha=Environment.Event.REF_SHA,
+                    path=artifact.path,
+                )
 
 
 def parse_args():

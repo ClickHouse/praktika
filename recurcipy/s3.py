@@ -6,14 +6,24 @@ from recurcipy.settings import Settings
 
 class S3Utils:
     @classmethod
-    def copy_artifact_from_s3(cls, sha, name):
+    def get_prefix(cls, pr_number, branch, sha):
+        prefix = ""
+        if pr_number > 0:
+            prefix += f"{pr_number}"
+        else:
+            prefix += f"{branch}"
+        prefix += f"/{sha}"
+        return prefix
+
+    @classmethod
+    def copy_artifact_from_s3(cls, pr_number, branch, sha, name):
         return Shell.check(
-            f"aws s3 cp s3://{Settings.S3_ARTIFACT_PATH}/{sha}/{Path(name).name} {Settings.INPUT_DIR}/{Path(name).name}",
+            f"aws s3 cp s3://{Settings.S3_ARTIFACT_PATH}/{cls.get_prefix(pr_number, branch, sha)}/{Path(name).name} {Settings.INPUT_DIR}/{Path(name).name}",
             verbose=True,
         )
 
     @classmethod
-    def copy_artifact_to_s3(cls, sha, path):
+    def copy_artifact_to_s3(cls, pr_number, branch, sha, path):
         assert Path(path), f"Artifact [{path}] doe not exist"
         assert Path(
             path
@@ -21,6 +31,6 @@ class S3Utils:
             f"Artifact [{path}] is not file. Only files are supported with S3 storage"
         )
         return Shell.check(
-            f"aws s3 cp {path} s3://{Settings.S3_ARTIFACT_PATH}/{sha}/{Path(path).name}",
+            f"aws s3 cp {path} s3://{Settings.S3_ARTIFACT_PATH}/{cls.get_prefix(pr_number, branch, sha)}/{Path(path).name}",
             verbose=True,
         )
