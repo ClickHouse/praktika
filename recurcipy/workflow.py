@@ -12,10 +12,15 @@ class Workflow:
 
     @dataclass
     class Config:
+        """
+        branches - List of branch names or patterns, valid for push trigger only, if not provided [Settings.MAIN_BRANCH_NAME] will be used
+        """
+
         name: str
         event: str
         jobs: List[Job.Config]
         artifacts: Optional[List[Artifact.Config]] = None
+        branches: Optional[List[str]] = None
 
         def is_event_pull_request(self):
             return self.event == Workflow.Event.PULL_REQUEST

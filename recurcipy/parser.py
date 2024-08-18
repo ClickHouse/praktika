@@ -3,6 +3,7 @@ from typing import Dict, List, Optional
 
 from recurcipy import Workflow, Artifact, Job
 from recurcipy.mangle import _get_workflows
+from recurcipy.settings import Settings
 
 
 class AddonType:
@@ -35,6 +36,7 @@ class WorkflowYaml:
 
     name: str
     event: str
+    branches: List[str]
     jobs: List[JobYaml]
     job_to_config: Dict[str, JobYaml]
     artifact_to_config: Dict[str, ArtifactYaml]
@@ -57,21 +59,23 @@ class WorkflowConfigParser:
         self.workflow_yaml_config = WorkflowYaml(
             name=self.workflow_name,
             event=config.event,
+            branches=[],
             jobs=[],
             job_to_config={},
             artifact_to_config={},
         )
 
-    # def _build_dependencies(self):
-    #     for job in self.config.jobs:
-    #         if job.requires:
-    #             dependencies = []
-    #             for artifact in job.requires:
-    #                 dependency = self.artifact_to_providing_job_map[artifact]
-    #                 dependencies.append(dependency)
-    #             job.auto_dependencies = dependencies
-
     def parse(self):
+        # populate WorkflowYaml.branches
+        if self.config.branches:
+            if self.config.event == Workflow.Event.PULL_REQUEST:
+                assert (
+                    False
+                ), f"branches cannot be set for workflow with pull_request trigger, workflow [{self.workflow_name}]"
+            self.workflow_yaml_config.branches = self.config.branches
+        else:
+            self.workflow_yaml_config.branches = [Settings.MAIN_BRANCH_NAME]
+
         # populate WorkflowYaml.artifact_to_config with phony artifacts
         for job in self.config.jobs:
             assert (

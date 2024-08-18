@@ -54,6 +54,7 @@ class PullRequestPushYamlGen:
         required_aux_workflow_configs = []
         template_1 = Templates.TEMPLATE_PULL_REQUEST_0.strip().format(
             NAME=self.workflow_config.name,
+            BRANCHES=", ".join(self.workflow_config.branches),
             EVENT=self.workflow_config.event,
             JOBS="{}\n" * len(self.workflow_config.jobs),
             BASE_BRANCH=Settings.MAIN_BRANCH_NAME,

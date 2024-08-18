@@ -1,8 +1,8 @@
-name: Example Self-hosted Runners
+name: Example On Push, S3, sh
 
 on:
-  pull_request:
-    branches: [main]
+  push:
+    branches: [parse_gh_env, test**]
 
 jobs:
 
@@ -37,19 +37,19 @@ jobs:
 
       - name: Pre
         run: |
-          python -m recurcipy.runner --pre-run --job-name "Job A" --workflow-name "Example Self-hosted Runners"
+          python -m recurcipy.runner --pre-run --job-name "Job A" --workflow-name "Example On Push, S3, sh"
 
       - name: Run
         run: |
-          python -m recurcipy.runner --run --job-name "Job A" --workflow-name "Example Self-hosted Runners"
+          python -m recurcipy.runner --run --job-name "Job A" --workflow-name "Example On Push, S3, sh"
 
       - name: Post
         run: |
-          python -m recurcipy.runner --post-run --job-name "Job A" --workflow-name "Example Self-hosted Runners"
+          python -m recurcipy.runner --post-run --job-name "Job A" --workflow-name "Example On Push, S3, sh"
 
   job_b:
     runs-on: [maxs-small]
-    needs: []
+    needs: [job_a]
     name: Job B
     steps:
       - name: Checkout code
@@ -78,12 +78,12 @@ jobs:
 
       - name: Pre
         run: |
-          python -m recurcipy.runner --pre-run --job-name "Job B" --workflow-name "Example Self-hosted Runners"
+          python -m recurcipy.runner --pre-run --job-name "Job B" --workflow-name "Example On Push, S3, sh"
 
       - name: Run
         run: |
-          python -m recurcipy.runner --run --job-name "Job B" --workflow-name "Example Self-hosted Runners"
+          python -m recurcipy.runner --run --job-name "Job B" --workflow-name "Example On Push, S3, sh"
 
       - name: Post
         run: |
-          python -m recurcipy.runner --post-run --job-name "Job B" --workflow-name "Example Self-hosted Runners"
+          python -m recurcipy.runner --post-run --job-name "Job B" --workflow-name "Example On Push, S3, sh"

@@ -2,8 +2,7 @@ name: Example GH Artifact
 
 on:
   pull_request:
-    branches:
-      - main
+    branches: [main]
 
 jobs:
 
@@ -23,6 +22,7 @@ jobs:
           echo "INPUT_DIR=$(readlink -f ~/tmp_ci/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f ~/tmp_ci/output)" >> "$GITHUB_ENV"
           env | grep GITHUB
+          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -48,7 +48,7 @@ jobs:
           python -m recurcipy.runner --post-run --job-name "Provide Artifact" --workflow-name "Example GH Artifact"
 
       - name: Upload artifact greet
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: greet
           path: ./hello_world.txt
@@ -69,6 +69,7 @@ jobs:
           echo "INPUT_DIR=$(readlink -f ~/tmp_ci/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f ~/tmp_ci/output)" >> "$GITHUB_ENV"
           env | grep GITHUB
+          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -82,7 +83,7 @@ jobs:
           #pip install recurcipy
 
       - name: Download artifact greet
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: greet
           path: ~/tmp_ci/input
