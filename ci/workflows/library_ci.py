@@ -1,15 +1,14 @@
 from typing import List
 
-from recurcipy import Job, Workflow, Artifact
-from recurcipy.utils import MetaClasses
+from recurcipy import Job, Workflow
 
 
-class JobNames(MetaClasses.WithIter):
+class JobNames:
     JOB_UNIT_TESTS = "Unit Tests"
     JOB_LINT = "Yaml Lint"
 
 
-class WorkflowNames(MetaClasses.WithIter):
+class WorkflowNames:
     """
     Workflow names
     """

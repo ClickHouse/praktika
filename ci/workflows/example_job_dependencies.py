@@ -4,10 +4,6 @@ from recurcipy.utils import MetaClasses
 
 
 class JobNames(MetaClasses.WithIter):
-    """
-    Inclusive List of Job names
-    """
-
     JOB_A = "Job A starting at the beginning"
     JOB_B = "Job B starting at the beginning"
     JOB_C = "Job C starting after Job A and B is done"
@@ -15,10 +11,6 @@ class JobNames(MetaClasses.WithIter):
 
 
 class WorkflowNames(MetaClasses.WithIter):
-    """
-    Workflow names
-    """
-
     PULL_REQUEST = "Example Job Dependencies"
 
 

@@ -182,11 +182,11 @@ class WorkflowConfigParser:
                     self.workflow_yaml_config.job_to_config[job_name].needs.append(
                         artifact.provided_by
                     )
-                if artifact.type == Artifact.Type.GH:
+                if artifact.type in (Artifact.Type.GH,):
                     self.workflow_yaml_config.job_to_config[
                         job_name
                     ].artifacts_gh_requires.append(artifact)
-                elif artifact.type == Artifact.Type.PHONY:
+                elif artifact.type in (Artifact.Type.PHONY, Artifact.Type.S3):
                     pass
                 else:
                     assert (

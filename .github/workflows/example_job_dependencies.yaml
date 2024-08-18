@@ -17,11 +17,11 @@ jobs:
 
       - name: Set up env
         run: |
-          rm -rf ~/lh_ci/input ~/lh_ci/output ~/lh_ci
-          mkdir -p ~/lh_ci ~/lh_ci/input ~/lh_ci/output
-          echo "TEMP_DIR=$(readlink -f ~/lh_ci)" >> "$GITHUB_ENV"
-          echo "INPUT_DIR=$(readlink -f ~/lh_ci/input)" >> "$GITHUB_ENV"
-          echo "OUTPUT_DIR=$(readlink -f ~/lh_ci/output)" >> "$GITHUB_ENV"
+          rm -rf ~/tmp_ci/input ~/tmp_ci/output ~/tmp_ci
+          mkdir -p ~/tmp_ci ~/tmp_ci/input ~/tmp_ci/output
+          echo "TEMP_DIR=$(readlink -f ~/tmp_ci)" >> "$GITHUB_ENV"
+          echo "INPUT_DIR=$(readlink -f ~/tmp_ci/input)" >> "$GITHUB_ENV"
+          echo "OUTPUT_DIR=$(readlink -f ~/tmp_ci/output)" >> "$GITHUB_ENV"
           env | grep GITHUB
 
       - name: Set up Python
@@ -57,11 +57,11 @@ jobs:
 
       - name: Set up env
         run: |
-          rm -rf ~/lh_ci/input ~/lh_ci/output ~/lh_ci
-          mkdir -p ~/lh_ci ~/lh_ci/input ~/lh_ci/output
-          echo "TEMP_DIR=$(readlink -f ~/lh_ci)" >> "$GITHUB_ENV"
-          echo "INPUT_DIR=$(readlink -f ~/lh_ci/input)" >> "$GITHUB_ENV"
-          echo "OUTPUT_DIR=$(readlink -f ~/lh_ci/output)" >> "$GITHUB_ENV"
+          rm -rf ~/tmp_ci/input ~/tmp_ci/output ~/tmp_ci
+          mkdir -p ~/tmp_ci ~/tmp_ci/input ~/tmp_ci/output
+          echo "TEMP_DIR=$(readlink -f ~/tmp_ci)" >> "$GITHUB_ENV"
+          echo "INPUT_DIR=$(readlink -f ~/tmp_ci/input)" >> "$GITHUB_ENV"
+          echo "OUTPUT_DIR=$(readlink -f ~/tmp_ci/output)" >> "$GITHUB_ENV"
           env | grep GITHUB
 
       - name: Set up Python
@@ -97,11 +97,11 @@ jobs:
 
       - name: Set up env
         run: |
-          rm -rf ~/lh_ci/input ~/lh_ci/output ~/lh_ci
-          mkdir -p ~/lh_ci ~/lh_ci/input ~/lh_ci/output
-          echo "TEMP_DIR=$(readlink -f ~/lh_ci)" >> "$GITHUB_ENV"
-          echo "INPUT_DIR=$(readlink -f ~/lh_ci/input)" >> "$GITHUB_ENV"
-          echo "OUTPUT_DIR=$(readlink -f ~/lh_ci/output)" >> "$GITHUB_ENV"
+          rm -rf ~/tmp_ci/input ~/tmp_ci/output ~/tmp_ci
+          mkdir -p ~/tmp_ci ~/tmp_ci/input ~/tmp_ci/output
+          echo "TEMP_DIR=$(readlink -f ~/tmp_ci)" >> "$GITHUB_ENV"
+          echo "INPUT_DIR=$(readlink -f ~/tmp_ci/input)" >> "$GITHUB_ENV"
+          echo "OUTPUT_DIR=$(readlink -f ~/tmp_ci/output)" >> "$GITHUB_ENV"
           env | grep GITHUB
 
       - name: Set up Python
@@ -137,11 +137,11 @@ jobs:
 
       - name: Set up env
         run: |
-          rm -rf ~/lh_ci/input ~/lh_ci/output ~/lh_ci
-          mkdir -p ~/lh_ci ~/lh_ci/input ~/lh_ci/output
-          echo "TEMP_DIR=$(readlink -f ~/lh_ci)" >> "$GITHUB_ENV"
-          echo "INPUT_DIR=$(readlink -f ~/lh_ci/input)" >> "$GITHUB_ENV"
-          echo "OUTPUT_DIR=$(readlink -f ~/lh_ci/output)" >> "$GITHUB_ENV"
+          rm -rf ~/tmp_ci/input ~/tmp_ci/output ~/tmp_ci
+          mkdir -p ~/tmp_ci ~/tmp_ci/input ~/tmp_ci/output
+          echo "TEMP_DIR=$(readlink -f ~/tmp_ci)" >> "$GITHUB_ENV"
+          echo "INPUT_DIR=$(readlink -f ~/tmp_ci/input)" >> "$GITHUB_ENV"
+          echo "OUTPUT_DIR=$(readlink -f ~/tmp_ci/output)" >> "$GITHUB_ENV"
           env | grep GITHUB
 
       - name: Set up Python

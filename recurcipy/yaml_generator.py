@@ -2,12 +2,12 @@ import dataclasses
 from pathlib import Path
 from typing import Optional, List
 
-from recurcipy import Workflow, Job, ContextManager, Artifact, Environment
+from recurcipy import Workflow, Job, ContextManager, Artifact
 from recurcipy.mangle import _get_workflows
-from recurcipy.parser import WorkflowConfigParser, WorkflowYaml, AddonType
-from recurcipy.settings import Settings
+from recurcipy.parser import WorkflowConfigParser, AddonType
 from recurcipy.utils import Utils, Shell
 from recurcipy.yaml_templates import Templates
+from recurcipy.settings import Settings
 
 
 class YamlGenerator:
@@ -19,16 +19,6 @@ class YamlGenerator:
     @classmethod
     def _get_workflow_file_name(cls, workflow_name):
         return f"{Settings.WORKFLOW_PATH_PREFIX}/{Utils.normalize_string(workflow_name)}.yaml"
-
-    def generate_from_example(self, example):
-        with ContextManager.cd():
-            example = example.removesuffix(".py")
-            example_path = f"{Settings.EXAMPLES_DIRECTORY}/{example}.py"
-            assert Path(example_path).exists(), f"Example [{example}] does not exist"
-            Path(Settings.CONFIG_DIRECTORY).mkdir(parents=True, exist_ok=True)
-            Shell.check(f"cp {example_path} {Settings.CONFIG_DIRECTORY}/")
-            Shell.check(f"git add {Settings.CONFIG_DIRECTORY}/*.py")
-        self.generate()
 
     def generate(self):
         if not self.py_workflows:
@@ -71,9 +61,9 @@ class PullRequestPushYamlGen:
 
         job_items = []
         setup_envs = Templates.TEMPLATE_SETUP_ENV.format(
-            TEMP_DIR=Environment.TEMP_DIR,
-            INPUT_DIR=Environment.INPUT_DIR,
-            OUTPUT_DIR=Environment.OUTPUT_DIR,
+            TEMP_DIR=Settings.TEMP_DIR,
+            INPUT_DIR=Settings.INPUT_DIR,
+            OUTPUT_DIR=Settings.OUTPUT_DIR,
         )
         for i, job in enumerate(self.workflow_config.jobs):
             job_name_normalized = Utils.normalize_string(job.name)
@@ -96,7 +86,7 @@ class PullRequestPushYamlGen:
             for artifact in job.artifacts_gh_requires:
                 downloads_github.append(
                     Templates.TEMPLATE_GH_DOWNLOAD.format(
-                        NAME=artifact.name, PATH=Environment.INPUT_DIR
+                        NAME=artifact.name, PATH=Settings.INPUT_DIR
                     )
                 )
             job_item = Templates.TEMPLATE_JOB_0.format(

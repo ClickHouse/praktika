@@ -65,13 +65,13 @@ class Shell:
 
     @classmethod
     def run(
-            cls,
-            command,
-            strict=False,
-            verbose=False,
-            dry_run=False,
-            stdin_str=None,
-            **kwargs,
+        cls,
+        command,
+        strict=False,
+        verbose=False,
+        dry_run=False,
+        stdin_str=None,
+        **kwargs,
     ):
         if dry_run:
             print(f"Dry-ryn. Would run command [{command}]")

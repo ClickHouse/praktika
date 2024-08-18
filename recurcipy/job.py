@@ -1,8 +1,6 @@
 from dataclasses import dataclass
 from typing import Optional, List
 
-from recurcipy.settings import Settings
-
 
 class Job:
     @dataclass

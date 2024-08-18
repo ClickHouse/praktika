@@ -1,24 +1,15 @@
-from recurcipy.utils import MetaClasses
+import os
+from recurcipy.defaultsettings import DefaultSettings
+from recurcipy.mangle import _get_user_settings
+
+Settings = DefaultSettings()
+
+user_settings = _get_user_settings()
+for setting, value in user_settings.items():
+    Settings.__setattr__(setting, value)
 
 
-class Settings:
-    ######################################
-    ###  Pipeline generation settings  ###
-    ######################################
-    MAIN_BRANCH_NAME = "main"
-    WORKFLOW_PATH_PREFIX = "./.github/workflows"
-    CONFIG_DIRECTORY = "./ci/configs"
-    EXAMPLES_DIRECTORY = "./recurcipy/examples"
-
-    ######################################
-    ### Execution environment settings ###
-    ######################################
-    GH_ACTIONS_DIRECTORY = "/home/ubuntu/gh_actions"
-
-    class ScalingType(metaclass=MetaClasses.WithIter):
-        DISABLED = "disabled"
-        AUTOMATIC_SCALE_DOWN = "scale_down"
-        AUTOMATIC_SCALE_UP_DOWN = "scale"
-
-    DEFAULT_RUNNER_SCALING_TYPE = ScalingType.AUTOMATIC_SCALE_UP_DOWN
-    MAX_WAIT_TIME_BEFORE_SCALE_DOWN_SEC = 30
+class Environment:
+    WORKFLOW_NAME = os.getenv("GITHUB_WORKFLOW", "NA")
+    JOB_NAME = os.getenv("JOB_NAME", "NA")
+    REPOSITORY = os.getenv("GITHUB_REPOSITORY", "")

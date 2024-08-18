@@ -1,26 +1,17 @@
 from typing import List
 from recurcipy import Job, Workflow
-from recurcipy.utils import MetaClasses
 
 
-class RunnerLabels(MetaClasses.WithIter):
+class RunnerLabels:
     SMALL = "maxs-small"
 
 
-class JobNames(MetaClasses.WithIter):
-    """
-    Inclusive List of Job names
-    """
-
+class JobNames:
     JOB_A = "Job A"
     JOB_B = "Job B"
 
 
-class WorkflowNames(MetaClasses.WithIter):
-    """
-    Workflow names
-    """
-
+class WorkflowNames:
     PULL_REQUEST = "Example Self-hosted Runners"
 
 
