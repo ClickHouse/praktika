@@ -5,7 +5,13 @@ from typing import Optional, List
 class Job:
     @dataclass
     class Requirements:
-        python_requirements: str = ""
+        python: bool = False
+        python_requirements_txt: str = ""
+
+    @dataclass
+    class CacheDigestConfig:
+        include_paths: Optional[List[str]] = None
+        exclude_paths: Optional[List[str]] = None
 
     @dataclass
     class Config:
@@ -29,3 +35,5 @@ class Job:
         job_requirements: Optional["Job.Requirements"] = None
 
         auto_dependencies: List[str] = None
+
+        cache_digest: Optional["Job.CacheDigestConfig"] = None

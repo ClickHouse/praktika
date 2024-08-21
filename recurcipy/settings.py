@@ -26,17 +26,18 @@ class Environment:
     REPOSITORY = os.getenv("GITHUB_REPOSITORY", "")
     EVENT_FILE_PATH = os.getenv("GITHUB_EVENT_PATH", "")
     BRANCH = os.getenv("GITHUB_REF_NAME", "")
-    Event = EventInfo()
+    JOB_OUTPUT_STREAM = os.getenv("GITHUB_OUTPUT", "")
+    EventInfo = EventInfo()
 
 
 if Environment.EVENT_FILE_PATH:
     with open(Environment.EVENT_FILE_PATH, "r", encoding="utf-8") as f:
         github_event = json.load(f)
     if "after" in github_event:
-        Environment.Event.REF_SHA = github_event["after"]
+        Environment.EventInfo.REF_SHA = github_event["after"]
     if "pull_request" in github_event:
-        Environment.Event.EVENT_TYPE = Workflow.Event.PULL_REQUEST
-        Environment.Event.PR_NUMBER = github_event["pull_request"]["number"]
+        Environment.EventInfo.EVENT_TYPE = Workflow.Event.PULL_REQUEST
+        Environment.EventInfo.PR_NUMBER = github_event["pull_request"]["number"]
     elif "commits" in github_event:
-        Environment.Event.EVENT_TYPE = Workflow.Event.PUSH
-        Environment.Event.PR_NUMBER = 0
+        Environment.EventInfo.EVENT_TYPE = Workflow.Event.PUSH
+        Environment.EventInfo.PR_NUMBER = 0

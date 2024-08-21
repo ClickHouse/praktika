@@ -23,14 +23,18 @@ workflow_pr = Workflow.Config(
     jobs=[
         Job.Config(
             name=JobNames.JOB_UNIT_TESTS,
-            command="python -m unittest discover -s ./ci/tests -p 'test_*.py'",
-            job_requirements=Job.Requirements(python_requirements="requirements.txt"),
+            command="python -m unittest ./ci/tests/test_parser.py",
+            job_requirements=Job.Requirements(
+                python_requirements_txt="requirements.txt"
+            ),
             runs_on=["ubuntu-latest"],
         ),
         Job.Config(
             name=JobNames.JOB_LINT,
             command="yamllint . --config-file=.yamllint",
-            job_requirements=Job.Requirements(python_requirements="requirements.txt"),
+            job_requirements=Job.Requirements(
+                python_requirements_txt="requirements.txt"
+            ),
             runs_on=["ubuntu-latest"],
         ),
     ],
@@ -43,13 +47,17 @@ workflow_main = Workflow.Config(
         Job.Config(
             name=JobNames.JOB_UNIT_TESTS,
             command="python -m unittest discover -s ./ci/tests -p 'test_*.py'",
-            job_requirements=Job.Requirements(python_requirements="requirements.txt"),
+            job_requirements=Job.Requirements(
+                python_requirements_txt="requirements.txt"
+            ),
             runs_on=["ubuntu-latest"],
         ),
         Job.Config(
             name=JobNames.JOB_LINT,
             command="yamllint . --config-file=.yamllint",
-            job_requirements=Job.Requirements(python_requirements="requirements.txt"),
+            job_requirements=Job.Requirements(
+                python_requirements_txt="requirements.txt"
+            ),
             runs_on=["ubuntu-latest"],
         ),
     ],

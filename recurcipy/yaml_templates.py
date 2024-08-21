@@ -13,8 +13,10 @@ jobs:
     TEMPLATE_JOB_0 = """
   {JOB_NAME_NORMALIZED}:
     runs-on: [{RUNS_ON}]
-    needs: [{NEEDS}]
+    needs: [{NEEDS}]{IF_EXPRESSION}
     name: {JOB_NAME}
+    outputs:
+      data: ${{{{ steps.run.outputs.DATA }}}}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -22,6 +24,8 @@ jobs:
       - name: Set up env
         run: |
 {SETUP_ENVS}
+          echo '''${{{{ needs.{WORKFLOW_CONFIG_JOB_NAME}.outputs.data }}}}''' > {WORKFLOW_RUN_CONFIG_FILE}
+          cat {WORKFLOW_RUN_CONFIG_FILE}
           env | grep GITHUB
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
 {JOB_ADDONS}{DOWNLOADS_GITHUB}
@@ -30,6 +34,7 @@ jobs:
           python -m recurcipy.runner --pre-run --job-name "{JOB_NAME}" --workflow-name "{WORKFLOW_NAME}"
 
       - name: Run
+        id: run
         run: |
           python -m recurcipy.runner --run --job-name "{JOB_NAME}" --workflow-name "{WORKFLOW_NAME}"
 
@@ -47,18 +52,23 @@ jobs:
           echo "OUTPUT_DIR=$(readlink -f {OUTPUT_DIR})" >> "$GITHUB_ENV"\
 """
 
-    TEMPLATE_PY_ADDONS = """
+    TEMPLATE_PY_INSTALL = """
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: {PYTHON_VERSION}
+"""
 
+    TEMPLATE_PY_WITH_REQUIREMENTS = (
+        TEMPLATE_PY_INSTALL
+        + """
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r {REQUIREMENT_PATH}
           #pip install recurcipy
 """
+    )
 
     TEMPLATE_GH_UPLOAD = """
       - name: Upload artifact {NAME}
@@ -76,8 +86,11 @@ jobs:
           path: {PATH}
 """
 
+    TEMPLATE_IF_EXPRESSION = """
+    if: ${{{{ !failure() && !cancelled() && !contains(fromJson(needs.{WORKFLOW_CONFIG_JOB_NAME}.outputs.data).cache_success, '{JOB_NAME}') }}}}\
+"""
 
-#
+
 #     TEMPLATE_JOB_NESTED = """\
 #   {JOB_NAME}:
 #     needs: [{NEEDS}]

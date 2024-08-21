@@ -4,6 +4,7 @@ from typing import Dict, List, Optional
 from recurcipy import Workflow, Artifact, Job
 from recurcipy.mangle import _get_workflows
 from recurcipy.settings import Settings
+from recurcipy.aux_job import _workflow_config_job
 
 
 class AddonType:
@@ -40,6 +41,7 @@ class WorkflowYaml:
     jobs: List[JobYaml]
     job_to_config: Dict[str, JobYaml]
     artifact_to_config: Dict[str, ArtifactYaml]
+    enable_cache: bool
 
 
 class WorkflowConfigParser:
@@ -63,9 +65,20 @@ class WorkflowConfigParser:
             jobs=[],
             job_to_config={},
             artifact_to_config={},
+            enable_cache=False,
         )
 
+    def preprocess(self):
+        if self.config.enable_cache:
+            self.config.jobs.insert(0, _workflow_config_job)
+            for job in self.config.jobs[1:]:
+                if not job.requires:
+                    job.requires = []
+                job.requires.append(_workflow_config_job.name)
+            self.workflow_yaml_config.enable_cache = True
+
     def parse(self):
+        self.preprocess()
         # populate WorkflowYaml.branches
         if self.config.branches:
             if self.config.event == Workflow.Event.PULL_REQUEST:
@@ -155,10 +168,16 @@ class WorkflowConfigParser:
         # populate JobYaml.addons
         for job in self.config.jobs:
             if job.job_requirements:
-                if job.job_requirements.python_requirements:
+                if job.job_requirements.python_requirements_txt:
                     addon_yaml = WorkflowYaml.JobAddonYaml(
-                        type=AddonType.PY, path=job.job_requirements.python_requirements
+                        type=AddonType.PY,
+                        path=job.job_requirements.python_requirements_txt,
                     )
+                    self.workflow_yaml_config.job_to_config[job.name].addons.append(
+                        addon_yaml
+                    )
+                elif job.job_requirements.python:
+                    addon_yaml = WorkflowYaml.JobAddonYaml(type=AddonType.PY, path="")
                     self.workflow_yaml_config.job_to_config[job.name].addons.append(
                         addon_yaml
                     )

@@ -1,9 +1,7 @@
 from typing import List
+
+from ci.settings.user_defined_settings import RunnerLabels
 from recurcipy import Job, Workflow
-
-
-class RunnerLabels:
-    SMALL = "maxs-small"
 
 
 class JobNames:
@@ -22,13 +20,17 @@ workflow_pr = Workflow.Config(
         Job.Config(
             name=JobNames.JOB_A,
             command="echo Dzień dobry wszystkim",
-            job_requirements=Job.Requirements(python_requirements="requirements.txt"),
+            job_requirements=Job.Requirements(
+                python_requirements_txt="requirements.txt"
+            ),
             runs_on=[RunnerLabels.SMALL],
         ),
         Job.Config(
             name=JobNames.JOB_B,
             command="echo Доброго ранку всім",
-            job_requirements=Job.Requirements(python_requirements="requirements.txt"),
+            job_requirements=Job.Requirements(
+                python_requirements_txt="requirements.txt"
+            ),
             runs_on=[RunnerLabels.SMALL],
         ),
     ],
