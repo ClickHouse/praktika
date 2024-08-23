@@ -21,6 +21,7 @@ class WorkflowYaml:
         artifacts_gh_requires: List["WorkflowYaml.ArtifactYaml"]
         artifacts_gh_provides: List["WorkflowYaml.ArtifactYaml"]
         addons: List["WorkflowYaml.JobAddonYaml"]
+        gh_app_auth: bool
 
     @dataclasses.dataclass
     class ArtifactYaml:
@@ -69,13 +70,15 @@ class WorkflowConfigParser:
         )
 
     def preprocess(self):
-        if self.config.enable_cache:
+        if self.config.enable_cache or self.config.enable_html:
+            if self.config.enable_html:
+                _workflow_config_job.job_requirements.gh_app_auth = True
             self.config.jobs.insert(0, _workflow_config_job)
             for job in self.config.jobs[1:]:
                 if not job.requires:
                     job.requires = []
                 job.requires.append(_workflow_config_job.name)
-            self.workflow_yaml_config.enable_cache = True
+        self.workflow_yaml_config.enable_cache = self.config.enable_cache
 
     def parse(self):
         self.preprocess()
@@ -113,6 +116,7 @@ class WorkflowConfigParser:
                 artifacts_gh_provides=[],
                 needs=[],
                 runs_on=[],
+                gh_app_auth=False,
             )
             self.workflow_yaml_config.jobs.append(job_yaml_config)
             assert (
@@ -181,8 +185,8 @@ class WorkflowConfigParser:
                     self.workflow_yaml_config.job_to_config[job.name].addons.append(
                         addon_yaml
                     )
-                else:
-                    assert False, "only py addon/requirement supported"
+                if job.job_requirements.gh_app_auth:
+                    self.workflow_yaml_config.job_to_config[job.name].gh_app_auth = True
 
         # populate JobYaml.runs_on
         for job in self.config.jobs:

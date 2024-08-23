@@ -1,3 +1,4 @@
+import inspect
 import os
 import re
 import subprocess
@@ -12,6 +13,12 @@ class MetaClasses:
     class WithIter(type):
         def __iter__(cls):
             return (v for k, v in cls.__dict__.items() if not k.startswith("_"))
+
+    class FormatPrint:
+        @classmethod
+        def format_print(cls, message):
+            calling_function_name = inspect.stack()[1].function
+            print(f"{cls.__class__.__name__}::{calling_function_name}: {message}")
 
 
 class ContextManager:
@@ -126,8 +133,12 @@ class Shell:
 
 class Utils:
     @staticmethod
-    def get_str_time_stamp():
-        return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    def timestamp():
+        return datetime.utcnow().timestamp()
+
+    @staticmethod
+    def timestamp_to_str(timestamp):
+        return datetime.utcfromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
 
     @staticmethod
     def get_failed_tests_number(description: str) -> Optional[int]:

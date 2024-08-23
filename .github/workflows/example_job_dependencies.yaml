@@ -16,18 +16,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up env
-        run: |
-          rm -rf /tmp/tmp_ci/input /tmp/tmp_ci/output /tmp/tmp_ci
-          mkdir -p /tmp/tmp_ci /tmp/tmp_ci/input /tmp/tmp_ci/output /tmp/tmp_ci/results
-          echo "TEMP_DIR=$(readlink -f /tmp/tmp_ci)" >> "$GITHUB_ENV"
-          echo "INPUT_DIR=$(readlink -f /tmp/tmp_ci/input)" >> "$GITHUB_ENV"
-          echo "OUTPUT_DIR=$(readlink -f /tmp/tmp_ci/output)" >> "$GITHUB_ENV"
-          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/tmp_ci/workflow_config.json
-          cat /tmp/tmp_ci/workflow_config.json
-          env | grep GITHUB
-          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -38,6 +26,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           #pip install praktika
+
+      - name: Set up env
+        run: |
+          rm -rf /tmp/tmp_ci/input /tmp/tmp_ci/output /tmp/tmp_ci
+          mkdir -p /tmp/tmp_ci /tmp/tmp_ci/input /tmp/tmp_ci/output /tmp/tmp_ci/results
+          echo "TEMP_DIR=$(readlink -f /tmp/tmp_ci)" >> "$GITHUB_ENV"
+          echo "INPUT_DIR=$(readlink -f /tmp/tmp_ci/input)" >> "$GITHUB_ENV"
+          echo "OUTPUT_DIR=$(readlink -f /tmp/tmp_ci/output)" >> "$GITHUB_ENV"
+          export GH_APP_PEM_KEY="${{ secrets.GH_APP_PEM_KEY }}"
+          export GH_APP_ID="${{ secrets.GH_APP_ID }}"
+          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/tmp_ci/workflow_config.json
+          cat /tmp/tmp_ci/workflow_config.json
+          env | grep GITHUB
+          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
 
       - name: Pre
         run: |
@@ -62,18 +64,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up env
-        run: |
-          rm -rf /tmp/tmp_ci/input /tmp/tmp_ci/output /tmp/tmp_ci
-          mkdir -p /tmp/tmp_ci /tmp/tmp_ci/input /tmp/tmp_ci/output /tmp/tmp_ci/results
-          echo "TEMP_DIR=$(readlink -f /tmp/tmp_ci)" >> "$GITHUB_ENV"
-          echo "INPUT_DIR=$(readlink -f /tmp/tmp_ci/input)" >> "$GITHUB_ENV"
-          echo "OUTPUT_DIR=$(readlink -f /tmp/tmp_ci/output)" >> "$GITHUB_ENV"
-          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/tmp_ci/workflow_config.json
-          cat /tmp/tmp_ci/workflow_config.json
-          env | grep GITHUB
-          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -84,6 +74,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           #pip install praktika
+
+      - name: Set up env
+        run: |
+          rm -rf /tmp/tmp_ci/input /tmp/tmp_ci/output /tmp/tmp_ci
+          mkdir -p /tmp/tmp_ci /tmp/tmp_ci/input /tmp/tmp_ci/output /tmp/tmp_ci/results
+          echo "TEMP_DIR=$(readlink -f /tmp/tmp_ci)" >> "$GITHUB_ENV"
+          echo "INPUT_DIR=$(readlink -f /tmp/tmp_ci/input)" >> "$GITHUB_ENV"
+          echo "OUTPUT_DIR=$(readlink -f /tmp/tmp_ci/output)" >> "$GITHUB_ENV"
+          export GH_APP_PEM_KEY="${{ secrets.GH_APP_PEM_KEY }}"
+          export GH_APP_ID="${{ secrets.GH_APP_ID }}"
+          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/tmp_ci/workflow_config.json
+          cat /tmp/tmp_ci/workflow_config.json
+          env | grep GITHUB
+          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
 
       - name: Pre
         run: |
@@ -108,18 +112,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up env
-        run: |
-          rm -rf /tmp/tmp_ci/input /tmp/tmp_ci/output /tmp/tmp_ci
-          mkdir -p /tmp/tmp_ci /tmp/tmp_ci/input /tmp/tmp_ci/output /tmp/tmp_ci/results
-          echo "TEMP_DIR=$(readlink -f /tmp/tmp_ci)" >> "$GITHUB_ENV"
-          echo "INPUT_DIR=$(readlink -f /tmp/tmp_ci/input)" >> "$GITHUB_ENV"
-          echo "OUTPUT_DIR=$(readlink -f /tmp/tmp_ci/output)" >> "$GITHUB_ENV"
-          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/tmp_ci/workflow_config.json
-          cat /tmp/tmp_ci/workflow_config.json
-          env | grep GITHUB
-          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -130,6 +122,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           #pip install praktika
+
+      - name: Set up env
+        run: |
+          rm -rf /tmp/tmp_ci/input /tmp/tmp_ci/output /tmp/tmp_ci
+          mkdir -p /tmp/tmp_ci /tmp/tmp_ci/input /tmp/tmp_ci/output /tmp/tmp_ci/results
+          echo "TEMP_DIR=$(readlink -f /tmp/tmp_ci)" >> "$GITHUB_ENV"
+          echo "INPUT_DIR=$(readlink -f /tmp/tmp_ci/input)" >> "$GITHUB_ENV"
+          echo "OUTPUT_DIR=$(readlink -f /tmp/tmp_ci/output)" >> "$GITHUB_ENV"
+          export GH_APP_PEM_KEY="${{ secrets.GH_APP_PEM_KEY }}"
+          export GH_APP_ID="${{ secrets.GH_APP_ID }}"
+          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/tmp_ci/workflow_config.json
+          cat /tmp/tmp_ci/workflow_config.json
+          env | grep GITHUB
+          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
 
       - name: Pre
         run: |
@@ -154,18 +160,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up env
-        run: |
-          rm -rf /tmp/tmp_ci/input /tmp/tmp_ci/output /tmp/tmp_ci
-          mkdir -p /tmp/tmp_ci /tmp/tmp_ci/input /tmp/tmp_ci/output /tmp/tmp_ci/results
-          echo "TEMP_DIR=$(readlink -f /tmp/tmp_ci)" >> "$GITHUB_ENV"
-          echo "INPUT_DIR=$(readlink -f /tmp/tmp_ci/input)" >> "$GITHUB_ENV"
-          echo "OUTPUT_DIR=$(readlink -f /tmp/tmp_ci/output)" >> "$GITHUB_ENV"
-          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/tmp_ci/workflow_config.json
-          cat /tmp/tmp_ci/workflow_config.json
-          env | grep GITHUB
-          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -176,6 +170,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           #pip install praktika
+
+      - name: Set up env
+        run: |
+          rm -rf /tmp/tmp_ci/input /tmp/tmp_ci/output /tmp/tmp_ci
+          mkdir -p /tmp/tmp_ci /tmp/tmp_ci/input /tmp/tmp_ci/output /tmp/tmp_ci/results
+          echo "TEMP_DIR=$(readlink -f /tmp/tmp_ci)" >> "$GITHUB_ENV"
+          echo "INPUT_DIR=$(readlink -f /tmp/tmp_ci/input)" >> "$GITHUB_ENV"
+          echo "OUTPUT_DIR=$(readlink -f /tmp/tmp_ci/output)" >> "$GITHUB_ENV"
+          export GH_APP_PEM_KEY="${{ secrets.GH_APP_PEM_KEY }}"
+          export GH_APP_ID="${{ secrets.GH_APP_ID }}"
+          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/tmp_ci/workflow_config.json
+          cat /tmp/tmp_ci/workflow_config.json
+          env | grep GITHUB
+          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
 
       - name: Pre
         run: |

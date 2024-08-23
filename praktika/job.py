@@ -7,6 +7,7 @@ class Job:
     class Requirements:
         python: bool = False
         python_requirements_txt: str = ""
+        gh_app_auth: bool = False
 
     @dataclass
     class CacheDigestConfig:

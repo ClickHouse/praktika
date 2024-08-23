@@ -1,6 +1,30 @@
 # praktika
 
-Big CI for big projects. It's easy with praktika.
+Resilient, feature-reach CI infrastructure on top of Git Management Platform (GH Action) and Cloud Provider (AWS WebServices).
+It's easy with praktika.
+
+### concepts
+* 100% Tolerance to GitHub API Failures:
+  * Make only the essential GitHub API calls, and limit them to the initial pipeline stage.
+  * Ensure that all API calls are retryable in case of failure.
+  * Provide GitHub data to CI jobs at runtime, eliminating the need for API calls during pipeline execution.
+* Minimal Dependencies:
+  * Prioritize using Python built-ins whenever possible.
+  * Opt for Python standard libraries over external packages.
+  * Only import non-standard modules if the user has enabled a feature that specifically requires them.
+* Minimal Overhead:
+  * Avoid unnecessary operations; only perform tasks explicitly requested by the user.
+* Design Simplicity:
+  * Favor a generic design, minimize custom handling.
+  * Strive for a high "value per line of code" ratio, ensuring that each line of code provides maximum utility.
+
+### dependencies:
+* python
+* non-standard python modules:
+  * jwt module if GH App auth is needed. If HTML reporting and/or Mergeable check is enabled
+* non-python dependencies:
+  * aws cli. Not required for GH-only setup (without cloud provider)
+  * gh cli. Not required for setup without HTML reporting and/or Mergeable check
 
 ## How to begin:
 
@@ -28,16 +52,17 @@ git push --set-upstream origin my_praktika
 ```
 
 #### CI Platform features
-|                         | GitHub | GitLab | BitBucket | comment                                   |
-|-------------------------|--------|--------|-----------|-------------------------------------------|
-| pull_request workflow   | Y      |        |           |                                           |
-| push workflow           | Y      |        |           |                                           |
-| merge_queue workflow    | N      |        |           |                                           |
-| scheduled workflow      | N      |        |           |                                           |
-| dispatch workflow       | N      |        |           |                                           |
-| job artifacts           | Y      |        |           | Upload/download native platform artifacts |
-| platform runners        | Y      |        |           | Free ubuntu-latest GH runner              |
-| self-hosted runners     | Y      |        |           | Using your own CI runners (AWS EC2)       |
+|                       | GitHub | GitLab | BitBucket | comment                                   |
+|-----------------------|--------|--------|-----------|-------------------------------------------|
+| pull_request workflow | Y      |        |           |                                           |
+| push workflow         | Y      |        |           |                                           |
+| merge_queue workflow  | N      |        |           |                                           |
+| scheduled workflow    | N      |        |           |                                           |
+| dispatch workflow     | N      |        |           |                                           |
+| Auth with App         | Y      |        |           |                                           |
+| job artifacts         | Y      |        |           | Upload/download native platform artifacts |
+| platform runners      | Y      |        |           | Free ubuntu-latest GH runner              |
+| self-hosted runners   | Y      |        |           | Using your own CI runners (AWS EC2)       |
 
 #### Cloud Compute features
 |                                     | AWS | Azure | GCP   | comment                               |
@@ -51,7 +76,7 @@ git push --set-upstream origin my_praktika
 | CloudWatch runner logs              | N   |       |       |                                       |
 | prebuild runner image (terraform)   | N   |       |       |                                       |
 
-#### Library features
+#### praktika features
 |                         |               | comment                                                   |
 |-------------------------|---------------|-----------------------------------------------------------|
 | Pythonic CI pipelines   | Y             | 100% python interface for creating CI pipelines           |

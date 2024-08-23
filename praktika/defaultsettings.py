@@ -1,5 +1,5 @@
 import dataclasses
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 
 @dataclasses.dataclass
@@ -18,6 +18,7 @@ class DefaultSettings:
     ### Runtime Settings               ###
     ######################################
     MAX_RETRIES_S3 = 3
+    MAX_RETRIES_GH = 3
 
     ######################################
     ### S3 (artifact storage) settings ###
@@ -47,6 +48,7 @@ class DefaultSettings:
     ###      HTML Report settings      ###
     ######################################
     HTML_S3_PATH: str = ""
+    S3_BUCKET_TO_HTTP_ENDPOINT: Optional[Dict[str, str]] = None
 
 
 _USER_DEFINED_SETTINGS = [
@@ -66,6 +68,8 @@ _USER_DEFINED_SETTINGS = [
     "CACHE_S3_PATH",
     "HTML_S3_PATH",
     "MAX_RETRIES_S3",
+    "MAX_RETRIES_GH",
+    "S3_BUCKET_TO_HTTP_ENDPOINT",
 ]
 
 

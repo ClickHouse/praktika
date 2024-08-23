@@ -11,6 +11,12 @@ def parse_args():
         action="store_true",
         help="Generates CI pipeline in accordance with configs in ./ci/configs/*.py",
     )
+    parser.add_argument(
+        "--workflow",
+        default="",
+        type=str,
+        help="Select specific workflow from ./ci/configs/*.py",
+    )
     return parser.parse_args(), parser
 
 
@@ -19,6 +25,6 @@ if __name__ == "__main__":
 
     if args.generate:
         Validator().validate()
-        YamlGenerator().generate()
+        YamlGenerator().generate(args.workflow)
     else:
         assert False

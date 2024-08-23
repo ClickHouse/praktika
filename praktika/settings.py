@@ -27,6 +27,8 @@ class Environment:
     EVENT_FILE_PATH = os.getenv("GITHUB_EVENT_PATH", "")
     BRANCH = os.getenv("GITHUB_REF_NAME", "")
     JOB_OUTPUT_STREAM = os.getenv("GITHUB_OUTPUT", "")
+    SECRET_APP_PEM_KEY = os.getenv("GH_APP_PEM_KEY", "")
+    SECRET_APP_ID = os.getenv("GH_APP_ID", "")
     EventInfo = EventInfo()
 
 

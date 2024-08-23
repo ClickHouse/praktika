@@ -1,4 +1,4 @@
-name: Example CI with Cache
+name: Example HTML report
 
 on:
   pull_request:
@@ -36,6 +36,7 @@ jobs:
           echo "OUTPUT_DIR=$(readlink -f /tmp/tmp_ci/output)" >> "$GITHUB_ENV"
           export GH_APP_PEM_KEY="${{ secrets.GH_APP_PEM_KEY }}"
           export GH_APP_ID="${{ secrets.GH_APP_ID }}"
+          python3 -m praktika.gh_auth
           echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/tmp_ci/workflow_config.json
           cat /tmp/tmp_ci/workflow_config.json
           env | grep GITHUB
@@ -43,22 +44,21 @@ jobs:
 
       - name: Pre
         run: |
-          python -m praktika.runner --pre-run --job-name "WorkflowConfig" --workflow-name "Example CI with Cache"
+          python -m praktika.runner --pre-run --job-name "WorkflowConfig" --workflow-name "Example HTML report"
 
       - name: Run
         id: run
         run: |
-          python -m praktika.runner --run --job-name "WorkflowConfig" --workflow-name "Example CI with Cache"
+          python -m praktika.runner --run --job-name "WorkflowConfig" --workflow-name "Example HTML report"
 
       - name: Post
         run: |
-          python -m praktika.runner --post-run --job-name "WorkflowConfig" --workflow-name "Example CI with Cache"
+          python -m praktika.runner --post-run --job-name "WorkflowConfig" --workflow-name "Example HTML report"
 
-  job_a:
+  job_1:
     runs-on: [maxs-small-fixed]
     needs: [workflowconfig]
-    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.workflowconfig.outputs.data).cache_success, 'Job A') }}
-    name: Job A
+    name: Job 1
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -92,22 +92,21 @@ jobs:
 
       - name: Pre
         run: |
-          python -m praktika.runner --pre-run --job-name "Job A" --workflow-name "Example CI with Cache"
+          python -m praktika.runner --pre-run --job-name "Job 1" --workflow-name "Example HTML report"
 
       - name: Run
         id: run
         run: |
-          python -m praktika.runner --run --job-name "Job A" --workflow-name "Example CI with Cache"
+          python -m praktika.runner --run --job-name "Job 1" --workflow-name "Example HTML report"
 
       - name: Post
         run: |
-          python -m praktika.runner --post-run --job-name "Job A" --workflow-name "Example CI with Cache"
+          python -m praktika.runner --post-run --job-name "Job 1" --workflow-name "Example HTML report"
 
-  job_b:
+  job_2:
     runs-on: [maxs-small-fixed]
-    needs: [workflowconfig, job_a]
-    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.workflowconfig.outputs.data).cache_success, 'Job B') }}
-    name: Job B
+    needs: [workflowconfig, job_1]
+    name: Job 2
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -141,13 +140,13 @@ jobs:
 
       - name: Pre
         run: |
-          python -m praktika.runner --pre-run --job-name "Job B" --workflow-name "Example CI with Cache"
+          python -m praktika.runner --pre-run --job-name "Job 2" --workflow-name "Example HTML report"
 
       - name: Run
         id: run
         run: |
-          python -m praktika.runner --run --job-name "Job B" --workflow-name "Example CI with Cache"
+          python -m praktika.runner --run --job-name "Job 2" --workflow-name "Example HTML report"
 
       - name: Post
         run: |
-          python -m praktika.runner --post-run --job-name "Job B" --workflow-name "Example CI with Cache"
+          python -m praktika.runner --post-run --job-name "Job 2" --workflow-name "Example HTML report"

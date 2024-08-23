@@ -22,6 +22,9 @@ jobs:
 {JOBS}\
 """
 
+        TEMPLATE_RUN_COMMAND = """
+          {COMMAND}\
+"""
         TEMPLATE_JOB_0 = """
   {JOB_NAME_NORMALIZED}:
     runs-on: [{RUNS_ON}]
@@ -32,15 +35,15 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
+{JOB_ADDONS}
       - name: Set up env
         run: |
-{SETUP_ENVS}
+{SETUP_ENVS}{EXTRA_COMMANDS}
           echo '''${{{{ needs.{WORKFLOW_CONFIG_JOB_NAME}.outputs.data }}}}''' > {WORKFLOW_CONFIG_FILE}
           cat {WORKFLOW_CONFIG_FILE}
           env | grep GITHUB
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
-{JOB_ADDONS}{DOWNLOADS_GITHUB}
+{DOWNLOADS_GITHUB}
       - name: Pre
         run: |
           python -m praktika.runner --pre-run --job-name "{JOB_NAME}" --workflow-name "{WORKFLOW_NAME}"
@@ -61,7 +64,9 @@ jobs:
           mkdir -p {TEMP_DIR} {INPUT_DIR} {OUTPUT_DIR} {RESULT_DIR}
           echo "TEMP_DIR=$(readlink -f {TEMP_DIR})" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f {INPUT_DIR})" >> "$GITHUB_ENV"
-          echo "OUTPUT_DIR=$(readlink -f {OUTPUT_DIR})" >> "$GITHUB_ENV"\
+          echo "OUTPUT_DIR=$(readlink -f {OUTPUT_DIR})" >> "$GITHUB_ENV"
+          export GH_APP_PEM_KEY="${{{{ secrets.GH_APP_PEM_KEY }}}}"
+          export GH_APP_ID="${{{{ secrets.GH_APP_ID }}}}"\
 """
 
         TEMPLATE_PY_INSTALL = """
@@ -102,21 +107,18 @@ jobs:
     if: ${{{{ !failure() && !cancelled() && !contains(fromJson(needs.{WORKFLOW_CONFIG_JOB_NAME}.outputs.data).cache_success, '{JOB_NAME}') }}}}\
 """
 
-    def __init__(self, workflows: Optional[List[Workflow.Config]] = None):
-        with ContextManager.cd():
-            Path(Settings.WORKFLOW_PATH_PREFIX).mkdir(parents=True, exist_ok=True)
-        if not workflows:
-            self.py_workflows = []  # type: List[Workflow.Config]
-        else:
-            self.py_workflows = workflows
+    def __init__(self):
+        self.py_workflows = []  # type: List[Workflow.Config]
 
     @classmethod
     def _get_workflow_file_name(cls, workflow_name):
         return f"{Settings.WORKFLOW_PATH_PREFIX}/{Utils.normalize_string(workflow_name)}.yaml"
 
-    def generate(self):
-        if not self.py_workflows:
-            self.py_workflows = _get_workflows()
+    def generate(self, workflow_file="", workflow_config=None):
+        if workflow_config:
+            self.py_workflows = [workflow_config]
+        else:
+            self.py_workflows = _get_workflows(file=workflow_file)
             assert self.py_workflows
         for workflow_config in self.py_workflows:
             print(f"Generate workflow [{workflow_config.name}]")
@@ -155,12 +157,6 @@ class PullRequestPushYamlGen:
         )
 
         job_items = []
-        setup_envs = YamlGenerator.Templates.TEMPLATE_SETUP_ENV.format(
-            TEMP_DIR=Settings.TEMP_DIR,
-            INPUT_DIR=Settings.INPUT_DIR,
-            OUTPUT_DIR=Settings.OUTPUT_DIR,
-            RESULT_DIR=Settings.RESULTS_DIR,
-        )
         for i, job in enumerate(self.workflow_config.jobs):
             job_name_normalized = Utils.normalize_string(job.name)
             needs = ", ".join(map(Utils.normalize_string, job.needs))
@@ -211,6 +207,18 @@ class PullRequestPushYamlGen:
             else:
                 if_expression = ""
 
+            extra_cmds = ""
+            if job.gh_app_auth:
+                extra_cmds = YamlGenerator.Templates.TEMPLATE_RUN_COMMAND.format(
+                    COMMAND="python3 -m praktika.gh_auth"
+                )
+            setup_envs = YamlGenerator.Templates.TEMPLATE_SETUP_ENV.format(
+                TEMP_DIR=Settings.TEMP_DIR,
+                INPUT_DIR=Settings.INPUT_DIR,
+                OUTPUT_DIR=Settings.OUTPUT_DIR,
+                RESULT_DIR=Settings.RESULTS_DIR,
+            )
+
             job_item = YamlGenerator.Templates.TEMPLATE_JOB_0.format(
                 JOB_NAME_NORMALIZED=job_name_normalized,
                 WORKFLOW_CONFIG_JOB_NAME=config_job_name_normalized,
@@ -220,6 +228,7 @@ class PullRequestPushYamlGen:
                 JOB_NAME=job_name,
                 WORKFLOW_NAME=self.workflow_config.name,
                 SETUP_ENVS=setup_envs,
+                EXTRA_COMMANDS=extra_cmds,
                 WORKFLOW_CONFIG_FILE=Settings.WORKFLOW_CONFIG_FILE,
                 JOB_ADDONS="\n".join(job_addons),
                 DOWNLOADS_GITHUB="\n".join(downloads_github),
@@ -257,29 +266,6 @@ class AuxConfig:
         return res
 
 
-# class AuxYamlGen:
-#     def __init__(self, aux_config: AuxConfig):
-#         self.addon = aux_config.addon
-#         self.config = aux_config
-#
-#     def generate(self):
-#         addon_inputs = []
-#         addon_steps = []
-#
-#         if self.addon.python_requirements_txt:
-#             addon_inputs.append(YamlGenerator.Templates.ADDON_PY_INPUT)
-#             addon_steps.append(YamlGenerator.Templates.ADDON_PY_STEPS)
-#
-#         template_1 = YamlGenerator.Templates.CALLABLE_JOB_TEMPLATE_0.strip().format(
-#             ADDONS_INPUTS="{}" * len(addon_inputs),
-#             ADDONS_STEPS="{}" * len(addon_steps),
-#         )
-#
-#         result = template_1.format(*addon_inputs, *addon_steps)
-#
-#         return result
-
-
 if __name__ == "__main__":
     WFS = [
         Workflow.Config(
@@ -298,5 +284,4 @@ if __name__ == "__main__":
             enable_cache=True,
         )
     ]
-    G = YamlGenerator(workflows=WFS)
-    G.generate()
+    YamlGenerator().generate(workflow_config=WFS)

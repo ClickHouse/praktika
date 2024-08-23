@@ -7,7 +7,7 @@ from praktika import Workflow
 from praktika.defaultsettings import DefaultSettings, _USER_DEFINED_SETTINGS
 
 
-def _get_workflows(name=None) -> List[Workflow.Config]:
+def _get_workflows(name=None, file=None) -> List[Workflow.Config]:
     """
     Gets user's workflow configs
     """
@@ -16,6 +16,8 @@ def _get_workflows(name=None) -> List[Workflow.Config]:
     with ContextManager.cd():
         directory = Path(DefaultSettings.WORKFLOWS_DIRECTORY)
         for py_file in directory.glob("*.py"):
+            if file and file not in str(py_file):
+                continue
             module_name = py_file.name.removeprefix(".py")
             spec = importlib.util.spec_from_file_location(
                 module_name, f"{DefaultSettings.WORKFLOWS_DIRECTORY}/{module_name}"

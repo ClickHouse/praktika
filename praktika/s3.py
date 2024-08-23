@@ -17,6 +17,7 @@ class S3:
 
     @classmethod
     def copy_artifact_from_s3(cls, pr_number, branch, sha, name):
+        assert sha, "Invalid input"
         return Shell.check(
             f"aws s3 cp s3://{Settings.S3_ARTIFACT_PATH}/{cls.get_prefix(pr_number, branch, sha)}/{Path(name).name} {Settings.INPUT_DIR}/{Path(name).name}",
             verbose=True,
@@ -55,7 +56,9 @@ class S3:
             res
         ), f"Failed to copy to s3 after Settings.MAX_RETRIES_S3 [{Settings.MAX_RETRIES_S3}] retries, file [{local_path}]"
         # TODO: add support for api gateway / cloudfront
-        return f"https://{s3_full_path}"
+        bucket = s3_path.split("/")[0]
+        endpoint = Settings.S3_BUCKET_TO_HTTP_ENDPOINT[bucket]
+        return f"https://{s3_full_path}".replace(bucket, endpoint)
 
     @classmethod
     def copy_file_from_s3(cls, s3_path, local_path):

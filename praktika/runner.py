@@ -22,9 +22,9 @@ class Runner:
         Shell.check("env")
 
         if job_name == Settings.CI_CONFIG_JOB_NAME:
-            job = _workflow_config_job
-        else:
-            job = workflow.get_job(job_name)
+            return
+
+        job = workflow.get_job(job_name)
         assert job, "BUG"
 
         if workflow.enable_html:
@@ -77,9 +77,9 @@ class Runner:
         print(f"Run post-run script [{job_name}], workflow [{workflow.name}]")
 
         if job_name == Settings.CI_CONFIG_JOB_NAME:
-            job = _workflow_config_job
-        else:
-            job = workflow.get_job(job_name)
+            return
+
+        job = workflow.get_job(job_name)
         assert job, "BUG"
         providing_artifacts = []
         if job.provides and workflow.artifacts:
@@ -109,82 +109,6 @@ class Runner:
         # always in the end
         if workflow.enable_cache:
             _CacheRunnerHooks.post_run(workflow, job)
-
-    #
-    # def config(self):
-    #     workflow_runtime_config = _WorkflowRuntimeConfig(
-    #         digests={},
-    #         sha=Environment.EventInfo.REF_SHA,
-    #         cache_success=[],
-    #         cache_artifacts={},
-    #     )
-    #     cache = Cache()
-    #     assert Environment.WORKFLOW_NAME
-    #     workflow = _get_workflows(name=Environment.WORKFLOW_NAME)[0]
-    #     print(f"Workflow Configure, workflow [{workflow.name}]")
-    #     assert (
-    #         workflow.enable_cache
-    #     ), f"Outdated yaml pipelines or BUG. Configuration must be run only for workflow with enabled cache, workflow [{workflow.name}]"
-    #     artifact_digest_map = {}
-    #     job_digest_map = {}
-    #     for job in workflow.jobs:
-    #         if not job.cache_digest:
-    #             print(
-    #                 f"NOTE: job [{job.name}] has no Config.cache_digest - skip cache check, always run"
-    #             )
-    #         digest = cache.digest.calc_digest(job.cache_digest)
-    #         job_digest_map[job.name] = digest
-    #         if job.provides:
-    #             # assign the job digest also to the artifacts it provides
-    #             for artifact in job.provides:
-    #                 artifact_digest_map[artifact] = digest
-    #     for job in workflow.jobs:
-    #         digests_combined_list = []
-    #         if job.requires:
-    #             # include digest of required artifact to the job digest, so that they affect job state
-    #             for artifact_name in job.requires:
-    #                 if artifact_name not in [
-    #                     artifact.name for artifact in workflow.artifacts
-    #                 ]:
-    #                     # phony artifact assumed to be not affecting jobs that depend on it
-    #                     continue
-    #                 digests_combined_list.append(artifact_digest_map[artifact_name])
-    #         digests_combined_list.append(job_digest_map[job.name])
-    #         final_digest = "-".join(digests_combined_list)
-    #         workflow_runtime_config.digests[job.name] = final_digest
-    #
-    #     assert (
-    #         workflow_runtime_config.digests
-    #     ), f"BUG, Workflow with enabled cache must have job digests after configuration, wf [{workflow.name}]"
-    #
-    #     print("Check remote cache")
-    #     job_to_cache_record = {}
-    #     for job_name, job_digest in workflow_runtime_config.digests.items():
-    #         record = cache.fetch_success(job_name=job_name, job_digest=job_digest)
-    #         if record:
-    #             assert (
-    #                 Utils.normalize_string(job_name)
-    #                 not in workflow_runtime_config.cache_success
-    #             )
-    #             workflow_runtime_config.cache_success.append(job_name)
-    #             job_to_cache_record[job_name] = record
-    #
-    #     print("Check artifacts to reuse")
-    #     for job in workflow.jobs:
-    #         if job.name in workflow_runtime_config.cache_success:
-    #             if job.provides:
-    #                 for artifact_name in job.provides:
-    #                     workflow_runtime_config.cache_artifacts[
-    #                         artifact_name
-    #                     ] = job_to_cache_record[job.name]
-    #
-    #     print(f"Write config to job output env: {Environment.JOB_OUTPUT_STREAM}")
-    #     with open(Environment.JOB_OUTPUT_STREAM, "a", encoding="utf8") as f:
-    #         print(
-    #             f"DATA={json.dumps(dataclasses.asdict(workflow_runtime_config))}",
-    #             file=f,
-    #         )
-    #     print(f"WorkflowRuntimeConfig: [{workflow_runtime_config}]")
 
 
 def parse_args():

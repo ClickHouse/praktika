@@ -1,15 +1,17 @@
 import dataclasses
 import json
+from datetime import datetime
 
-from praktika.utils import Utils
+from praktika.gh import GH
+from praktika.utils import Utils, MetaClasses
 from praktika.s3 import S3
 from praktika.cache import Cache
 from praktika.html_generator import HtmlGenerator
 from praktika.interfaces import HookInterface
 from praktika.mangle import _get_workflows
 from praktika.runtime import _WorkflowRuntimeConfig
-from praktika.result import Result
-from praktika.settings import Environment
+from praktika.result import Result, _PreResult, ResultInfo
+from praktika.settings import Environment, Settings
 
 
 class _CacheRunnerHooks(HookInterface):
@@ -91,21 +93,20 @@ class _CacheRunnerHooks(HookInterface):
 
     @classmethod
     def pre_run(cls, _workflow, _job, _required_artifacts=None):
-        if _job != _workflow.jobs[0]:
-            runtime_config = _WorkflowRuntimeConfig.from_fs()
-            required_artifacts = []
-            if _required_artifacts:
-                required_artifacts = _required_artifacts
-            for artifact in required_artifacts:
-                if artifact.name in runtime_config.cache_artifacts:
-                    record = runtime_config.cache_artifacts[artifact.name]
-                    print(f"Reuse artifact form [{record}]")
-                    assert S3.copy_artifact_from_s3(
-                        branch=record.branch,
-                        pr_number=record.pr_number,
-                        sha=record.sha,
-                        name=artifact.path,
-                    )
+        runtime_config = _WorkflowRuntimeConfig.from_fs()
+        required_artifacts = []
+        if _required_artifacts:
+            required_artifacts = _required_artifacts
+        for artifact in required_artifacts:
+            if artifact.name in runtime_config.cache_artifacts:
+                record = runtime_config.cache_artifacts[artifact.name]
+                print(f"Reuse artifact form [{record}]")
+                assert S3.copy_artifact_from_s3(
+                    branch=record.branch,
+                    pr_number=record.pr_number,
+                    sha=record.sha,
+                    name=artifact.path,
+                )
 
     @classmethod
     def run(cls, workflow, job):
@@ -113,7 +114,7 @@ class _CacheRunnerHooks(HookInterface):
 
     @classmethod
     def post_run(cls, workflow, job):
-        if job == workflow.jobs[0]:
+        if job.name == Settings.CI_CONFIG_JOB_NAME:
             return
         if job.cache_digest:
             # cache is enabled, and it's a job that supposed to be cached (has defined digest config)
@@ -122,7 +123,7 @@ class _CacheRunnerHooks(HookInterface):
             Cache.push_success_record(job.name, job_digest, workflow_runtime.sha)
 
 
-class _HtmlRunnerHooks(HookInterface):
+class _HtmlRunnerHooks(HookInterface, MetaClasses.FormatPrint):
     @classmethod
     def configure(cls, _workflow):
         # generate pending Results for all jobs in workflow
@@ -137,14 +138,30 @@ class _HtmlRunnerHooks(HookInterface):
                 result = Result.generate_pending(job.name)
                 results.append(result)
         summary_result = Result.generate_pending(_workflow.name, results=results)
-        html_result = HtmlGenerator.generate_recursive(
-            summary_result, upload_to_s3=True
+        summary_result.copy_to_s3()
+        link = HtmlGenerator.generate_recursive(summary_result, upload_to_s3=True)
+        GH.post_commit_status(
+            name=_workflow.name,
+            status=Result.Status.PENDING,
+            description="",
+            url=link,
         )
-        print(f"TODO: link {html_result.html_link}")
 
     @classmethod
     def pre_run(cls, _workflow, _job):
-        pass
+        cls.format_print("pre run hook")
+        result = Result(
+            name=_job.name,
+            status=Result.Status.RUNNING,
+            start_time=datetime.now().timestamp(),
+        )
+        result.dump()
+        workflow_result = Result.from_s3(_workflow.name)
+        workflow_result.update_sub_result(result)
+        workflow_result.copy_to_s3()
+        HtmlGenerator.generate_recursive(
+            workflow_result, upload_to_s3=True, changed_item=result
+        )
 
     @classmethod
     def run(cls, _workflow, _job):
@@ -152,4 +169,25 @@ class _HtmlRunnerHooks(HookInterface):
 
     @classmethod
     def post_run(cls, _workflow, _job):
-        pass
+        result = Result.from_fs(_job.name)
+        if not result:
+            result = Result(
+                name=_job.name,
+                start_time=0.0,
+                duration=0.0,
+                status=Result.Status.ERROR,
+                info=ResultInfo.NOT_FOUND_IMPOSSIBLE,
+            ).dump()
+        elif result.status == Result.Status.RUNNING:
+            result.info = ResultInfo.NOT_FOUND
+            result.status = Result.Status.ERROR
+            result.update_duration()
+        else:
+            result.update_duration()
+
+        workflow_result = Result.from_s3(_workflow.name)
+        workflow_result.update_sub_result(result)
+        workflow_result.copy_to_s3()
+        HtmlGenerator.generate_recursive(
+            workflow_result, upload_to_s3=True, changed_item=result
+        )
