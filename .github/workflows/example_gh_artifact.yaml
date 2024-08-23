@@ -19,12 +19,12 @@ jobs:
       - name: Set up env
         run: |
           rm -rf /tmp/tmp_ci/input /tmp/tmp_ci/output /tmp/tmp_ci
-          mkdir -p /tmp/tmp_ci /tmp/tmp_ci/input /tmp/tmp_ci/output
+          mkdir -p /tmp/tmp_ci /tmp/tmp_ci/input /tmp/tmp_ci/output /tmp/tmp_ci/results
           echo "TEMP_DIR=$(readlink -f /tmp/tmp_ci)" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f /tmp/tmp_ci/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f /tmp/tmp_ci/output)" >> "$GITHUB_ENV"
-          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/workflow_config.json
-          cat /tmp/workflow_config.json
+          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/tmp_ci/workflow_config.json
+          cat /tmp/tmp_ci/workflow_config.json
           env | grep GITHUB
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
 
@@ -37,20 +37,20 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          #pip install recurcipy
+          #pip install praktika
 
       - name: Pre
         run: |
-          python -m recurcipy.runner --pre-run --job-name "Provide Artifact" --workflow-name "Example GH Artifact"
+          python -m praktika.runner --pre-run --job-name "Provide Artifact" --workflow-name "Example GH Artifact"
 
       - name: Run
         id: run
         run: |
-          python -m recurcipy.runner --run --job-name "Provide Artifact" --workflow-name "Example GH Artifact"
+          python -m praktika.runner --run --job-name "Provide Artifact" --workflow-name "Example GH Artifact"
 
       - name: Post
         run: |
-          python -m recurcipy.runner --post-run --job-name "Provide Artifact" --workflow-name "Example GH Artifact"
+          python -m praktika.runner --post-run --job-name "Provide Artifact" --workflow-name "Example GH Artifact"
 
       - name: Upload artifact greet
         uses: actions/upload-artifact@v4
@@ -71,12 +71,12 @@ jobs:
       - name: Set up env
         run: |
           rm -rf /tmp/tmp_ci/input /tmp/tmp_ci/output /tmp/tmp_ci
-          mkdir -p /tmp/tmp_ci /tmp/tmp_ci/input /tmp/tmp_ci/output
+          mkdir -p /tmp/tmp_ci /tmp/tmp_ci/input /tmp/tmp_ci/output /tmp/tmp_ci/results
           echo "TEMP_DIR=$(readlink -f /tmp/tmp_ci)" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f /tmp/tmp_ci/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f /tmp/tmp_ci/output)" >> "$GITHUB_ENV"
-          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/workflow_config.json
-          cat /tmp/workflow_config.json
+          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/tmp_ci/workflow_config.json
+          cat /tmp/tmp_ci/workflow_config.json
           env | grep GITHUB
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
 
@@ -89,7 +89,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          #pip install recurcipy
+          #pip install praktika
 
       - name: Download artifact greet
         uses: actions/download-artifact@v4
@@ -99,13 +99,13 @@ jobs:
 
       - name: Pre
         run: |
-          python -m recurcipy.runner --pre-run --job-name "Consume Artifact" --workflow-name "Example GH Artifact"
+          python -m praktika.runner --pre-run --job-name "Consume Artifact" --workflow-name "Example GH Artifact"
 
       - name: Run
         id: run
         run: |
-          python -m recurcipy.runner --run --job-name "Consume Artifact" --workflow-name "Example GH Artifact"
+          python -m praktika.runner --run --job-name "Consume Artifact" --workflow-name "Example GH Artifact"
 
       - name: Post
         run: |
-          python -m recurcipy.runner --post-run --job-name "Consume Artifact" --workflow-name "Example GH Artifact"
+          python -m praktika.runner --post-run --job-name "Consume Artifact" --workflow-name "Example GH Artifact"

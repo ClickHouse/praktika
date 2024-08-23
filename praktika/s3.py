@@ -1,10 +1,10 @@
 from pathlib import Path
 
-from recurcipy import Shell
-from recurcipy.settings import Settings
+from praktika.utils import Shell
+from praktika.settings import Settings
 
 
-class S3Utils:
+class S3:
     @classmethod
     def get_prefix(cls, pr_number, branch, sha):
         prefix = ""
@@ -42,10 +42,20 @@ class S3Utils:
         assert Path(
             local_path
         ).is_file(), f"Path [{local_path}] is not file. Only files are supported"
-        return Shell.check(
-            f"aws s3 cp {local_path} s3://{s3_path}/{Path(local_path).name}",
-            verbose=True,
-        )
+        s3_full_path = f"{s3_path}/{Path(local_path).name}"
+        i = 0
+        res = False
+        while not res and i < Settings.MAX_RETRIES_S3:
+            i += 1
+            res = Shell.check(
+                f"aws s3 cp {local_path} s3://{s3_full_path}",
+                verbose=True,
+            )
+        assert (
+            res
+        ), f"Failed to copy to s3 after Settings.MAX_RETRIES_S3 [{Settings.MAX_RETRIES_S3}] retries, file [{local_path}]"
+        # TODO: add support for api gateway / cloudfront
+        return f"https://{s3_full_path}"
 
     @classmethod
     def copy_file_from_s3(cls, s3_path, local_path):

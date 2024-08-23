@@ -3,6 +3,7 @@ import re
 import subprocess
 import sys
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Union, Optional
 
@@ -18,18 +19,19 @@ class ContextManager:
     @contextmanager
     def cd(to: Optional[Union[Path, str]] = None) -> Iterator[None]:
         """
-        changes current workin directory to @path or `git root` if @path is None
+        changes current working directory to @path or `git root` if @path is None
         :param to:
         :return:
         """
         if not to:
             to = Shell.get_output_or_raise("git rev-parse --show-toplevel")
-        oldpwd = os.getcwd()
+            assert to
+        old_pwd = os.getcwd()
         os.chdir(to)
         try:
             yield
         finally:
-            os.chdir(oldpwd)
+            os.chdir(old_pwd)
 
 
 class Shell:
@@ -123,6 +125,10 @@ class Shell:
 
 
 class Utils:
+    @staticmethod
+    def get_str_time_stamp():
+        return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
     @staticmethod
     def get_failed_tests_number(description: str) -> Optional[int]:
         description = description.lower()

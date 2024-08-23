@@ -1,10 +1,10 @@
 import dataclasses
 from typing import Dict, List, Optional
 
-from recurcipy import Workflow, Artifact, Job
-from recurcipy.mangle import _get_workflows
-from recurcipy.settings import Settings
-from recurcipy.aux_job import _workflow_config_job
+from praktika import Workflow, Artifact, Job
+from praktika.mangle import _get_workflows
+from praktika.settings import Settings
+from praktika.aux_job import _workflow_config_job
 
 
 class AddonType:
@@ -48,12 +48,12 @@ class WorkflowConfigParser:
     def __init__(self, config: Workflow.Config):
         self.workflow_name = config.name
         self.config = config
-        self.requires_all = []
-        self.provides_all = []
-        self.job_names_all = []
-        self.artifact_to_providing_job_map = {}
-        self.artifact_to_job_requires_map = {}
-        self.artifact_map = {}
+        self.requires_all = []  # type: List[str]
+        self.provides_all = []  # type: List[str]
+        self.job_names_all = []  # type: List[str]
+        self.artifact_to_providing_job_map = {}  # type: Dict[str, List[str]]
+        self.artifact_to_job_requires_map = {}  # type: Dict[str, List[str]]
+        self.artifact_map = {}  # type: Dict[str, List[Artifact.Config]]
 
         self.job_to_provides_artifacts = {}  # type: Dict[str, List[Artifact.Config]]
         self.job_to_requires_artifacts = {}  # type: Dict[str, List[Artifact.Config]]

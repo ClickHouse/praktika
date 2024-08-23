@@ -34,6 +34,6 @@ class Job:
 
         job_requirements: Optional["Job.Requirements"] = None
 
-        auto_dependencies: List[str] = None
+        auto_dependencies: Optional[List[str]] = None
 
         cache_digest: Optional["Job.CacheDigestConfig"] = None

@@ -1,6 +1,6 @@
 import os
 
-from recurcipy.utils import MetaClasses
+from praktika.utils import MetaClasses
 
 
 class ScalingType(metaclass=MetaClasses.WithIter):

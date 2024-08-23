@@ -2,8 +2,9 @@ import importlib.util
 from pathlib import Path
 from typing import List, Dict, Any
 
-from recurcipy import ContextManager, Workflow
-from recurcipy.defaultsettings import DefaultSettings, _USER_DEFINED_SETTINGS
+from praktika.utils import ContextManager
+from praktika import Workflow
+from praktika.defaultsettings import DefaultSettings, _USER_DEFINED_SETTINGS
 
 
 def _get_workflows(name=None) -> List[Workflow.Config]:
@@ -19,7 +20,9 @@ def _get_workflows(name=None) -> List[Workflow.Config]:
             spec = importlib.util.spec_from_file_location(
                 module_name, f"{DefaultSettings.WORKFLOWS_DIRECTORY}/{module_name}"
             )
+            assert spec
             foo = importlib.util.module_from_spec(spec)
+            assert spec.loader
             spec.loader.exec_module(foo)
             try:
                 res += foo.WORKFLOWS
@@ -52,7 +55,9 @@ def _get_user_settings() -> Dict[str, Any]:
             spec = importlib.util.spec_from_file_location(
                 module_name, f"{DefaultSettings.SETTINGS_DIRECTORY}/{module_name}"
             )
+            assert spec
             foo = importlib.util.module_from_spec(spec)
+            assert spec.loader
             spec.loader.exec_module(foo)
             for setting in _USER_DEFINED_SETTINGS:
                 try:

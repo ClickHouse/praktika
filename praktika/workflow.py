@@ -1,8 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Optional
 
-from recurcipy import Job
-from recurcipy.artifact import Artifact
+from praktika import Job, Artifact
 
 
 class Workflow:
@@ -22,6 +21,7 @@ class Workflow:
         artifacts: Optional[List[Artifact.Config]] = None
         branches: Optional[List[str]] = None
         enable_cache: bool = False
+        enable_html: bool = False
 
         def is_event_pull_request(self):
             return self.event == Workflow.Event.PULL_REQUEST

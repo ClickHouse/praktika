@@ -7,10 +7,10 @@ import os
 from hashlib import md5
 from pathlib import Path
 
-from recurcipy import Job, Workflow, Artifact
-from recurcipy.s3 import S3Utils
-from recurcipy.settings import Settings, Environment
-from recurcipy.utils import Utils
+from praktika import Job, Workflow, Artifact
+from praktika.settings import Settings, Environment
+from praktika.utils import Utils
+from praktika.s3 import S3
 
 
 class Cache:
@@ -144,7 +144,7 @@ class Cache:
         record_path = f"{Settings.CACHE_S3_PATH}/v{Settings.CACHE_VERSION}/{Utils.normalize_string(job_name)}/{job_digest}"
         record_file = Path(Settings.TEMP_DIR) / type_
         record.dump(record_file)
-        S3Utils.copy_file_to_s3(s3_path=record_path, local_path=record_file)
+        S3.copy_file_to_s3(s3_path=record_path, local_path=record_file)
         record_file.unlink()
 
     def fetch_success(self, job_name, job_digest):
@@ -157,7 +157,7 @@ class Cache:
             f"{Settings.CACHE_LOCAL_PATH}/{Utils.normalize_string(job_name)}/"
         )
         Path(record_file_local_dir).mkdir(parents=True, exist_ok=True)
-        res = S3Utils.copy_file_from_s3(
+        res = S3.copy_file_from_s3(
             s3_path=record_path, local_path=record_file_local_dir
         )
         if res:

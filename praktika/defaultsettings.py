@@ -1,8 +1,6 @@
 import dataclasses
 from typing import Optional, List
 
-from recurcipy.utils import MetaClasses
-
 
 @dataclasses.dataclass
 class DefaultSettings:
@@ -13,6 +11,13 @@ class DefaultSettings:
     WORKFLOW_PATH_PREFIX: str = "./.github/workflows"
     WORKFLOWS_DIRECTORY: str = "./ci/workflows"
     SETTINGS_DIRECTORY: str = "./ci/settings"
+    CI_CONFIG_JOB_NAME = "WorkflowConfig"
+    CI_CONFIG_RUNS_ON: Optional[List[str]] = None
+
+    ######################################
+    ### Runtime Settings               ###
+    ######################################
+    MAX_RETRIES_S3 = 3
 
     ######################################
     ### S3 (artifact storage) settings ###
@@ -25,19 +30,23 @@ class DefaultSettings:
     TEMP_DIR: str = "/tmp/tmp_ci"
     OUTPUT_DIR: str = f"{TEMP_DIR}/output"
     INPUT_DIR: str = f"{TEMP_DIR}/input"
+    RESULTS_DIR: str = f"{TEMP_DIR}/results"
     PYTHON_INTERPRETER: str = "python3"
     PYTHON_VERSION: str = "3.9"
-    WORKFLOW_RUN_CONFIG_FILE: str = "/tmp/workflow_config.json"
+    WORKFLOW_CONFIG_FILE: str = f"{TEMP_DIR}/workflow_config.json"
 
     ######################################
     ###      CI Cache settings         ###
     ######################################
     CACHE_VERSION: int = 1
     CACHE_DIGEST_LEN: int = 20
-    CACHE_CONFIG_RUNS_ON: Optional[List[str]] = None
-    CACHE_CONFIG_JOB_NAME = "WorkflowConfig"
     CACHE_S3_PATH: str = ""
     CACHE_LOCAL_PATH: str = f"{TEMP_DIR}/ci_cache"
+
+    ######################################
+    ###      HTML Report settings      ###
+    ######################################
+    HTML_S3_PATH: str = ""
 
 
 _USER_DEFINED_SETTINGS = [
@@ -49,16 +58,18 @@ _USER_DEFINED_SETTINGS = [
     "TEMP_DIR",
     "OUTPUT_DIR",
     "INPUT_DIR",
-    "CACHE_CONFIG_RUNS_ON",
-    "CACHE_CONFIG_JOB_NAME",
+    "CI_CONFIG_RUNS_ON",
+    "CI_CONFIG_JOB_NAME",
     "PYTHON_INTERPRETER",
     "PYTHON_VERSION",
-    "WORKFLOW_RUN_CONFIG_FILE",
+    "WORKFLOW_CONFIG_FILE",
     "CACHE_S3_PATH",
+    "HTML_S3_PATH",
+    "MAX_RETRIES_S3",
 ]
 
 
-class GHRunners(metaclass=MetaClasses.WithIter):
+class GHRunners:
     ubuntu = "ubuntu-latest"
 
 

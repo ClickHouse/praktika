@@ -1,7 +1,7 @@
 import unittest
 
-from recurcipy import Shell
-from recurcipy.settings import Settings
+from praktika.utils import Shell
+from praktika.settings import Settings
 
 
 class TestExample1(unittest.TestCase):

@@ -1,6 +1,6 @@
 from typing import List
 
-from recurcipy import Job, Workflow
+from praktika import Job, Workflow
 
 
 class JobNames:

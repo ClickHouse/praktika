@@ -5,8 +5,8 @@ import time
 
 import requests
 
-from recurcipy import Shell, ContextManager
-from recurcipy.execution.execution_settings import ExecutionSettings, ScalingType
+from praktika.utils import Shell, ContextManager
+from praktika.execution.execution_settings import ExecutionSettings, ScalingType
 
 
 class StateMachine:

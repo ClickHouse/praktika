@@ -1,26 +1,26 @@
-# RecurCIPY
+# praktika
 
-Pythonic CI on top of GitHub Actions
+Big CI for big projects. It's easy with praktika.
 
 ## How to begin:
 
 ```sh
 # 1. install recurCIPY (TODO: python module is not yet there)
-pip install recurcipy
+pip install praktika
 
 # 2. checkout new branch
-git checkout -b my_yaml_ci_written_in_python
+git checkout -b my_praktika
 
 # 3. create your workflow config in python or take any as an example from ./ci/config/*
 
 # 4. generate pipeline files
-python -m recurcipy --generate
+python -m praktika --generate
 
 # 5. Check pipeline files generated: ./.github/workflows/*.yaml
 
 # 6. Commit and Push updates to remote:
 git commit -m "Hello World"
-git push --set-upstream origin my_yaml_ci_written_in_python
+git push --set-upstream origin my_praktika
 
 # 7. Create PR for the pushed branch
 
@@ -57,7 +57,7 @@ git push --set-upstream origin my_yaml_ci_written_in_python
 | Pythonic CI pipelines   | Y             | 100% python interface for creating CI pipelines           |
 | Pre-requisites: python  | Y             | Install python dependencies as a pre-requisite job step   |
 | Artifacts               | Y             | Upload/download artifacts in a pre/post job step (GH, S3) |
-| Reports                 | N (High Prio) | Building HTML report for CI jobs                          |
+| Reports                 | Y             | Building HTML report for CI jobs                          |
 | ClickHouse CI DB        | N (High Prio) | Export results to CI DB for analytics and observability   |
 | CI Cache                | Y             | Skip not-affected job, reuse artifacts                    |
 | CI Customization        | N             | Support for manual CI customization within a CI run       |

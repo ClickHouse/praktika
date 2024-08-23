@@ -4,5 +4,5 @@ class RunnerLabels:
 
 
 S3_ARTIFACT_PATH = "clickhouse-builds/artifacts"
-CACHE_CONFIG_RUNS_ON = [RunnerLabels.SMALL_FIXED]
+CI_CONFIG_RUNS_ON = [RunnerLabels.SMALL_FIXED]
 CACHE_S3_PATH = "clickhouse-builds/ci_cache"

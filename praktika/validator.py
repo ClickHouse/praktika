@@ -1,6 +1,6 @@
-from recurcipy.defaultsettings import GHRunners
-from recurcipy.mangle import _get_workflows
-from recurcipy.settings import Settings
+from praktika.defaultsettings import GHRunners
+from praktika.mangle import _get_workflows
+from praktika.settings import Settings
 
 
 class Validator:
@@ -30,14 +30,20 @@ class Validator:
 
             if workflow.enable_cache:
                 assert (
-                    Settings.CACHE_CONFIG_RUNS_ON
+                    Settings.CI_CONFIG_RUNS_ON
                 ), f"Runner label to run workflow config job must be provided via CACHE_CONFIG_RUNS_ON setting if enable_cache=True, workflow [{workflow.name}]"
 
                 assert (
                     Settings.CACHE_S3_PATH
                 ), f"CACHE_S3_PATH Setting must be defined if enable_cache=True, workflow [{workflow.name}]"
 
+            if workflow.enable_html:
+                assert (
+                    Settings.HTML_S3_PATH
+                ), f"HTML_S3_PATH Setting must be defined if enable_html=True, workflow [{workflow.name}]"
+
+            if workflow.enable_html or workflow.enable_html:
                 for artifact in workflow.artifacts:
                     assert (
                         artifact.is_s3_artifact()
-                    ), f"All artifacts must be of S3 type if enable_cache=True, artifact [{artifact.name}], type [{artifact.type}], workflow [{workflow.name}]"
+                    ), f"All artifacts must be of S3 type if enable_cache|enable_html=True, artifact [{artifact.name}], type [{artifact.type}], workflow [{workflow.name}]"

@@ -2,9 +2,9 @@ import dataclasses
 import json
 import os
 
-from recurcipy import Workflow
-from recurcipy.defaultsettings import DefaultSettings
-from recurcipy.mangle import _get_user_settings
+from praktika import Workflow
+from praktika.defaultsettings import DefaultSettings
+from praktika.mangle import _get_user_settings
 
 Settings = DefaultSettings()
 

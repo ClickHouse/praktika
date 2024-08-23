@@ -1,11 +1,11 @@
 import argparse
 
-from recurcipy.validator import Validator
-from recurcipy.yaml_generator import YamlGenerator
+from praktika.validator import Validator
+from praktika.yaml_generator import YamlGenerator
 
 
 def parse_args():
-    parser = argparse.ArgumentParser("RecurCIPY")
+    parser = argparse.ArgumentParser("praktika")
     parser.add_argument(
         "--generate",
         action="store_true",
