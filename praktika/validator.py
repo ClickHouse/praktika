@@ -1,15 +1,22 @@
-from praktika.defaultsettings import GHRunners
+from pathlib import Path
+
+from praktika import Workflow
+from praktika._settings import GHRunners
 from praktika.mangle import _get_workflows
 from praktika.settings import Settings
+from praktika.utils import ContextManager
 
 
 class Validator:
     @classmethod
     def validate(cls):
-        print("Start validating Pipeline and settings")
+        print("===Start validating Pipeline and settings===")
         workflows = _get_workflows()
         for workflow in workflows:
             print(f"Validating workflow [{workflow.name}]")
+
+            cls.validate_file_paths_in_run_command(workflow)
+
             if workflow.artifacts:
                 for artifact in workflow.artifacts:
                     if artifact.is_s3_artifact():
@@ -54,3 +61,19 @@ class Validator:
                     assert (
                         artifact.is_s3_artifact()
                     ), f"All artifacts must be of S3 type if enable_cache|enable_html=True, artifact [{artifact.name}], type [{artifact.type}], workflow [{workflow.name}]"
+
+    @classmethod
+    def validate_file_paths_in_run_command(cls, workflow: Workflow.Config) -> None:
+        if not Settings.VALIDATE_FILE_PATHS_IN_RUN_COMMAND:
+            return
+        with ContextManager.cd():
+            for job in workflow.jobs:
+                run_command = job.command
+                command_parts = run_command.split(" ")
+                for part in command_parts:
+                    if ">" in part:
+                        return
+                    if "/" in part:
+                        assert (
+                            Path(part).is_file() or Path(part).is_dir()
+                        ), f"Apparently run command [{run_command}] for job [{job}] has invalid path [{part}]. Setting to disable check: VALIDATE_FILE_PATHS_IN_RUN_COMMAND"

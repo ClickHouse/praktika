@@ -8,5 +8,5 @@ setup(
     license="Apache 2.0",
     author="Max Kainov",
     author_email="max.kainov@clickhouse.com",
-    description="Pythonic CI Framework for GitHub Actions",
+    description="CI Infrastructure Toolbox",
 )

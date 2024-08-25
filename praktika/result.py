@@ -2,31 +2,75 @@ import dataclasses
 import datetime
 import json
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 
 from praktika.s3 import S3
 from praktika.utils import Utils
-from praktika.settings import Settings, Environment
+from praktika.settings import Settings
+from praktika.environment import Environment
 
 
 @dataclasses.dataclass
 class Result:
     class Status:
+        SKIPPED = "skipped"
         SUCCESS = "success"
-        FAILED = "failed"
+        FAILED = "failure"
         PENDING = "pending"
         RUNNING = "running"
         ERROR = "error"
 
     name: str
     status: str
-    start_time: float
+    start_time: Optional[float] = None
     duration: Optional[float] = None
     results: Optional[List["Result"]] = None
     files: Optional[List[str]] = None
     urls: Optional[List[str]] = None
     info: str = ""
-    _html_link: str = ""
+    html_link: str = ""
+
+    @classmethod
+    def set_status(cls, status) -> "Result":
+        result = cls.from_fs(Environment.JOB_NAME)
+        assert result
+        result.status = status
+        result.dump()
+        return result
+
+    @classmethod
+    def set_success(cls) -> "Result":
+        return cls.set_status(cls.Status.SUCCESS)
+
+    @classmethod
+    def set_results(cls, results: List["Result"]) -> "Result":
+        result = cls.from_fs(Environment.JOB_NAME)
+        assert result
+        result.results = results
+        result.dump()
+        return result
+
+    @classmethod
+    def set_files(cls, files) -> "Result":
+        for file in files:
+            assert Path(
+                file
+            ).is_file(), f"Not valid file [{file}] from file list [{files}]"
+        result = cls.from_fs(Environment.JOB_NAME)
+        assert result
+        if not result.files:
+            result.files = []
+        result.files += files
+        result.dump()
+        return result
+
+    @classmethod
+    def set_info(cls, info: str) -> "Result":
+        result = cls.from_fs(Environment.JOB_NAME)
+        assert result
+        result.info = info
+        result.dump()
+        return result
 
     def dump(self):
         path = self._get_file_name(self.name)
@@ -36,10 +80,11 @@ class Result:
 
     @staticmethod
     def _get_file_name(name):
+        assert name
         return Path(Settings.RESULTS_DIR) / f"{Utils.normalize_string(name)}.json"
 
     @classmethod
-    def from_fs(cls, name: str) -> Optional["Result"]:
+    def from_fs(cls, name) -> Optional["Result"]:
         path = cls._get_file_name(name)
         try:
             with open(path, "r", encoding="utf8") as f:
@@ -61,7 +106,7 @@ class Result:
     def copy_to_s3(self):
         assert Settings.HTML_S3_PATH, "BUG?"
         self.dump()
-        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=Environment.EventInfo.PR_NUMBER, branch=Environment.BRANCH, sha=Environment.EventInfo.REF_SHA)}"
+        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=Environment.PR_NUMBER, branch=Environment.BRANCH, sha=Environment.SHA)}"
         html_link = S3.copy_file_to_s3(
             s3_path=s3_path, local_path=self._get_file_name(self.name)
         )
@@ -72,14 +117,24 @@ class Result:
         assert Settings.HTML_S3_PATH, "BUG?"
         file_path = cls._get_file_name(name)
         file_name = Path(file_path).name
-        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=Environment.EventInfo.PR_NUMBER, branch=Environment.BRANCH, sha=Environment.EventInfo.REF_SHA)}/{file_name}"
+        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=Environment.PR_NUMBER, branch=Environment.BRANCH, sha=Environment.SHA)}/{file_name}"
         S3.copy_file_from_s3(s3_path=s3_path, local_path=file_path)
         result = Result.from_fs(name)
         assert result
         return result
 
     def update_duration(self):
-        self.duration = datetime.datetime.utcnow().timestamp() - self.start_time
+        if not self.duration and self.start_time:
+            self.duration = datetime.datetime.utcnow().timestamp() - self.start_time
+        else:
+            if not self.duration:
+                print(
+                    f"NOTE: duration is set for job [{self.name}] Result - do not update by CI"
+                )
+            else:
+                print(
+                    f"NOTE: start_time is not set for job [{self.name}] Result - do not update duration"
+                )
         return self
 
     def update_sub_result(self, result: "Result"):
@@ -119,14 +174,14 @@ class Result:
             self.Status.RUNNING,
         ):
             print("Pipeline finished")
-        self.update_duration()
+            self.update_duration()
 
     @classmethod
     def generate_pending(cls, name, results=None):
         return Result(
             name=name,
             status=Result.Status.PENDING,
-            start_time=Utils.timestamp(),
+            start_time=None,
             duration=None,
             results=results or [],
             files=[],
@@ -165,7 +220,8 @@ class _PreResult:
 
 
 class ResultInfo:
-    NOT_FOUND = "No results found (job killed or terminated without result generation)"
+    NOT_FOUND = "No results found (job killed or terminated, no @Result provided)"
     NOT_FOUND_IMPOSSIBLE = (
-        "No job results or pre-result found (bug, or job misbehaviour)"
+        "No job @Result or pre-run @Result (bug, or job misbehaviour, must not be here)"
     )
+    SKIPPED_DUE_TO_PREVIOUS_FAILURE = "Skipped due to previous dependency job failure"

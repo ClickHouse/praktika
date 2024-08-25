@@ -7,7 +7,8 @@ from typing import List, Optional
 from praktika.result import Result
 from praktika.utils import Utils
 from praktika.s3 import S3
-from praktika.settings import Settings, Environment
+from praktika.settings import Settings
+from praktika.environment import Environment
 
 
 class HtmlGenerator:
@@ -21,14 +22,11 @@ class HtmlGenerator:
             return ""
         m, s = divmod(seconds, 60)
         h, m = divmod(m, 60)
-        ms = int(s * 10) / 10
+        h = int(h)
+        m = int(m)
+        ms = int(str(int(s * 10))[-1])
         s = int(s)
-        parts = []
-        if h > 0:
-            parts.append(f"{h}h")
-        if m > 0:
-            parts.append(f" {m}m")
-        parts.append(f" {s}.{ms}s")
+        parts = [f"{h}h", f" {m}m", f" {s}.{ms}s"]
         return "".join(parts)
 
     @classmethod
@@ -44,8 +42,10 @@ class HtmlGenerator:
                 color = "#ffc107"
             elif status == Result.Status.RUNNING:
                 color = "#007bff"
+            elif status == Result.Status.SKIPPED:
+                color = "#6c757d"
             else:
-                print(f"WARNING: Status unknown [{status}]")
+                print(f"WARNING: Status unknown [{status}] for job [{result.name}]")
                 color = "#6c757d"
             return color
 
@@ -100,29 +100,27 @@ class HtmlGenerator:
                 )  # Reusing the URL function for files if any
 
                 name = escape(res.name)
-                if res._html_link:
-                    name = f'<a href="{escape(res._html_link)}">{name}</a>'
+                if res.html_link:
+                    name = f'<a href="{escape(res.html_link)}">{name}</a>'
 
-                info_content = (
-                    f"<pre>{escape(res.info)}</pre>" if res.info else "No info"
-                )
-                row = (
-                    f'<tr class="expandable">'
-                    f"<td>{name}</td>"
-                    f'<td style="font-weight: bold;color: {get_status_color(res.status)};">{escape(res.status)}</td>'
-                )
+                info_content = f"<pre>{escape(res.info)}</pre>" if res.info else ""
+                row = f'<tr class="expandable">' if res.info else "<tr>"
+                row += f"<td>{name}</td>"
+                row += f'<td class="status-cell" style="font-weight: bold;color: {get_status_color(res.status)};">{escape(res.status)}'
+                if info_content:
+                    row += '<span class="expand-indicator">▸</span>'
+                row += "</td>"
                 if has_start_time:
-                    row += f"<td>{escape(Utils.timestamp_to_str(res.start_time))}</td>"
+                    row += f"<td>{escape(Utils.timestamp_to_str(res.start_time)) if res.start_time else ''}</td>"
                 if has_duration:
-                    row += f"<td>{escape(cls.format_duration(res.duration))}</td>"
+                    row += f"<td>{escape(cls.format_duration(res.duration)) if res.duration else ''}</td>"
                 if has_urls:
                     row += f"<td>{urls}</td>"
                 if has_files:
                     row += f"<td>{files}</td>"
-                row += (
-                    f"</tr>"
-                    f'<tr class="expandable-content"><td colspan="6">{info_content}</td></tr>'
-                )
+                row += f"</tr>"
+                if info_content:
+                    row += f'<tr class="expandable-content"><td colspan="6">{info_content}</td></tr>'
                 table_rows.append(row + "\n")
 
             return f"<table><tr>{table_headers}</tr>{''.join(table_rows)}</table>"
@@ -245,21 +243,35 @@ class HtmlGenerator:
                     filter: brightness(125%);
                     transition: filter 0.3s;
                 }}
+                .status-cell {{
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center; /* Vertically align the text and indicator */
+                    padding-right: 15px; /* Add some padding to the right for better spacing */
+                }}
+
+                .expand-indicator {{
+                    font-size: 0.8em;
+                    margin-left: 5px;
+                    cursor: pointer;
+                    color: #888;  /* Subtle color to match the theme */
+                    transition: transform 0.2s ease;
+                }}
             </style>
             <title>{escape(result.name)}</title>
         </head>
         <body>
         <div class="main">
             <span class="nowrap themes">
-                <span id="toggle-theme">🔆</span>
+                <span id="toggle-autoreload">🔄</span>
             </span>
             <span class="nowrap themes">
-                <span id="toggle-autoreload">🔄</span>
+                <span id="toggle-theme">🔆</span>
             </span>
             <h1><span class="gradient">{escape(result.name)}</span></h1>
             <p>{escape(result.info)}</p>
             <p>Start Time: {escape(Utils.timestamp_to_str(result.start_time))}</p>
-            <p>Duration: {escape(cls.format_duration(result.duration)) if result.status != "pending" else '<span id="dynamic-duration"></span>'}</p>
+            <p>Duration: {escape(cls.format_duration(result.duration)) if result.status not in (Result.Status.PENDING, Result.Status.RUNNING) else '<span id="dynamic-duration"></span>'}</p>
             <p>Status: <span id="status" style="color: {get_status_color(result.status)};"> {escape(result.status)}</span></p>
             <p class="links">
                 {generate_urls(result.urls)}
@@ -286,11 +298,14 @@ class HtmlGenerator:
                         .forEach(tr => table.appendChild(tr) );
                 }})));
     
-                Array.from(document.getElementsByClassName("expandable")).forEach(tr => tr.addEventListener('click', function() {{
-                    var content = this.nextElementSibling;
+                Array.from(document.getElementsByClassName("status-cell")).forEach(td => td.addEventListener('click', function() {{
+                    var content = this.parentElement.nextElementSibling;
                     content.classList.toggle("expandable-content");
+                    // TODO make indicator rotating
+                    // content.classList.toggle("open");  // Add or remove the open class
+                    // this.querySelector('.expand-indicator').classList.toggle('expanded');  // Toggle the indicator's rotation
                 }}));
-    
+
                 let theme = 'dark';
     
                 function setTheme(new_theme) {{
@@ -328,7 +343,7 @@ class HtmlGenerator:
 
                 function updateDuration() {{
                     const durationElement = document.getElementById('dynamic-duration');
-                    const startTime = {int(result.start_time * 1000)};  // Convert start_time to milliseconds
+                    const startTime = {int(result.start_time or 0) * 1000};  // Convert start_time to milliseconds
                     durationElement.innerText = calculateDuration(startTime);
                 }}
     
@@ -379,60 +394,85 @@ class HtmlGenerator:
 
         return html_content
 
-    # @staticmethod
-    # def _get_html_url_name(url):
-    #     base_name = ""
-    #     if isinstance(url, str):
-    #         base_name = os.path.basename(url)
-    #     if isinstance(url, tuple):
-    #         base_name = url[1]
-    #
-    #     if "?" in base_name:
-    #         base_name = base_name.split("?")[0]
-    #
-    #     if base_name is not None:
-    #         return base_name.replace("%2B", "+").replace("%20", " ")
-    #      return None
-    #
-    # @classmethod
-    # def _get_html_url(cls, url):
-    #     href = None
-    #     name = None
-    #     if isinstance(url, str):
-    #         href, name = url, cls._get_html_url_name(url)
-    #     if isinstance(url, tuple):
-    #         href, name = url[0], cls._get_html_url_name(url)
-    #     if href and name:
-    #         return f'<a href="{href}">{cls._get_html_url_name(url)}</a>'
-    #     return ""
-
     @classmethod
     def dump_html(cls, name, content, upload_to_s3: bool) -> str:
         html_file_path = f"{Settings.RESULTS_DIR}/{Utils.normalize_string(name)}.html"
         with open(html_file_path, "w", encoding="utf8") as f:
             f.write(content)
         if upload_to_s3:
-            s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=Environment.EventInfo.PR_NUMBER, branch=Environment.BRANCH, sha=Environment.EventInfo.REF_SHA)}"
+            s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=Environment.PR_NUMBER, branch=Environment.BRANCH, sha=Environment.SHA)}"
             html_link = S3.copy_file_to_s3(s3_path=s3_path, local_path=html_file_path)
             return html_link
 
         return f"file://{Path(html_file_path).absolute()}"
 
     @classmethod
-    def generate_recursive(
-        cls, result: Result, upload_to_s3: bool, changed_item: Optional[Result] = None
+    def upload_file_to_s3(
+        cls, local_file_path, upload_to_s3: bool, text: bool = False
     ) -> str:
+        if upload_to_s3:
+            s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=Environment.PR_NUMBER, branch=Environment.BRANCH, sha=Environment.SHA)}"
+            html_link = S3.copy_file_to_s3(
+                s3_path=s3_path, local_path=local_file_path, text=text
+            )
+            return html_link
+        return f"file://{Path(local_file_path).absolute()}"
+
+    @classmethod
+    def generate_recursive(
+        cls, result: Result, upload_to_s3: bool, changed_items: List[Result] = None
+    ) -> Result:
+        changed_result_names = [item.name for item in changed_items or []]
         for result_ in result.results or []:
-            if changed_item and changed_item.name != result_.name:
+            if changed_result_names and result_.name not in changed_result_names:
+                print(
+                    f"Result for [{result_.name}] has not been changed - skip updating html"
+                )
                 continue
             if result_.results:
-                html_link = cls.generate_recursive(result_, upload_to_s3=upload_to_s3)
-                result_._html_link = html_link
+                if result_.html_link:
+                    print(
+                        f"Result for [{result_.name}] has own html_link [{result_.html_link}] - report won't be generated"
+                    )
+                    continue
+                _ = cls.generate_recursive(result_, upload_to_s3=upload_to_s3)
+                print(
+                    f"Html for sub Result [{result_.name}] updated, link [{result_.html_link}]"
+                )
 
+        if result.files:
+            if not result.urls:
+                result.urls = []
+            for file in result.files:
+                if not Path(file).is_file():
+                    print(
+                        f"ERROR: Invalid file [{file}] in [{result.name}] @Result - skip upload"
+                    )
+                    result.info += f"\nWARNING: Result file [{file}] was not found"
+                    file_link = cls.upload_file_to_s3(file, upload_to_s3=False)
+                else:
+                    is_text = False
+                    for text_file_suffix in Settings.TEXT_CONTENT_EXTENSIONS:
+                        if file.endswith(text_file_suffix):
+                            print(
+                                f"File [{file}] matches Settings.TEXT_CONTENT_EXTENSIONS [{Settings.TEXT_CONTENT_EXTENSIONS}] - add text attribute for s3 object"
+                            )
+                            is_text = True
+                            break
+                    file_link = cls.upload_file_to_s3(
+                        file, upload_to_s3=upload_to_s3, text=is_text
+                    )
+                result.urls.append(file_link)
+            print(
+                f"Job files [{result.files}] uploaded to s3 [{result.urls[-len(result.files):]}] - clean files list"
+            )
+            result.files = []
+
+        print(f"Generating HTML for result [{result}]")
         html_content = cls.generate_html(result)
         html_link = cls.dump_html(result.name, html_content, upload_to_s3)
-        result._html_link = html_link
-        return html_link
+        result.html_link = html_link
+        return result
 
 
 if __name__ == "__main__":
@@ -467,9 +507,10 @@ if __name__ == "__main__":
                         urls=["http://example.com/error"],
                     ),
                 ],
+                info="foobar",
             ),
         ],
-        files=None,
+        files=["lsls"],
         urls=["http://example.com/job"],
     )
 

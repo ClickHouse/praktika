@@ -1,9 +1,9 @@
 import dataclasses
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Iterable
 
 
 @dataclasses.dataclass
-class DefaultSettings:
+class _Settings:
     ######################################
     ###  Pipeline generation settings  ###
     ######################################
@@ -13,6 +13,7 @@ class DefaultSettings:
     SETTINGS_DIRECTORY: str = "./ci/settings"
     CI_CONFIG_JOB_NAME = "WorkflowConfig"
     CI_CONFIG_RUNS_ON: Optional[List[str]] = None
+    VALIDATE_FILE_PATHS_IN_RUN_COMMAND: bool = True
 
     ######################################
     ### Runtime Settings               ###
@@ -35,6 +36,7 @@ class DefaultSettings:
     PYTHON_INTERPRETER: str = "python3"
     PYTHON_VERSION: str = "3.9"
     WORKFLOW_CONFIG_FILE: str = f"{TEMP_DIR}/workflow_config.json"
+    ENVIRONMENT_VAR_FILE: str = f"{TEMP_DIR}/environment.json"
 
     ######################################
     ###      CI Cache settings         ###
@@ -48,6 +50,7 @@ class DefaultSettings:
     ###      HTML Report settings      ###
     ######################################
     HTML_S3_PATH: str = ""
+    TEXT_CONTENT_EXTENSIONS: Iterable[str] = frozenset([".txt", ".log"])
     S3_BUCKET_TO_HTTP_ENDPOINT: Optional[Dict[str, str]] = None
 
 
@@ -70,6 +73,8 @@ _USER_DEFINED_SETTINGS = [
     "MAX_RETRIES_S3",
     "MAX_RETRIES_GH",
     "S3_BUCKET_TO_HTTP_ENDPOINT",
+    "VALIDATE_FILE_PATHS_IN_RUN_COMMAND",
+    "TEXT_CONTENT_EXTENSIONS",
 ]
 
 
@@ -78,4 +83,4 @@ class GHRunners:
 
 
 if __name__ == "__main__":
-    print(dataclasses.asdict(DefaultSettings()))
+    print(dataclasses.asdict(_Settings()))

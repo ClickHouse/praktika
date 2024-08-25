@@ -8,7 +8,8 @@ from hashlib import md5
 from pathlib import Path
 
 from praktika import Job, Workflow, Artifact
-from praktika.settings import Settings, Environment
+from praktika.settings import Settings
+from praktika.environment import Environment
 from praktika.utils import Utils
 from praktika.s3 import S3
 
@@ -32,6 +33,10 @@ class Cache:
         def from_fs(cls, path):
             with open(path, "r", encoding="utf8") as f:
                 return Cache.CacheRecord(**json.load(f))
+
+        @classmethod
+        def from_dict(cls, obj):
+            return Cache.CacheRecord(**obj)
 
     def __init__(self):
         self.digest = self.Digest()
@@ -135,7 +140,7 @@ class Cache:
         record = Cache.CacheRecord(
             type=type_,
             sha=sha,
-            pr_number=Environment.EventInfo.PR_NUMBER,
+            pr_number=Environment.PR_NUMBER,
             branch=Environment.BRANCH,
         )
         assert (

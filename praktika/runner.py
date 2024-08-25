@@ -2,33 +2,36 @@ import argparse
 import sys
 
 from praktika import Artifact
-from praktika.auto_hooks import _CacheRunnerHooks, _HtmlRunnerHooks
+from praktika.hook_html import HtmlRunnerHooks
+from praktika.hook_cache import CacheRunnerHooks
 from praktika.mangle import _get_workflows
-from praktika.settings import Environment, Settings
-from praktika.aux_job import _workflow_config_job
+from praktika.runtime import _RuntimeVars
+from praktika.settings import Settings
+from praktika.environment import Environment
 from praktika.utils import Shell
 from praktika.s3 import S3
 
 
 class Runner:
     def pre_run(self, job_name, workflow_name):
-        workflow = _get_workflows(name=workflow_name)[0]
-        print(f"Run pre-run script [{job_name}], workflow [{workflow.name}]")
-
-        envs = {"JOB_NAME": job_name}
-        print(f"Exporting env variables [{envs}]")
-        for k, v in envs.items():
-            Shell.check(f'export {k}="{v}"')
-        Shell.check("env")
-
         if job_name == Settings.CI_CONFIG_JOB_NAME:
             return
+
+        # reset env if any
+        _RuntimeVars(RUN_EXIT_CODE=None).dump()
+
+        # Update and dump environment
+        Environment.JOB_NAME = job_name
+        Environment.dump()
+
+        workflow = _get_workflows(name=workflow_name)[0]
+        print(f"Run pre-run script [{job_name}], workflow [{workflow.name}]")
 
         job = workflow.get_job(job_name)
         assert job, "BUG"
 
         if workflow.enable_html:
-            _HtmlRunnerHooks.pre_run(workflow, job)
+            HtmlRunnerHooks.pre_run(workflow, job)
 
         required_artifacts = []
         if job.requires and workflow.artifacts:
@@ -41,15 +44,15 @@ class Runner:
                         required_artifacts.append(artifact)
         print(f"Job requires s3 artifacts [{required_artifacts}]")
         if workflow.enable_cache:
-            _CacheRunnerHooks.pre_run(
+            CacheRunnerHooks.pre_run(
                 _job=job, _workflow=workflow, _required_artifacts=required_artifacts
             )
         else:
             for artifact in required_artifacts:
                 assert S3.copy_artifact_from_s3(
                     branch=Environment.BRANCH,
-                    pr_number=Environment.EventInfo.PR_NUMBER,
-                    sha=Environment.EventInfo.REF_SHA,
+                    pr_number=Environment.PR_NUMBER,
+                    sha=Environment.SHA,
                     name=artifact.path,
                 )
 
@@ -62,53 +65,61 @@ class Runner:
 
         if job_name == Settings.CI_CONFIG_JOB_NAME:
             if workflow.enable_cache:
-                _CacheRunnerHooks.configure(workflow)
+                CacheRunnerHooks.configure(workflow)
             if workflow.enable_html:
-                _HtmlRunnerHooks.configure(workflow)
+                HtmlRunnerHooks.configure(workflow)
 
         else:
             job = workflow.get_job(job_name)
             assert job
             print(f"Run command [{job.command}]")
-            return Shell.run(job.command)
+            exit_code = Shell.run(job.command)
+            _RuntimeVars(RUN_EXIT_CODE=exit_code).dump()
+            return exit_code
 
     def post_run(self, job_name, workflow_name):
-        workflow = _get_workflows(name=workflow_name)[0]
-        print(f"Run post-run script [{job_name}], workflow [{workflow.name}]")
-
         if job_name == Settings.CI_CONFIG_JOB_NAME:
             return
 
+        print(f"Run post-run script [{job_name}], workflow [{workflow_name}]")
+        workflow = _get_workflows(name=workflow_name)[0]
+
         job = workflow.get_job(job_name)
         assert job, "BUG"
-        providing_artifacts = []
-        if job.provides and workflow.artifacts:
-            for provides_artifact_name in job.provides:
-                for artifact in workflow.artifacts:
-                    if (
-                        artifact.name == provides_artifact_name
-                        and artifact.type == Artifact.Type.S3
-                    ):
-                        providing_artifacts.append(artifact)
-        if providing_artifacts:
-            print(f"Job provides s3 artifacts [{providing_artifacts}]")
-            for artifact in providing_artifacts:
-                assert Shell.check(
-                    f"ls -l {artifact.path}", verbose=True
-                ), f"Artifact {artifact.path} not found"
-                assert S3.copy_artifact_to_s3(
-                    branch=Environment.BRANCH,
-                    pr_number=Environment.EventInfo.PR_NUMBER,
-                    sha=Environment.EventInfo.REF_SHA,
-                    path=artifact.path,
-                )
+
+        run_exit_code = _RuntimeVars.from_fs().RUN_EXIT_CODE
+        if run_exit_code == 0:
+            providing_artifacts = []
+            if job.provides and workflow.artifacts:
+                for provides_artifact_name in job.provides:
+                    for artifact in workflow.artifacts:
+                        if (
+                            artifact.name == provides_artifact_name
+                            and artifact.type == Artifact.Type.S3
+                        ):
+                            providing_artifacts.append(artifact)
+            if providing_artifacts:
+                print(f"Job provides s3 artifacts [{providing_artifacts}]")
+                for artifact in providing_artifacts:
+                    assert Shell.check(
+                        f"ls -l {artifact.path}", verbose=True
+                    ), f"Artifact {artifact.path} not found"
+                    assert S3.copy_artifact_to_s3(
+                        branch=Environment.BRANCH,
+                        pr_number=Environment.PR_NUMBER,
+                        sha=Environment.SHA,
+                        path=artifact.path,
+                    )
+        else:
+            print(f"Job exit code [{run_exit_code} != 0] - skip artifact upload")
 
         if workflow.enable_html:
-            _HtmlRunnerHooks.post_run(workflow, job)
+            HtmlRunnerHooks.post_run(workflow, job)
 
         # always in the end
-        if workflow.enable_cache:
-            _CacheRunnerHooks.post_run(workflow, job)
+        if run_exit_code == 0:
+            if workflow.enable_cache:
+                CacheRunnerHooks.post_run(workflow, job)
 
 
 def parse_args():

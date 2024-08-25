@@ -4,7 +4,7 @@ from pathlib import Path
 import requests
 from jwt import jwk_from_pem, JWT
 
-from praktika.settings import Environment
+from praktika.environment import Environment
 from praktika.utils import Shell
 
 

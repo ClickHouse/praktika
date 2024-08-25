@@ -1,19 +1,20 @@
 # praktika
 
-Resilient, feature-reach CI infrastructure on top of Git Management Platform (GH Action) and Cloud Provider (AWS WebServices).
+ToolBox for building resilient, feature-reach CI infrastructure on top of Git Management Platform (GH Action) and Cloud Provider (AWS WebServices).
 It's easy with praktika.
 
-### concepts
+### concepts:
 * 100% Tolerance to GitHub API Failures:
   * Make only the essential GitHub API calls, and limit them to the initial pipeline stage.
   * Ensure that all API calls are retryable in case of failure.
   * Provide GitHub data to CI jobs at runtime, eliminating the need for API calls during pipeline execution.
+* Early configuration fault detection:
+  * Make configuration errors visible at pipeline generation rather than runtime when possible
 * Minimal Dependencies:
-  * Prioritize using Python built-ins whenever possible.
   * Opt for Python standard libraries over external packages.
   * Only import non-standard modules if the user has enabled a feature that specifically requires them.
 * Minimal Overhead:
-  * Avoid unnecessary operations; only perform tasks explicitly requested by the user.
+  * only perform tasks explicitly requested by the user.
 * Design Simplicity:
   * Favor a generic design, minimize custom handling.
   * Strive for a high "value per line of code" ratio, ensuring that each line of code provides maximum utility.
@@ -77,17 +78,17 @@ git push --set-upstream origin my_praktika
 | prebuild runner image (terraform)   | N   |       |       |                                       |
 
 #### praktika features
-|                         |               | comment                                                   |
-|-------------------------|---------------|-----------------------------------------------------------|
-| Pythonic CI pipelines   | Y             | 100% python interface for creating CI pipelines           |
-| Pre-requisites: python  | Y             | Install python dependencies as a pre-requisite job step   |
-| Artifacts               | Y             | Upload/download artifacts in a pre/post job step (GH, S3) |
-| Reports                 | Y             | Building HTML report for CI jobs                          |
-| ClickHouse CI DB        | N (High Prio) | Export results to CI DB for analytics and observability   |
-| CI Cache                | Y             | Skip not-affected job, reuse artifacts                    |
-| CI Customization        | N             | Support for manual CI customization within a CI run       |
-| Docker as execution env | N             | Support running jobs in docker natively                   |
-| Observability           | N             | Integration with observability platform, Grafana          |
-| Slack app               | N             | Slack app to subscribe to CI events, Alarms, etc          |
-| Automatic Backporting   | N             | Automatic PR backports to release ranches                 |
-| Mergeable Check logic   | N (High Prio) | Automatic PR backports to release ranches                 |
+|                         |               | comment                                                 |
+|-------------------------|---------------|---------------------------------------------------------|
+| Pythonic CI pipelines   | Y             | 100% python interface for creating CI pipelines         |
+| Artifacts               | Y             | Download/upload artifacts (GH, S3)                      |
+| Reports                 | Y             | Building HTML report for CI jobs                        |
+| CI Cache                | Y             | Skip not-affected job, reuse artifacts                  |
+| ClickHouse CI DB        | N (High Prio) | Export results to CI DB for analytics and observability |
+| Docker as execution env | N             | Support running jobs in docker natively                 |
+| Observability           | N             | Integration with observability platform, Grafana        |
+| CI Customization        | N             | Support for manual CI customization within a CI run     |
+| Slack app               | N             | Slack app to subscribe to CI events, Alarms, etc        |
+| Automatic Backporting   | N             | Automatic PR backports to release ranches               |
+| Mergeable Check logic   | N (High Prio) | Allow specific job(s) to fail without blocking merge    |
+| Pre-requisites: python  | Y             | Install python dependencies as a pre-requisite job step |

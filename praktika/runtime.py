@@ -1,7 +1,8 @@
 import dataclasses
 import json
-from dataclasses import dataclass
-from typing import Dict, List
+
+from dataclasses import dataclass, asdict
+from typing import Dict, List, Optional
 
 from praktika.cache import Cache
 from praktika.settings import Settings
@@ -29,3 +30,22 @@ class _WorkflowRuntimeConfig:
     def dump(self):
         with open(Settings.WORKFLOW_CONFIG_FILE, "w", encoding="utf8") as f:
             print(json.dumps(dataclasses.asdict(self)), file=f)
+
+
+@dataclass
+class _RuntimeVars:
+    RUN_EXIT_CODE: Optional[int]
+    _PATH = Settings.TEMP_DIR + "/runtime.json"
+
+    def dump(self):
+        with open(self._PATH, "w", encoding="utf8") as f:
+            json.dump(asdict(self), fp=f)
+
+    @classmethod
+    def from_fs(cls):
+        with open(cls._PATH, "r", encoding="utf8") as f:
+            return _RuntimeVars(**json.load(fp=f))
+
+    @classmethod
+    def run_failed(cls):
+        return cls.from_fs().RUN_EXIT_CODE != 0

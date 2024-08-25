@@ -95,9 +95,9 @@ echo "CloudWatch installed"
 
 # copy ci lib
 cd ~
-aws s3 cp --recursive s3://clickhouse-builds/max_test/recurcipy ./recurcipy
-
-python3 -m recurcipy.execution
+aws s3 cp --recursive s3://clickhouse-builds/max_test/praktika ./praktika
+export PYTHONUNBUFFERED=1
+python3 -m praktika.execution 2>&1 | tee /var/log/praktika-execution.log
 
 ## install docker
 #curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg

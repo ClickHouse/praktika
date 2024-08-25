@@ -20,18 +20,18 @@ workflow = Workflow.Config(
         Job.Config(
             name=JobNames.JOB_A,
             runs_on=[RunnerLabels.SMALL_FIXED],
-            command="echo Hi there!",
+            command="python3 ./ci/tests/example_2/some_job_script.py",
             job_requirements=Job.Requirements(
-                python_requirements_txt="./requirements.txt"
+                python_requirements_txt="./requirements_with_gh_auth.txt"
             ),
         ),
         Job.Config(
             name=JobNames.JOB_B,
             runs_on=[RunnerLabels.SMALL_FIXED],
-            command="echo Hoi!",
+            command="python3 ./ci/tests/example_2/some_job_script_2.py",
             requires=[JobNames.JOB_A],
             job_requirements=Job.Requirements(
-                python_requirements_txt="./requirements.txt"
+                python_requirements_txt="./requirements_with_gh_auth.txt"
             ),
         ),
     ],

@@ -185,7 +185,8 @@ class WorkflowConfigParser:
                     self.workflow_yaml_config.job_to_config[job.name].addons.append(
                         addon_yaml
                     )
-                if job.job_requirements.gh_app_auth:
+                if self.config.enable_html:
+                    # auth required for evry job with enabled HTML, so that workflow summary status can be updated
                     self.workflow_yaml_config.job_to_config[job.name].gh_app_auth = True
 
         # populate JobYaml.runs_on

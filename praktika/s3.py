@@ -37,7 +37,7 @@ class S3:
         )
 
     @classmethod
-    def copy_file_to_s3(cls, s3_path, local_path):
+    def copy_file_to_s3(cls, s3_path, local_path, text=False):
         assert Path(local_path), f"Path [{local_path}] does not exist"
         assert Path(s3_path), f"Invalid S3 Path [{s3_path}]"
         assert Path(
@@ -46,10 +46,13 @@ class S3:
         s3_full_path = f"{s3_path}/{Path(local_path).name}"
         i = 0
         res = False
+        cmd = f"aws s3 cp {local_path} s3://{s3_full_path}"
+        if text:
+            cmd += " --content-type text/plain"
         while not res and i < Settings.MAX_RETRIES_S3:
             i += 1
             res = Shell.check(
-                f"aws s3 cp {local_path} s3://{s3_full_path}",
+                cmd,
                 verbose=True,
             )
         assert (
