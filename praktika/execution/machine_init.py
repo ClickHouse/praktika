@@ -2,11 +2,12 @@ import os
 import platform
 import signal
 import time
+import traceback
 
 import requests
 
-from recurcipy import Shell, ContextManager
-from recurcipy.execution.execution_settings import ExecutionSettings, ScalingType
+from praktika.utils import Shell, ContextManager
+from praktika.execution.execution_settings import ExecutionSettings, ScalingType
 
 
 class StateMachine:
@@ -25,11 +26,13 @@ class StateMachine:
     def kick(self):
         if self.state == self.StateNames.INIT:
             self.machine.config_actions().run_actions_async()
+            print("State Machine: INIT -> WAIT")
             self.state = self.StateNames.WAIT
             self.state_updated_at = int(time.time())
         elif self.state == self.StateNames.WAIT:
             res = self.machine.check_job_assigned()
             if res:
+                print("State Machine: WAIT -> RUN")
                 self.state = self.StateNames.RUN
                 self.state_updated_at = int(time.time())
                 self.check_scale_up()
@@ -40,6 +43,7 @@ class StateMachine:
             if res:
                 pass
             else:
+                print("State Machine: RUN -> INIT")
                 self.state = self.StateNames.INIT
                 self.state_updated_at = int(time.time())
 
@@ -195,10 +199,7 @@ class Machine:
         if not log_file:
             print("check_job_assigned: No log file")
             return False
-        res = Shell.check(f"grep -q 'Terminal] .* Running job:' {log_file}")
-        if not res:
-            print("check_job_assigned: No job assigned")
-        return res
+        return Shell.check(f"grep -q 'Terminal] .* Running job:' {log_file}")
 
     def check_job_running(self):
         if self.proc is None:
@@ -208,7 +209,7 @@ class Machine:
         if exit_code is None:
             return True
         else:
-            print(f"Job runner finished with [{exit_code}]")
+            print(f"Job runner finished with exit code [{exit_code}]")
             self.proc = None
             return False
 
@@ -223,11 +224,20 @@ class Machine:
             and self.runner_api_endpoint
             and self.labels
         )
-        Shell.check("pwd")
         command = f"sudo -u ubuntu {ExecutionSettings.GH_ACTIONS_DIRECTORY}/config.sh --token {self.gh_token} \
             --url {self.runner_api_endpoint} --ephemeral --unattended --replace \
             --runnergroup Default --labels {','.join(self.labels)} --work wd --name {self.instance_id}"
-        Shell.check(command, strict=True, verbose=True)
+        i = 3
+        res = False
+        while i > 0 and not res:
+            res = Shell.check(command, verbose=True)
+            i -= 1
+            print("ERROR: failed to configure GH actions runner, retry after 10s")
+            time.sleep(10)
+        if res:
+            print("GH action runner has been configured")
+        else:
+            assert False, "GH actions runner configuration failed"
         return self
 
     def unconfig_actions(self):
@@ -246,12 +256,18 @@ class Machine:
         return self
 
     def self_terminate(self, decrease_capacity):
+        print(
+            f"WARNING: Self terminate is called, decrease_capacity [{decrease_capacity}]"
+        )
+        traceback.print_stack()
         if not self.instance_id:
             self.update_instance_info()
         assert self.instance_id
         command = f"aws autoscaling terminate-instance-in-auto-scaling-group --instance-id {self.instance_id}"
         if decrease_capacity:
             command += " --should-decrement-desired-capacity"
+        else:
+            command += " --no-should-decrement-desired-capacity"
         Shell.check(
             command=command,
             verbose=True,
@@ -291,6 +307,7 @@ def run():
         m.run()
     except Exception as e:
         print(f"FATAL: Exception [{e}] - terminate instance")
+        time.sleep(10)
         m.terminate()
         raise e
 

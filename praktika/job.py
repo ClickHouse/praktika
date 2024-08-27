@@ -7,6 +7,7 @@ class Job:
     class Requirements:
         python: bool = False
         python_requirements_txt: str = ""
+        gh_app_auth: bool = False
 
     @dataclass
     class CacheDigestConfig:
@@ -34,6 +35,6 @@ class Job:
 
         job_requirements: Optional["Job.Requirements"] = None
 
-        auto_dependencies: List[str] = None
+        auto_dependencies: Optional[List[str]] = None
 
         cache_digest: Optional["Job.CacheDigestConfig"] = None

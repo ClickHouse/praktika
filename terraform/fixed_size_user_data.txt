@@ -93,11 +93,12 @@ aws ssm get-parameter --region us-east-1 --name AmazonCloudWatch-github-runners 
 systemctl enable amazon-cloudwatch-agent.service
 echo "CloudWatch installed"
 
-# copy ci lib
+# copy ci lib, until it's no published python library
 cd ~
-aws s3 cp --recursive s3://clickhouse-builds/max_test/recurcipy ./recurcipy
+aws s3 cp --recursive s3://clickhouse-builds/max_test/praktika ./praktika
 
-python3 -m recurcipy.execution
+export PYTHONUNBUFFERED=1
+python3 -m praktika.execution 2>&1 | tee /var/log/praktika-execution.log
 
 ## install docker
 #curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg

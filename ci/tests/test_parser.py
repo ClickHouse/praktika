@@ -1,7 +1,7 @@
 import unittest
 
-from recurcipy.mangle import _get_workflows
-from recurcipy.parser import WorkflowConfigParser
+from praktika.mangle import _get_workflows
+from praktika.parser import WorkflowConfigParser
 
 
 class TestWorkflowConfigParser(unittest.TestCase):

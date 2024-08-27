@@ -1,7 +1,7 @@
 from typing import List
 
-from recurcipy import Job, Workflow, Artifact
-from recurcipy.settings import Settings
+from praktika import Job, Workflow, Artifact
+from praktika.settings import Settings
 
 
 class JobNames:

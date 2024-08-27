@@ -1,8 +1,10 @@
+import inspect
 import os
 import re
 import subprocess
 import sys
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Union, Optional
 
@@ -12,24 +14,31 @@ class MetaClasses:
         def __iter__(cls):
             return (v for k, v in cls.__dict__.items() if not k.startswith("_"))
 
+    class FormatPrint:
+        @classmethod
+        def format_print(cls, message):
+            calling_function_name = inspect.stack()[1].function
+            print(f"{cls.__class__.__name__}::{calling_function_name}: {message}")
+
 
 class ContextManager:
     @staticmethod
     @contextmanager
     def cd(to: Optional[Union[Path, str]] = None) -> Iterator[None]:
         """
-        changes current workin directory to @path or `git root` if @path is None
+        changes current working directory to @path or `git root` if @path is None
         :param to:
         :return:
         """
         if not to:
             to = Shell.get_output_or_raise("git rev-parse --show-toplevel")
-        oldpwd = os.getcwd()
+            assert to
+        old_pwd = os.getcwd()
         os.chdir(to)
         try:
             yield
         finally:
-            os.chdir(oldpwd)
+            os.chdir(old_pwd)
 
 
 class Shell:
@@ -123,6 +132,14 @@ class Shell:
 
 
 class Utils:
+    @staticmethod
+    def timestamp():
+        return datetime.utcnow().timestamp()
+
+    @staticmethod
+    def timestamp_to_str(timestamp):
+        return datetime.utcfromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+
     @staticmethod
     def get_failed_tests_number(description: str) -> Optional[int]:
         description = description.lower()

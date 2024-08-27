@@ -1,10 +1,10 @@
 import dataclasses
 from typing import Dict, List, Optional
 
-from recurcipy import Workflow, Artifact, Job
-from recurcipy.mangle import _get_workflows
-from recurcipy.settings import Settings
-from recurcipy.aux_job import _workflow_config_job
+from praktika import Workflow, Artifact, Job
+from praktika.mangle import _get_workflows
+from praktika.settings import Settings
+from praktika.aux_job import _workflow_config_job
 
 
 class AddonType:
@@ -21,6 +21,7 @@ class WorkflowYaml:
         artifacts_gh_requires: List["WorkflowYaml.ArtifactYaml"]
         artifacts_gh_provides: List["WorkflowYaml.ArtifactYaml"]
         addons: List["WorkflowYaml.JobAddonYaml"]
+        gh_app_auth: bool
 
     @dataclasses.dataclass
     class ArtifactYaml:
@@ -48,12 +49,12 @@ class WorkflowConfigParser:
     def __init__(self, config: Workflow.Config):
         self.workflow_name = config.name
         self.config = config
-        self.requires_all = []
-        self.provides_all = []
-        self.job_names_all = []
-        self.artifact_to_providing_job_map = {}
-        self.artifact_to_job_requires_map = {}
-        self.artifact_map = {}
+        self.requires_all = []  # type: List[str]
+        self.provides_all = []  # type: List[str]
+        self.job_names_all = []  # type: List[str]
+        self.artifact_to_providing_job_map = {}  # type: Dict[str, List[str]]
+        self.artifact_to_job_requires_map = {}  # type: Dict[str, List[str]]
+        self.artifact_map = {}  # type: Dict[str, List[Artifact.Config]]
 
         self.job_to_provides_artifacts = {}  # type: Dict[str, List[Artifact.Config]]
         self.job_to_requires_artifacts = {}  # type: Dict[str, List[Artifact.Config]]
@@ -69,13 +70,15 @@ class WorkflowConfigParser:
         )
 
     def preprocess(self):
-        if self.config.enable_cache:
+        if self.config.enable_cache or self.config.enable_html:
+            if self.config.enable_html:
+                _workflow_config_job.job_requirements.gh_app_auth = True
             self.config.jobs.insert(0, _workflow_config_job)
             for job in self.config.jobs[1:]:
                 if not job.requires:
                     job.requires = []
                 job.requires.append(_workflow_config_job.name)
-            self.workflow_yaml_config.enable_cache = True
+        self.workflow_yaml_config.enable_cache = self.config.enable_cache
 
     def parse(self):
         self.preprocess()
@@ -113,6 +116,7 @@ class WorkflowConfigParser:
                 artifacts_gh_provides=[],
                 needs=[],
                 runs_on=[],
+                gh_app_auth=False,
             )
             self.workflow_yaml_config.jobs.append(job_yaml_config)
             assert (
@@ -181,8 +185,9 @@ class WorkflowConfigParser:
                     self.workflow_yaml_config.job_to_config[job.name].addons.append(
                         addon_yaml
                     )
-                else:
-                    assert False, "only py addon/requirement supported"
+                if self.config.enable_html:
+                    # auth required for evry job with enabled HTML, so that workflow summary status can be updated
+                    self.workflow_yaml_config.job_to_config[job.name].gh_app_auth = True
 
         # populate JobYaml.runs_on
         for job in self.config.jobs:

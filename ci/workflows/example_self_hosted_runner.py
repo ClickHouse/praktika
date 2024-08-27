@@ -1,7 +1,7 @@
 from typing import List
 
 from ci.settings.user_defined_settings import RunnerLabels
-from recurcipy import Job, Workflow
+from praktika import Job, Workflow
 
 
 class JobNames:
