@@ -1,6 +1,6 @@
 from typing import List
 
-from ci.settings.user_defined_settings import RunnerLabels
+from ci.settings.my_settings import RunnerLabels
 from praktika import Job, Workflow
 
 
@@ -16,6 +16,7 @@ class WorkflowNames:
 workflow_pr = Workflow.Config(
     name=WorkflowNames.PULL_REQUEST,
     event=Workflow.Event.PULL_REQUEST,
+    base_branches=["main"],
     jobs=[
         Job.Config(
             name=JobNames.JOB_A,

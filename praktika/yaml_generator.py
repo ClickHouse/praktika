@@ -162,7 +162,6 @@ class PullRequestPushYamlGen:
             BRANCHES=", ".join(self.workflow_config.branches),
             EVENT=self.workflow_config.event,
             JOBS="{}\n" * len(self.workflow_config.jobs),
-            BASE_BRANCH=Settings.MAIN_BRANCH_NAME,
         )
 
         job_items = []

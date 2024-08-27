@@ -6,7 +6,7 @@ from praktika.s3 import S3
 from praktika.cache import Cache
 from praktika.hook_interface import HookInterface
 from praktika.mangle import _get_workflows
-from praktika.runtime import _WorkflowRuntimeConfig
+from praktika.runtime import WorkflowRuntime
 from praktika.settings import Settings
 from praktika.environment import Environment
 
@@ -14,7 +14,7 @@ from praktika.environment import Environment
 class CacheRunnerHooks(HookInterface):
     @classmethod
     def configure(cls, _workflow):
-        workflow_runtime_config = _WorkflowRuntimeConfig(
+        workflow_runtime_config = WorkflowRuntime(
             digests={},
             sha=Environment.SHA,
             cache_success=[],
@@ -76,21 +76,23 @@ class CacheRunnerHooks(HookInterface):
             if job.name in workflow_runtime_config.cache_success:
                 if job.provides:
                     for artifact_name in job.provides:
-                        workflow_runtime_config.cache_artifacts[
-                            artifact_name
-                        ] = job_to_cache_record[job.name]
+                        workflow_runtime_config.cache_artifacts[artifact_name] = (
+                            job_to_cache_record[job.name]
+                        )
 
         print(f"Write config to job output env: {Environment._JOB_OUTPUT_STREAM}")
         with open(Environment._JOB_OUTPUT_STREAM, "a", encoding="utf8") as f:
             print(
-                f"DATA={json.dumps(dataclasses.asdict(workflow_runtime_config))}",
+                f"DATA={workflow_runtime_config.to_json()}",
                 file=f,
             )
-        print(f"WorkflowRuntimeConfig: [{workflow_runtime_config}]")
+        print(
+            f"WorkflowRuntimeConfig: [{workflow_runtime_config.to_json(pretty=True)}]"
+        )
 
     @classmethod
     def pre_run(cls, _workflow, _job, _required_artifacts=None):
-        runtime_config = _WorkflowRuntimeConfig.from_fs()
+        runtime_config = WorkflowRuntime.from_fs(Settings.WORKFLOW_CONFIG_FILE)
         required_artifacts = []
         if _required_artifacts:
             required_artifacts = _required_artifacts
@@ -115,6 +117,6 @@ class CacheRunnerHooks(HookInterface):
             return
         if job.cache_digest:
             # cache is enabled, and it's a job that supposed to be cached (has defined digest config)
-            workflow_runtime = _WorkflowRuntimeConfig.from_fs()
+            workflow_runtime = WorkflowRuntime.from_fs(Settings.WORKFLOW_CONFIG_FILE)
             job_digest = workflow_runtime.digests[job.name]
             Cache.push_success_record(job.name, job_digest, workflow_runtime.sha)

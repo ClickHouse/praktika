@@ -20,6 +20,7 @@ class WorkflowNames:
 workflow_pr = Workflow.Config(
     name=WorkflowNames.PULL_REQUEST,
     event=Workflow.Event.PULL_REQUEST,
+    base_branches=["main"],
     jobs=[
         Job.Config(
             name=JobNames.JOB_UNIT_TESTS,
@@ -43,6 +44,7 @@ workflow_pr = Workflow.Config(
 workflow_main = Workflow.Config(
     name=WorkflowNames.MAIN,
     event=Workflow.Event.PUSH,
+    branches=["main"],
     jobs=[
         Job.Config(
             name=JobNames.JOB_UNIT_TESTS,

@@ -2,10 +2,11 @@ from datetime import datetime
 
 from praktika.gh import GH
 from praktika.parser import WorkflowConfigParser
+from praktika.settings import Settings
 from praktika.utils import Utils, MetaClasses
 from praktika.html_generator import HtmlGenerator
 from praktika.hook_interface import HookInterface
-from praktika.runtime import _WorkflowRuntimeConfig, _RuntimeVars
+from praktika.runtime import _RuntimeVars, WorkflowRuntime
 from praktika.result import Result, ResultInfo
 
 
@@ -14,7 +15,9 @@ class HtmlRunnerHooks(HookInterface, MetaClasses.FormatPrint):
     def configure(cls, _workflow):
         # generate pending Results for all jobs in workflow
         if _workflow.enable_cache:
-            skip_jobs = _WorkflowRuntimeConfig.from_fs().cache_success
+            skip_jobs = WorkflowRuntime.from_fs(
+                Settings.WORKFLOW_CONFIG_FILE
+            ).cache_success
         else:
             skip_jobs = []
 

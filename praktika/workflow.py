@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 from praktika import Job, Artifact
@@ -12,14 +12,16 @@ class Workflow:
     @dataclass
     class Config:
         """
-        branches - List of branch names or patterns, valid for push trigger only, if not provided [Settings.MAIN_BRANCH_NAME] will be used
+        branches - List of branch names or patterns, for push trigger only
+        base_branches - List of base branches (target branch), for pull_request trigger only
         """
 
         name: str
         event: str
         jobs: List[Job.Config]
+        branches: List[str] = field(default_factory=list)
+        base_branches: List[str] = field(default_factory=list)
         artifacts: Optional[List[Artifact.Config]] = None
-        branches: Optional[List[str]] = None
         enable_cache: bool = False
         enable_html: bool = False
 

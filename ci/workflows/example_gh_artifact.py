@@ -25,6 +25,7 @@ artifacts = [
 workflow_pr = Workflow.Config(
     name=WorkflowNames.PULL_REQUEST,
     event=Workflow.Event.PULL_REQUEST,
+    base_branches=["main"],
     jobs=[
         Job.Config(
             name=JobNames.JOB_UPLOADING_ARTIFACT,
