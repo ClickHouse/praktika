@@ -1,7 +1,6 @@
 import dataclasses
 import json
 import os
-from pathlib import Path
 
 from praktika import Workflow
 from praktika._settings import _Settings

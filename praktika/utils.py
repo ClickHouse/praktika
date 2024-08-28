@@ -1,4 +1,6 @@
+import dataclasses
 import inspect
+import json
 import os
 import re
 import subprocess
@@ -6,7 +8,9 @@ import sys
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator, Union, Optional
+from typing import Iterator, Union, Optional, TypeVar, Type, Dict, Any
+
+T = TypeVar("T", bound="Serializable")
 
 
 class MetaClasses:
@@ -19,6 +23,24 @@ class MetaClasses:
         def format_print(cls, message):
             calling_function_name = inspect.stack()[1].function
             print(f"{cls.__class__.__name__}::{calling_function_name}: {message}")
+
+    @dataclasses.dataclass
+    class Serializable:
+        @classmethod
+        def from_dict(cls: Type[T], obj: Dict[str, Any]) -> T:
+            return cls(**obj)
+
+        @classmethod
+        def from_fs(cls: Type[T], file_path) -> T:
+            with open(file_path, "r", encoding="utf8") as f:
+                return cls.from_dict(json.load(f))
+
+        def dump(self, file_path):
+            with open(file_path, "w", encoding="utf8") as f:
+                json.dump(dataclasses.asdict(self), f)
+
+        def to_json(self, pretty=False):
+            return json.dumps(dataclasses.asdict(self), indent=4 if pretty else None)
 
 
 class ContextManager:
@@ -184,3 +206,14 @@ class Utils:
         ):
             res = res.replace(*r)
         return res
+
+
+if __name__ == "__main__":
+
+    @dataclasses.dataclass
+    class Test(MetaClasses.Serializable):
+        a: int = 1
+
+    Test(a=3).dump("/tmp/test.json")
+    t = Test.from_fs("/tmp/test.json")
+    print(t)

@@ -1,6 +1,6 @@
 # praktika
 
-ToolBox for building resilient, feature-reach CI infrastructure on top of Git Management Platform (GH Action) and Cloud Provider (AWS WebServices).
+ToolBox for building resilient, feature-reach CI infrastructure on top of Git Management Platform (GH Actions) and Public Cloud Provider (AWS WebServices).
 It's easy with praktika.
 
 ### concepts:
@@ -9,15 +9,14 @@ It's easy with praktika.
   * Ensure that all API calls are retryable in case of failure.
   * Provide GitHub data to CI jobs at runtime, eliminating the need for API calls during pipeline execution.
 * Early configuration fault detection:
-  * Make configuration errors visible at pipeline generation rather than runtime when possible
+  * Make pipeline configuration errors visible at pipeline generation step rather than runtime
 * Minimal Dependencies:
   * Opt for Python standard libraries over external packages.
   * Only import non-standard modules if the user has enabled a feature that specifically requires them.
 * Minimal Overhead:
-  * only perform tasks explicitly requested by the user.
+  * Do not do more than explicitly requested by user.
 * Design Simplicity:
   * Favor a generic design, minimize custom handling.
-  * Strive for a high "value per line of code" ratio, ensuring that each line of code provides maximum utility.
 
 ### dependencies:
 * python

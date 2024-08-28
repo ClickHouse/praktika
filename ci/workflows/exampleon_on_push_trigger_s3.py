@@ -14,7 +14,7 @@ class ArtifactNames:
 
 
 class WorkflowNames:
-    NAME = "Example On Push, S3, sh"
+    NAME = "Example On Push,S3,self-hosted"
 
 
 class RunnerLabels:
@@ -31,6 +31,7 @@ artifacts = [
 workflow_pr = Workflow.Config(
     name=WorkflowNames.NAME,
     event=Workflow.Event.PUSH,
+    branches=["parse_gh_env", "test**"],
     jobs=[
         Job.Config(
             name=JobNames.JOB_A,
@@ -51,7 +52,6 @@ workflow_pr = Workflow.Config(
             ),
         ),
     ],
-    branches=["parse_gh_env", "test**"],
     artifacts=artifacts,
 )
 

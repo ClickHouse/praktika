@@ -227,7 +227,7 @@ class Machine:
         command = f"sudo -u ubuntu {ExecutionSettings.GH_ACTIONS_DIRECTORY}/config.sh --token {self.gh_token} \
             --url {self.runner_api_endpoint} --ephemeral --unattended --replace \
             --runnergroup Default --labels {','.join(self.labels)} --work wd --name {self.instance_id}"
-        i = 3
+        i = 7
         res = False
         while i > 0 and not res:
             res = Shell.check(command, verbose=True)
