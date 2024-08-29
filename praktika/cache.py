@@ -1,13 +1,9 @@
 import dataclasses
-import fnmatch
-import glob
-import hashlib
 import json
-import os
-from hashlib import md5
 from pathlib import Path
 
 from praktika import Job, Workflow, Artifact
+from praktika.digest import Digest
 from praktika.settings import Settings
 from praktika.environment import Environment
 from praktika.utils import Utils
@@ -39,100 +35,8 @@ class Cache:
             return Cache.CacheRecord(**obj)
 
     def __init__(self):
-        self.digest = self.Digest()
+        self.digest = Digest()
         self.success = {}  # type Dict[str, Any]
-
-    class Digest:
-        def __init__(self):
-            self.digest_cache = {}
-
-        @staticmethod
-        def _hash_digest_config(digest_config: Job.CacheDigestConfig) -> str:
-            data_dict = dataclasses.asdict(digest_config)
-            hash_obj = md5()
-            hash_obj.update(str(data_dict).encode())
-            hash_string = hash_obj.hexdigest()
-            return hash_string
-
-        def calc_digest(self, config):
-            """
-            Calculate the MD5 hash of files based on the CacheDigestConfig.
-
-            Args:
-                config (CacheDigestConfig): Configuration for included and excluded paths.
-
-            Returns:
-                str: The MD5 hash of the included files.
-            """
-            if not config or not config.include_paths:
-                return "f" * Settings.CACHE_DIGEST_LEN
-
-            cache_key = self._hash_digest_config(config)
-
-            if cache_key in self.digest_cache:
-                return self.digest_cache[cache_key]
-
-            # Get the list of included files
-            included_files = []
-            if config.include_paths:
-                for path in config.include_paths:
-                    if os.path.isfile(path):
-                        included_files.append(path)
-                    elif os.path.isdir(path):
-                        for root, dirs, files in os.walk(path):
-                            for file in files:
-                                included_files.append(os.path.join(root, file))
-                    elif "*" in str(path):
-                        included_files.extend(
-                            [
-                                f
-                                for f in glob.glob(path, recursive=True)
-                                if os.path.isfile(f)
-                            ]
-                        )
-                    else:
-                        assert False, f"File does not exist or not valid [{path}]"
-
-            # Filter out excluded files
-            if config.exclude_paths:
-                excluded_files = set()
-                for path in config.exclude_paths:
-                    if os.path.isfile(path):
-                        excluded_files.add(path)
-                    elif os.path.isdir(path):
-                        for root, dirs, files in os.walk(path):
-                            for file in files:
-                                excluded_files.add(os.path.join(root, file))
-                    elif "*" in str(path):
-                        matching_files = [
-                            file
-                            for file in included_files
-                            if fnmatch.fnmatch(file, path)
-                        ]
-                        excluded_files.update(matching_files)
-                    else:
-                        print(
-                            f"WARNING: digest exclude file does not exist or not valid [{path}]"
-                        )
-
-                included_files = [f for f in included_files if f not in excluded_files]
-
-            print(
-                f"calc digest: hash_key [{cache_key}], include [{included_files}] files"
-            )
-            # Sort files to ensure consistent hash calculation
-            included_files.sort()
-
-            # Calculate MD5 hash
-            hash_md5 = hashlib.md5()
-            for file_path in included_files:
-                with open(file_path, "rb") as f:
-                    for chunk in iter(lambda: f.read(4096), b""):
-                        hash_md5.update(chunk)
-
-            res = hash_md5.hexdigest()[: Settings.CACHE_DIGEST_LEN]
-            self.digest_cache[cache_key] = res
-            return res
 
     @classmethod
     def push_success_record(cls, job_name, job_digest, sha):
@@ -140,8 +44,8 @@ class Cache:
         record = Cache.CacheRecord(
             type=type_,
             sha=sha,
-            pr_number=Environment.PR_NUMBER,
-            branch=Environment.BRANCH,
+            pr_number=Environment.get().PR_NUMBER,
+            branch=Environment.get().BRANCH,
         )
         assert (
             Settings.CACHE_S3_PATH
@@ -187,7 +91,7 @@ if __name__ == "__main__":
                 job_requirements=Job.Requirements(
                     python_requirements_txt="./requirements.txt"
                 ),
-                cache_digest=Job.CacheDigestConfig(
+                digest_config=Job.CacheDigestConfig(
                     # example: use glob to include files
                     include_paths=["./ci/tests/example_1/test_example_consume*.py"],
                 ),
@@ -200,7 +104,7 @@ if __name__ == "__main__":
                 job_requirements=Job.Requirements(
                     python_requirements_txt="./requirements.txt"
                 ),
-                cache_digest=Job.CacheDigestConfig(
+                digest_config=Job.CacheDigestConfig(
                     # example: use dir to include files recursively
                     include_paths=["./ci/tests/example_1"],
                     # example: use glob to exclude files from digest
@@ -215,4 +119,4 @@ if __name__ == "__main__":
         enable_cache=True,
     )
     for job in workflow.jobs:
-        print(c.digest.calc_digest(job.cache_digest))
+        print(c.digest.calc_job_digest(job))

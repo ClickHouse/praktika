@@ -10,9 +10,9 @@ class Artifact:
     @dataclass
     class Config:
         """
-        @name artifact name
-        @type artifact type, see Artifact.Type
-        @path file path or glob, e.g. "path/**/[abc]rtifac?/*"
+        name - artifact name
+        type - artifact type, see Artifact.Type
+        path - file path or glob, e.g. "path/**/[abc]rtifac?/*"
         """
 
         name: str

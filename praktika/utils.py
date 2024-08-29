@@ -5,10 +5,13 @@ import os
 import re
 import subprocess
 import sys
+from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Union, Optional, TypeVar, Type, Dict, Any
+
+from praktika._settings import _Settings
 
 T = TypeVar("T", bound="Serializable")
 
@@ -25,19 +28,33 @@ class MetaClasses:
             print(f"{cls.__class__.__name__}::{calling_function_name}: {message}")
 
     @dataclasses.dataclass
-    class Serializable:
+    class Serializable(ABC):
         @classmethod
         def from_dict(cls: Type[T], obj: Dict[str, Any]) -> T:
             return cls(**obj)
 
         @classmethod
-        def from_fs(cls: Type[T], file_path) -> T:
-            with open(file_path, "r", encoding="utf8") as f:
-                return cls.from_dict(json.load(f))
+        def from_fs(cls: Type[T], name) -> T:
+            with open(cls.file_name_static(name), "r", encoding="utf8") as f:
+                try:
+                    return cls.from_dict(json.load(f))
+                except json.decoder.JSONDecodeError as ex:
+                    print(f"ERROR: failed to parse json, ex [{ex}]")
+                    print(f"JSON content [{cls.file_name_static(name)}]:\n {f.read()}")
+                    raise ex
 
-        def dump(self, file_path):
-            with open(file_path, "w", encoding="utf8") as f:
-                json.dump(dataclasses.asdict(self), f)
+        @classmethod
+        @abstractmethod
+        def file_name_static(cls, name):
+            pass
+
+        def file_name(self):
+            return self.file_name_static(self.name)
+
+        def dump(self):
+            with open(self.file_name(), "w", encoding="utf8") as f:
+                json.dump(dataclasses.asdict(self), f, indent=4)
+            return self
 
         def to_json(self, pretty=False):
             return json.dumps(dataclasses.asdict(self), indent=4 if pretty else None)
@@ -53,7 +70,15 @@ class ContextManager:
         :return:
         """
         if not to:
-            to = Shell.get_output_or_raise("git rev-parse --show-toplevel")
+            try:
+                to = Shell.get_output_or_raise("git rev-parse --show-toplevel")
+            except:
+                pass
+            if not to:
+                if Path(_Settings.DOCKER_WD).is_dir():
+                    to = _Settings.DOCKER_WD
+            if not to:
+                assert False, "FIX IT"
             assert to
         old_pwd = os.getcwd()
         os.chdir(to)
@@ -66,10 +91,25 @@ class ContextManager:
 class Shell:
     @classmethod
     def get_output_or_raise(cls, command):
-        return cls.get_output(command, strict=True).strip()
+        return cls.get_output(command).strip()
 
     @classmethod
     def get_output(cls, command, strict=False):
+        res = subprocess.run(
+            command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if res.stderr:
+            print(f"WARNING: stderr: {res.stderr.strip()}")
+        if res.returncode != 0:
+            raise RuntimeError(f"command failed with {res.returncode}")
+        return res.stdout.strip()
+
+    @classmethod
+    def get_output_and_code(cls, command, strict=False):
         res = subprocess.run(
             command,
             shell=True,
@@ -80,24 +120,29 @@ class Shell:
         )
         if res.stderr:
             print(f"WARNING: stderr: {res.stderr.strip()}")
-        return res.stdout.strip()
+        return res.stdout.strip(), res.returncode
 
     @classmethod
     def check(
         cls,
         command,
+        log_file=None,
         strict=False,
         verbose=False,
         dry_run=False,
         stdin_str=None,
         **kwargs,
     ):
-        return cls.run(command, strict, verbose, dry_run, stdin_str, **kwargs) == 0
+        return (
+            cls.run(command, log_file, strict, verbose, dry_run, stdin_str, **kwargs)
+            == 0
+        )
 
     @classmethod
     def run(
         cls,
         command,
+        log_file=None,
         strict=False,
         verbose=False,
         dry_run=False,
@@ -109,24 +154,28 @@ class Shell:
             return True
         if verbose:
             print(f"Run command [{command}]")
-        proc = subprocess.Popen(
-            command,
-            shell=True,
-            stderr=subprocess.STDOUT,
-            stdout=subprocess.PIPE,
-            stdin=subprocess.PIPE if stdin_str else None,
-            universal_newlines=True,
-            start_new_session=True,
-            bufsize=1,
-            errors="backslashreplace",
-            **kwargs,
-        )
-        if stdin_str:
-            proc.communicate(input=stdin_str)
-        elif proc.stdout:
-            for line in proc.stdout:
-                sys.stdout.write(line)
-        proc.wait()
+
+        log_file = log_file or "/dev/null"
+        with open(log_file, "w") as log_fp:
+            proc = subprocess.Popen(
+                command,
+                shell=True,
+                stderr=subprocess.STDOUT,
+                stdout=subprocess.PIPE,
+                stdin=subprocess.PIPE if stdin_str else None,
+                universal_newlines=True,
+                start_new_session=True,
+                bufsize=1,
+                errors="backslashreplace",
+                **kwargs,
+            )
+            if stdin_str:
+                proc.communicate(input=stdin_str)
+            elif proc.stdout:
+                for line in proc.stdout:
+                    sys.stdout.write(line)
+                    log_fp.write(line)
+            proc.wait()
         if strict:
             assert proc.returncode == 0
         return proc.returncode
@@ -207,13 +256,25 @@ class Utils:
             res = res.replace(*r)
         return res
 
+    class Stopwatch:
+        def __init__(self):
+            self.start_time = datetime.utcnow().timestamp()
+
+        @property
+        def duration(self) -> float:
+            return datetime.utcnow().timestamp() - self.start_time
+
 
 if __name__ == "__main__":
 
     @dataclasses.dataclass
     class Test(MetaClasses.Serializable):
-        a: int = 1
+        name: str
 
-    Test(a=3).dump("/tmp/test.json")
-    t = Test.from_fs("/tmp/test.json")
+        @staticmethod
+        def file_name_static(name):
+            return f"/tmp/{Utils.normalize_string(name)}.json"
+
+    Test(name="dsada").dump()
+    t = Test.from_fs("dsada")
     print(t)

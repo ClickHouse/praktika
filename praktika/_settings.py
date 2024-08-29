@@ -11,8 +11,9 @@ class _Settings:
     WORKFLOWS_DIRECTORY: str = "./ci/workflows"
     SETTINGS_DIRECTORY: str = "./ci/settings"
     CI_CONFIG_JOB_NAME = "WorkflowConfig"
+    DOCKER_BUILD_JOB_NAME = "DockerBuilds"
     CI_CONFIG_RUNS_ON: Optional[List[str]] = None
-    VALIDATE_FILE_PATHS_IN_RUN_COMMAND: bool = True
+    VALIDATE_FILE_PATHS: bool = True
 
     ######################################
     #    Runtime Settings                #
@@ -34,7 +35,6 @@ class _Settings:
     RESULTS_DIR: str = f"{TEMP_DIR}/results"
     PYTHON_INTERPRETER: str = "python3"
     PYTHON_VERSION: str = "3.9"
-    WORKFLOW_CONFIG_FILE: str = f"{TEMP_DIR}/workflow_config.json"
     ENVIRONMENT_VAR_FILE: str = f"{TEMP_DIR}/environment.json"
 
     ######################################
@@ -52,6 +52,10 @@ class _Settings:
     TEXT_CONTENT_EXTENSIONS: Iterable[str] = frozenset([".txt", ".log"])
     S3_BUCKET_TO_HTTP_ENDPOINT: Optional[Dict[str, str]] = None
 
+    DOCKERHUB_USERNAME: str = ""
+    DOCKERHUB_SECRET: str = ""
+    DOCKER_WD: str = "/wd"
+
 
 _USER_DEFINED_SETTINGS = [
     "S3_ARTIFACT_PATH",
@@ -66,10 +70,11 @@ _USER_DEFINED_SETTINGS = [
     "CI_CONFIG_JOB_NAME",
     "PYTHON_INTERPRETER",
     "PYTHON_VERSION",
-    "WORKFLOW_CONFIG_FILE",
     "MAX_RETRIES_S3",
     "MAX_RETRIES_GH",
-    "VALIDATE_FILE_PATHS_IN_RUN_COMMAND",
+    "VALIDATE_FILE_PATHS",
+    "DOCKERHUB_USERNAME",
+    "DOCKERHUB_SECRET",
 ]
 
 

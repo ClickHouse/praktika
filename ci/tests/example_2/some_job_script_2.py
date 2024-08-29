@@ -5,4 +5,4 @@ if __name__ == "__main__":
     #   ...
 
     # 2. dump results
-    Result.set_success()  # just set success status, without any other info
+    Result.get().set_success()  # just set success status, without any other info

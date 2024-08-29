@@ -40,7 +40,7 @@ workflow = Workflow.Config(
             job_requirements=Job.Requirements(
                 python_requirements_txt="./requirements.txt"
             ),
-            cache_digest=Job.CacheDigestConfig(
+            digest_config=Job.CacheDigestConfig(
                 # example: use glob to include files
                 include_paths=["./ci/tests/example_1/test_example_produce*py"],
             ),
@@ -53,7 +53,7 @@ workflow = Workflow.Config(
             job_requirements=Job.Requirements(
                 python_requirements_txt="./requirements.txt"
             ),
-            cache_digest=Job.CacheDigestConfig(
+            digest_config=Job.CacheDigestConfig(
                 # example: use dir to include files recursively
                 include_paths=["./ci/tests/example_1"],
                 # example: use glob and dir to exclude files from digest

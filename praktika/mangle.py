@@ -1,17 +1,17 @@
 import importlib.util
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Dict, Any
 
+from praktika import Job
 from praktika.utils import ContextManager
-from praktika import Workflow
 from praktika._settings import _Settings, _USER_DEFINED_SETTINGS
 
 
-def _get_workflows(name=None, file=None) -> List[Workflow.Config]:
+def _get_workflows(name=None, file=None):
     """
     Gets user's workflow configs
     """
-    res = []  # type: List[Workflow.Config]
+    res = []
 
     with ContextManager.cd():
         directory = Path(_Settings.WORKFLOWS_DIRECTORY)
@@ -30,7 +30,8 @@ def _get_workflows(name=None, file=None) -> List[Workflow.Config]:
                 for workflow in foo.WORKFLOWS:
                     if name and name == workflow.name:
                         print(f"Read workflow [{name}] config from [{module_name}]")
-                        return [workflow]
+                        res = [workflow]
+                        break
                     else:
                         res += foo.WORKFLOWS
                         print(f"Read workflow configs from [{module_name}]")
@@ -39,7 +40,40 @@ def _get_workflows(name=None, file=None) -> List[Workflow.Config]:
                     f"WARNING: Failed to add WORKFLOWS config from [{module_name}], exception [{e}]"
                 )
     assert res
+    for workflow in res:
+        _update_workflow_with_native_jobs(workflow)
     return res
+
+
+def _update_workflow_with_native_jobs(workflow):
+    if workflow.dockers:
+        from praktika.native_jobs import _docker_build_job
+
+        if workflow.enable_cache:
+            print(
+                f"Add automatic digest config for [{_docker_build_job.name}] job since cache is enabled"
+            )
+            docker_digest_config = Job.CacheDigestConfig()
+            for docker_config in workflow.dockers:
+                docker_digest_config.include_paths.append(docker_config.path)
+            _docker_build_job.digest_config = docker_digest_config
+
+        workflow.jobs.insert(0, _docker_build_job)
+        for job in workflow.jobs[1:]:
+            if not job.requires:
+                job.requires = []
+            job.requires.append(_docker_build_job.name)
+
+    if workflow.enable_cache or workflow.enable_html:
+        from praktika.native_jobs import _workflow_config_job
+
+        if workflow.enable_html:
+            _workflow_config_job.job_requirements.gh_app_auth = True
+        workflow.jobs.insert(0, _workflow_config_job)
+        for job in workflow.jobs[1:]:
+            if not job.requires:
+                job.requires = []
+            job.requires.append(_workflow_config_job.name)
 
 
 def _get_user_settings() -> Dict[str, Any]:
