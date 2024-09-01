@@ -1,10 +1,8 @@
 import dataclasses
-from typing import Dict, List, Optional
+from typing import Dict, List
 
-from praktika import Workflow, Artifact, Job
+from praktika import Workflow, Artifact
 from praktika.mangle import _get_workflows
-from praktika.settings import Settings
-from praktika.aux_job import _workflow_config_job
 
 
 class AddonType:
@@ -70,14 +68,24 @@ class WorkflowConfigParser:
         )
 
     def preprocess(self):
-        if self.config.enable_cache or self.config.enable_html:
-            if self.config.enable_html:
-                _workflow_config_job.job_requirements.gh_app_auth = True
-            self.config.jobs.insert(0, _workflow_config_job)
-            for job in self.config.jobs[1:]:
-                if not job.requires:
-                    job.requires = []
-                job.requires.append(_workflow_config_job.name)
+        # if self.config.dockers:
+        #     docker_build_job = self.config.get_job(name=Settings.DOCKER_BUILD_JOB_NAME)
+        #     self.config.jobs.insert(0, docker_build_job)
+        #     for job in self.config.jobs[1:]:
+        #         if not job.requires:
+        #             job.requires = []
+        #         job.requires.append(docker_build_job.name)
+        #
+        # if self.config.enable_cache or self.config.enable_html:
+        #     workflow_config_job = self.config.get_job(name=Settings.CI_CONFIG_JOB_NAME)
+        #     if self.config.enable_html:
+        #         workflow_config_job.job_requirements.gh_app_auth = True
+        #     self.config.jobs.insert(0, workflow_config_job)
+        #     for job in self.config.jobs[1:]:
+        #         if not job.requires:
+        #             job.requires = []
+        #         job.requires.append(workflow_config_job.name)
+
         self.workflow_yaml_config.enable_cache = self.config.enable_cache
 
     def parse(self):

@@ -56,10 +56,10 @@ class Auth:
 
     @classmethod
     def auth(cls) -> None:
-        pem = Environment.SECRET_APP_PEM_KEY
+        pem = Environment.get().SECRET_APP_PEM_KEY
         assert pem
         # Generate JWT
-        jwt_token = cls._generate_jwt(Environment.SECRET_APP_ID, pem)
+        jwt_token = cls._generate_jwt(Environment.get().SECRET_APP_ID, pem)
         # Get Installation ID
         installation_id = cls._get_installation_id(jwt_token)
         # Get Installation Access Token

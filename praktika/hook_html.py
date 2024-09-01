@@ -13,11 +13,9 @@ from praktika.result import Result, ResultInfo
 class HtmlRunnerHooks(HookInterface, MetaClasses.FormatPrint):
     @classmethod
     def configure(cls, _workflow):
-        # generate pending Results for all jobs in workflow
+        # generate pending Results for all jobs in the workflow
         if _workflow.enable_cache:
-            skip_jobs = WorkflowRuntime.from_fs(
-                Settings.WORKFLOW_CONFIG_FILE
-            ).cache_success
+            skip_jobs = WorkflowRuntime.from_fs(_workflow.name).cache_success
         else:
             skip_jobs = []
 
@@ -25,7 +23,9 @@ class HtmlRunnerHooks(HookInterface, MetaClasses.FormatPrint):
         for job in _workflow.jobs:
             if job.name not in skip_jobs:
                 result = Result.generate_pending(job.name)
-                results.append(result)
+            else:
+                result = Result.generate_skipped(job.name)
+            results.append(result)
         summary_result = Result.generate_pending(_workflow.name, results=results)
         summary_result.start_time = Utils.timestamp()
         summary_result.copy_to_s3()
@@ -38,7 +38,7 @@ class HtmlRunnerHooks(HookInterface, MetaClasses.FormatPrint):
         )
         res2 = GH.post_pr_comment(
             comment_body=f"[CI Status]({summary_result.html_link}) for [{_workflow.name}] workflow",
-            or_update_comment_with_substring="[CI Status]",
+            or_update_comment_with_substring=f") for [{_workflow.name}] workflow",
         )
         assert (
             res1 or res2
@@ -46,13 +46,15 @@ class HtmlRunnerHooks(HookInterface, MetaClasses.FormatPrint):
 
     @classmethod
     def pre_run(cls, _workflow, _job):
-        cls.format_print("pre run hook")
         result = Result(
             name=_job.name,
             status=Result.Status.RUNNING,
             start_time=datetime.now().timestamp(),
         )
         result.dump()
+        if not _workflow.enable_html or _job.name == Settings.CI_CONFIG_JOB_NAME:
+            # SPECIAL handling
+            return
         workflow_result = Result.from_s3(_workflow.name)
         workflow_result.update_sub_result(result)
         workflow_result.copy_to_s3()
@@ -66,25 +68,8 @@ class HtmlRunnerHooks(HookInterface, MetaClasses.FormatPrint):
 
     @classmethod
     def post_run(cls, _workflow, _job):
+        print(f"Post run for job [{_job.name}], workflow [{_workflow.name}]")
         result = Result.from_fs(_job.name)
-        if not result:
-            result = Result(
-                name=_job.name,
-                start_time=None,
-                duration=None,
-                status=Result.Status.ERROR,
-                info=ResultInfo.NOT_FOUND_IMPOSSIBLE,
-            ).dump()
-            print(
-                f"ERROR: critical bug or job misbehaviour, nor job Result neither pre-Result is found"
-            )
-        elif result.status == Result.Status.RUNNING:
-            result.info = ResultInfo.NOT_FOUND
-            result.status = Result.Status.ERROR
-            print(f"ERROR: job was killed or died without providing Result")
-
-        result.update_duration()
-        print(f"Job Result [{result}]")
 
         workflow_result = Result.from_s3(_workflow.name)
         old_status = workflow_result.status
@@ -99,7 +84,7 @@ class HtmlRunnerHooks(HookInterface, MetaClasses.FormatPrint):
             for dependee_job in workflow_config_parsed.workflow_yaml_config.jobs:
                 if _job.name in dependee_job.needs:
                     print(
-                        f"NOTE: Set job [{_job.name}] status to [{Result.Status.SKIPPED}] due to current failure"
+                        f"NOTE: Set job [{dependee_job.name}] status to [{Result.Status.SKIPPED}] due to current failure"
                     )
                     skipped_job_results.append(
                         Result(
@@ -117,8 +102,8 @@ class HtmlRunnerHooks(HookInterface, MetaClasses.FormatPrint):
             upload_to_s3=True,
             changed_items=[result] + skipped_job_results,
         )
-        print("Workflow summary Result:")
-        print(workflow_result)
+        # print("Workflow summary Result:")
+        # print(workflow_result)
         workflow_result.copy_to_s3()
         if workflow_result.status != old_status:
             print(

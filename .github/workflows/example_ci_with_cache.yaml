@@ -44,8 +44,8 @@ jobs:
           export GH_APP_ID="${{ secrets.GH_APP_ID }}"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/praktika/workflow_config.json
-          cat /tmp/praktika/workflow_config.json
+          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
+          cat /tmp/praktika/results/workflow_config_example_ci_with_cache.json
           env | grep GITHUB
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
 
@@ -96,8 +96,8 @@ jobs:
           export GH_APP_ID="${{ secrets.GH_APP_ID }}"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/praktika/workflow_config.json
-          cat /tmp/praktika/workflow_config.json
+          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
+          cat /tmp/praktika/results/workflow_config_example_ci_with_cache.json
           env | grep GITHUB
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
 
@@ -148,8 +148,8 @@ jobs:
           export GH_APP_ID="${{ secrets.GH_APP_ID }}"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/praktika/workflow_config.json
-          cat /tmp/praktika/workflow_config.json
+          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
+          cat /tmp/praktika/results/workflow_config_example_ci_with_cache.json
           env | grep GITHUB
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
 

@@ -2,6 +2,8 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from praktika import Job, Artifact
+from praktika.docker import Docker
+from praktika.secret import Secret
 
 
 class Workflow:
@@ -21,7 +23,9 @@ class Workflow:
         jobs: List[Job.Config]
         branches: List[str] = field(default_factory=list)
         base_branches: List[str] = field(default_factory=list)
-        artifacts: Optional[List[Artifact.Config]] = None
+        artifacts: List[Artifact.Config] = field(default_factory=list)
+        dockers: List[Docker.Config] = field(default_factory=list)
+        secrets: List[Secret.Config] = field(default_factory=list)
         enable_cache: bool = False
         enable_html: bool = False
 
@@ -32,8 +36,20 @@ class Workflow:
             return self.event == Workflow.Event.PUSH
 
         def get_job(self, name: str) -> Optional[Job.Config]:
+            # from praktika.native_configs import _docker_build_job, _workflow_config_job
+            #
+            # for job in (_docker_build_job, _workflow_config_job):
+            #     if job.name == name:
+            #         print(f"Native praktika job requested [{name}]")
+            #         return job
             for job in self.jobs:
                 if job.name == name:
                     return job
             else:
                 return None
+
+        def get_secret(self, name) -> Optional[Secret.Config]:
+            for secret in self.secrets:
+                if secret.name == name:
+                    return secret
+            return None

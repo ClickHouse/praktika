@@ -1,3 +1,5 @@
+import glob
+from itertools import chain
 from pathlib import Path
 
 from praktika import Workflow
@@ -16,6 +18,7 @@ class Validator:
             print(f"Validating workflow [{workflow.name}]")
 
             cls.validate_file_paths_in_run_command(workflow)
+            cls.validate_file_paths_in_digest_configs(workflow)
 
             if workflow.artifacts:
                 for artifact in workflow.artifacts:
@@ -62,9 +65,20 @@ class Validator:
                         artifact.is_s3_artifact()
                     ), f"All artifacts must be of S3 type if enable_cache|enable_html=True, artifact [{artifact.name}], type [{artifact.type}], workflow [{workflow.name}]"
 
+            if workflow.dockers:
+                assert (
+                    Settings.DOCKERHUB_USERNAME
+                ), f"Settings.DOCKERHUB_USERNAME must be provided if workflow has dockers, workflow [{workflow.name}]"
+                assert (
+                    Settings.DOCKERHUB_SECRET
+                ), f"Settings.DOCKERHUB_SECRET must be provided if workflow has dockers, workflow [{workflow.name}]"
+                assert workflow.get_secret(
+                    Settings.DOCKERHUB_SECRET
+                ), f"Secret [{Settings.DOCKERHUB_SECRET}] must have configuration in workflow.secrets, workflow [{workflow.name}]"
+
     @classmethod
     def validate_file_paths_in_run_command(cls, workflow: Workflow.Config) -> None:
-        if not Settings.VALIDATE_FILE_PATHS_IN_RUN_COMMAND:
+        if not Settings.VALIDATE_FILE_PATHS:
             return
         with ContextManager.cd():
             for job in workflow.jobs:
@@ -76,4 +90,24 @@ class Validator:
                     if "/" in part:
                         assert (
                             Path(part).is_file() or Path(part).is_dir()
-                        ), f"Apparently run command [{run_command}] for job [{job}] has invalid path [{part}]. Setting to disable check: VALIDATE_FILE_PATHS_IN_RUN_COMMAND"
+                        ), f"Apparently run command [{run_command}] for job [{job}] has invalid path [{part}]. Setting to disable check: VALIDATE_FILE_PATHS"
+
+    @classmethod
+    def validate_file_paths_in_digest_configs(cls, workflow: Workflow.Config) -> None:
+        if not Settings.VALIDATE_FILE_PATHS:
+            return
+        with ContextManager.cd():
+            for job in workflow.jobs:
+                if not job.digest_config:
+                    continue
+                for include_path in chain(
+                    job.digest_config.include_paths, job.digest_config.exclude_paths
+                ):
+                    if "*" in include_path:
+                        assert glob.glob(
+                            include_path, recursive=True
+                        ), f"Apparently file glob [{include_path}] in job [{job.name}] digest_config [{job.digest_config}] invalid, workflow [{workflow.name}]. Setting to disable check: VALIDATE_FILE_PATHS"
+                    else:
+                        assert (
+                            Path(include_path).is_file() or Path(include_path).is_dir()
+                        ), f"Apparently file path [{include_path}] in job [{job.name}] digest_config [{job.digest_config}] invalid, workflow [{workflow.name}]. Setting to disable check: VALIDATE_FILE_PATHS"

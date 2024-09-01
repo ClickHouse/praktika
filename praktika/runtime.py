@@ -1,17 +1,18 @@
-import dataclasses
 import json
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Dict, List, Optional
 
 from praktika.cache import Cache
 from praktika.settings import Settings
-from praktika.utils import MetaClasses
+from praktika.utils import MetaClasses, Utils
 
 
 @dataclass
 class WorkflowRuntime(MetaClasses.Serializable):
-    digests: Dict[str, str]
+    name: str
+    digest_jobs: Dict[str, str]
+    digest_dockers: Dict[str, str]
     cache_success: List[str]
     cache_artifacts: Dict[str, Cache.CacheRecord]
     sha: str
@@ -19,18 +20,23 @@ class WorkflowRuntime(MetaClasses.Serializable):
     @classmethod
     def from_dict(cls, obj):
         cache_artifacts = obj["cache_artifacts"]
-        cache_artifacts_deserialized = []
-        for cache_artifact in cache_artifacts:
-            cache_artifacts_deserialized.append(
-                Cache.CacheRecord.from_dict(cache_artifact)
+        cache_artifacts_deserialized = {}
+        for artifact_name, cache_artifact in cache_artifacts.items():
+            cache_artifacts_deserialized[artifact_name] = Cache.CacheRecord.from_dict(
+                cache_artifact
             )
         obj["cache_artifacts"] = cache_artifacts_deserialized
         return WorkflowRuntime(**obj)
 
+    @classmethod
+    def file_name_static(cls, name):
+        return f"{Settings.RESULTS_DIR}/workflow_config_{Utils.normalize_string(name)}.json"
+
 
 @dataclass
 class _RuntimeVars:
-    RUN_EXIT_CODE: Optional[int]
+    exit_code: Optional[int]
+    log_files: List[str] = field(default_factory=list)
     _PATH = Settings.TEMP_DIR + "/runtime.json"
 
     def dump(self):
@@ -44,4 +50,4 @@ class _RuntimeVars:
 
     @classmethod
     def run_failed(cls):
-        return cls.from_fs().RUN_EXIT_CODE != 0
+        return cls.from_fs().exit_code != 0

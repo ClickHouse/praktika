@@ -4,6 +4,7 @@ from typing import List
 from praktika import Workflow, Job, Artifact
 from praktika.mangle import _get_workflows
 from praktika.parser import WorkflowConfigParser, AddonType
+from praktika.runtime import WorkflowRuntime
 from praktika.utils import Utils, Shell, ContextManager
 from praktika.settings import Settings
 
@@ -237,7 +238,9 @@ class PullRequestPushYamlGen:
                 WORKFLOW_NAME=self.workflow_config.name,
                 SETUP_ENVS=setup_envs,
                 EXTRA_COMMANDS=extra_cmds,
-                WORKFLOW_CONFIG_FILE=Settings.WORKFLOW_CONFIG_FILE,
+                WORKFLOW_CONFIG_FILE=WorkflowRuntime.file_name_static(
+                    self.workflow_config.name
+                ),
                 JOB_ADDONS="\n".join(job_addons),
                 DOWNLOADS_GITHUB="\n".join(downloads_github),
                 UPLOADS_GITHUB="\n".join(uploads_github),

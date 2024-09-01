@@ -131,7 +131,7 @@ class HtmlGenerator:
         <head>
             <meta charset="utf-8">
             <style>
-                :root {{
+            :root {{
                     --color: white;
                     --background: hsl(210deg, 50%, 10%) linear-gradient(180deg, hsl(210deg, 50%, 15%), hsl(210deg, 50%, 5%));
                     --td-background: hsl(210deg, 50%, 20%);
@@ -148,115 +148,152 @@ class HtmlGenerator:
                     --table-header-font-size: 1.2rem;
                     --table-body-font-size: 1rem;
                     --table-padding: 8px 15px;
+                    --page-padding: 0; /* Default padding */
+                    --subtle-font-size: 0.9rem;
+                    --subtle-background: hsl(210deg, 50%, 15%);
+                    --subtle-color: hsl(210deg, 50%, 70%);
                 }}
-    
-                [data-theme="light"] {{
-                    --color: black;
-                    --background: hsl(210deg, 50%, 95%) linear-gradient(180deg, #FFF, #EEE);
-                    --td-background: white;
-                    --th-background: #DDD;
-                    --link-color: #0077B6;
-                    --link-hover-color: #023E8A;
-                    --menu-background: white;
-                    --menu-hover-background: #EEE;
-                    --menu-hover-color: #023E8A;
-                    --text-gradient: linear-gradient(90deg, black, black);
-                    --shadow-intensity: 0.1;
-                    --tr-hover-filter: brightness(95%);
-                    --table-border-color: #CCC;
-                }}
-    
-                .gradient {{
-                    background-image: var(--text-gradient);
-                    background-size: 100% 100%;
-                    background-repeat: repeat;
-                    -webkit-background-clip: text;
-                    -webkit-text-fill-color: transparent;
-                    color: black;
-                }}
-                html {{ min-height: 100%; font-family: "Arial", sans-serif; background: var(--background); color: var(--color); }}
-                h1 {{ margin-left: 20px; font-size: 2rem; }}
-                th, td {{
-                    padding: var(--table-padding);
-                    text-align: left;
-                    vertical-align: middle;
-                    line-height: 1.5;
-                    border: 1px solid var(--table-border-color);
-                    font-size: var(--table-body-font-size);
-                }}
-                td {{ background: var(--td-background); }}
-                th {{
-                    background: var(--th-background);
-                    white-space: nowrap;
-                    font-size: var(--table-header-font-size);
-                    font-weight: bold;
-                }}
-                a {{ color: var(--link-color); text-decoration: none; }}
-                a:hover, a:active {{ color: var(--link-hover-color); text-decoration: none; }}
-                table {{
-                    box-shadow: 0 8px 25px -5px rgba(0, 0, 0, var(--shadow-intensity));
-                    border-collapse: collapse;
-                    border-spacing: 0;
-                    width: 100%;
-                    margin: 20px auto;
-                    max-width: 1200px;
-                }}
-                p.links a {{
-                    padding: 10px 15px;
-                    margin: 5px;
-                    background: var(--menu-background);
-                    line-height: 2;
-                    white-space: nowrap;
-                    border-radius: 5px;
-                    display: inline-block;
-                    transition: background 0.3s, color 0.3s;
-                }}
-                p.links a:hover {{ background: var(--menu-hover-background); color: var(--menu-hover-color); }}
-                th {{ cursor: pointer; }}
-                tr:hover {{ filter: var(--tr-hover-filter); }}
-                .expandable {{ cursor: pointer; }}
-                .expandable-content {{ display: none; }}
-                pre {{ white-space: pre-wrap; font-size: 0.9rem; background: var(--td-background); padding: 10px; border-radius: 5px; }}
-                #fish {{ display: none; float: right; position: relative; top: -20em; right: 2vw; margin-bottom: -20em; width: 30vw; filter: brightness(7%); z-index: -1; }}
-    
-                .themes {{
-                    float: right;
-                    font-size: 1.5rem;
-                    margin-bottom: 1rem;
-                }}
-    
-                #toggle-theme {{
-                    padding-right: 0.5rem;
-                    user-select: none;
-                    cursor: pointer;
-                    display: inline-block;
-                    transform: translate(1px, 1px);
-                    filter: brightness(125%);
-                    transition: filter 0.3s;
-                }}
-                #toggle-autoreload {{
-                    padding-right: 0.5rem;
-                    user-select: none;
-                    cursor: pointer;
-                    display: inline-block;
-                    transform: translate(1px, 1px);
-                    filter: brightness(125%);
-                    transition: filter 0.3s;
-                }}
-                .status-cell {{
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center; /* Vertically align the text and indicator */
-                    padding-right: 15px; /* Add some padding to the right for better spacing */
-                }}
+                
+            [data-theme="light"] {{
+                --color: black;
+                --background: hsl(210deg, 50%, 95%) linear-gradient(180deg, #FFF, #EEE);
+                --td-background: white;
+                --th-background: #DDD;
+                --link-color: #0077B6;
+                --link-hover-color: #023E8A;
+                --menu-background: white;
+                --menu-hover-background: #EEE;
+                --menu-hover-color: #023E8A;
+                --text-gradient: linear-gradient(90deg, black, black);
+                --shadow-intensity: 0.1;
+                --tr-hover-filter: brightness(95%);
+                --table-border-color: #CCC;
+            }}
 
-                .expand-indicator {{
-                    font-size: 0.8em;
-                    margin-left: 5px;
-                    cursor: pointer;
-                    color: #888;  /* Subtle color to match the theme */
-                    transition: transform 0.2s ease;
-                }}
+            .info-table {{
+                width: 100%;
+                max-width: 1200px;
+                margin: 20px auto;
+                background-color: var(--subtle-background);
+                color: var(--subtle-color);
+                border-collapse: collapse;
+                font-size: var(--subtle-font-size);
+            }}
+
+            .info-table th, .info-table td {{
+                padding: var(--table-padding);
+                border: none; /* No border for subtlety */
+                text-align: left;
+            }}
+
+            /* .info-table th {{ color: var(--color); }} */
+
+            .info-table td {{
+                padding-left: 20px; /* Add padding to align the text nicely */
+            }}
+
+            .gradient {{
+                background-image: var(--text-gradient);
+                background-size: 100% 100%;
+                background-repeat: repeat;
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                color: black;
+            }}
+            html {{ min-height: 100%; font-family: "Arial", sans-serif; background: var(--background); color: var(--color); }}
+
+            h1 {{
+                margin: 0;
+                padding-left: 0;
+            }}
+
+            .container {{
+                margin: 20px auto; /* Center the container */
+                max-width: 1200px; /* Match the table's max-width */
+            }}
+
+            th, td {{
+                padding: var(--table-padding);
+                text-align: left;
+                vertical-align: middle;
+                line-height: 1.5;
+                border: 1px solid var(--table-border-color);
+                font-size: var(--table-body-font-size);
+            }}
+            td {{ background: var(--td-background); }}
+            th {{
+                background: var(--th-background);
+                white-space: nowrap;
+                font-size: var(--table-header-font-size);
+                font-weight: bold;
+            }}
+            a {{ color: var(--link-color); text-decoration: none; }}
+            a:hover, a:active {{ color: var(--link-hover-color); text-decoration: none; }}
+
+            table {{
+                box-shadow: 0 8px 25px -5px rgba(0, 0, 0, var(--shadow-intensity));
+                border-collapse: collapse;
+                border-spacing: 0;
+                width: 100%;
+                margin: 0 auto; /* Center the table */
+                max-width: 1200px; /* Maximum width of the table */
+            }}
+
+            p.links a {{
+                padding: 10px 15px;
+                margin: 5px;
+                background: var(--menu-background);
+                line-height: 2;
+                white-space: nowrap;
+                border-radius: 5px;
+                display: inline-block;
+                transition: background 0.3s, color 0.3s;
+            }}
+            p.links a:hover {{ background: var(--menu-hover-background); color: var(--menu-hover-color); }}
+            th {{ cursor: pointer; }}
+            tr:hover {{ filter: var(--tr-hover-filter); }}
+            .expandable {{ cursor: pointer; }}
+            .expandable-content {{ display: none; }}
+            pre {{ white-space: pre-wrap; font-size: 0.9rem; background: var(--td-background); padding: 10px; border-radius: 5px; }}
+            #fish {{ display: none; float: right; position: relative; top: -20em; right: 2vw; margin-bottom: -20em; width: 30vw; filter: brightness(7%); z-index: -1; }}
+
+            .themes {{
+                float: right;
+                font-size: 1.5rem;
+                margin-bottom: 1rem;
+            }}
+
+            #toggle-theme {{
+                padding-right: 0.5rem;
+                user-select: none;
+                cursor: pointer;
+                display: inline-block;
+                transform: translate(1px, 1px);
+                filter: brightness(125%);
+                transition: filter 0.3s;
+            }}
+            #toggle-autoreload {{
+                padding-right: 0.5rem;
+                user-select: none;
+                cursor: pointer;
+                display: inline-block;
+                transform: translate(1px, 1px);
+                filter: brightness(125%);
+                transition: filter 0.3s;
+            }}
+            .status-cell {{
+                justify-content: space-between;
+                align-items: center; /* Vertically align the text and indicator */
+                padding-right: 15px; /* Add some padding to the right for better spacing */
+            }}
+
+            .expand-indicator {{
+                font-size: 0.8em;
+                margin-left: 5px;
+                cursor: pointer;
+                color: #888;  /* Subtle color to match the theme */
+                transition: transform 0.2s ease;
+            }}
             </style>
             <title>{escape(result.name)}</title>
         </head>
@@ -268,15 +305,33 @@ class HtmlGenerator:
             <span class="nowrap themes">
                 <span id="toggle-theme">🔆</span>
             </span>
+
+            <div class="container">
+
             <h1><span class="gradient">{escape(result.name)}</span></h1>
-            <p>{escape(result.info)}</p>
-            <p>Start Time: {escape(Utils.timestamp_to_str(result.start_time))}</p>
-            <p>Duration: {escape(cls.format_duration(result.duration)) if result.status not in (Result.Status.PENDING, Result.Status.RUNNING) else '<span id="dynamic-duration"></span>'}</p>
-            <p>Status: <span id="status" style="color: {get_status_color(result.status)};"> {escape(result.status)}</span></p>
+
+            <table class="info-table">
+                <tr>
+                    <td>{escape(Utils.timestamp_to_str(result.start_time))}</td>
+                    <td><a href="{escape(Environment.get().CHANGE_URL)}">{ (f"PR{Environment.get().PR_NUMBER}" if Environment.get().PR_NUMBER else Environment.get().BRANCH) + f"({Environment.get().SHA[:8]})" }</a></td>
+                </tr>
+                <tr>
+                    <td>{escape(cls.format_duration(result.duration)) if result.status not in (Result.Status.PENDING, Result.Status.RUNNING) else '<span id="dynamic-duration"></span>'}</td>
+                    <td><a href="{escape(Environment.get().RUN_URL)}">Actions</a></td>
+                </tr>
+                <tr>
+                    <td><span id="status" style="color: {get_status_color(result.status)};"> {escape(result.status)}</span></td>
+                    <td><p style="color: #FFA500;">{escape(result.info)}</p></td>
+                </tr>
+            </table>
+            
             <p class="links">
                 {generate_urls(result.urls)}
             </p>
             {generate_table(result.results)}
+            
+            </div>
+
             <img id="fish" src="https://presentations.clickhouse.com/images/fish.png" />
             <script type="text/javascript">
                 const getCellValue = (tr, idx) => {{
@@ -300,10 +355,20 @@ class HtmlGenerator:
     
                 Array.from(document.getElementsByClassName("status-cell")).forEach(td => td.addEventListener('click', function() {{
                     var content = this.parentElement.nextElementSibling;
-                    content.classList.toggle("expandable-content");
-                    // TODO make indicator rotating
-                    // content.classList.toggle("open");  // Add or remove the open class
-                    // this.querySelector('.expand-indicator').classList.toggle('expanded');  // Toggle the indicator's rotation
+                    if (content && content.classList.contains("expandable-content")) {{
+                        // Check if the content is currently visible (expanded)
+                        if (content.style.display === "table-row") {{
+                            content.style.display = "none"; // Collapse the content
+                        }} else {{
+                            content.style.display = "table-row"; // Expand the content
+                        }}
+            
+                    // Optional: toggle an indicator's rotation or other visual cues
+                    // const indicator = this.querySelector('.expand-indicator');
+                    // if (indicator) {{
+                    //    indicator.classList.toggle('expanded');  // Add rotation logic here if needed
+                    // }}
+                    }}
                 }}));
 
                 let theme = 'dark';
@@ -343,12 +408,14 @@ class HtmlGenerator:
 
                 function updateDuration() {{
                     const durationElement = document.getElementById('dynamic-duration');
-                    const startTime = {int(result.start_time or 0) * 1000};  // Convert start_time to milliseconds
-                    durationElement.innerText = calculateDuration(startTime);
+                        const startTime = {int(result.start_time or 0) * 1000};  // Convert start_time to milliseconds
+                    if (durationElement) {{
+                        durationElement.innerText = calculateDuration(startTime);
+                    }}
                 }}
     
                 window.onload = function() {{
-                    if ("{result.status}" === "pending") {{
+                    if ("{int(result.status in (Result.Status.PENDING, Result.Status.RUNNING))}") {{
                         updateDuration();
                         setInterval(updateDuration, 1000);  // Update every second
                     }}
@@ -361,7 +428,7 @@ class HtmlGenerator:
                 function startAutoReload() {{
                     reloadInterval = setInterval(function() {{
                         location.reload();
-                    }}, 60000); // Reload every 60 seconds
+                    }}, 30000); // Reload every 30 seconds
                 }}
 
                 function stopAutoReload() {{
@@ -400,7 +467,7 @@ class HtmlGenerator:
         with open(html_file_path, "w", encoding="utf8") as f:
             f.write(content)
         if upload_to_s3:
-            s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=Environment.PR_NUMBER, branch=Environment.BRANCH, sha=Environment.SHA)}"
+            s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=Environment.get().PR_NUMBER, branch=Environment.get().BRANCH, sha=Environment.get().SHA)}"
             html_link = S3.copy_file_to_s3(s3_path=s3_path, local_path=html_file_path)
             return html_link
 
@@ -408,10 +475,13 @@ class HtmlGenerator:
 
     @classmethod
     def upload_file_to_s3(
-        cls, local_file_path, upload_to_s3: bool, text: bool = False
+        cls, local_file_path, upload_to_s3: bool, text: bool = False, s3_subprefix=""
     ) -> str:
         if upload_to_s3:
-            s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=Environment.PR_NUMBER, branch=Environment.BRANCH, sha=Environment.SHA)}"
+            s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=Environment.get().PR_NUMBER, branch=Environment.get().BRANCH, sha=Environment.get().SHA)}"
+            if s3_subprefix:
+                s3_subprefix.removeprefix("/").removesuffix("/")
+                s3_path += f"/{s3_subprefix}"
             html_link = S3.copy_file_to_s3(
                 s3_path=s3_path, local_path=local_file_path, text=text
             )
@@ -420,7 +490,11 @@ class HtmlGenerator:
 
     @classmethod
     def generate_recursive(
-        cls, result: Result, upload_to_s3: bool, changed_items: List[Result] = None
+        cls,
+        result: Result,
+        upload_to_s3: bool,
+        s3_subprefix: str = "",
+        changed_items: Optional[List[Result]] = None,
     ) -> Result:
         changed_result_names = [item.name for item in changed_items or []]
         for result_ in result.results or []:
@@ -429,13 +503,17 @@ class HtmlGenerator:
                     f"Result for [{result_.name}] has not been changed - skip updating html"
                 )
                 continue
-            if result_.results:
+            if result_.results or result_.files:
                 if result_.html_link:
                     print(
                         f"Result for [{result_.name}] has own html_link [{result_.html_link}] - report won't be generated"
                     )
                     continue
-                _ = cls.generate_recursive(result_, upload_to_s3=upload_to_s3)
+                _ = cls.generate_recursive(
+                    result_,
+                    upload_to_s3=upload_to_s3,
+                    s3_subprefix=f"{s3_subprefix}/{Utils.normalize_string(result.name)}",
+                )
                 print(
                     f"Html for sub Result [{result_.name}] updated, link [{result_.html_link}]"
                 )
@@ -460,7 +538,10 @@ class HtmlGenerator:
                             is_text = True
                             break
                     file_link = cls.upload_file_to_s3(
-                        file, upload_to_s3=upload_to_s3, text=is_text
+                        file,
+                        upload_to_s3=upload_to_s3,
+                        text=is_text,
+                        s3_subprefix=s3_subprefix,
                     )
                 result.urls.append(file_link)
             print(
@@ -468,7 +549,7 @@ class HtmlGenerator:
             )
             result.files = []
 
-        print(f"Generating HTML for result [{result}]")
+        print(f"Generating HTML for result [{result.name}]")
         html_content = cls.generate_html(result)
         html_link = cls.dump_html(result.name, html_content, upload_to_s3)
         result.html_link = html_link
@@ -477,14 +558,40 @@ class HtmlGenerator:
 
 if __name__ == "__main__":
     sample_result = Result(
-        status="success",
-        name="Job A",
+        status="running",
+        name="Workflow Name",
         start_time=datetime.datetime.utcnow().timestamp(),
         duration=3600.5,
         results=[
             Result(
+                status="running",
+                name="Very very long job name to not fit on a page",
+                start_time=datetime.datetime.utcnow().timestamp(),
+                duration=600,
+                results=[
+                    Result(
+                        status="success",
+                        name="Test A",
+                        start_time=datetime.datetime.utcnow().timestamp(),
+                        duration=10,
+                        results=None,
+                        files=["file1.txt", "file2.log"],
+                        urls=["http://example.com/report"],
+                    ),
+                    Result(
+                        status="failure",
+                        name="Test B",
+                        start_time=datetime.datetime.utcnow().timestamp(),
+                        duration=20,
+                        results=None,
+                        files=["error.log"],
+                        urls=["http://example.com/error"],
+                    ),
+                ],
+            ),
+            Result(
                 status="success",
-                name="Job 1",
+                name="Another job",
                 start_time=datetime.datetime.utcnow().timestamp(),
                 duration=600,
                 results=[

@@ -1,6 +1,3 @@
-import dataclasses
-import json
-
 from praktika.utils import Utils
 from praktika.s3 import S3
 from praktika.cache import Cache
@@ -14,15 +11,10 @@ from praktika.environment import Environment
 class CacheRunnerHooks(HookInterface):
     @classmethod
     def configure(cls, _workflow):
-        workflow_runtime_config = WorkflowRuntime(
-            digests={},
-            sha=Environment.SHA,
-            cache_success=[],
-            cache_artifacts={},
-        )
+        workflow_config = WorkflowRuntime.from_fs(_workflow.name)
         cache = Cache()
-        assert Environment.WORKFLOW_NAME
-        workflow = _get_workflows(name=Environment.WORKFLOW_NAME)[0]
+        assert Environment.get().WORKFLOW_NAME
+        workflow = _get_workflows(name=Environment.get().WORKFLOW_NAME)[0]
         print(f"Workflow Configure, workflow [{workflow.name}]")
         assert (
             workflow.enable_cache
@@ -30,11 +22,11 @@ class CacheRunnerHooks(HookInterface):
         artifact_digest_map = {}
         job_digest_map = {}
         for job in workflow.jobs:
-            if not job.cache_digest:
+            if not job.digest_config:
                 print(
-                    f"NOTE: job [{job.name}] has no Config.cache_digest - skip cache check, always run"
+                    f"NOTE: job [{job.name}] has no Config.digest_config - skip cache check, always run"
                 )
-            digest = cache.digest.calc_digest(job.cache_digest)
+            digest = cache.digest.calc_job_digest(job_config=job)
             job_digest_map[job.name] = digest
             if job.provides:
                 # assign the job digest also to the artifacts it provides
@@ -53,46 +45,53 @@ class CacheRunnerHooks(HookInterface):
                     digests_combined_list.append(artifact_digest_map[artifact_name])
             digests_combined_list.append(job_digest_map[job.name])
             final_digest = "-".join(digests_combined_list)
-            workflow_runtime_config.digests[job.name] = final_digest
+            workflow_config.digest_jobs[job.name] = final_digest
 
         assert (
-            workflow_runtime_config.digests
+            workflow_config.digest_jobs
         ), f"BUG, Workflow with enabled cache must have job digests after configuration, wf [{workflow.name}]"
 
         print("Check remote cache")
         job_to_cache_record = {}
-        for job_name, job_digest in workflow_runtime_config.digests.items():
+        for job_name, job_digest in workflow_config.digest_jobs.items():
             record = cache.fetch_success(job_name=job_name, job_digest=job_digest)
             if record:
                 assert (
                     Utils.normalize_string(job_name)
-                    not in workflow_runtime_config.cache_success
+                    not in workflow_config.cache_success
                 )
-                workflow_runtime_config.cache_success.append(job_name)
+                workflow_config.cache_success.append(job_name)
                 job_to_cache_record[job_name] = record
 
         print("Check artifacts to reuse")
         for job in workflow.jobs:
-            if job.name in workflow_runtime_config.cache_success:
+            if job.name in workflow_config.cache_success:
                 if job.provides:
                     for artifact_name in job.provides:
-                        workflow_runtime_config.cache_artifacts[artifact_name] = (
+                        workflow_config.cache_artifacts[artifact_name] = (
                             job_to_cache_record[job.name]
                         )
 
-        print(f"Write config to job output env: {Environment._JOB_OUTPUT_STREAM}")
-        with open(Environment._JOB_OUTPUT_STREAM, "a", encoding="utf8") as f:
+        print(f"Write config to job output env: {Environment.get()._JOB_OUTPUT_STREAM}")
+        with open(Environment.get()._JOB_OUTPUT_STREAM, "a", encoding="utf8") as f:
             print(
-                f"DATA={workflow_runtime_config.to_json()}",
+                f"DATA={workflow_config.to_json()}",
                 file=f,
             )
+        print(f"WorkflowRuntimeConfig: [{workflow_config.to_json(pretty=True)}]")
         print(
-            f"WorkflowRuntimeConfig: [{workflow_runtime_config.to_json(pretty=True)}]"
+            "Dump WorkflowConfig to fs, the next hooks in this job might want to see it"
         )
+        workflow_config.dump()
+
+        return workflow_config
 
     @classmethod
     def pre_run(cls, _workflow, _job, _required_artifacts=None):
-        runtime_config = WorkflowRuntime.from_fs(Settings.WORKFLOW_CONFIG_FILE)
+        if _job.name == Settings.CI_CONFIG_JOB_NAME:
+            # SPECIAL handling
+            return
+        runtime_config = WorkflowRuntime.from_fs(_workflow.name)
         required_artifacts = []
         if _required_artifacts:
             required_artifacts = _required_artifacts
@@ -115,8 +114,8 @@ class CacheRunnerHooks(HookInterface):
     def post_run(cls, workflow, job):
         if job.name == Settings.CI_CONFIG_JOB_NAME:
             return
-        if job.cache_digest:
+        if job.digest_config:
             # cache is enabled, and it's a job that supposed to be cached (has defined digest config)
-            workflow_runtime = WorkflowRuntime.from_fs(Settings.WORKFLOW_CONFIG_FILE)
-            job_digest = workflow_runtime.digests[job.name]
+            workflow_runtime = WorkflowRuntime.from_fs(workflow.name)
+            job_digest = workflow_runtime.digest_jobs[job.name]
             Cache.push_success_record(job.name, job_digest, workflow_runtime.sha)

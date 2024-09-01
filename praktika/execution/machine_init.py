@@ -118,7 +118,6 @@ class Machine:
             self.arch = "arm64"
         else:
             assert False, f"Unsupported arch [{platform.machine()}]"
-        self.gh_token = None
         self.instance_id = None
         self.asg_name = None
         self.runner_api_endpoint = None
@@ -155,11 +154,10 @@ class Machine:
             )
 
     def _get_gh_token_from_ssm(self):
-        if not self.gh_token:
-            self.gh_token = Shell.get_output_or_raise(
-                "/usr/local/bin/aws ssm  get-parameter --name github_runner_registration_token --with-decryption --output text --query Parameter.Value"
-            )
-        return self.gh_token
+        gh_token = Shell.get_output_or_raise(
+            "/usr/local/bin/aws ssm  get-parameter --name github_runner_registration_token --with-decryption --output text --query Parameter.Value"
+        )
+        return gh_token
 
     def update_instance_info(self):
         self.instance_id = Shell.get_output_or_raise("ec2metadata --instance-id")
@@ -216,40 +214,35 @@ class Machine:
     def config_actions(self):
         if not self.instance_id:
             self.update_instance_info()
-        if not self.gh_token:
-            self._get_gh_token_from_ssm()
-        assert (
-            self.gh_token
-            and self.instance_id
-            and self.runner_api_endpoint
-            and self.labels
-        )
-        command = f"sudo -u ubuntu {ExecutionSettings.GH_ACTIONS_DIRECTORY}/config.sh --token {self.gh_token} \
+        token = self._get_gh_token_from_ssm()
+        assert token and self.instance_id and self.runner_api_endpoint and self.labels
+        command = f"sudo -u ubuntu {ExecutionSettings.GH_ACTIONS_DIRECTORY}/config.sh --token {token} \
             --url {self.runner_api_endpoint} --ephemeral --unattended --replace \
             --runnergroup Default --labels {','.join(self.labels)} --work wd --name {self.instance_id}"
-        i = 7
-        res = False
-        while i > 0 and not res:
-            res = Shell.check(command, verbose=True)
-            i -= 1
-            print("ERROR: failed to configure GH actions runner, retry after 10s")
-            time.sleep(10)
-        if res:
+        res = 1
+        i = 0
+        while i < 10 and res != 0:
+            res = Shell.run(command)
+            i += 1
+            if res != 0:
+                print(
+                    f"ERROR: failed to configure GH actions runner after [{i}] attempts, exit code [{res}], retry after 10s"
+                )
+                time.sleep(10)
+                self._get_gh_token_from_ssm()
+        if res == 0:
             print("GH action runner has been configured")
         else:
             assert False, "GH actions runner configuration failed"
         return self
 
     def unconfig_actions(self):
-        if not self.gh_token:
-            self._get_gh_token_from_ssm()
-        command = f"sudo -u ubuntu {ExecutionSettings.GH_ACTIONS_DIRECTORY}/config.sh remove --token {self.gh_token}"
-        Shell.check(command, strict=True, verbose=True)
+        token = self._get_gh_token_from_ssm()
+        command = f"sudo -u ubuntu {ExecutionSettings.GH_ACTIONS_DIRECTORY}/config.sh remove --token {token}"
+        Shell.check(command, strict=True)
         return self
 
     def run_actions_async(self):
-        if not self.gh_token:
-            self._get_gh_token_from_ssm()
         command = f"sudo -u ubuntu {ExecutionSettings.GH_ACTIONS_DIRECTORY}/run.sh"
         self.proc = Shell.run_async(command)
         assert self.proc is not None

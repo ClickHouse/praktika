@@ -2,16 +2,16 @@ import dataclasses
 import datetime
 import json
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any
 
 from praktika.s3 import S3
-from praktika.utils import Utils
+from praktika.utils import Utils, MetaClasses
 from praktika.settings import Settings
 from praktika.environment import Environment
 
 
 @dataclasses.dataclass
-class Result:
+class Result(MetaClasses.Serializable):
     class Status:
         SKIPPED = "skipped"
         SUCCESS = "success"
@@ -30,69 +30,42 @@ class Result:
     info: str = ""
     html_link: str = ""
 
-    @classmethod
-    def set_status(cls, status) -> "Result":
-        result = cls.from_fs(Environment.JOB_NAME)
-        assert result
-        result.status = status
-        result.dump()
-        return result
+    @staticmethod
+    def get():
+        return Result.from_fs(Environment.get().JOB_NAME)
 
-    @classmethod
-    def set_success(cls) -> "Result":
-        return cls.set_status(cls.Status.SUCCESS)
+    def set_status(self, status) -> "Result":
+        self.status = status
+        self.dump()
+        return self
 
-    @classmethod
-    def set_results(cls, results: List["Result"]) -> "Result":
-        result = cls.from_fs(Environment.JOB_NAME)
-        assert result
-        result.results = results
-        result.dump()
-        return result
+    def set_success(self) -> "Result":
+        return self.set_status(Result.Status.SUCCESS)
 
-    @classmethod
-    def set_files(cls, files) -> "Result":
+    def set_results(self, results: List["Result"]) -> "Result":
+        self.results = results
+        self.dump()
+        return self
+
+    def set_files(self, files) -> "Result":
         for file in files:
             assert Path(
                 file
             ).is_file(), f"Not valid file [{file}] from file list [{files}]"
-        result = cls.from_fs(Environment.JOB_NAME)
-        assert result
-        if not result.files:
-            result.files = []
-        result.files += files
-        result.dump()
-        return result
-
-    @classmethod
-    def set_info(cls, info: str) -> "Result":
-        result = cls.from_fs(Environment.JOB_NAME)
-        assert result
-        result.info = info
-        result.dump()
-        return result
-
-    def dump(self):
-        path = self._get_file_name(self.name)
-        with open(path, "w", encoding="utf8") as f:
-            json.dump(dataclasses.asdict(self), f)
+        if not self.files:
+            self.files = []
+        self.files += files
+        self.dump()
         return self
 
-    @staticmethod
-    def _get_file_name(name):
-        assert name
-        return Path(Settings.RESULTS_DIR) / f"{Utils.normalize_string(name)}.json"
+    def set_info(self, info: str) -> "Result":
+        self.info = info
+        self.dump()
+        return self
 
     @classmethod
-    def from_fs(cls, name) -> Optional["Result"]:
-        path = cls._get_file_name(name)
-        try:
-            with open(path, "r", encoding="utf8") as f:
-                dict_obj = json.load(f)
-                return cls.from_dict(dict_obj)
-        except Exception as ex:
-            print(f"ERROR: failed to load Results from [{path}], exception [{ex}]")
-            return None
+    def file_name_static(cls, name):
+        return f"{Settings.RESULTS_DIR}/result_{Utils.normalize_string(name)}.json"
 
     @classmethod
     def from_dict(cls, obj: Dict[str, Any]) -> "Result":
@@ -106,18 +79,16 @@ class Result:
     def copy_to_s3(self):
         assert Settings.HTML_S3_PATH, "BUG?"
         self.dump()
-        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=Environment.PR_NUMBER, branch=Environment.BRANCH, sha=Environment.SHA)}"
-        html_link = S3.copy_file_to_s3(
-            s3_path=s3_path, local_path=self._get_file_name(self.name)
-        )
+        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=Environment.get().PR_NUMBER, branch=Environment.get().BRANCH, sha=Environment.get().SHA)}"
+        html_link = S3.copy_file_to_s3(s3_path=s3_path, local_path=self.file_name())
         return html_link
 
     @classmethod
     def from_s3(cls, name):
         assert Settings.HTML_S3_PATH, "BUG?"
-        file_path = cls._get_file_name(name)
+        file_path = cls.file_name_static(name)
         file_name = Path(file_path).name
-        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=Environment.PR_NUMBER, branch=Environment.BRANCH, sha=Environment.SHA)}/{file_name}"
+        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=Environment.get().PR_NUMBER, branch=Environment.get().BRANCH, sha=Environment.get().SHA)}/{file_name}"
         S3.copy_file_from_s3(s3_path=s3_path, local_path=file_path)
         result = Result.from_fs(name)
         assert result
@@ -189,6 +160,19 @@ class Result:
             info="",
         )
 
+    @classmethod
+    def generate_skipped(cls, name, results=None):
+        return Result(
+            name=name,
+            status=Result.Status.SKIPPED,
+            start_time=None,
+            duration=None,
+            results=results or [],
+            files=[],
+            urls=[],
+            info="from cache",
+        )
+
 
 @dataclasses.dataclass
 class _PreResult:
@@ -220,8 +204,8 @@ class _PreResult:
 
 
 class ResultInfo:
-    NOT_FOUND = "No results found (job killed or terminated, no @Result provided)"
+    NOT_FOUND = "Job killed or terminated, no :Result: file provided)"
     NOT_FOUND_IMPOSSIBLE = (
-        "No job @Result or pre-run @Result (bug, or job misbehaviour, must not be here)"
+        "No :Result: file (bug, or job misbehaviour, must not ever happen)"
     )
-    SKIPPED_DUE_TO_PREVIOUS_FAILURE = "Skipped due to previous dependency job failure"
+    SKIPPED_DUE_TO_PREVIOUS_FAILURE = "Skipped due to previous failure"

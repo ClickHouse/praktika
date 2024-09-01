@@ -51,7 +51,26 @@ git push --set-upstream origin my_praktika
 # 8. Enjoy Your Hello World CI
 ```
 
-#### CI Platform features
+#### praktika features
+|                              |               | comment                                                      |
+|------------------------------|---------------|--------------------------------------------------------------|
+| Pythonic CI pipelines        | Y             | 100% python interface for creating CI pipelines              |
+| Artifacts                    | Y             | Download/upload artifacts (GH, S3)                           |
+| Reports                      | Y             | HTML report for CI workflow/jobs/tests                       |
+| CI Cache                     | Y             | Skip not-affected job, reuse artifacts                       |
+| Docker as execution env      | N             | Support running jobs in docker natively                      |
+| ClickHouse CI DB             | N (High Prio) | Export results to CI DB for analytics and observability      |
+| Mergeable Check logic        | N (High Prio) | Allow specific job(s) to fail without blocking merge         |
+| CI Customization             | N             | Support for manual CI customization within a CI run          |
+| Observability                | N             | Integration with observability platform, Grafana             |
+| Collecting logs from runners | N             | system, logs, machine init logs, etc                         |
+| Slack app                    | N             | Slack app to subscribe to CI events, Alarms, etc             |
+| Main CI Dashboard            | N             | Page comprising info about all running workflows/PRs/commits |
+| Automatic Backporting        | N             | Automatic PR backports to release ranches                    |
+| Pre-requisites: python       | Y             | Install python dependencies as a pre-requisite job step      |
+| Secret Management            | Y             | Fetch secrets from AWS SSM or GH secrets/variables           |
+
+#### Supported GitHub features
 |                       | GitHub | GitLab | BitBucket | comment                                   |
 |-----------------------|--------|--------|-----------|-------------------------------------------|
 | pull_request workflow | Y      |        |           |                                           |
@@ -63,31 +82,16 @@ git push --set-upstream origin my_praktika
 | job artifacts         | Y      |        |           | Upload/download native platform artifacts |
 | platform runners      | Y      |        |           | Free ubuntu-latest GH runner              |
 | self-hosted runners   | Y      |        |           | Using your own CI runners (AWS EC2)       |
+| secrets and variables | Y      |        |           | Using secrets in workflows                |
 
 #### Cloud Compute features
-|                                     | AWS | Azure | GCP   | comment                               |
-|-------------------------------------|-----|-------|-------|---------------------------------------|
-| EC2 as a CI runner                  | Y   |       |       |                                       |
-| ASG self-scale down                 | Y   |       |       | Self scaling down upon job completion |
-| ASG self-scale up                   | Y   |       |       | Requires 1+ EC2 instance in reserve   |
-| ASG zero-capacity-overhead scale up | N   |       |       | for instance: GH webhook + lambda     |
-| ASG fixed size                      | Y   |       |       | no auto scaling                       |
-| S3 for artifacts                    | Y   |       |       |                                       |
-| CloudWatch runner logs              | N   |       |       |                                       |
-| prebuild runner image (terraform)   | N   |       |       |                                       |
-
-#### praktika features
-|                         |               | comment                                                 |
-|-------------------------|---------------|---------------------------------------------------------|
-| Pythonic CI pipelines   | Y             | 100% python interface for creating CI pipelines         |
-| Artifacts               | Y             | Download/upload artifacts (GH, S3)                      |
-| Reports                 | Y             | Building HTML report for CI jobs                        |
-| CI Cache                | Y             | Skip not-affected job, reuse artifacts                  |
-| ClickHouse CI DB        | N (High Prio) | Export results to CI DB for analytics and observability |
-| Docker as execution env | N             | Support running jobs in docker natively                 |
-| Observability           | N             | Integration with observability platform, Grafana        |
-| CI Customization        | N             | Support for manual CI customization within a CI run     |
-| Slack app               | N             | Slack app to subscribe to CI events, Alarms, etc        |
-| Automatic Backporting   | N             | Automatic PR backports to release ranches               |
-| Mergeable Check logic   | N (High Prio) | Allow specific job(s) to fail without blocking merge    |
-| Pre-requisites: python  | Y             | Install python dependencies as a pre-requisite job step |
+|                                     | AWS | Azure | GCP   | comment                                                                    |
+|-------------------------------------|-----|-------|-------|----------------------------------------------------------------------------|
+| EC2 as a CI runner                  | Y   |       |       |                                                                            |
+| ASG self-scale down                 | Y   |       |       | Self scaling down upon job completion                                      |
+| ASG self-scale up                   | Y   |       |       | Requires 1+ EC2 instance in reserve                                        |
+| ASG fixed size                      | Y   |       |       | no auto scaling                                                            |
+| S3 for artifacts                    | Y   |       |       |                                                                            |
+| ASG zero-capacity-overhead scale up | N   |       |       | for instance: GH webhook + lambda. (can be enabled, but no native support) |
+| prebuild runner image (terraform)   | N   |       |       |                                                                            |
+| SSM                                 | Y   |       |       | Using secrets from SSM in workflows                                        |

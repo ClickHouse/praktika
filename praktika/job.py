@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, List
 
 
@@ -11,8 +11,8 @@ class Job:
 
     @dataclass
     class CacheDigestConfig:
-        include_paths: Optional[List[str]] = None
-        exclude_paths: Optional[List[str]] = None
+        include_paths: List[str] = field(default_factory=list)
+        exclude_paths: List[str] = field(default_factory=list)
 
     @dataclass
     class Config:
@@ -37,4 +37,6 @@ class Job:
 
         auto_dependencies: Optional[List[str]] = None
 
-        cache_digest: Optional["Job.CacheDigestConfig"] = None
+        digest_config: Optional["Job.CacheDigestConfig"] = None
+
+        run_in_docker: str = ""
