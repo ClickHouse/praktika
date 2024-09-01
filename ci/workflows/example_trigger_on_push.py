@@ -14,7 +14,7 @@ class WorkflowNames:
 workflow = Workflow.Config(
     name=WorkflowNames.NAME,
     event=Workflow.Event.PUSH,
-    branches=["'**'"],
+    branches=["**"],
     jobs=[
         Job.Config(
             name=JobNames.JOB_A,

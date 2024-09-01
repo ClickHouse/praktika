@@ -4,7 +4,7 @@ name: Example On Push,S3,self-hosted
 
 on:
   push:
-    branches: [parse_gh_env, test**]
+    branches: ['parse_gh_env', 'test**']
 
 env:
   # Force the stdout and stderr streams to be unbuffered

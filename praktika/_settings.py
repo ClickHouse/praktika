@@ -49,6 +49,7 @@ class _Settings:
     #        HTML Report settings        #
     ######################################
     HTML_S3_PATH: str = ""
+    HTML_PAGE_FILE: str = "./praktika/json.html"
     TEXT_CONTENT_EXTENSIONS: Iterable[str] = frozenset([".txt", ".log"])
     S3_BUCKET_TO_HTTP_ENDPOINT: Optional[Dict[str, str]] = None
 

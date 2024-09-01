@@ -6,14 +6,14 @@ from praktika.utils import Utils, Shell
 if __name__ == "__main__":
     # 1. do some work
 
-    # dummy job log
-    log_file_path = f"{Settings.OUTPUT_DIR}/{Utils.normalize_string(Environment.get().JOB_NAME)}.log"
-    Shell.check(f"echo 'Hello World!' > {log_file_path}")
+    # dummy job artifact
+    artifact_path = f"{Settings.OUTPUT_DIR}/{Utils.normalize_string(Environment.get().JOB_NAME)}.log"
+    Shell.check(f"echo 'Hello World!' > {artifact_path}")
 
     # 2. dump results
     Result.from_fs(Environment.get().JOB_NAME).set_success().set_info(
         "all good"
-    ).set_files(files=[log_file_path]).set_results(
+    ).set_files(files=[artifact_path]).set_results(
         results=[
             Result(
                 name="Test 1",

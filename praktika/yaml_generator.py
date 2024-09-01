@@ -160,7 +160,7 @@ class PullRequestPushYamlGen:
         base_template = YamlGenerator.Templates.TEMPLATE_PULL_REQUEST_0
         template_1 = base_template.strip().format(
             NAME=self.workflow_config.name,
-            BRANCHES=", ".join(self.workflow_config.branches),
+            BRANCHES=", ".join([f"'{branch}'" for branch in self.workflow_config.branches]),
             EVENT=self.workflow_config.event,
             JOBS="{}\n" * len(self.workflow_config.jobs),
         )

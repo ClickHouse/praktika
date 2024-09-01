@@ -4,7 +4,7 @@ name: Library Main CI
 
 on:
   push:
-    branches: [main]
+    branches: ['main']
 
 env:
   # Force the stdout and stderr streams to be unbuffered

@@ -1,6 +1,6 @@
 # praktika
 
-ToolBox for building resilient, feature-reach CI infrastructure on top of Git Management Platform (GH Actions) and Public Cloud Provider (AWS WebServices).
+Resilient, feature-reach CI infrastructure on top of Git Management Platform (GH Actions) and Public Cloud Provider (AWS WebServices).
 It's easy with praktika.
 
 ### concepts:
