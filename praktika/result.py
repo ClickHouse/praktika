@@ -24,10 +24,11 @@ class Result(MetaClasses.Serializable):
     status: str
     start_time: Optional[float] = None
     duration: Optional[float] = None
-    results: Optional[List["Result"]] = None
-    files: Optional[List[str]] = None
-    urls: Optional[List[str]] = None
+    results: List["Result"] = dataclasses.field(default_factory=list)
+    files: List[str] = dataclasses.field(default_factory=list)
+    links: List[str] = dataclasses.field(default_factory=list)
     info: str = ""
+    aux_links: List[str] = dataclasses.field(default_factory=list)
     html_link: str = ""
 
     @staticmethod
@@ -79,9 +80,20 @@ class Result(MetaClasses.Serializable):
     def copy_to_s3(self):
         assert Settings.HTML_S3_PATH, "BUG?"
         self.dump()
-        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=Environment.get().PR_NUMBER, branch=Environment.get().BRANCH, sha=Environment.get().SHA)}"
-        html_link = S3.copy_file_to_s3(s3_path=s3_path, local_path=self.file_name())
-        return html_link
+        pr_number = Environment.get().PR_NUMBER
+        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=pr_number, branch=Environment.get().BRANCH, sha=Environment.get().SHA)}"
+        url = S3.copy_file_to_s3(s3_path=s3_path, local_path=self.file_name())
+        if pr_number:
+            print("Duplicate Result for PR for latest-sha html report")
+            s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=pr_number, branch=Environment.get().BRANCH, sha='latest')}"
+            url = S3.copy_file_to_s3(s3_path=s3_path, local_path=self.file_name())
+        return url
+
+    def get_link(self):
+        pr_number = Environment.get().PR_NUMBER
+        sha = Environment.get().SHA if pr_number == 0 else 'latest'
+        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=pr_number, branch=Environment.get().BRANCH, sha=sha)}"
+        return S3.get_link(s3_path=s3_path, local_path=self.file_name())
 
     @classmethod
     def from_s3(cls, name):
@@ -156,7 +168,7 @@ class Result(MetaClasses.Serializable):
             duration=None,
             results=results or [],
             files=[],
-            urls=[],
+            links=[],
             info="",
         )
 
@@ -169,9 +181,54 @@ class Result(MetaClasses.Serializable):
             duration=None,
             results=results or [],
             files=[],
-            urls=[],
+            links=[],
             info="from cache",
         )
+
+    @classmethod
+    def upload_file_to_s3(
+        cls, local_file_path, upload_to_s3: bool, text: bool = False, s3_subprefix=""
+    ) -> str:
+        if upload_to_s3:
+            s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=Environment.get().PR_NUMBER, branch=Environment.get().BRANCH, sha=Environment.get().SHA)}"
+            if s3_subprefix:
+                s3_subprefix.removeprefix("/").removesuffix("/")
+                s3_path += f"/{s3_subprefix}"
+            html_link = S3.copy_file_to_s3(
+                s3_path=s3_path, local_path=local_file_path, text=text
+            )
+            return html_link
+        return f"file://{Path(local_file_path).absolute()}"
+
+    def upload_files(self):
+        if self.results:
+            for result_ in self.results:
+                result_.upload_files()
+        for file in self.files:
+            if not Path(file).is_file():
+                print(f"ERROR: Invalid file [{file}] in [{self.name}] - skip upload")
+                self.info += f"\nWARNING: Result file [{file}] was not found"
+                file_link = self.upload_file_to_s3(file, upload_to_s3=False)
+            else:
+                is_text = False
+                for text_file_suffix in Settings.TEXT_CONTENT_EXTENSIONS:
+                    if file.endswith(text_file_suffix):
+                        print(
+                            f"File [{file}] matches Settings.TEXT_CONTENT_EXTENSIONS [{Settings.TEXT_CONTENT_EXTENSIONS}] - add text attribute for s3 object"
+                        )
+                        is_text = True
+                        break
+                file_link = self.upload_file_to_s3(
+                    file,
+                    upload_to_s3=True,
+                    text=is_text,
+                    s3_subprefix=Utils.normalize_string(self.name),
+                )
+            self.links.append(file_link)
+        print(
+            f"Job files [{self.files}] uploaded to s3 [{self.links[-len(self.files):]}] - clean files list"
+        )
+        self.files = []
 
 
 @dataclasses.dataclass

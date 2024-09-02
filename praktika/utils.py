@@ -104,7 +104,7 @@ class Shell:
         )
         if res.stderr:
             print(f"WARNING: stderr: {res.stderr.strip()}")
-        if res.returncode != 0:
+        if strict and res.returncode != 0:
             raise RuntimeError(f"command failed with {res.returncode}")
         return res.stdout.strip()
 

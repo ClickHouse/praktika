@@ -12,7 +12,8 @@ class S3:
             prefix += f"{pr_number}"
         else:
             prefix += f"{branch}"
-        prefix += f"/{sha}"
+        if sha:
+            prefix += f"/{sha}"
         return prefix
 
     @classmethod
@@ -38,7 +39,7 @@ class S3:
 
     @classmethod
     def copy_file_to_s3(cls, s3_path, local_path, text=False):
-        assert Path(local_path), f"Path [{local_path}] does not exist"
+        assert Path(local_path).exists(), f"Path [{local_path}] does not exist"
         assert Path(s3_path), f"Invalid S3 Path [{s3_path}]"
         assert Path(
             local_path
@@ -59,6 +60,13 @@ class S3:
             res
         ), f"Failed to copy to s3 after Settings.MAX_RETRIES_S3 [{Settings.MAX_RETRIES_S3}] retries, file [{local_path}]"
         # TODO: add support for api gateway / cloudfront
+        bucket = s3_path.split("/")[0]
+        endpoint = Settings.S3_BUCKET_TO_HTTP_ENDPOINT[bucket]
+        return f"https://{s3_full_path}".replace(bucket, endpoint)
+
+    @classmethod
+    def get_link(cls, s3_path, local_path):
+        s3_full_path = f"{s3_path}/{Path(local_path).name}"
         bucket = s3_path.split("/")[0]
         endpoint = Settings.S3_BUCKET_TO_HTTP_ENDPOINT[bucket]
         return f"https://{s3_full_path}".replace(bucket, endpoint)

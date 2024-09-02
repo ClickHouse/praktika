@@ -1,5 +1,6 @@
 import argparse
 
+from praktika.html_prepare import Html
 from praktika.validator import Validator
 from praktika.yaml_generator import YamlGenerator
 
@@ -10,6 +11,11 @@ def parse_args():
         "--generate",
         action="store_true",
         help="Generates CI pipeline in accordance with configs in ./ci/configs/*.py",
+    )
+    parser.add_argument(
+        "--upload-html",
+        action="store_true",
+        help="Upload html for reports",
     )
     parser.add_argument(
         "--workflow",
@@ -26,5 +32,7 @@ if __name__ == "__main__":
     if args.generate:
         Validator().validate()
         YamlGenerator().generate(args.workflow)
+    elif args.upload_html:
+        Html.prepare()
     else:
         assert False

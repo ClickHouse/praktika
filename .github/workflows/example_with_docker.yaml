@@ -4,7 +4,7 @@ name: Example with Docker
 
 on:
   pull_request:
-    branches: [main]
+    branches: ['main']
 
 env:
   # Force the stdout and stderr streams to be unbuffered

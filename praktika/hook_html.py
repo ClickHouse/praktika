@@ -1,10 +1,12 @@
 from datetime import datetime
+import urllib.parse
+from pathlib import Path
 
+from praktika.environment import Environment
 from praktika.gh import GH
 from praktika.parser import WorkflowConfigParser
 from praktika.settings import Settings
 from praktika.utils import Utils, MetaClasses
-from praktika.html_generator import HtmlGenerator
 from praktika.hook_interface import HookInterface
 from praktika.runtime import _RuntimeVars, WorkflowRuntime
 from praktika.result import Result, ResultInfo
@@ -27,18 +29,29 @@ class HtmlRunnerHooks(HookInterface, MetaClasses.FormatPrint):
                 result = Result.generate_skipped(job.name)
             results.append(result)
         summary_result = Result.generate_pending(_workflow.name, results=results)
+        summary_result.aux_links.append(Environment.get().CHANGE_URL)
+        summary_result.aux_links.append(Environment.get().RUN_URL)
         summary_result.start_time = Utils.timestamp()
-        summary_result.copy_to_s3()
-        _ = HtmlGenerator.generate_recursive(summary_result, upload_to_s3=True)
+        json_url_encoded = urllib.parse.quote(summary_result.get_link(), safe="")
+        page_url = "/".join(
+            ["https:/", Settings.HTML_S3_PATH, str(Path(Settings.HTML_PAGE_FILE).name)]
+        )
+        for bucket, endpoint in Settings.S3_BUCKET_TO_HTTP_ENDPOINT.items():
+            page_url = page_url.replace(bucket, endpoint)
+        page_url += f"?results={json_url_encoded}"
+        summary_result.html_link = page_url
+        _ = summary_result.copy_to_s3()
+        print(f"CI Status page url [{page_url}]")
+
         res1 = GH.post_commit_status(
             name=_workflow.name,
             status=Result.Status.PENDING,
             description="",
-            url=summary_result.html_link,
+            url=page_url,
         )
         res2 = GH.post_pr_comment(
-            comment_body=f"[CI Status]({summary_result.html_link}) for [{_workflow.name}] workflow",
-            or_update_comment_with_substring=f") for [{_workflow.name}] workflow",
+            comment_body=f"[CI Status]({page_url}), commit [{Environment.get().SHA[:8]}], workflow [{_workflow.name}]",
+            or_update_comment_with_substring=f", workflow [{_workflow.name}]",
         )
         assert (
             res1 or res2
@@ -58,9 +71,9 @@ class HtmlRunnerHooks(HookInterface, MetaClasses.FormatPrint):
         workflow_result = Result.from_s3(_workflow.name)
         workflow_result.update_sub_result(result)
         workflow_result.copy_to_s3()
-        HtmlGenerator.generate_recursive(
-            workflow_result, upload_to_s3=True, changed_items=[result]
-        )
+        # HtmlGenerator.generate_recursive(
+        #     workflow_result, upload_to_s3=True, changed_items=[result]
+        # )
 
     @classmethod
     def run(cls, _workflow, _job):
@@ -73,6 +86,8 @@ class HtmlRunnerHooks(HookInterface, MetaClasses.FormatPrint):
 
         workflow_result = Result.from_s3(_workflow.name)
         old_status = workflow_result.status
+
+        result.upload_files()
         workflow_result.update_sub_result(result)
 
         skipped_job_results = []
@@ -97,13 +112,6 @@ class HtmlRunnerHooks(HookInterface, MetaClasses.FormatPrint):
         for skipped_job_result in skipped_job_results:
             workflow_result.update_sub_result(skipped_job_result)
 
-        _ = HtmlGenerator.generate_recursive(
-            workflow_result,
-            upload_to_s3=True,
-            changed_items=[result] + skipped_job_results,
-        )
-        # print("Workflow summary Result:")
-        # print(workflow_result)
         workflow_result.copy_to_s3()
         if workflow_result.status != old_status:
             print(
