@@ -44,15 +44,17 @@ jobs:
           export GH_APP_ID="${{ secrets.GH_APP_ID }}"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_s3_artifact.json
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_s3_artifact.json
           cat /tmp/praktika/results/workflow_config_example_s3_artifact.json
+          echo "::group::GITHUB ENV"
           env | grep GITHUB
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
+          echo "::endgroup::"
+          echo "PRAKTIKA_STEP_ENV_OK=1" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
           python -m praktika.runner --pre-run --job-name "Provide Artifact" --workflow-name "Example S3 Artifact"
-
       - name: Run
         id: run
         run: |
@@ -95,15 +97,17 @@ jobs:
           export GH_APP_ID="${{ secrets.GH_APP_ID }}"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_s3_artifact.json
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_s3_artifact.json
           cat /tmp/praktika/results/workflow_config_example_s3_artifact.json
+          echo "::group::GITHUB ENV"
           env | grep GITHUB
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
+          echo "::endgroup::"
+          echo "PRAKTIKA_STEP_ENV_OK=1" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
           python -m praktika.runner --pre-run --job-name "Consume Artifact" --workflow-name "Example S3 Artifact"
-
       - name: Run
         id: run
         run: |

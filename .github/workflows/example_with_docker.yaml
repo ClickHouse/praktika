@@ -12,10 +12,10 @@ env:
 
 jobs:
 
-  workflowconfig:
+  config_workflow:
     runs-on: [maxs-small-fixed]
     needs: []
-    name: WorkflowConfig
+    name: Config Workflow
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -45,30 +45,32 @@ jobs:
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
           python3 -m praktika.gh_auth
-          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_with_docker.json
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_with_docker.json
           cat /tmp/praktika/results/workflow_config_example_with_docker.json
+          echo "::group::GITHUB ENV"
           env | grep GITHUB
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
+          echo "::endgroup::"
+          echo "PRAKTIKA_STEP_ENV_OK=1" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
-          python -m praktika.runner --pre-run --job-name "WorkflowConfig" --workflow-name "Example with Docker"
-
+          python -m praktika.runner --pre-run --job-name "Config Workflow" --workflow-name "Example with Docker"
       - name: Run
         id: run
         run: |
-          python -m praktika.runner --run --job-name "WorkflowConfig" --workflow-name "Example with Docker"
+          python -m praktika.runner --run --job-name "Config Workflow" --workflow-name "Example with Docker"
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
-          python -m praktika.runner --post-run --job-name "WorkflowConfig" --workflow-name "Example with Docker"
+          python -m praktika.runner --post-run --job-name "Config Workflow" --workflow-name "Example with Docker"
 
-  dockerbuilds:
+  docker_builds:
     runs-on: [maxs-small-fixed]
-    needs: [workflowconfig]
-    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.workflowconfig.outputs.data).cache_success, 'DockerBuilds') }}
-    name: DockerBuilds
+    needs: [config_workflow]
+    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success, 'Docker Builds') }}
+    name: Docker Builds
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -92,29 +94,31 @@ jobs:
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
           python3 -m praktika.gh_auth
-          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_with_docker.json
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_with_docker.json
           cat /tmp/praktika/results/workflow_config_example_with_docker.json
+          echo "::group::GITHUB ENV"
           env | grep GITHUB
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
+          echo "::endgroup::"
+          echo "PRAKTIKA_STEP_ENV_OK=1" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
-          python -m praktika.runner --pre-run --job-name "DockerBuilds" --workflow-name "Example with Docker"
-
+          python -m praktika.runner --pre-run --job-name "Docker Builds" --workflow-name "Example with Docker"
       - name: Run
         id: run
         run: |
-          python -m praktika.runner --run --job-name "DockerBuilds" --workflow-name "Example with Docker"
+          python -m praktika.runner --run --job-name "Docker Builds" --workflow-name "Example with Docker"
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
-          python -m praktika.runner --post-run --job-name "DockerBuilds" --workflow-name "Example with Docker"
+          python -m praktika.runner --post-run --job-name "Docker Builds" --workflow-name "Example with Docker"
 
   some_job_to_run_in_docker:
     runs-on: [maxs-small-fixed]
-    needs: [workflowconfig, dockerbuilds]
-    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.workflowconfig.outputs.data).cache_success, 'Some Job to run in docker') }}
+    needs: [config_workflow, docker_builds]
+    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success, 'Some Job to run in docker') }}
     name: Some Job to run in docker
     outputs:
       data: ${{ steps.run.outputs.DATA }}
@@ -145,15 +149,17 @@ jobs:
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
           python3 -m praktika.gh_auth
-          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_with_docker.json
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_with_docker.json
           cat /tmp/praktika/results/workflow_config_example_with_docker.json
+          echo "::group::GITHUB ENV"
           env | grep GITHUB
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
+          echo "::endgroup::"
+          echo "PRAKTIKA_STEP_ENV_OK=1" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
           python -m praktika.runner --pre-run --job-name "Some Job to run in docker" --workflow-name "Example with Docker"
-
       - name: Run
         id: run
         run: |

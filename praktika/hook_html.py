@@ -71,9 +71,6 @@ class HtmlRunnerHooks(HookInterface, MetaClasses.FormatPrint):
         workflow_result = Result.from_s3(_workflow.name)
         workflow_result.update_sub_result(result)
         workflow_result.copy_to_s3()
-        # HtmlGenerator.generate_recursive(
-        #     workflow_result, upload_to_s3=True, changed_items=[result]
-        # )
 
     @classmethod
     def run(cls, _workflow, _job):

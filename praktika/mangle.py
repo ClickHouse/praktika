@@ -49,6 +49,7 @@ def _update_workflow_with_native_jobs(workflow):
     if workflow.dockers:
         from praktika.native_jobs import _docker_build_job
 
+        print(f"Enable native job [{_docker_build_job.name}] for [{workflow.name}]")
         if workflow.enable_cache:
             print(
                 f"Add automatic digest config for [{_docker_build_job.name}] job since cache is enabled"
@@ -64,9 +65,14 @@ def _update_workflow_with_native_jobs(workflow):
                 job.requires = []
             job.requires.append(_docker_build_job.name)
 
-    if workflow.enable_cache or workflow.enable_html:
+    if (
+        workflow.enable_cache
+        or workflow.enable_html
+        or workflow.enable_merge_ready_status
+    ):
         from praktika.native_jobs import _workflow_config_job
 
+        print(f"Enable native job [{_workflow_config_job.name}] for [{workflow.name}]")
         if workflow.enable_html:
             _workflow_config_job.job_requirements.gh_app_auth = True
         workflow.jobs.insert(0, _workflow_config_job)
@@ -74,6 +80,14 @@ def _update_workflow_with_native_jobs(workflow):
             if not job.requires:
                 job.requires = []
             job.requires.append(_workflow_config_job.name)
+
+    if workflow.enable_merge_ready_status:
+        from praktika.native_jobs import _final_job
+
+        print(f"Enable native job [{_final_job.name}] for [{workflow.name}]")
+        for job in workflow.jobs:
+            _final_job.requires.append(job.name)
+        workflow.jobs.append(_final_job)
 
 
 def _get_user_settings() -> Dict[str, Any]:

@@ -63,6 +63,7 @@ class GH:
 
     @classmethod
     def post_commit_status(cls, name, status, description, url):
+        status = cls.convert_to_gh_status(status)
         command = (
             f"gh api -X POST -H 'Accept: application/vnd.github.v3+json' "
             f"/repos/{Environment.get().REPOSITORY}/statuses/{Environment.get().SHA} "

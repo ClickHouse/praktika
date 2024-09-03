@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from praktika.s3 import S3
-from praktika.utils import Utils, MetaClasses
+from praktika.utils import Utils, MetaClasses, Shell
 from praktika.settings import Settings
 from praktika.environment import Environment
 
@@ -91,7 +91,7 @@ class Result(MetaClasses.Serializable):
 
     def get_link(self):
         pr_number = Environment.get().PR_NUMBER
-        sha = Environment.get().SHA if pr_number == 0 else 'latest'
+        sha = Environment.get().SHA if pr_number == 0 else "latest"
         s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=pr_number, branch=Environment.get().BRANCH, sha=sha)}"
         return S3.get_link(s3_path=s3_path, local_path=self.file_name())
 
@@ -101,9 +101,10 @@ class Result(MetaClasses.Serializable):
         file_path = cls.file_name_static(name)
         file_name = Path(file_path).name
         s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=Environment.get().PR_NUMBER, branch=Environment.get().BRANCH, sha=Environment.get().SHA)}/{file_name}"
-        S3.copy_file_from_s3(s3_path=s3_path, local_path=file_path)
+        if not S3.copy_file_from_s3(s3_path=s3_path, local_path=file_path):
+            print(f"ERROR: failed to cp file [{s3_path}] from s3")
+            raise RuntimeError(f"ERROR: failed to cp file [{s3_path}] from s3")
         result = Result.from_fs(name)
-        assert result
         return result
 
     def update_duration(self):
@@ -261,6 +262,8 @@ class _PreResult:
 
 
 class ResultInfo:
+    SETUP_ENV_JOB_FAILED = "Failed to set up job env, it's praktika bug or misconfiguration, check GH Actions logs and report an issue please"
+    PRE_JOB_FAILED = "Failed to do a job pre-run step, it's praktika bug or misconfiguration, check GH Actions logs and report an issue please"
     NOT_FOUND = "Job killed or terminated, no :Result: file provided)"
     NOT_FOUND_IMPOSSIBLE = (
         "No :Result: file (bug, or job misbehaviour, must not ever happen)"

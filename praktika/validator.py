@@ -38,6 +38,11 @@ class Validator:
                                 [r in GHRunners for r in job.runs_on]
                             ), f"GH runners [{job.name}:{job.runs_on}] must not be used with S3 as artifact storage"
 
+                if job.allow_merge_on_failure:
+                    assert (
+                        workflow.enable_merge_ready_status
+                    ), f"Job property allow_merge_on_failure must be used only with enabled workflow.enable_merge_ready_status, workflow [{workflow.name}], job [{job.name}]"
+
             if workflow.enable_cache:
                 assert (
                     Settings.CI_CONFIG_RUNS_ON
@@ -75,6 +80,16 @@ class Validator:
                 assert workflow.get_secret(
                     Settings.DOCKERHUB_SECRET
                 ), f"Secret [{Settings.DOCKERHUB_SECRET}] must have configuration in workflow.secrets, workflow [{workflow.name}]"
+
+            if (
+                workflow.enable_cache
+                or workflow.enable_html
+                or workflow.enable_merge_ready_status
+            ):
+                for job in workflow.jobs:
+                    assert not any(
+                        job in ("ubuntu-latest",) for job in job.runs_on
+                    ), f"GitHub Runners must not be used for workflow with enabled: workflow.enable_cache, workflow.enable_html or workflow.enable_merge_ready_status as s3 access is required, workflow [{workflow.name}], job [{job.name}]"
 
     @classmethod
     def validate_file_paths_in_run_command(cls, workflow: Workflow.Config) -> None:

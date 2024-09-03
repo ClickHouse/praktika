@@ -12,10 +12,10 @@ env:
 
 jobs:
 
-  workflowconfig:
+  config_workflow:
     runs-on: [maxs-small-fixed]
     needs: []
-    name: WorkflowConfig
+    name: Config Workflow
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -44,29 +44,31 @@ jobs:
           export GH_APP_ID="${{ secrets.GH_APP_ID }}"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
           cat /tmp/praktika/results/workflow_config_example_ci_with_cache.json
+          echo "::group::GITHUB ENV"
           env | grep GITHUB
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
+          echo "::endgroup::"
+          echo "PRAKTIKA_STEP_ENV_OK=1" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
-          python -m praktika.runner --pre-run --job-name "WorkflowConfig" --workflow-name "Example CI with Cache"
-
+          python -m praktika.runner --pre-run --job-name "Config Workflow" --workflow-name "Example CI with Cache"
       - name: Run
         id: run
         run: |
-          python -m praktika.runner --run --job-name "WorkflowConfig" --workflow-name "Example CI with Cache"
+          python -m praktika.runner --run --job-name "Config Workflow" --workflow-name "Example CI with Cache"
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
-          python -m praktika.runner --post-run --job-name "WorkflowConfig" --workflow-name "Example CI with Cache"
+          python -m praktika.runner --post-run --job-name "Config Workflow" --workflow-name "Example CI with Cache"
 
   job_a:
     runs-on: [maxs-small-fixed]
-    needs: [workflowconfig]
-    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.workflowconfig.outputs.data).cache_success, 'Job A') }}
+    needs: [config_workflow]
+    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success, 'Job A') }}
     name: Job A
     outputs:
       data: ${{ steps.run.outputs.DATA }}
@@ -96,15 +98,17 @@ jobs:
           export GH_APP_ID="${{ secrets.GH_APP_ID }}"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
           cat /tmp/praktika/results/workflow_config_example_ci_with_cache.json
+          echo "::group::GITHUB ENV"
           env | grep GITHUB
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
+          echo "::endgroup::"
+          echo "PRAKTIKA_STEP_ENV_OK=1" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
           python -m praktika.runner --pre-run --job-name "Job A" --workflow-name "Example CI with Cache"
-
       - name: Run
         id: run
         run: |
@@ -117,8 +121,8 @@ jobs:
 
   job_b:
     runs-on: [maxs-small-fixed]
-    needs: [workflowconfig, job_a]
-    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.workflowconfig.outputs.data).cache_success, 'Job B') }}
+    needs: [config_workflow, job_a]
+    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success, 'Job B') }}
     name: Job B
     outputs:
       data: ${{ steps.run.outputs.DATA }}
@@ -148,15 +152,17 @@ jobs:
           export GH_APP_ID="${{ secrets.GH_APP_ID }}"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
           cat /tmp/praktika/results/workflow_config_example_ci_with_cache.json
+          echo "::group::GITHUB ENV"
           env | grep GITHUB
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
+          echo "::endgroup::"
+          echo "PRAKTIKA_STEP_ENV_OK=1" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
           python -m praktika.runner --pre-run --job-name "Job B" --workflow-name "Example CI with Cache"
-
       - name: Run
         id: run
         run: |
