@@ -491,7 +491,7 @@
         const titleElement = document.getElementById('title');
         let lastModifiedTime = null;
 
-        fetch(path)
+        fetch(path, {cache: "no-cache"})
             .then(response => {
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);

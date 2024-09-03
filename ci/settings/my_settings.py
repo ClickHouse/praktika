@@ -11,3 +11,6 @@ S3_BUCKET_TO_HTTP_ENDPOINT = {"clickhouse-builds": "clickhouse-builds.s3.amazona
 
 DOCKERHUB_USERNAME = "robotclickhouse"
 DOCKERHUB_SECRET = "dockerhub_robot_password"
+
+CI_DB_DB_NAME = "default"
+CI_DB_TABLE_NAME = "checks"

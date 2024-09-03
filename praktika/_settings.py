@@ -38,6 +38,12 @@ class _Settings:
     PYTHON_INTERPRETER: str = "python3"
     PYTHON_VERSION: str = "3.9"
     ENVIRONMENT_VAR_FILE: str = f"{TEMP_DIR}/environment.json"
+    PRE_LOG: str = f"{TEMP_DIR}/pre_run.log"
+    RUN_LOG: str = f"{TEMP_DIR}/run.log"
+    POST_LOG: str = f"{TEMP_DIR}/post_run.log"
+
+    SECRET_GH_APP_ID: str = "GH_APP_ID"
+    SECRET_GH_APP_PEM_KEY: str = "GH_APP_PEM_KEY"
 
     ######################################
     #        CI Cache settings           #
@@ -59,6 +65,15 @@ class _Settings:
     DOCKERHUB_SECRET: str = ""
     DOCKER_WD: str = "/wd"
 
+    ######################################
+    #        CI DB Settings              #
+    ######################################
+    SECRET_CI_DB_URL: str = "CI_DB_URL"
+    SECRET_CI_DB_PASSWORD: str = "CI_DB_PASSWORD"
+    CI_DB_DB_NAME = ""
+    CI_DB_TABLE_NAME = ""
+    CI_DB_INSERT_TIMEOUT_SEC = 5
+
 
 _USER_DEFINED_SETTINGS = [
     "S3_ARTIFACT_PATH",
@@ -79,6 +94,13 @@ _USER_DEFINED_SETTINGS = [
     "DOCKERHUB_USERNAME",
     "DOCKERHUB_SECRET",
     "READY_FOR_MERGE_STATUS_NAME",
+    "SECRET_CI_DB_URL",
+    "SECRET_CI_DB_PASSWORD",
+    "CI_DB_DB_NAME",
+    "CI_DB_TABLE_NAME",
+    "CI_DB_INSERT_TIMEOUT_SEC",
+    "SECRET_GH_APP_PEM_KEY",
+    "SECRET_GH_APP_ID",
 ]
 
 

@@ -41,6 +41,7 @@ class WorkflowYaml:
     jobs: List[JobYaml]
     job_to_config: Dict[str, JobYaml]
     artifact_to_config: Dict[str, ArtifactYaml]
+    secret_names_gh: List[str]
     enable_cache: bool
 
 
@@ -63,6 +64,7 @@ class WorkflowConfigParser:
             event=config.event,
             branches=[],
             jobs=[],
+            secret_names_gh=[],
             job_to_config={},
             artifact_to_config={},
             enable_cache=False,
@@ -252,6 +254,11 @@ class WorkflowConfigParser:
                 self.workflow_yaml_config.job_to_config[
                     artifact.provided_by
                 ].artifacts_gh_provides.append(artifact)
+
+        # populate secrets
+        for secret_config in self.config.secrets:
+            if secret_config.is_gh():
+                self.workflow_yaml_config.secret_names_gh.append(secret_config.name)
 
         return self
 

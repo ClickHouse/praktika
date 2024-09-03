@@ -72,8 +72,8 @@ class CacheRunnerHooks(HookInterface):
                             job_to_cache_record[job.name]
                         )
 
-        print(f"Write config to job output env: {Environment.get()._JOB_OUTPUT_STREAM}")
-        with open(Environment.get()._JOB_OUTPUT_STREAM, "a", encoding="utf8") as f:
+        print(f"Write config to job output env: {Environment.get().JOB_OUTPUT_STREAM}")
+        with open(Environment.get().JOB_OUTPUT_STREAM, "a", encoding="utf8") as f:
             print(
                 f"DATA={workflow_config.to_json()}",
                 file=f,
