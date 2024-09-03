@@ -12,10 +12,10 @@ env:
 
 jobs:
 
-  workflowconfig:
+  config_workflow:
     runs-on: [maxs-small-fixed]
     needs: []
-    name: WorkflowConfig
+    name: Config Workflow
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -45,28 +45,30 @@ jobs:
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
           python3 -m praktika.gh_auth
-          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_html_report.json
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_html_report.json
           cat /tmp/praktika/results/workflow_config_example_html_report.json
+          echo "::group::GITHUB ENV"
           env | grep GITHUB
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
+          echo "::endgroup::"
+          echo "PRAKTIKA_STEP_ENV_OK=1" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
-          python -m praktika.runner --pre-run --job-name "WorkflowConfig" --workflow-name "Example HTML report"
-
+          python -m praktika.runner --pre-run --job-name "Config Workflow" --workflow-name "Example HTML report"
       - name: Run
         id: run
         run: |
-          python -m praktika.runner --run --job-name "WorkflowConfig" --workflow-name "Example HTML report"
+          python -m praktika.runner --run --job-name "Config Workflow" --workflow-name "Example HTML report"
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
-          python -m praktika.runner --post-run --job-name "WorkflowConfig" --workflow-name "Example HTML report"
+          python -m praktika.runner --post-run --job-name "Config Workflow" --workflow-name "Example HTML report"
 
   job_1:
     runs-on: [maxs-small-fixed]
-    needs: [workflowconfig]
+    needs: [config_workflow]
     name: Job 1
     outputs:
       data: ${{ steps.run.outputs.DATA }}
@@ -97,15 +99,17 @@ jobs:
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
           python3 -m praktika.gh_auth
-          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_html_report.json
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_html_report.json
           cat /tmp/praktika/results/workflow_config_example_html_report.json
+          echo "::group::GITHUB ENV"
           env | grep GITHUB
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
+          echo "::endgroup::"
+          echo "PRAKTIKA_STEP_ENV_OK=1" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
           python -m praktika.runner --pre-run --job-name "Job 1" --workflow-name "Example HTML report"
-
       - name: Run
         id: run
         run: |
@@ -118,7 +122,7 @@ jobs:
 
   job_2:
     runs-on: [maxs-small-fixed]
-    needs: [workflowconfig, job_1]
+    needs: [config_workflow, job_1]
     name: Job 2
     outputs:
       data: ${{ steps.run.outputs.DATA }}
@@ -149,15 +153,17 @@ jobs:
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
           python3 -m praktika.gh_auth
-          echo '''${{ needs.workflowconfig.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_html_report.json
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_html_report.json
           cat /tmp/praktika/results/workflow_config_example_html_report.json
+          echo "::group::GITHUB ENV"
           env | grep GITHUB
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
+          echo "::endgroup::"
+          echo "PRAKTIKA_STEP_ENV_OK=1" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
           python -m praktika.runner --pre-run --job-name "Job 2" --workflow-name "Example HTML report"
-
       - name: Run
         id: run
         run: |

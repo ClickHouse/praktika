@@ -47,13 +47,15 @@ jobs:
 {SETUP_ENVS}{EXTRA_COMMANDS}
           echo '''${{{{ needs.{WORKFLOW_CONFIG_JOB_NAME}.outputs.data }}}}''' > {WORKFLOW_CONFIG_FILE}
           cat {WORKFLOW_CONFIG_FILE}
+          echo "::group::GITHUB ENV"
           env | grep GITHUB
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
+          echo "::endgroup::"
+          echo "PRAKTIKA_STEP_ENV_OK=1" >> "$GITHUB_ENV"
 {DOWNLOADS_GITHUB}
       - name: Pre
         run: |
           python -m praktika.runner --pre-run --job-name "{JOB_NAME}" --workflow-name "{WORKFLOW_NAME}"
-
       - name: Run
         id: run
         run: |
@@ -116,6 +118,10 @@ jobs:
     if: ${{{{ !failure() && !cancelled() && !contains(fromJson(needs.{WORKFLOW_CONFIG_JOB_NAME}.outputs.data).cache_success, '{JOB_NAME}') }}}}\
 """
 
+        TEMPLATE_IF_EXPRESSION_NOT_CANCELLED = """
+    if: ${{ !cancelled() }}\
+"""
+
     def __init__(self):
         self.py_workflows = []  # type: List[Workflow.Config]
 
@@ -160,7 +166,9 @@ class PullRequestPushYamlGen:
         base_template = YamlGenerator.Templates.TEMPLATE_PULL_REQUEST_0
         template_1 = base_template.strip().format(
             NAME=self.workflow_config.name,
-            BRANCHES=", ".join([f"'{branch}'" for branch in self.workflow_config.branches]),
+            BRANCHES=", ".join(
+                [f"'{branch}'" for branch in self.workflow_config.branches]
+            ),
             EVENT=self.workflow_config.event,
             JOBS="{}\n" * len(self.workflow_config.jobs),
         )
@@ -205,6 +213,7 @@ class PullRequestPushYamlGen:
                 Settings.CI_CONFIG_JOB_NAME
             )
 
+            if_expression = ""
             if (
                 self.workflow_config.enable_cache
                 and job_name_normalized != config_job_name_normalized
@@ -213,8 +222,10 @@ class PullRequestPushYamlGen:
                     WORKFLOW_CONFIG_JOB_NAME=config_job_name_normalized,
                     JOB_NAME=job_name,
                 )
-            else:
-                if_expression = ""
+            if job.run_if_not_cancelled:
+                if_expression = (
+                    YamlGenerator.Templates.TEMPLATE_IF_EXPRESSION_NOT_CANCELLED
+                )
 
             extra_cmds = ""
             if job.gh_app_auth:

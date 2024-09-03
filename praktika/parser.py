@@ -20,6 +20,7 @@ class WorkflowYaml:
         artifacts_gh_provides: List["WorkflowYaml.ArtifactYaml"]
         addons: List["WorkflowYaml.JobAddonYaml"]
         gh_app_auth: bool
+        run_if_not_cancelled: bool
 
     @dataclasses.dataclass
     class ArtifactYaml:
@@ -139,6 +140,7 @@ class WorkflowConfigParser:
                 needs=[],
                 runs_on=[],
                 gh_app_auth=False,
+                run_if_not_cancelled=job.run_if_not_cancelled,
             )
             self.workflow_yaml_config.jobs.append(job_yaml_config)
             assert (

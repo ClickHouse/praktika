@@ -1,5 +1,6 @@
 import argparse
 import sys
+import time
 
 from praktika._settings import _Settings
 from praktika.artifact import Artifact
@@ -19,7 +20,8 @@ class Runner:
         _RuntimeVars(exit_code=None).dump()
 
         # Update and dump environment
-        Environment.get().set_job_name(job_name)
+        env = Environment.from_env().set_job_name(job_name)
+        print(f"Environment: [{env}]")
 
         workflow = _get_workflows(name=workflow_name)[0]
         print(f"Run pre-run script [{job_name}], workflow [{workflow.name}]")
@@ -52,6 +54,10 @@ class Runner:
                     name=artifact.path,
                 )
 
+        # set pre-step ok in env
+        env.PRAKTIKA_STEP_PRE_OK = True
+        env.dump()
+
     def run(self, job_name, workflow_name):
         workflow = _get_workflows(name=workflow_name)[0]
         print(f"Run script [{job_name}], workflow [{workflow.name}]")
@@ -72,6 +78,7 @@ class Runner:
         else:
             cmd = job.command
         exit_code = Shell.run(cmd, log_file=log_file, verbose=True)
+        # TODO: remove _RuntimeVars and set this meta into Environment
         _RuntimeVars(exit_code=exit_code, log_files=[log_file]).dump()
         return exit_code
 
@@ -80,6 +87,26 @@ class Runner:
         workflow = _get_workflows(name=workflow_name)[0]
         job = workflow.get_job(job_name)
         assert job, "BUG"
+
+        env_setup_ok = Environment.get().PRAKTIKA_STEP_ENV_OK
+        pre_step_ok = Environment.get().PRAKTIKA_STEP_PRE_OK
+        if not env_setup_ok or not pre_step_ok:
+            print("ERROR: praktika bug or misconfiguration")
+            # set dummy _RuntimeVars
+            _RuntimeVars(exit_code=None).dump()
+            if workflow.enable_html:
+                # set Result with error
+                Result(
+                    name=job_name,
+                    status=Result.Status.ERROR,
+                    start_time=Utils.timestamp(),
+                    duration=0.0,
+                    info=(
+                        ResultInfo.SETUP_ENV_JOB_FAILED
+                        if env_setup_ok
+                        else ResultInfo.PRE_JOB_FAILED
+                    ),
+                ).dump()
 
         result = Result.from_fs(job_name)
         if not result:

@@ -5,6 +5,7 @@ from praktika import Job, Workflow
 from praktika.digest import Digest
 from praktika.docker import Docker
 from praktika.environment import Environment
+from praktika.gh import GH
 from praktika.hook_cache import CacheRunnerHooks
 from praktika.hook_html import HtmlRunnerHooks
 from praktika.mangle import _get_workflows
@@ -25,7 +26,7 @@ _workflow_config_job = Job.Config(
         python=True,
         python_requirements_txt="requirements_with_gh_auth.txt",
     ),
-    command=f"{Settings.PYTHON_INTERPRETER} -m praktika.native_jobs {Settings.CI_CONFIG_JOB_NAME}",
+    command=f"{Settings.PYTHON_INTERPRETER} -m praktika.native_jobs '{Settings.CI_CONFIG_JOB_NAME}'",
 )
 
 _docker_build_job = Job.Config(
@@ -34,7 +35,17 @@ _docker_build_job = Job.Config(
     job_requirements=Job.Requirements(
         python=True,
     ),
-    command=f"{Settings.PYTHON_INTERPRETER} -m praktika.native_jobs {Settings.DOCKER_BUILD_JOB_NAME}",
+    command=f"{Settings.PYTHON_INTERPRETER} -m praktika.native_jobs '{Settings.DOCKER_BUILD_JOB_NAME}'",
+)
+
+_final_job = Job.Config(
+    name=Settings.FINISH_WORKFLOW_JOB_NAME,
+    runs_on=Settings.CI_CONFIG_RUNS_ON,
+    job_requirements=Job.Requirements(
+        python=True,
+    ),
+    command=f"{Settings.PYTHON_INTERPRETER} -m praktika.native_jobs '{Settings.FINISH_WORKFLOW_JOB_NAME}'",
+    run_if_not_cancelled=True,
 )
 
 
@@ -206,6 +217,43 @@ def _config_workflow(workflow: Workflow.Config, job_name):
         sys.exit(1)
 
 
+def _finish_workflow(workflow, job_name):
+    print(f"Start [{job_name}], workflow [{workflow.name}]")
+
+    workflow_result = Result.from_s3(workflow.name)
+
+    ready_for_merge_status = Result.Status.SUCCESS
+    ready_for_merge_description = ""
+    failed_results = []
+    for result in workflow_result.results:
+        if result.name == job_name or result.status in (
+            Result.Status.SUCCESS,
+            Result.Status.SKIPPED,
+        ):
+            continue
+        job = workflow.get_job(result.name)
+        if not job or not job.allow_merge_on_failure:
+            print(
+                f"NOTE: Result for [{result.name}] has not ok status [{result.status}]"
+            )
+            ready_for_merge_status = Result.Status.FAILED
+            failed_results.append(result.name)
+
+    if failed_results:
+        ready_for_merge_description = f"failed: {', '.join(failed_results)}"
+
+    GH.post_commit_status(
+        name=Settings.READY_FOR_MERGE_STATUS_NAME,
+        status=ready_for_merge_status,
+        description=ready_for_merge_description,
+        url="",
+    )
+
+    Result.from_fs(job_name).set_status(Result.Status.SUCCESS).set_info(
+        ready_for_merge_description
+    )
+
+
 if __name__ == "__main__":
     job_name = sys.argv[1]
     assert job_name, "Job name must be provided as input argument"
@@ -214,5 +262,7 @@ if __name__ == "__main__":
         _build_dockers(workflow, job_name)
     elif job_name == Settings.CI_CONFIG_JOB_NAME:
         _config_workflow(workflow, job_name)
+    elif job_name == Settings.FINISH_WORKFLOW_JOB_NAME:
+        _finish_workflow(workflow, job_name)
     else:
-        assert False, "BUG"
+        assert False, f"BUG, job name [{job_name}]"

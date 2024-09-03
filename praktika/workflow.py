@@ -28,6 +28,7 @@ class Workflow:
         secrets: List[Secret.Config] = field(default_factory=list)
         enable_cache: bool = False
         enable_html: bool = False
+        enable_merge_ready_status: bool = False
 
         def is_event_pull_request(self):
             return self.event == Workflow.Event.PULL_REQUEST
@@ -36,12 +37,6 @@ class Workflow:
             return self.event == Workflow.Event.PUSH
 
         def get_job(self, name: str) -> Optional[Job.Config]:
-            # from praktika.native_configs import _docker_build_job, _workflow_config_job
-            #
-            # for job in (_docker_build_job, _workflow_config_job):
-            #     if job.name == name:
-            #         print(f"Native praktika job requested [{name}]")
-            #         return job
             for job in self.jobs:
                 if job.name == name:
                     return job

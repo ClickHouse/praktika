@@ -10,8 +10,10 @@ class _Settings:
     WORKFLOW_PATH_PREFIX: str = "./.github/workflows"
     WORKFLOWS_DIRECTORY: str = "./ci/workflows"
     SETTINGS_DIRECTORY: str = "./ci/settings"
-    CI_CONFIG_JOB_NAME = "WorkflowConfig"
-    DOCKER_BUILD_JOB_NAME = "DockerBuilds"
+    CI_CONFIG_JOB_NAME = "Config Workflow"
+    DOCKER_BUILD_JOB_NAME = "Docker Builds"
+    FINISH_WORKFLOW_JOB_NAME = "Finish Workflow"
+    READY_FOR_MERGE_STATUS_NAME = "Ready for Merge"
     CI_CONFIG_RUNS_ON: Optional[List[str]] = None
     VALIDATE_FILE_PATHS: bool = True
 
@@ -76,6 +78,7 @@ _USER_DEFINED_SETTINGS = [
     "VALIDATE_FILE_PATHS",
     "DOCKERHUB_USERNAME",
     "DOCKERHUB_SECRET",
+    "READY_FOR_MERGE_STATUS_NAME",
 ]
 
 

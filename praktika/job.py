@@ -27,7 +27,7 @@ class Job:
 
         # What job requires
         #   May be phony or physical names
-        requires: Optional[List[str]] = None
+        requires: List[str] = field(default_factory=list)
 
         # What job provides
         #   May be phony or physical names
@@ -40,3 +40,7 @@ class Job:
         digest_config: Optional["Job.CacheDigestConfig"] = None
 
         run_in_docker: str = ""
+
+        run_if_not_cancelled: bool = False
+
+        allow_merge_on_failure: bool = False

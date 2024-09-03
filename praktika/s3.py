@@ -73,11 +73,14 @@ class S3:
 
     @classmethod
     def copy_file_from_s3(cls, s3_path, local_path):
-        assert Path(local_path), f"Path [{local_path}] does not exist"
         assert Path(s3_path), f"Invalid S3 Path [{s3_path}]"
         if Path(local_path).is_dir():
             local_path = Path(local_path) / Path(s3_path).name
+        else:
+            assert Path(
+                local_path
+            ).parent.is_dir(), f"Parent path for [{local_path}] does not exist"
         return Shell.check(
-            f"aws s3 cp s3://{s3_path} {Path(local_path)}",
+            f"aws s3 cp s3://{s3_path} {local_path}",
             verbose=True,
         )

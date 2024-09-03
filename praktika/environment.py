@@ -25,6 +25,8 @@ class Environment(MetaClasses.Serializable):
     CHANGE_URL: str
     RUN_ID: str
     RUN_URL: str
+    PRAKTIKA_STEP_ENV_OK: bool
+    PRAKTIKA_STEP_PRE_OK: bool
     name = "environment"
 
     @classmethod
@@ -42,7 +44,10 @@ class Environment(MetaClasses.Serializable):
         if Path(cls.file_name_static()).is_file():
             return cls.from_fs("environment")
         else:
-            return cls.from_env()
+            print("WARNING: Environment: get from env")
+            env = cls.from_env()
+            env.dump()
+            return env
 
     def set_job_name(self, job_name):
         self.JOB_NAME = job_name
@@ -62,6 +67,8 @@ class Environment(MetaClasses.Serializable):
         _JOB_OUTPUT_STREAM = os.getenv("GITHUB_OUTPUT", "")
         RUN_ID = os.getenv("GITHUB_RUN_ID", "0")
         RUN_URL = f"https://github.com/{REPOSITORY}/actions/runs/{RUN_ID}"
+        PRAKTIKA_STEP_ENV_OK = bool(os.getenv("PRAKTIKA_STEP_ENV_OK", False))
+        PRAKTIKA_STEP_PRE_OK = bool(os.getenv("PRAKTIKA_STEP_PRE_OK", False))
 
         if EVENT_FILE_PATH:
             with open(EVENT_FILE_PATH, "r", encoding="utf-8") as f:
@@ -69,7 +76,7 @@ class Environment(MetaClasses.Serializable):
             if "pull_request" in github_event:
                 EVENT_TYPE = Workflow.Event.PULL_REQUEST
                 PR_NUMBER = github_event["pull_request"]["number"]
-                SHA = github_event["after"]
+                SHA = github_event["pull_request"]["head"]["sha"]
                 CHANGE_URL = github_event["pull_request"]["html_url"]
             elif "commits" in github_event:
                 EVENT_TYPE = Workflow.Event.PUSH
@@ -100,4 +107,6 @@ class Environment(MetaClasses.Serializable):
             RUN_ID=RUN_ID,
             CHANGE_URL=CHANGE_URL,
             RUN_URL=RUN_URL,
+            PRAKTIKA_STEP_ENV_OK=PRAKTIKA_STEP_ENV_OK,
+            PRAKTIKA_STEP_PRE_OK=PRAKTIKA_STEP_PRE_OK,
         )
