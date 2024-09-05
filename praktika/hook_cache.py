@@ -5,7 +5,7 @@ from praktika.hook_interface import HookInterface
 from praktika.mangle import _get_workflows
 from praktika.runtime import WorkflowRuntime
 from praktika.settings import Settings
-from praktika.environment import Environment
+from praktika._environment import _Environment
 
 
 class CacheRunnerHooks(HookInterface):
@@ -13,8 +13,8 @@ class CacheRunnerHooks(HookInterface):
     def configure(cls, _workflow):
         workflow_config = WorkflowRuntime.from_fs(_workflow.name)
         cache = Cache()
-        assert Environment.get().WORKFLOW_NAME
-        workflow = _get_workflows(name=Environment.get().WORKFLOW_NAME)[0]
+        assert _Environment.get().WORKFLOW_NAME
+        workflow = _get_workflows(name=_Environment.get().WORKFLOW_NAME)[0]
         print(f"Workflow Configure, workflow [{workflow.name}]")
         assert (
             workflow.enable_cache
@@ -72,8 +72,8 @@ class CacheRunnerHooks(HookInterface):
                             job_to_cache_record[job.name]
                         )
 
-        print(f"Write config to job output env: {Environment.get().JOB_OUTPUT_STREAM}")
-        with open(Environment.get().JOB_OUTPUT_STREAM, "a", encoding="utf8") as f:
+        print(f"Write config to job output env: {_Environment.get().JOB_OUTPUT_STREAM}")
+        with open(_Environment.get().JOB_OUTPUT_STREAM, "a", encoding="utf8") as f:
             print(
                 f"DATA={workflow_config.to_json()}",
                 file=f,

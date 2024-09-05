@@ -15,7 +15,7 @@ jobs:
   config_workflow:
     runs-on: [maxs-small-fixed]
     needs: []
-    name: Config Workflow
+    name: null
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -89,7 +89,7 @@ jobs:
   some_job_1_that_should_block_merge_on_failure:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow]
-    name: Some Job 1 that should block merge on failure
+    name: null
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -163,7 +163,7 @@ jobs:
   some_job_2_that_should_not_block_merge_on_failure:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow, some_job_1_that_should_block_merge_on_failure]
-    name: Some Job 2 that should not block merge on failure
+    name: null
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -238,7 +238,7 @@ jobs:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow, some_job_1_that_should_block_merge_on_failure, some_job_2_that_should_not_block_merge_on_failure]
     if: ${{ !cancelled() }}
-    name: Finish Workflow
+    name: null
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:

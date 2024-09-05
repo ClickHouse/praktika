@@ -6,7 +6,7 @@ from typing import Optional, List, Dict, Any
 from praktika.s3 import S3
 from praktika.utils import Utils, MetaClasses
 from praktika.settings import Settings
-from praktika.environment import Environment
+from praktika._environment import _Environment
 
 
 @dataclasses.dataclass
@@ -32,7 +32,7 @@ class Result(MetaClasses.Serializable):
 
     @staticmethod
     def get():
-        return Result.from_fs(Environment.get().JOB_NAME)
+        return Result.from_fs(_Environment.get().JOB_NAME)
 
     def is_completed(self):
         return self.status not in (Result.Status.PENDING, Result.Status.RUNNING)
@@ -87,27 +87,30 @@ class Result(MetaClasses.Serializable):
     def copy_to_s3(self):
         assert Settings.HTML_S3_PATH, "BUG?"
         self.dump()
-        pr_number = Environment.get().PR_NUMBER
-        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=pr_number, branch=Environment.get().BRANCH, sha=Environment.get().SHA)}"
+        env = _Environment.get()
+        pr_number = env.PR_NUMBER
+        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=pr_number, branch=env.BRANCH, sha=env.SHA)}"
         url = S3.copy_file_to_s3(s3_path=s3_path, local_path=self.file_name())
         if pr_number:
             print("Duplicate Result for PR for latest-sha html report")
-            s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=pr_number, branch=Environment.get().BRANCH, sha='latest')}"
+            s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=pr_number, branch=env.BRANCH, sha='latest')}"
             url = S3.copy_file_to_s3(s3_path=s3_path, local_path=self.file_name())
         return url
 
     def get_link(self):
-        pr_number = Environment.get().PR_NUMBER
-        sha = Environment.get().SHA if pr_number == 0 else "latest"
-        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=pr_number, branch=Environment.get().BRANCH, sha=sha)}"
+        env = _Environment.get()
+        pr_number = env.PR_NUMBER
+        sha = env.SHA if pr_number == 0 else "latest"
+        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=pr_number, branch=env.BRANCH, sha=sha)}"
         return S3.get_link(s3_path=s3_path, local_path=self.file_name())
 
     @classmethod
     def from_s3(cls, name):
         assert Settings.HTML_S3_PATH, "BUG?"
+        env = _Environment.get()
         file_path = cls.file_name_static(name)
         file_name = Path(file_path).name
-        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=Environment.get().PR_NUMBER, branch=Environment.get().BRANCH, sha=Environment.get().SHA)}/{file_name}"
+        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=env.PR_NUMBER, branch=env.BRANCH, sha=env.SHA)}/{file_name}"
         if not S3.copy_file_from_s3(s3_path=s3_path, local_path=file_path):
             print(f"ERROR: failed to cp file [{s3_path}] from s3")
             raise RuntimeError(f"ERROR: failed to cp file [{s3_path}] from s3")
@@ -198,7 +201,8 @@ class Result(MetaClasses.Serializable):
         cls, local_file_path, upload_to_s3: bool, text: bool = False, s3_subprefix=""
     ) -> str:
         if upload_to_s3:
-            s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=Environment.get().PR_NUMBER, branch=Environment.get().BRANCH, sha=Environment.get().SHA)}"
+            env = _Environment.get()
+            s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=env.PR_NUMBER, branch=env.BRANCH, sha=env.SHA)}"
             if s3_subprefix:
                 s3_subprefix.removeprefix("/").removesuffix("/")
                 s3_path += f"/{s3_subprefix}"

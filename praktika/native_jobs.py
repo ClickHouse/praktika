@@ -5,14 +5,13 @@ from praktika import Job, Workflow
 from praktika.cidb import CIDB
 from praktika.digest import Digest
 from praktika.docker import Docker
-from praktika.environment import Environment
+from praktika._environment import _Environment
 from praktika.gh import GH
 from praktika.hook_cache import CacheRunnerHooks
 from praktika.hook_html import HtmlRunnerHooks
 from praktika.mangle import _get_workflows
 from praktika.result import Result
 from praktika.runtime import WorkflowRuntime
-from praktika.secret import Secret
 from praktika.settings import Settings
 from praktika.utils import Utils, Shell
 
@@ -206,7 +205,7 @@ def _config_workflow(workflow: Workflow.Config, job_name):
         name=workflow.name,
         digest_jobs={},
         digest_dockers={},
-        sha=Environment.get().SHA,
+        sha=_Environment.get().SHA,
         cache_success=[],
         cache_artifacts={},
     ).dump()
@@ -313,7 +312,7 @@ def _finish_workflow(workflow, job_name):
         ready_for_merge_description = f"failed: {', '.join(failed_results)}"
 
     GH.post_commit_status(
-        name=Settings.READY_FOR_MERGE_STATUS_NAME,
+        name=Settings.READY_FOR_MERGE_STATUS_NAME + f" [{workflow.name}]",
         status=ready_for_merge_status,
         description=ready_for_merge_description,
         url="",
@@ -327,7 +326,7 @@ def _finish_workflow(workflow, job_name):
 if __name__ == "__main__":
     job_name = sys.argv[1]
     assert job_name, "Job name must be provided as input argument"
-    workflow = _get_workflows(name=Environment.get().WORKFLOW_NAME)[0]
+    workflow = _get_workflows(name=_Environment.get().WORKFLOW_NAME)[0]
     if job_name == Settings.DOCKER_BUILD_JOB_NAME:
         _build_dockers(workflow, job_name)
     elif job_name == Settings.CI_CONFIG_JOB_NAME:

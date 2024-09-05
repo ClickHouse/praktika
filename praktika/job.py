@@ -1,5 +1,7 @@
+import copy
+import json
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Any
 
 
 class Job:
@@ -44,3 +46,26 @@ class Job:
         run_if_not_cancelled: bool = False
 
         allow_merge_on_failure: bool = False
+
+        parameter: Any = None
+
+        _nest_name: str = ""
+
+        def parametrize(self, *params):
+            res = []
+            for param in params:
+                obj = copy.deepcopy(self)
+                obj.parameter = param
+                obj._nest_name = obj.name
+                obj.name = self.get_full_job_name(obj.name, param)
+                res.append(obj)
+            return res
+
+        @staticmethod
+        def get_full_job_name(name, param):
+            if isinstance(param, list) or isinstance(param, dict):
+                param_ = json.dumps(param)
+            else:
+                # to not add quotes for str type
+                param_ = param
+            return f"{name} ({param_})" if param else name

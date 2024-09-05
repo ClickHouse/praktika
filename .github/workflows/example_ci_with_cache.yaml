@@ -59,19 +59,19 @@ jobs:
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name "Config Workflow" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/pre_run.log
+          python -m praktika.runner --pre-run --job-name '''Config Workflow''' --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name "Config Workflow" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/run.log
+          python -m praktika.runner --run --job-name '''Config Workflow''' --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name "Config Workflow" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/post_run.log
+          python -m praktika.runner --post-run --job-name '''Config Workflow''' --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/post_run.log
 
   job_a:
     runs-on: [maxs-small-fixed]
@@ -121,19 +121,19 @@ jobs:
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name "Job A" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/pre_run.log
+          python -m praktika.runner --pre-run --job-name '''Job A''' --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name "Job A" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/run.log
+          python -m praktika.runner --run --job-name '''Job A''' --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name "Job A" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/post_run.log
+          python -m praktika.runner --post-run --job-name '''Job A''' --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/post_run.log
 
   job_b:
     runs-on: [maxs-small-fixed]
@@ -183,16 +183,16 @@ jobs:
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name "Job B" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/pre_run.log
+          python -m praktika.runner --pre-run --job-name '''Job B''' --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name "Job B" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/run.log
+          python -m praktika.runner --run --job-name '''Job B''' --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name "Job B" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/post_run.log
+          python -m praktika.runner --post-run --job-name '''Job B''' --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/post_run.log

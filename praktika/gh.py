@@ -2,7 +2,7 @@ import json
 import time
 
 from praktika.settings import Settings
-from praktika.environment import Environment
+from praktika._environment import _Environment
 from praktika.utils import Shell
 from praktika.result import Result
 
@@ -31,9 +31,9 @@ class GH:
         cls, comment_body, or_update_comment_with_substring, repo=None, pr=None
     ):
         if not repo:
-            repo = Environment.get().REPOSITORY
+            repo = _Environment.get().REPOSITORY
         if not pr:
-            pr = Environment.get().PR_NUMBER
+            pr = _Environment.get().PR_NUMBER
         if or_update_comment_with_substring:
             print(f"check comment [{comment_body}] created")
             cmd_check_created = f'gh api -H "Accept: application/vnd.github.v3+json" \
@@ -66,7 +66,7 @@ class GH:
         status = cls.convert_to_gh_status(status)
         command = (
             f"gh api -X POST -H 'Accept: application/vnd.github.v3+json' "
-            f"/repos/{Environment.get().REPOSITORY}/statuses/{Environment.get().SHA} "
+            f"/repos/{_Environment.get().REPOSITORY}/statuses/{_Environment.get().SHA} "
             f"-f state='{status}' -f target_url='{url}' "
             f"-f description='{description}' -f context='{name}'"
         )

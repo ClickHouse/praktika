@@ -9,7 +9,7 @@ from praktika.hook_cache import CacheRunnerHooks
 from praktika.mangle import _get_workflows
 from praktika.result import Result, ResultInfo
 from praktika.runtime import WorkflowRuntime
-from praktika.environment import Environment
+from praktika._environment import _Environment
 from praktika.settings import Settings
 from praktika.utils import Shell, Utils, TeePopen
 from praktika.s3 import S3
@@ -18,7 +18,7 @@ from praktika.s3 import S3
 class Runner:
     def pre_run(self, job_name, workflow_name):
         # Update and dump environment
-        env = Environment.from_env().set_job_name(job_name)
+        env = _Environment.from_env().set_job_name(job_name)
         print(f"Environment: [{env}]")
 
         workflow = _get_workflows(name=workflow_name)[0]
@@ -46,9 +46,9 @@ class Runner:
         else:
             for artifact in required_artifacts:
                 assert S3.copy_artifact_from_s3(
-                    branch=Environment.get().BRANCH,
-                    pr_number=Environment.get().PR_NUMBER,
-                    sha=Environment.get().SHA,
+                    branch=_Environment.get().BRANCH,
+                    pr_number=_Environment.get().PR_NUMBER,
+                    sha=_Environment.get().SHA,
                     name=artifact.path,
                 )
 
@@ -78,8 +78,6 @@ class Runner:
             cmd = job.command
 
         with TeePopen(cmd, timeout=job.timeout) as process:
-            print(f"Job process started, pid [{process.process.pid}]")
-            print("timeout", process.timeout_exceeded)
             exit_code = process.wait()
 
             result = Result.from_fs(job_name)
@@ -94,7 +92,7 @@ class Runner:
                 result.set_status(Result.Status.ERROR).set_info(ResultInfo.KILLED)
             result.dump()
 
-        env = Environment.get()
+        env = _Environment.get()
         env.PRAKTIKA_RUN_STEP_EXIT_CODE = exit_code
         env.dump()
 
@@ -109,7 +107,7 @@ class Runner:
         workflow = _get_workflows(name=workflow_name)[0]
         job = workflow.get_job(job_name)
         assert job, "BUG"
-        env = Environment.get()
+        env = _Environment.get()
 
         if not env.setup_ok():
             info = "ERROR: Set up Env step failed. praktika bug or misconfiguration"
@@ -178,9 +176,9 @@ class Runner:
                         f"ls -l {artifact.path}", verbose=True
                     ), f"Artifact {artifact.path} not found"
                     assert S3.copy_artifact_to_s3(
-                        branch=Environment.get().BRANCH,
-                        pr_number=Environment.get().PR_NUMBER,
-                        sha=Environment.get().SHA,
+                        branch=_Environment.get().BRANCH,
+                        pr_number=_Environment.get().PR_NUMBER,
+                        sha=_Environment.get().SHA,
                         path=artifact.path,
                     )
         else:

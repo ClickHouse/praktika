@@ -38,10 +38,15 @@ class Workflow:
             return self.event == Workflow.Event.PUSH
 
         def get_job(self, name: str) -> Optional[Job.Config]:
+            names = []
             for job in self.jobs:
                 if job.name == name:
                     return job
+                names.append(job.name)
             else:
+                print(
+                    f"ERROR: Failed to find job name [{name}], workflow jobs [{names}]"
+                )
                 return None
 
         def get_secret(self, name) -> Optional[Secret.Config]:

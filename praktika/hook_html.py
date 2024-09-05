@@ -2,7 +2,7 @@ from datetime import datetime
 import urllib.parse
 from pathlib import Path
 
-from praktika.environment import Environment
+from praktika._environment import _Environment
 from praktika.gh import GH
 from praktika.parser import WorkflowConfigParser
 from praktika.settings import Settings
@@ -28,8 +28,8 @@ class HtmlRunnerHooks:
                 result = Result.generate_skipped(job.name)
             results.append(result)
         summary_result = Result.generate_pending(_workflow.name, results=results)
-        summary_result.aux_links.append(Environment.get().CHANGE_URL)
-        summary_result.aux_links.append(Environment.get().RUN_URL)
+        summary_result.aux_links.append(_Environment.get().CHANGE_URL)
+        summary_result.aux_links.append(_Environment.get().RUN_URL)
         summary_result.start_time = Utils.timestamp()
         json_url_encoded = urllib.parse.quote(summary_result.get_link(), safe="")
         page_url = "/".join(
@@ -49,7 +49,7 @@ class HtmlRunnerHooks:
             url=page_url,
         )
         res2 = GH.post_pr_comment(
-            comment_body=f"[CI Status]({page_url}), commit [{Environment.get().SHA[:8]}], workflow [{_workflow.name}]",
+            comment_body=f"[CI Status]({page_url}), commit [{_Environment.get().SHA[:8]}], workflow [{_workflow.name}]",
             or_update_comment_with_substring=f", workflow [{_workflow.name}]",
         )
         assert (
@@ -92,7 +92,7 @@ class HtmlRunnerHooks:
         workflow_result.update_sub_result(result)
 
         skipped_job_results = []
-        if Environment.get().PRAKTIKA_RUN_STEP_EXIT_CODE != 0:
+        if _Environment.get().PRAKTIKA_RUN_STEP_EXIT_CODE != 0:
             print(
                 "Current job failed - find dependee jobs in the workflow and set their statuses to skipped"
             )

@@ -1,9 +1,7 @@
 from typing import List
 
-from praktika import Job, Workflow
+from praktika import Job, Workflow, Docker, Secret
 from ci.settings.my_settings import RunnerLabels
-from praktika.docker import Docker
-from praktika.secret import Secret
 
 
 class JobNames:

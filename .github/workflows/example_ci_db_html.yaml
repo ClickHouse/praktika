@@ -15,7 +15,7 @@ jobs:
   config_workflow:
     runs-on: [maxs-small-fixed]
     needs: []
-    name: null
+    name: Config Workflow
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -67,8 +67,8 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_db__html.json
-          cat /tmp/praktika/results/workflow_config_example_ci_db__html.json
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_db_html.json
+          cat /tmp/praktika/results/workflow_config_example_ci_db_html.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
@@ -84,24 +84,24 @@ jobs:
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name "Config Workflow" --workflow-name "Example CI DB, HTML" 2>&1 | tee /tmp/praktika/pre_run.log
+          python -m praktika.runner --pre-run --job-name '''Config Workflow''' --workflow-name "Example CI DB, HTML" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name "Config Workflow" --workflow-name "Example CI DB, HTML" 2>&1 | tee /tmp/praktika/run.log
+          python -m praktika.runner --run --job-name '''Config Workflow''' --workflow-name "Example CI DB, HTML" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name "Config Workflow" --workflow-name "Example CI DB, HTML" 2>&1 | tee /tmp/praktika/post_run.log
+          python -m praktika.runner --post-run --job-name '''Config Workflow''' --workflow-name "Example CI DB, HTML" 2>&1 | tee /tmp/praktika/post_run.log
 
   job:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow]
-    name: null
+    name: Job
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -153,8 +153,8 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_db__html.json
-          cat /tmp/praktika/results/workflow_config_example_ci_db__html.json
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_db_html.json
+          cat /tmp/praktika/results/workflow_config_example_ci_db_html.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
@@ -170,16 +170,16 @@ jobs:
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name "Job" --workflow-name "Example CI DB, HTML" 2>&1 | tee /tmp/praktika/pre_run.log
+          python -m praktika.runner --pre-run --job-name '''Job''' --workflow-name "Example CI DB, HTML" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name "Job" --workflow-name "Example CI DB, HTML" 2>&1 | tee /tmp/praktika/run.log
+          python -m praktika.runner --run --job-name '''Job''' --workflow-name "Example CI DB, HTML" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name "Job" --workflow-name "Example CI DB, HTML" 2>&1 | tee /tmp/praktika/post_run.log
+          python -m praktika.runner --post-run --job-name '''Job''' --workflow-name "Example CI DB, HTML" 2>&1 | tee /tmp/praktika/post_run.log

@@ -59,19 +59,19 @@ jobs:
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name "Unit Tests" --workflow-name "Library PR CI" 2>&1 | tee /tmp/praktika/pre_run.log
+          python -m praktika.runner --pre-run --job-name '''Unit Tests''' --workflow-name "Library PR CI" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name "Unit Tests" --workflow-name "Library PR CI" 2>&1 | tee /tmp/praktika/run.log
+          python -m praktika.runner --run --job-name '''Unit Tests''' --workflow-name "Library PR CI" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name "Unit Tests" --workflow-name "Library PR CI" 2>&1 | tee /tmp/praktika/post_run.log
+          python -m praktika.runner --post-run --job-name '''Unit Tests''' --workflow-name "Library PR CI" 2>&1 | tee /tmp/praktika/post_run.log
 
   yaml_lint:
     runs-on: [ubuntu-latest]
@@ -120,16 +120,16 @@ jobs:
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name "Yaml Lint" --workflow-name "Library PR CI" 2>&1 | tee /tmp/praktika/pre_run.log
+          python -m praktika.runner --pre-run --job-name '''Yaml Lint''' --workflow-name "Library PR CI" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name "Yaml Lint" --workflow-name "Library PR CI" 2>&1 | tee /tmp/praktika/run.log
+          python -m praktika.runner --run --job-name '''Yaml Lint''' --workflow-name "Library PR CI" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name "Yaml Lint" --workflow-name "Library PR CI" 2>&1 | tee /tmp/praktika/post_run.log
+          python -m praktika.runner --post-run --job-name '''Yaml Lint''' --workflow-name "Library PR CI" 2>&1 | tee /tmp/praktika/post_run.log

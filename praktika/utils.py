@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from threading import Thread
+from types import SimpleNamespace
 from typing import Iterator, Union, Optional, TypeVar, Type, Dict, Any
 
 from praktika._settings import _Settings
@@ -32,6 +33,20 @@ class MetaClasses:
 
     @dataclasses.dataclass
     class Serializable(ABC):
+
+        @classmethod
+        def to_dict(cls, obj):
+            if dataclasses.is_dataclass(obj):
+                return {k: cls.to_dict(v) for k, v in dataclasses.asdict(obj).items()}
+            elif isinstance(obj, SimpleNamespace):
+                return {k: cls.to_dict(v) for k, v in vars(obj).items()}
+            elif isinstance(obj, list):
+                return [cls.to_dict(i) for i in obj]
+            elif isinstance(obj, dict):
+                return {k: cls.to_dict(v) for k, v in obj.items()}
+            else:
+                return obj
+
         @classmethod
         def from_dict(cls: Type[T], obj: Dict[str, Any]) -> T:
             return cls(**obj)
@@ -56,7 +71,7 @@ class MetaClasses:
 
         def dump(self):
             with open(self.file_name(), "w", encoding="utf8") as f:
-                json.dump(dataclasses.asdict(self), f, indent=4)
+                json.dump(self.to_dict(self), f, indent=4)
             return self
 
         @classmethod
@@ -292,12 +307,18 @@ class Utils:
         res = string.lower()
         for r in (
             (" ", "_"),
-            ("(", "_"),
-            (")", "_"),
-            (",", "_"),
+            ("(", ""),
+            (")", ""),
+            ("{", ""),
+            ("}", ""),
+            ("'", ""),
+            ("[", ""),
+            ("]", ""),
+            (",", ""),
             ("/", "_"),
             ("-", "_"),
             (":", ""),
+            ('"', ""),
         ):
             res = res.replace(*r)
         return res

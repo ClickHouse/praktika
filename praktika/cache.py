@@ -5,7 +5,7 @@ from pathlib import Path
 from praktika import Job, Workflow, Artifact
 from praktika.digest import Digest
 from praktika.settings import Settings
-from praktika.environment import Environment
+from praktika._environment import _Environment
 from praktika.utils import Utils
 from praktika.s3 import S3
 
@@ -44,8 +44,8 @@ class Cache:
         record = Cache.CacheRecord(
             type=type_,
             sha=sha,
-            pr_number=Environment.get().PR_NUMBER,
-            branch=Environment.get().BRANCH,
+            pr_number=_Environment.get().PR_NUMBER,
+            branch=_Environment.get().BRANCH,
         )
         assert (
             Settings.CACHE_S3_PATH
