@@ -48,23 +48,33 @@ jobs:
           echo '''${{{{ needs.{WORKFLOW_CONFIG_JOB_NAME}.outputs.data }}}}''' > {WORKFLOW_CONFIG_FILE}
           cat {WORKFLOW_CONFIG_FILE}
           echo "::group::GITHUB ENV"
-          env | grep GITHUB
+          env | grep GITHUB ||:
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
           echo "::endgroup::"
-          echo "PRAKTIKA_STEP_ENV_OK=1" >> "$GITHUB_ENV"
+          echo "::group::CI ENV"
+          env | grep CI_ ||:
+          echo "::endgroup::"
+          echo "::group::GH ENV"
+          env | grep GH_ ||:
+          echo "::endgroup::"
+          echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
 {DOWNLOADS_GITHUB}
       - name: Pre
         run: |
-          python -m praktika.runner --pre-run --job-name "{JOB_NAME}" --workflow-name "{WORKFLOW_NAME}"
+          set -o pipefail
+          python -m praktika.runner --pre-run --job-name "{JOB_NAME}" --workflow-name "{WORKFLOW_NAME}" 2>&1 | tee {PRE_LOG}
+
       - name: Run
         id: run
         run: |
-          python -m praktika.runner --run --job-name "{JOB_NAME}" --workflow-name "{WORKFLOW_NAME}"
+          set -o pipefail
+          python -m praktika.runner --run --job-name "{JOB_NAME}" --workflow-name "{WORKFLOW_NAME}" 2>&1 | tee {RUN_LOG}
 
       - name: Post
         if: ${{{{ !cancelled() }}}}
         run: |
-          python -m praktika.runner --post-run --job-name "{JOB_NAME}" --workflow-name "{WORKFLOW_NAME}"
+          set -o pipefail
+          python -m praktika.runner --post-run --job-name "{JOB_NAME}" --workflow-name "{WORKFLOW_NAME}" 2>&1 | tee {POST_LOG}
 {UPLOADS_GITHUB}\
 """
 
@@ -74,10 +84,17 @@ jobs:
           echo "TEMP_DIR=$(readlink -f {TEMP_DIR})" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f {INPUT_DIR})" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f {OUTPUT_DIR})" >> "$GITHUB_ENV"
-          export GH_APP_PEM_KEY="${{{{ secrets.GH_APP_PEM_KEY }}}}"
-          export GH_APP_ID="${{{{ secrets.GH_APP_ID }}}}"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"\
+"""
+
+        TEMPLATE_SETUP_ENV_SECRETS = """\
+          export {SECRET_NAME}="${{{{ secrets.{SECRET_NAME} }}}}"
+          cat >> "$GITHUB_ENV" << 'EOF'
+          {SECRET_NAME}<<MULTILINE_SECRET_SUPPORT
+          ${{{{ secrets.{SECRET_NAME} }}}}
+          MULTILINE_SECRET_SUPPORT
+          EOF\
 """
 
         TEMPLATE_PY_INSTALL = """
@@ -238,6 +255,11 @@ class PullRequestPushYamlGen:
                 OUTPUT_DIR=Settings.OUTPUT_DIR,
                 RESULT_DIR=Settings.RESULTS_DIR,
             )
+            for secret in self.workflow_config.secret_names_gh:
+                setup_envs += "\n"
+                setup_envs += YamlGenerator.Templates.TEMPLATE_SETUP_ENV_SECRETS.format(
+                    SECRET_NAME=secret,
+                )
 
             job_item = YamlGenerator.Templates.TEMPLATE_JOB_0.format(
                 JOB_NAME_NORMALIZED=job_name_normalized,
@@ -255,6 +277,9 @@ class PullRequestPushYamlGen:
                 JOB_ADDONS="\n".join(job_addons),
                 DOWNLOADS_GITHUB="\n".join(downloads_github),
                 UPLOADS_GITHUB="\n".join(uploads_github),
+                PRE_LOG=Settings.PRE_LOG,
+                RUN_LOG=Settings.RUN_LOG,
+                POST_LOG=Settings.POST_LOG,
             )
             job_items.append(job_item.rstrip("\n"))
         res = template_1.format(*job_items)

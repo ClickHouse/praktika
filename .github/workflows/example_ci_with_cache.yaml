@@ -40,30 +40,38 @@ jobs:
           echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
-          export GH_APP_PEM_KEY="${{ secrets.GH_APP_PEM_KEY }}"
-          export GH_APP_ID="${{ secrets.GH_APP_ID }}"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
           echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
           cat /tmp/praktika/results/workflow_config_example_ci_with_cache.json
           echo "::group::GITHUB ENV"
-          env | grep GITHUB
+          env | grep GITHUB ||:
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
           echo "::endgroup::"
-          echo "PRAKTIKA_STEP_ENV_OK=1" >> "$GITHUB_ENV"
+          echo "::group::CI ENV"
+          env | grep CI_ ||:
+          echo "::endgroup::"
+          echo "::group::GH ENV"
+          env | grep GH_ ||:
+          echo "::endgroup::"
+          echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
-          python -m praktika.runner --pre-run --job-name "Config Workflow" --workflow-name "Example CI with Cache"
+          set -o pipefail
+          python -m praktika.runner --pre-run --job-name "Config Workflow" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/pre_run.log
+
       - name: Run
         id: run
         run: |
-          python -m praktika.runner --run --job-name "Config Workflow" --workflow-name "Example CI with Cache"
+          set -o pipefail
+          python -m praktika.runner --run --job-name "Config Workflow" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
-          python -m praktika.runner --post-run --job-name "Config Workflow" --workflow-name "Example CI with Cache"
+          set -o pipefail
+          python -m praktika.runner --post-run --job-name "Config Workflow" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/post_run.log
 
   job_a:
     runs-on: [maxs-small-fixed]
@@ -94,30 +102,38 @@ jobs:
           echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
-          export GH_APP_PEM_KEY="${{ secrets.GH_APP_PEM_KEY }}"
-          export GH_APP_ID="${{ secrets.GH_APP_ID }}"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
           echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
           cat /tmp/praktika/results/workflow_config_example_ci_with_cache.json
           echo "::group::GITHUB ENV"
-          env | grep GITHUB
+          env | grep GITHUB ||:
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
           echo "::endgroup::"
-          echo "PRAKTIKA_STEP_ENV_OK=1" >> "$GITHUB_ENV"
+          echo "::group::CI ENV"
+          env | grep CI_ ||:
+          echo "::endgroup::"
+          echo "::group::GH ENV"
+          env | grep GH_ ||:
+          echo "::endgroup::"
+          echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
-          python -m praktika.runner --pre-run --job-name "Job A" --workflow-name "Example CI with Cache"
+          set -o pipefail
+          python -m praktika.runner --pre-run --job-name "Job A" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/pre_run.log
+
       - name: Run
         id: run
         run: |
-          python -m praktika.runner --run --job-name "Job A" --workflow-name "Example CI with Cache"
+          set -o pipefail
+          python -m praktika.runner --run --job-name "Job A" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
-          python -m praktika.runner --post-run --job-name "Job A" --workflow-name "Example CI with Cache"
+          set -o pipefail
+          python -m praktika.runner --post-run --job-name "Job A" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/post_run.log
 
   job_b:
     runs-on: [maxs-small-fixed]
@@ -148,27 +164,35 @@ jobs:
           echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
-          export GH_APP_PEM_KEY="${{ secrets.GH_APP_PEM_KEY }}"
-          export GH_APP_ID="${{ secrets.GH_APP_ID }}"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
           echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
           cat /tmp/praktika/results/workflow_config_example_ci_with_cache.json
           echo "::group::GITHUB ENV"
-          env | grep GITHUB
+          env | grep GITHUB ||:
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
           echo "::endgroup::"
-          echo "PRAKTIKA_STEP_ENV_OK=1" >> "$GITHUB_ENV"
+          echo "::group::CI ENV"
+          env | grep CI_ ||:
+          echo "::endgroup::"
+          echo "::group::GH ENV"
+          env | grep GH_ ||:
+          echo "::endgroup::"
+          echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
-          python -m praktika.runner --pre-run --job-name "Job B" --workflow-name "Example CI with Cache"
+          set -o pipefail
+          python -m praktika.runner --pre-run --job-name "Job B" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/pre_run.log
+
       - name: Run
         id: run
         run: |
-          python -m praktika.runner --run --job-name "Job B" --workflow-name "Example CI with Cache"
+          set -o pipefail
+          python -m praktika.runner --run --job-name "Job B" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
-          python -m praktika.runner --post-run --job-name "Job B" --workflow-name "Example CI with Cache"
+          set -o pipefail
+          python -m praktika.runner --post-run --job-name "Job B" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/post_run.log

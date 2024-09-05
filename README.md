@@ -52,23 +52,27 @@ git push --set-upstream origin my_praktika
 ```
 
 #### praktika features
-|                              |               | comment                                                      |
-|------------------------------|---------------|--------------------------------------------------------------|
-| Pythonic CI pipelines        | Y             | 100% python interface for creating CI pipelines              |
-| Artifacts                    | Y             | Download/upload artifacts (GH, S3)                           |
-| Reports                      | Y             | HTML report for CI workflow/jobs/tests                       |
-| CI Cache                     | Y             | Skip not-affected job, reuse artifacts                       |
-| Docker as execution env      | N             | Support running jobs in docker natively                      |
-| ClickHouse CI DB             | N (High Prio) | Export results to CI DB for analytics and observability      |
-| Mergeable Check logic        | N (High Prio) | Allow specific job(s) to fail without blocking merge         |
-| CI Customization             | N             | Support for manual CI customization within a CI run          |
-| Observability                | N             | Integration with observability platform, Grafana             |
-| Collecting logs from runners | N             | system, logs, machine init logs, etc                         |
-| Slack app                    | N             | Slack app to subscribe to CI events, Alarms, etc             |
-| Main CI Dashboard            | N             | Page comprising info about all running workflows/PRs/commits |
-| Automatic Backporting        | N             | Automatic PR backports to release ranches                    |
-| Pre-requisites: python       | Y             | Install python dependencies as a pre-requisite job step      |
-| Secret Management            | Y             | Fetch secrets from AWS SSM or GH secrets/variables           |
+|                                       |   | comment                                                      |
+|---------------------------------------|---|--------------------------------------------------------------|
+| Pythonic CI pipelines                 | Y | 100% python interface for creating CI pipelines              |
+| Artifacts                             | Y | Download/upload artifacts (GH, S3)                           |
+| Reports                               | Y | HTML report for CI workflow/jobs/tests                       |
+| CI Cache                              | Y | Skip not-affected job, reuse artifacts                       |
+| Docker as execution env               | N | Support running jobs in docker natively                      |
+| ClickHouse CI DB                      | Y | Export results to CI DB for analytics and observability      |
+| Custom CI DB                          | N | Provide support for Bring Your Own CI DB                     |
+| Mergeable Check logic                 | Y | Allow specific job(s) to fail without blocking merge         |
+| CI Customization                      | N | Support for manual CI customization within a CI run          |
+| Observability                         | N | Integration with observability platform, Grafana             |
+| Collecting logs from runners          | N | system, logs, machine init logs, etc                         |
+| Slack app                             | N | Slack app to subscribe to CI events, Alarms, etc             |
+| Main CI Dashboard                     | N | Page comprising info about all running workflows/PRs/commits |
+| Automatic Backporting                 | N | Automatic PR backports to release ranches                    |
+| Pre-requisites: python                | Y | Install python dependencies as a pre-requisite job step      |
+| Secret Management                     | Y | Fetch secrets from AWS SSM or GH secrets/variables           |
+| Job Timeout config and handling       | N |                                                              |
+| Matrix Jobs                           | N |                                                              |
+| Collect execution logs on infra error | N | Collect runner, pre, post logs                               |
 
 #### Supported GitHub features
 |                       | GitHub | GitLab | BitBucket | comment                                   |

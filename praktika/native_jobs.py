@@ -2,6 +2,7 @@ import sys
 from typing import Dict
 
 from praktika import Job, Workflow
+from praktika.cidb import CIDB
 from praktika.digest import Digest
 from praktika.docker import Docker
 from praktika.environment import Environment
@@ -75,9 +76,7 @@ def _build_dockers(workflow, job_name):
     if job_status == Result.Status.SUCCESS:
         if not Docker.login(
             Settings.DOCKERHUB_USERNAME,
-            user_password=Secret.get_value(
-                workflow.get_secret(Settings.DOCKERHUB_SECRET)
-            ),
+            user_password=workflow.get_secret(Settings.DOCKERHUB_SECRET).get_value(),
         ):
             job_status = Result.Status.FAILED
             job_info = "Failed to login to dockerhub"
@@ -122,39 +121,86 @@ def _build_dockers(workflow, job_name):
 
 
 def _config_workflow(workflow: Workflow.Config, job_name):
-    print(f"Start [{job_name}], workflow [{workflow.name}]")
-    results = []
-    files = []
-    job_status = Result.Status.SUCCESS
 
-    print("Check workflows are up to date")
-    stop_watch = Utils.Stopwatch()
-    output, exit_code = Shell.get_output_and_code(
-        f"git diff-index HEAD -- {Settings.WORKFLOW_PATH_PREFIX}"
-    )
-    info = ""
-    if exit_code != 0:
-        info = f"workspace has uncommitted files unexpectedly [{output}]"
-        job_status = Result.Status.ERROR
-        print("ERROR: ", info)
-    else:
-        Shell.check(f"{Settings.PYTHON_INTERPRETER} -m praktika --generate")
+    def _check_yaml_up_to_date():
+        print("Check workflows are up to date")
+        stop_watch = Utils.Stopwatch()
         output, exit_code = Shell.get_output_and_code(
             f"git diff-index HEAD -- {Settings.WORKFLOW_PATH_PREFIX}"
         )
+        info = ""
+        status = Result.Status.SUCCESS
         if exit_code != 0:
-            info = f"workspace has outdated workflows [{output}] - regenerate with [python -m praktika --generate]"
-            job_status = Result.Status.ERROR
+            info = f"workspace has uncommitted files unexpectedly [{output}]"
+            status = Result.Status.ERROR
             print("ERROR: ", info)
-    results.append(
-        Result(
-            name="Check Workflows updated",
-            status=job_status,
-            start_time=stop_watch.start_time,
-            duration=stop_watch.duration,
-            info=info,
+        else:
+            Shell.check(f"{Settings.PYTHON_INTERPRETER} -m praktika --generate")
+            output, exit_code = Shell.get_output_and_code(
+                f"git diff-index HEAD -- {Settings.WORKFLOW_PATH_PREFIX}"
+            )
+            if exit_code != 0:
+                info = f"workspace has outdated workflows [{output}] - regenerate with [python -m praktika --generate]"
+                status = Result.Status.ERROR
+                print("ERROR: ", info)
+
+        return (
+            Result(
+                name="Check Workflows updated",
+                status=status,
+                start_time=stop_watch.start_time,
+                duration=stop_watch.duration,
+                info=info,
+            ),
+            info,
         )
-    )
+
+    def _check_secrets(secrets):
+        print("Check Secrets")
+        info = ""
+        stop_watch = Utils.Stopwatch()
+        failed_secrets = []
+        for secret_config in secrets:
+            if not secret_config.get_value():
+                failed_secrets.append(secret_config.name)
+        if failed_secrets:
+            info = f"Secrets cannot be retrieved: {', '.join(failed_secrets)}"
+
+        return (
+            Result(
+                name="Check Secrets",
+                status=(
+                    Result.Status.FAILED if failed_secrets else Result.Status.SUCCESS
+                ),
+                start_time=stop_watch.start_time,
+                duration=stop_watch.duration,
+                info=info,
+            ),
+            info,
+        )
+
+    def _check_db(workflow):
+        stop_watch = Utils.Stopwatch()
+        res, info = CIDB(
+            workflow.get_secret(Settings.SECRET_CI_DB_URL).get_value(),
+            workflow.get_secret(Settings.SECRET_CI_DB_PASSWORD).get_value(),
+        ).check()
+        return (
+            Result(
+                name="Check CI DB",
+                status=(Result.Status.FAILED if not res else Result.Status.SUCCESS),
+                start_time=stop_watch.start_time,
+                duration=stop_watch.duration,
+                info=info,
+            ),
+            info,
+        )
+
+    print(f"Start [{job_name}], workflow [{workflow.name}]")
+    results = []
+    files = []
+    info_lines = []
+    job_status = Result.Status.SUCCESS
 
     workflow_config = WorkflowRuntime(
         name=workflow.name,
@@ -165,6 +211,30 @@ def _config_workflow(workflow: Workflow.Config, job_name):
         cache_artifacts={},
     ).dump()
 
+    # checks:
+    result_, info = _check_yaml_up_to_date()
+    if result_.status != Result.Status.SUCCESS:
+        print("ERROR: yaml files are outdated - regenerate, commit and push")
+        job_status = Result.Status.ERROR
+        info_lines.append(job_name + ": " + info)
+    results.append(result_)
+
+    if workflow.secrets:
+        result_, info = _check_secrets(workflow.secrets)
+        if result_.status != Result.Status.SUCCESS:
+            print(f"ERROR: Secrets [{workflow.secrets}] are invalid")
+            job_status = Result.Status.ERROR
+            info_lines.append(job_name + ": " + info)
+        results.append(result_)
+
+    if workflow.enable_cidb:
+        result_, info = _check_db(workflow)
+        if result_.status != Result.Status.SUCCESS:
+            job_status = Result.Status.ERROR
+            info_lines.append(job_name + ": " + info)
+        results.append(result_)
+
+    # config:
     if workflow.dockers:
         print("Calculate docker's digests")
         dockers = workflow.dockers
@@ -209,9 +279,9 @@ def _config_workflow(workflow: Workflow.Config, job_name):
         )
         files.append(Result.file_name_static(workflow.name))
 
-    Result.from_fs(job_name).set_status(Result.Status.SUCCESS).set_results(
-        results
-    ).set_files(files)
+    Result.from_fs(job_name).set_status(job_status).set_results(results).set_files(
+        files
+    ).set_info("\n".join(info_lines))
 
     if job_status != Result.Status.SUCCESS:
         sys.exit(1)

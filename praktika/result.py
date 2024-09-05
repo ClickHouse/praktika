@@ -1,11 +1,10 @@
 import dataclasses
 import datetime
-import json
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from praktika.s3 import S3
-from praktika.utils import Utils, MetaClasses, Shell
+from praktika.utils import Utils, MetaClasses
 from praktika.settings import Settings
 from praktika.environment import Environment
 
@@ -35,6 +34,9 @@ class Result(MetaClasses.Serializable):
     def get():
         return Result.from_fs(Environment.get().JOB_NAME)
 
+    def is_completed(self):
+        return self.status not in (Result.Status.PENDING, Result.Status.RUNNING)
+
     def set_status(self, status) -> "Result":
         self.status = status
         self.dump()
@@ -60,7 +62,9 @@ class Result(MetaClasses.Serializable):
         return self
 
     def set_info(self, info: str) -> "Result":
-        self.info = info
+        if self.info:
+            self.info += "\n"
+        self.info += info
         self.dump()
         return self
 
@@ -226,44 +230,16 @@ class Result(MetaClasses.Serializable):
                     s3_subprefix=Utils.normalize_string(self.name),
                 )
             self.links.append(file_link)
-        print(
-            f"Job files [{self.files}] uploaded to s3 [{self.links[-len(self.files):]}] - clean files list"
-        )
-        self.files = []
-
-
-@dataclasses.dataclass
-class _PreResult:
-    name: str
-    start_time: float
-
-    @classmethod
-    def get_path(cls, name):
-        path = Path(Settings.RESULTS_DIR) / f"{Utils.normalize_string(name)}_pre.json"
-        return path
-
-    def dump(self):
-        with open(self.get_path(self.name), "w", encoding="utf8") as f:
-            json.dump(dataclasses.asdict(self), f)
-        assert Path(self.get_path(self.name)).is_file()
-        return self
-
-    @classmethod
-    def from_fs(cls, name: str) -> Optional["_PreResult"]:
-        assert Path(cls.get_path(name)).is_file()
-        try:
-            with open(cls.get_path(name), "r", encoding="utf8") as f:
-                return _PreResult(**json.load(f))
-        except Exception as ex:
+        if self.files:
             print(
-                f"ERROR: failed to load Results from [{cls.get_path(name)}], exception [{ex}]"
+                f"Job files [{self.files}] uploaded to s3 [{self.links[-len(self.files):]}] - clean files list"
             )
-            return None
+            self.files = []
 
 
 class ResultInfo:
-    SETUP_ENV_JOB_FAILED = "Failed to set up job env, it's praktika bug or misconfiguration, check GH Actions logs and report an issue please"
-    PRE_JOB_FAILED = "Failed to do a job pre-run step, it's praktika bug or misconfiguration, check GH Actions logs and report an issue please"
+    SETUP_ENV_JOB_FAILED = "Failed to set up job env, it's praktika bug or misconfiguration, check GH Actions logs and report the issue please"
+    PRE_JOB_FAILED = "Failed to do a job pre-run step, it's praktika bug or misconfiguration, check GH Actions logs and report the issue please"
     NOT_FOUND = "Job killed or terminated, no :Result: file provided)"
     NOT_FOUND_IMPOSSIBLE = (
         "No :Result: file (bug, or job misbehaviour, must not ever happen)"

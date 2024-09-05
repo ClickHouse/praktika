@@ -29,6 +29,7 @@ class Workflow:
         enable_cache: bool = False
         enable_html: bool = False
         enable_merge_ready_status: bool = False
+        enable_cidb: bool = False
 
         def is_event_pull_request(self):
             return self.event == Workflow.Event.PULL_REQUEST

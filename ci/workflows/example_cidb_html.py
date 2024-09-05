@@ -2,16 +2,15 @@ from typing import List
 
 from praktika import Job, Workflow
 from ci.settings.my_settings import RunnerLabels
-from praktika.docker import Docker
 from praktika.secret import Secret
 
 
 class JobNames:
-    NAME_1 = "Some Job to run in docker"
+    NAME_1 = "Job"
 
 
 class WorkflowNames:
-    NAME = "Example with Docker"
+    NAME = "Example CI DB, HTML"
 
 
 workflow = Workflow.Config(
@@ -27,32 +26,20 @@ workflow = Workflow.Config(
                 python_requirements_txt="./requirements.txt"
             ),
             digest_config=Job.CacheDigestConfig(
-                # example: use glob to include files
                 include_paths=["./ci/tests/example_2/some_job_script.py"],
             ),
-            run_in_docker="clickhouse/praktika-test",
-        ),
-    ],
-    dockers=[
-        Docker.Config(
-            name="clickhouse/praktika",
-            path="./dockers/praktika",
-            arm64=True,
-            amd64=True,
-            depend_on=[],
-        ),
-        Docker.Config(
-            name="clickhouse/praktika-test",
-            path="./dockers/praktika-test",
-            arm64=True,
-            amd64=True,
-            depend_on=["clickhouse/praktika"],
         ),
     ],
     secrets=[
+        # example: provide required secrets and store CI DB secrets names in user settings:
+        #   CI_DB_URL="CI_DB_URL", CI_DB_PASSWORD="CI_DB_PASSWORD"
         Secret.Config(
-            name="dockerhub_robot_password",
-            type=Secret.Type.AWS_SSM_VAR,
+            name="CI_DB_URL",
+            type=Secret.Type.GH_SECRET,
+        ),
+        Secret.Config(
+            name="CI_DB_PASSWORD",
+            type=Secret.Type.GH_SECRET,
         ),
         Secret.Config(
             name="GH_APP_ID",
@@ -63,8 +50,9 @@ workflow = Workflow.Config(
             type=Secret.Type.GH_SECRET,
         ),
     ],
-    enable_cache=True,
     enable_html=True,
+    # example: enable ci db
+    enable_cidb=True,
 )
 
 WORKFLOWS = [

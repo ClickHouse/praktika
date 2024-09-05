@@ -6,13 +6,12 @@ from praktika.environment import Environment
 from praktika.gh import GH
 from praktika.parser import WorkflowConfigParser
 from praktika.settings import Settings
-from praktika.utils import Utils, MetaClasses
-from praktika.hook_interface import HookInterface
-from praktika.runtime import _RuntimeVars, WorkflowRuntime
+from praktika.utils import Utils
+from praktika.runtime import WorkflowRuntime
 from praktika.result import Result, ResultInfo
 
 
-class HtmlRunnerHooks(HookInterface, MetaClasses.FormatPrint):
+class HtmlRunnerHooks:
     @classmethod
     def configure(cls, _workflow):
         # generate pending Results for all jobs in the workflow
@@ -77,18 +76,23 @@ class HtmlRunnerHooks(HookInterface, MetaClasses.FormatPrint):
         pass
 
     @classmethod
-    def post_run(cls, _workflow, _job):
+    def post_run(cls, _workflow, _job, info_errors):
         print(f"Post run for job [{_job.name}], workflow [{_workflow.name}]")
         result = Result.from_fs(_job.name)
 
         workflow_result = Result.from_s3(_workflow.name)
+        if info_errors:
+            info_errors = [f"{_job.name}: {error}" for error in info_errors]
+            info_str = workflow_result.info + "\n" + "\n".join(info_errors)
+            print("Update workflow results with new info")
+            workflow_result.set_info(info_str)
         old_status = workflow_result.status
 
         result.upload_files()
         workflow_result.update_sub_result(result)
 
         skipped_job_results = []
-        if _RuntimeVars.run_failed():
+        if Environment.get().PRAKTIKA_RUN_STEP_EXIT_CODE != 0:
             print(
                 "Current job failed - find dependee jobs in the workflow and set their statuses to skipped"
             )

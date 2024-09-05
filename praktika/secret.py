@@ -14,25 +14,25 @@ class Secret:
     class Config:
         name: str
         type: str
-        encrypted: bool
+        encrypted: bool = False
 
-    @classmethod
-    def get_value(cls, config: "Secret.Config"):
-        if config.type == Secret.Type.AWS_SSM_VAR:
-            return cls.get_aws_ssm_var(config)
-        elif config.type == Secret.Type.GH_SECRET:
-            return cls.get_gh_secret(config)
-        else:
-            assert False, f"Not supported secret type, secret [{config}]"
+        def is_gh(self):
+            return self.type == Secret.Type.GH_SECRET
 
-    @classmethod
-    def get_aws_ssm_var(cls, config):
-        res = Shell.get_output_or_raise(
-            f"aws ssm  get-parameter --name {config.name} --with-decryption --output text --query Parameter.Value",
-        )
-        return res
+        def get_value(self):
+            if self.type == Secret.Type.AWS_SSM_VAR:
+                return self.get_aws_ssm_var()
+            elif self.type == Secret.Type.GH_SECRET:
+                return self.get_gh_secret()
+            else:
+                assert False, f"Not supported secret type, secret [{self}]"
 
-    @classmethod
-    def get_gh_secret(cls, config):
-        res = os.getenv(f"{config.name}")
-        return res
+        def get_aws_ssm_var(self):
+            res = Shell.get_output_or_raise(
+                f"aws ssm  get-parameter --name {self.name} --with-decryption --output text --query Parameter.Value",
+            )
+            return res
+
+        def get_gh_secret(self):
+            res = os.getenv(f"{self.name}")
+            return res

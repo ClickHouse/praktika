@@ -53,6 +53,12 @@ class Validator:
                 ), f"CACHE_S3_PATH Setting must be defined if enable_cache=True, workflow [{workflow.name}]"
 
             if workflow.enable_html:
+                assert workflow.get_secret(
+                    "GH_APP_ID"
+                ), f"GH Secret GH_APP_ID must be provided with .enable_html=True, workflow [{workflow.name}]"
+                assert workflow.get_secret(
+                    "GH_APP_PEM_KEY"
+                ), f"GH Secret GH_APP_PEM_KEY must be provided with .enable_html=True, workflow [{workflow.name}]"
                 assert (
                     Settings.HTML_S3_PATH
                 ), f"HTML_S3_PATH Setting must be defined if enable_html=True, workflow [{workflow.name}]"
@@ -90,6 +96,20 @@ class Validator:
                     assert not any(
                         job in ("ubuntu-latest",) for job in job.runs_on
                     ), f"GitHub Runners must not be used for workflow with enabled: workflow.enable_cache, workflow.enable_html or workflow.enable_merge_ready_status as s3 access is required, workflow [{workflow.name}], job [{job.name}]"
+
+            if workflow.enable_cidb:
+                assert (
+                    Settings.SECRET_CI_DB_URL
+                ), f"Settings.CI_DB_URL_SECRET must be provided if workflow.enable_cidb=True, workflow [{workflow.name}]"
+                assert (
+                    Settings.SECRET_CI_DB_PASSWORD
+                ), f"Settings.CI_DB_PASSWORD_SECRET must be provided if workflow.enable_cidb=True, workflow [{workflow.name}]"
+                assert (
+                    Settings.CI_DB_DB_NAME
+                ), f"Settings.CI_DB_DB_NAME must be provided if workflow.enable_cidb=True, workflow [{workflow.name}]"
+                assert (
+                    Settings.CI_DB_TABLE_NAME
+                ), f"Settings.CI_DB_TABLE_NAME must be provided if workflow.enable_cidb=True, workflow [{workflow.name}]"
 
     @classmethod
     def validate_file_paths_in_run_command(cls, workflow: Workflow.Config) -> None:
