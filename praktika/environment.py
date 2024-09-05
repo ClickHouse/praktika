@@ -43,6 +43,9 @@ class Environment(MetaClasses.Serializable):
     def prerun_ok(self):
         return self.PRAKTIKA_PRERUN_STEP_EXIT_CODE == 0
 
+    def run_ok(self):
+        return self.PRAKTIKA_RUN_STEP_EXIT_CODE == 0
+
     @classmethod
     def file_name_static(cls, _name=""):
         return f"{_Settings.TEMP_DIR}/{cls.name}.json"

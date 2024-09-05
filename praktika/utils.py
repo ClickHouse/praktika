@@ -3,12 +3,15 @@ import inspect
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import time
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from threading import Thread
 from typing import Iterator, Union, Optional, TypeVar, Type, Dict, Any
 
 from praktika._settings import _Settings
@@ -55,6 +58,10 @@ class MetaClasses:
             with open(self.file_name(), "w", encoding="utf8") as f:
                 json.dump(dataclasses.asdict(self), f, indent=4)
             return self
+
+        @classmethod
+        def exist(cls, name):
+            return Path(cls.file_name_static(name)).is_file()
 
         def to_json(self, pretty=False):
             return json.dumps(dataclasses.asdict(self), indent=4 if pretty else None)
@@ -109,6 +116,17 @@ class Shell:
         return res.stdout.strip()
 
     @classmethod
+    def get_res_stdout_stderr(cls, command):
+        res = subprocess.run(
+            command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        return res.returncode, res.stdout.strip(), res.stderr.strip()
+
+    @classmethod
     def get_output_and_code(cls, command, strict=False):
         res = subprocess.run(
             command,
@@ -147,8 +165,31 @@ class Shell:
         verbose=False,
         dry_run=False,
         stdin_str=None,
+        timeout=None,
         **kwargs,
     ):
+
+        def _check_timeout(timeout, process) -> None:
+            if not timeout:
+                return
+            time.sleep(timeout)
+            print(
+                f"WARNING: Timeout exceeded [{timeout}], send SIGTERM to process group [{process.pid}]"
+            )
+            os.killpg(process.pid, signal.SIGTERM)
+
+            time_wait = 0
+
+            while process.poll() is None and time_wait < 100:
+                print("wait...")
+                wait = 5
+                time.sleep(wait)
+                time_wait += wait
+            while process.poll() is None:
+                print(f"WARNING: Process is still running, send SIGKILL")
+                os.killpg(process.pid, signal.SIGKILL)
+                time.sleep(5)
+
         if dry_run:
             print(f"Dry-ryn. Would run command [{command}]")
             return True
@@ -156,6 +197,7 @@ class Shell:
             print(f"Run command [{command}]")
 
         log_file = log_file or "/dev/null"
+
         with open(log_file, "w") as log_fp:
             proc = subprocess.Popen(
                 command,
@@ -169,9 +211,13 @@ class Shell:
                 errors="backslashreplace",
                 **kwargs,
             )
+            if timeout:
+                t = Thread(target=_check_timeout)
+                t.daemon = True  # does not block the program from exit
+                t.start()
             if stdin_str:
                 proc.communicate(input=stdin_str)
-            elif proc.stdout:
+            if proc.stdout:
                 for line in proc.stdout:
                     sys.stdout.write(line)
                     log_fp.write(line)
@@ -263,6 +309,89 @@ class Utils:
         @property
         def duration(self) -> float:
             return datetime.utcnow().timestamp() - self.start_time
+
+
+class TeePopen:
+    def __init__(
+        self,
+        command: str,
+        log_file: Union[str, Path] = "",
+        env: Optional[dict] = None,
+        timeout: Optional[int] = None,
+    ):
+        self.command = command
+        self.log_file_name = log_file
+        self.log_file = None
+        self.env = env or os.environ.copy()
+        self.process = None  # type: Optional[subprocess.Popen]
+        self.timeout = timeout
+        self.timeout_exceeded = False
+        self.terminated_by_sigterm = False
+        self.terminated_by_sigkill = False
+
+    def _check_timeout(self) -> None:
+        if self.timeout is None:
+            return
+        time.sleep(self.timeout)
+        print(
+            f"WARNING: Timeout exceeded [{self.timeout}], send SIGTERM to [{self.process.pid}] and give a chance for graceful termination"
+        )
+        self.send_signal(signal.SIGTERM)
+        time_wait = 0
+        self.terminated_by_sigterm = True
+        self.timeout_exceeded = True
+        while self.process.poll() is None and time_wait < 100:
+            print("wait...")
+            wait = 5
+            time.sleep(wait)
+            time_wait += wait
+        while self.process.poll() is None:
+            print(f"WARNING: Still running, send SIGKILL to [{self.process.pid}]")
+            self.send_signal(signal.SIGKILL)
+            self.terminated_by_sigkill = True
+            time.sleep(2)
+
+    def __enter__(self) -> "TeePopen":
+        if self.log_file_name:
+            self.log_file = open(self.log_file_name, "w", encoding="utf-8")
+        self.process = subprocess.Popen(
+            self.command,
+            shell=True,
+            universal_newlines=True,
+            env=self.env,
+            start_new_session=True,  # signall will be sent to all children
+            stderr=subprocess.STDOUT,
+            stdout=subprocess.PIPE,
+            bufsize=1,
+            errors="backslashreplace",
+        )
+        time.sleep(1)
+        print(f"Subprocess started, pid [{self.process.pid}]")
+        if self.timeout is not None and self.timeout > 0:
+            t = Thread(target=self._check_timeout)
+            t.daemon = True  # does not block the program from exit
+            t.start()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.wait()
+        if self.log_file:
+            self.log_file.close()
+
+    def wait(self) -> int:
+        if self.process.stdout is not None:
+            for line in self.process.stdout:
+                sys.stdout.write(line)
+                if self.log_file:
+                    self.log_file.write(line)
+
+        return self.process.wait()
+
+    def poll(self):
+        return self.process.poll()
+
+    def send_signal(self, signal_num):
+        os.killpg(self.process.pid, signal_num)
 
 
 if __name__ == "__main__":

@@ -34,6 +34,7 @@ workflow_pr = Workflow.Config(
             job_requirements=Job.Requirements(
                 python_requirements_txt="./requirements_with_gh_auth.txt"
             ),
+            timeout=5,
             # example: This job won't set "Ready For Merge" status on failure
             allow_merge_on_failure=True,
         ),
