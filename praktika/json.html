@@ -564,7 +564,7 @@
 
                     // Handle duration update if duration is null and start_time exists
                     if (mainData.duration === null && mainData.start_time) {
-                        let duration = Math.floor(Date.now() / 1000) - mainData.start_time;
+                        let duration = Math.floor(Date.now() / 1000 - mainData.start_time);
                         const durationElement = document.getElementById('duration-value');
 
                         const intervalId = setInterval(() => {

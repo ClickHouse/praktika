@@ -52,12 +52,12 @@ class S3:
             cmd += " --content-type text/plain"
         while not res and i < Settings.MAX_RETRIES_S3:
             i += 1
-            res = Shell.check(
-                cmd,
-                verbose=True,
-            )
+            res, stdout, stderr = Shell.get_res_stdout_stderr(cmd)
+            if "aws sso login" in stderr:
+                print("ERROR: aws login expired")
+                break
         assert (
-            res
+            res == 0
         ), f"Failed to copy to s3 after Settings.MAX_RETRIES_S3 [{Settings.MAX_RETRIES_S3}] retries, file [{local_path}]"
         # TODO: add support for api gateway / cloudfront
         bucket = s3_path.split("/")[0]

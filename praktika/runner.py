@@ -11,7 +11,7 @@ from praktika.result import Result, ResultInfo
 from praktika.runtime import WorkflowRuntime
 from praktika.environment import Environment
 from praktika.settings import Settings
-from praktika.utils import Shell, Utils
+from praktika.utils import Shell, Utils, TeePopen
 from praktika.s3 import S3
 
 
@@ -55,6 +55,7 @@ class Runner:
         # set pre-step ok in env
         env.PRAKTIKA_PRERUN_STEP_EXIT_CODE = 0
         env.dump()
+        return True
 
     def run(self, job_name, workflow_name):
         workflow = _get_workflows(name=workflow_name)[0]
@@ -75,12 +76,32 @@ class Runner:
             cmd = f"docker run --rm -e PYTHONPATH='{_Settings.DOCKER_WD}' --volume ./:{_Settings.DOCKER_WD} --volume {_Settings.TEMP_DIR}:{_Settings.TEMP_DIR} --workdir={_Settings.DOCKER_WD} {job.run_in_docker}:{docker_tag} {job.command}"
         else:
             cmd = job.command
-        exit_code = Shell.run(cmd, log_file=log_file, verbose=True)
+
+        with TeePopen(cmd, timeout=job.timeout) as process:
+            print(f"Job process started, pid [{process.process.pid}]")
+            print("timeout", process.timeout_exceeded)
+            exit_code = process.wait()
+
+            result = Result.from_fs(job_name)
+            if process.timeout_exceeded:
+                print(
+                    f"WARNING: Job timed out: [{job_name}], timeout [{job.timeout}], exit code [{exit_code}]"
+                )
+                if not result.is_completed() or result.is_ok():
+                    result.set_status(Result.Status.ERROR)
+                result.set_info(ResultInfo.TIMEOUT)
+            elif exit_code != 0:
+                result.set_status(Result.Status.ERROR).set_info(ResultInfo.KILLED)
+            result.dump()
+
         env = Environment.get()
         env.PRAKTIKA_RUN_STEP_EXIT_CODE = exit_code
         env.dump()
 
-        assert exit_code == 0, "run command failed"
+        if exit_code == 0:
+            print(f"run command failed with exit code [{exit_code}]")
+
+        return exit_code == 0
 
     def post_run(self, job_name, workflow_name):
         print(f"Run post-run script [{job_name}], workflow [{workflow_name}]")
@@ -116,24 +137,28 @@ class Runner:
             ).dump()
             info_errors.append(info)
 
-        result = Result.from_fs(job_name)
-        if not result:
-            result = Result(
+        if not Result.exist(job_name):
+            Result(
                 name=job_name,
                 start_time=Utils.timestamp(),
                 duration=None,
                 status=Result.Status.ERROR,
                 info=ResultInfo.NOT_FOUND_IMPOSSIBLE,
-                files=[Settings.RUN_LOG],
-            )
+            ).dump()
             print(f"ERROR: {ResultInfo.NOT_FOUND_IMPOSSIBLE}")
             info_errors.append(ResultInfo.NOT_FOUND_IMPOSSIBLE)
-        elif not result.is_completed():
-            result.info = ResultInfo.NOT_FOUND
+
+        result = Result.from_fs(job_name)
+        if not env.run_ok() and result.info:
+            # provide job info to workflow level
+            info_errors.append(result.info)
+
+        if not result.is_completed():
+            result.info = ResultInfo.KILLED
             result.status = Result.Status.ERROR
-            print(f"ERROR: {ResultInfo.NOT_FOUND}")
-            info_errors.append(ResultInfo.NOT_FOUND)
-        result.update_duration().dump()
+            print(f"ERROR: {ResultInfo.KILLED}")
+            info_errors.append(ResultInfo.KILLED)
+        result.set_files(files=[Settings.RUN_LOG]).update_duration().dump()
 
         run_exit_code = env.PRAKTIKA_RUN_STEP_EXIT_CODE
         if run_exit_code == 0:
@@ -160,7 +185,6 @@ class Runner:
                     )
         else:
             print(f"Job exit code [{run_exit_code} != 0] - skip artifact upload")
-            result.set_files(files=[Settings.RUN_LOG])
 
         if workflow.enable_cidb:
             print("Insert results to CIDB")
@@ -183,6 +207,8 @@ class Runner:
         if run_exit_code == 0:
             if workflow.enable_cache:
                 CacheRunnerHooks.post_run(workflow, job)
+
+        return True
 
 
 def parse_args():
@@ -216,18 +242,22 @@ def parse_args():
 if __name__ == "__main__":
     args, parser = parse_args()
 
+    res = False
     if args.pre_run:
         assert (
             args.job_name and args.workflow_name
         ), f"--job-name required with --pre-run"
-        Runner().pre_run(args.job_name, args.workflow_name)
+        res = Runner().pre_run(args.job_name, args.workflow_name)
     elif args.run:
         assert args.job_name and args.workflow_name, f"--job-name required with --run"
-        Runner().run(args.job_name, args.workflow_name)
+        res = Runner().run(args.job_name, args.workflow_name)
     elif args.post_run:
         assert (
             args.job_name and args.workflow_name
         ), f"--job-name required with --post-run"
-        Runner().post_run(args.job_name, args.workflow_name)
+        res = Runner().post_run(args.job_name, args.workflow_name)
     else:
         assert False
+
+    if not res:
+        sys.exit(1)

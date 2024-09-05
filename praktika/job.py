@@ -35,7 +35,7 @@ class Job:
 
         job_requirements: Optional["Job.Requirements"] = None
 
-        auto_dependencies: Optional[List[str]] = None
+        timeout: int = 1 * 3600
 
         digest_config: Optional["Job.CacheDigestConfig"] = None
 

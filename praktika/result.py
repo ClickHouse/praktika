@@ -37,6 +37,9 @@ class Result(MetaClasses.Serializable):
     def is_completed(self):
         return self.status not in (Result.Status.PENDING, Result.Status.RUNNING)
 
+    def is_ok(self):
+        return self.status in (Result.Status.SKIPPED, Result.Status.SUCCESS)
+
     def set_status(self, status) -> "Result":
         self.status = status
         self.dump()
@@ -240,8 +243,9 @@ class Result(MetaClasses.Serializable):
 class ResultInfo:
     SETUP_ENV_JOB_FAILED = "Failed to set up job env, it's praktika bug or misconfiguration, check GH Actions logs and report the issue please"
     PRE_JOB_FAILED = "Failed to do a job pre-run step, it's praktika bug or misconfiguration, check GH Actions logs and report the issue please"
-    NOT_FOUND = "Job killed or terminated, no :Result: file provided)"
+    KILLED = "Job killed or terminated, no Result provided"
     NOT_FOUND_IMPOSSIBLE = (
-        "No :Result: file (bug, or job misbehaviour, must not ever happen)"
+        "No Result file (bug, or job misbehaviour, must not ever happen)"
     )
     SKIPPED_DUE_TO_PREVIOUS_FAILURE = "Skipped due to previous failure"
+    TIMEOUT = "Timeout"
