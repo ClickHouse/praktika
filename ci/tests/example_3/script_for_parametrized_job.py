@@ -1,13 +1,19 @@
+from pathlib import Path
+
 from praktika.environment import Environment
 from praktika.result import Result
+from praktika.settings import Settings
 
 if __name__ == "__main__":
 
-    print(Environment.PARAMETER)
+    assert Path(
+        f"{Settings.INPUT_DIR}/artifact.txt"
+    ).is_file(), "required artifact not found"
 
     try:
-        print(Environment.PARAMETER.name)
+        for key, value in vars(Environment.PARAMETER).items():
+            print(f"{key}: {value}")
     except:
-        print("parameter is not a json object")
+        print(f"parameter is not a json object: {Environment.PARAMETER}")
 
     Result.get().set_success()

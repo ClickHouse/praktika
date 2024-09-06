@@ -20,9 +20,12 @@ class WorkflowYaml:
         artifacts_gh_provides: List["WorkflowYaml.ArtifactYaml"]
         addons: List["WorkflowYaml.JobAddonYaml"]
         gh_app_auth: bool
-        run_if_not_cancelled: bool
+        run_unless_cancelled: bool
         parameter: Any
         nest: str
+
+        def __repr__(self):
+            return self.name
 
     @dataclasses.dataclass
     class ArtifactYaml:
@@ -31,6 +34,9 @@ class WorkflowYaml:
         required_by: List[str]
         path: str
         type: str
+
+        def __repr__(self):
+            return self.name
 
     @dataclasses.dataclass
     class JobAddonYaml:
@@ -115,6 +121,20 @@ class WorkflowConfigParser:
                     type=Artifact.Type.PHONY,
                 )
             )
+            if (
+                job._nest_name
+                and job._nest_name not in self.workflow_yaml_config.artifact_to_config
+            ):
+                # nesting job name
+                self.workflow_yaml_config.artifact_to_config[job._nest_name] = (
+                    WorkflowYaml.ArtifactYaml(
+                        name=job._nest_name,
+                        provided_by=job._nest_name,
+                        required_by=[],
+                        path="",
+                        type=Artifact.Type.PHONY,
+                    )
+                )
 
         # populate jobs
         for job in self.config.jobs:
@@ -126,7 +146,7 @@ class WorkflowConfigParser:
                 needs=[],
                 runs_on=[],
                 gh_app_auth=False,
-                run_if_not_cancelled=job.run_if_not_cancelled,
+                run_unless_cancelled=job.run_unless_cancelled,
                 parameter=None,
                 nest="",
             )
@@ -210,10 +230,10 @@ class WorkflowConfigParser:
             artifact_name,
             artifact,
         ) in self.workflow_yaml_config.artifact_to_config.items():
-            assert (
-                artifact.provided_by
-                and artifact.provided_by in self.workflow_yaml_config.job_to_config
-            ), f"Artifact [{artifact_name}] has no valid job providing it [{artifact.provided_by}]"
+            # assert (
+            #     artifact.provided_by
+            #     and artifact.provided_by in self.workflow_yaml_config.job_to_config
+            # ), f"Artifact [{artifact_name}] has no valid job providing it [{artifact.provided_by}]"
             for job_name in artifact.required_by:
                 if (
                     artifact.provided_by

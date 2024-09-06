@@ -12,17 +12,21 @@ class GH:
     def do_command_with_retries(cls, command):
         res = False
         retry_count = 0
+        out, err = "", ""
 
         while retry_count < Settings.MAX_RETRIES_GH and not res:
-            res = Shell.check(command, verbose=True)
-
+            ret_code, out, err = Shell.get_res_stdout_stderr(command, verbose=True)
+            res = ret_code == 0
+            if not res and "Validation Failed" in err:
+                print("ERROR: GH command validation error")
+                break
             if not res:
                 retry_count += 1
                 time.sleep(5)
 
         if not res:
             print(
-                f"ERROR: Failed to execute gh command [{command}] [MAX_RETRIES_GH={Settings.MAX_RETRIES_GH}] attempts"
+                f"ERROR: Failed to execute gh command [{command}] out:[{out}] err:[{err}] after [{retry_count}] attempts"
             )
         return res
 
@@ -55,8 +59,7 @@ class GH:
                              "/repos/{repo}/issues/comments/{id}" \
                              -f body=\'{comment_body}\''
                     print(f"Update existing comments [{id}]")
-                    cls.do_command_with_retries(cmd)
-                return True
+                    return cls.do_command_with_retries(cmd)
 
         cmd = f'gh pr comment {pr} --body "{comment_body}"'
         return cls.do_command_with_retries(cmd)

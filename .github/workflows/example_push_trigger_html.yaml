@@ -6,6 +6,11 @@ on:
   push:
     branches: ['**']
 
+# Cancel the previous wf run in PRs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # Force the stdout and stderr streams to be unbuffered
   PYTHONUNBUFFERED: 1
@@ -40,6 +45,7 @@ jobs:
           echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
+          echo "JOB_NAME=Config Workflow" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
           export GH_APP_ID="${{ secrets.GH_APP_ID }}"
@@ -55,7 +61,13 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_push_trigger_html.json
+          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
+            # normal job case
+            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_push_trigger_html.json
+          else
+            # nested job case
+            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_push_trigger_html.json
+          fi
           cat /tmp/praktika/results/workflow_config_example_push_trigger_html.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -114,6 +126,7 @@ jobs:
           echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
+          echo "JOB_NAME=Job 1" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
           export GH_APP_ID="${{ secrets.GH_APP_ID }}"
@@ -129,7 +142,13 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_push_trigger_html.json
+          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
+            # normal job case
+            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_push_trigger_html.json
+          else
+            # nested job case
+            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_push_trigger_html.json
+          fi
           cat /tmp/praktika/results/workflow_config_example_push_trigger_html.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -188,6 +207,7 @@ jobs:
           echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
+          echo "JOB_NAME=Job 2" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
           export GH_APP_ID="${{ secrets.GH_APP_ID }}"
@@ -203,7 +223,13 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_push_trigger_html.json
+          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
+            # normal job case
+            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_push_trigger_html.json
+          else
+            # nested job case
+            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_push_trigger_html.json
+          fi
           cat /tmp/praktika/results/workflow_config_example_push_trigger_html.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:

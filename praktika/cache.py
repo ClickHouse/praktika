@@ -66,9 +66,14 @@ class Cache:
             f"{Settings.CACHE_LOCAL_PATH}/{Utils.normalize_string(job_name)}/"
         )
         Path(record_file_local_dir).mkdir(parents=True, exist_ok=True)
-        res = S3.copy_file_from_s3(
-            s3_path=record_path, local_path=record_file_local_dir
-        )
+
+        if S3.head_object(record_path):
+            res = S3.copy_file_from_s3(
+                s3_path=record_path, local_path=record_file_local_dir
+            )
+        else:
+            res = None
+
         if res:
             print(f"Cache record found, job [{job_name}], digest [{job_digest}]")
             self.success[job_name] = True

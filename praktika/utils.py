@@ -1,3 +1,4 @@
+import base64
 import dataclasses
 import inspect
 import json
@@ -58,7 +59,8 @@ class MetaClasses:
                     return cls.from_dict(json.load(f))
                 except json.decoder.JSONDecodeError as ex:
                     print(f"ERROR: failed to parse json, ex [{ex}]")
-                    print(f"JSON content [{cls.file_name_static(name)}]:\n {f.read()}")
+                    print(f"JSON content [{cls.file_name_static(name)}]")
+                    Shell.check(f"cat {cls.file_name_static(name)}")
                     raise ex
 
         @classmethod
@@ -116,7 +118,9 @@ class Shell:
         return cls.get_output(command).strip()
 
     @classmethod
-    def get_output(cls, command, strict=False):
+    def get_output(cls, command, strict=False, verbose=False):
+        if verbose:
+            print(f"Run command [{command}]")
         res = subprocess.run(
             command,
             shell=True,
@@ -131,7 +135,9 @@ class Shell:
         return res.stdout.strip()
 
     @classmethod
-    def get_res_stdout_stderr(cls, command):
+    def get_res_stdout_stderr(cls, command, verbose=True):
+        if verbose:
+            print(f"Run command [{command}]")
         res = subprocess.run(
             command,
             shell=True,
@@ -228,10 +234,12 @@ class Shell:
             )
             if timeout:
                 t = Thread(target=_check_timeout)
-                t.daemon = True  # does not block the program from exit
+                t.daemon = True
                 t.start()
             if stdin_str:
-                proc.communicate(input=stdin_str)
+                proc.stdin.write(stdin_str)
+                proc.stdin.close()
+
             if proc.stdout:
                 for line in proc.stdout:
                     sys.stdout.write(line)
@@ -293,6 +301,14 @@ class Utils:
     @staticmethod
     def clear_dmesg():
         Shell.check("sudo dmesg --clear", verbose=True)
+
+    @staticmethod
+    def to_base64(value):
+        assert isinstance(value, str), f"TODO: not supported for {type(value)}"
+        string_bytes = value.encode("utf-8")
+        base64_bytes = base64.b64encode(string_bytes)
+        base64_string = base64_bytes.decode("utf-8")
+        return base64_string
 
     @staticmethod
     def is_hex(s):

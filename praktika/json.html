@@ -277,6 +277,15 @@
             valueElement.classList.add('status-value');
             valueElement.classList.add(getStatusClass(value));
             valueElement.textContent = value;
+        } else if (typeof value === 'string' && value.includes('\n')) {
+            // Handle multiline strings by converting '\n' to <br> elements
+            const lines = value.split('\n');
+            lines.forEach((line, index) => {
+                valueElement.appendChild(document.createTextNode(line));
+                if (index < lines.length - 1) {
+                    valueElement.appendChild(document.createElement('br'));
+                }
+            });
         } else if (typeof value === 'object' && !Array.isArray(value)) {
             // Handle nested objects
             const nestedContainer = document.createElement('div');

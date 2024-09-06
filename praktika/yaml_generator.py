@@ -21,6 +21,11 @@ on:
   {EVENT}:
     branches: [{BRANCHES}]
 
+# Cancel the previous wf run in PRs.
+concurrency:
+  group: ${{{{{{{{ github.workflow }}}}}}}}-${{{{{{{{ github.ref }}}}}}}}
+  cancel-in-progress: true
+
 env:
   # Force the stdout and stderr streams to be unbuffered
   PYTHONUNBUFFERED: 1
@@ -35,12 +40,24 @@ jobs:
 name: {NAME}
 on:
   workflow_call:
+    inputs:
+      config:
+        type: string
+        required: false
+        default: ''
+    secrets:
+{SECRETS}
 
 env:
   PYTHONUNBUFFERED: 1
 
 jobs:
 {JOBS}\
+"""
+
+        TEMPLATE_SECRET_CONFIG = """\
+      {SECRET_NAME}:
+        required: true
 """
 
         TEMPLATE_RUN_COMMAND = """
@@ -55,9 +72,21 @@ jobs:
 
         TEMPLATE_NEST = """
   {JOB_NAME_NORMALIZED}:
-    needs: [{NEEDS}]
+    needs: [{NEEDS}]{IF_EXPRESSION}
     name: {JOB_NAME}
     uses: ./.github/workflows/{JOB_NAME_NORMALIZED}.yaml
+"""
+
+        TEMPLATE_NEST_WITH = """\
+    with:
+      config: ${{ needs.config_workflow.outputs.data }}
+"""
+        TEMPLATE_NEST_SECRETS = """\
+    secrets:
+"""
+
+        TEMPLATE_NEST_SECRET_ITEM = """\
+      {SECRET_NAME}: ${{{{ secrets.{SECRET_NAME} }}}}
 """
 
         TEMPLATE_JOB_0 = """
@@ -74,7 +103,13 @@ jobs:
       - name: Set up env
         run: |
 {SETUP_ENVS}{EXTRA_COMMANDS}
-          echo '''${{{{ needs.{WORKFLOW_CONFIG_JOB_NAME}.outputs.data }}}}''' > {WORKFLOW_CONFIG_FILE}
+          if [ -n '''${{{{ needs.{WORKFLOW_CONFIG_JOB_NAME}.outputs.data }}}}''' ]; then
+            # normal job case
+            echo '''${{{{ needs.{WORKFLOW_CONFIG_JOB_NAME}.outputs.data }}}}''' > {WORKFLOW_CONFIG_FILE}
+          else
+            # nested job case
+            echo '''${{{{ inputs.config }}}}''' > {WORKFLOW_CONFIG_FILE}
+          fi
           cat {WORKFLOW_CONFIG_FILE}
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -113,6 +148,7 @@ jobs:
           echo "TEMP_DIR=$(readlink -f {TEMP_DIR})" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f {INPUT_DIR})" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f {OUTPUT_DIR})" >> "$GITHUB_ENV"
+          echo "JOB_NAME={JOB_NAME}" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"\
 """
@@ -169,7 +205,15 @@ jobs:
 """
 
         TEMPLATE_IF_EXPRESSION = """
-    if: ${{{{ !failure() && !cancelled() && !contains(fromJson(needs.{WORKFLOW_CONFIG_JOB_NAME}.outputs.data).cache_success, '{JOB_NAME}') }}}}\
+    if: ${{{{ !failure() && !cancelled() && !contains(fromJson(needs.{WORKFLOW_CONFIG_JOB_NAME}.outputs.data).cache_success_base64, '{JOB_NAME_BASE64}') }}}}\
+"""
+
+        TEMPLATE_IF_EXPRESSION_NESTED = """
+    if: ${{{{ !failure() && !cancelled() && !contains(fromJson(inputs.config).cache_success_base64, '{JOB_NAME_BASE64}') }}}}\
+"""
+
+        TEMPLATE_IF_EXPRESSION_SKIPPED_OR_SUCCESS = """
+    if: ${{ !failure() && !cancelled() }}\
 """
 
         TEMPLATE_IF_EXPRESSION_NOT_CANCELLED = """
@@ -271,11 +315,19 @@ class PullRequestPushYamlGen:
             ):
                 if_expression = YamlGenerator.Templates.TEMPLATE_IF_EXPRESSION.format(
                     WORKFLOW_CONFIG_JOB_NAME=config_job_name_normalized,
-                    JOB_NAME=job_name,
+                    JOB_NAME_BASE64=Utils.to_base64(job_name),
                 )
-            if job.run_if_not_cancelled:
+            if job.run_unless_cancelled:
                 if_expression = (
                     YamlGenerator.Templates.TEMPLATE_IF_EXPRESSION_NOT_CANCELLED
+                )
+
+            if_expression_nested = ""
+            if self.workflow_config.enable_cache:
+                if_expression_nested = (
+                    YamlGenerator.Templates.TEMPLATE_IF_EXPRESSION_NESTED.format(
+                        JOB_NAME_BASE64=Utils.to_base64(job_name),
+                    )
                 )
 
             extra_cmds = ""
@@ -288,6 +340,7 @@ class PullRequestPushYamlGen:
                 INPUT_DIR=Settings.INPUT_DIR,
                 OUTPUT_DIR=Settings.OUTPUT_DIR,
                 RESULT_DIR=Settings.RESULTS_DIR,
+                JOB_NAME=job_name,
             )
             if job.parameter:
                 setup_envs += "\n"
@@ -313,9 +366,9 @@ class PullRequestPushYamlGen:
                     + str(len(nest_to_jobs.get(job.nest, [])))
                 ),
                 WORKFLOW_CONFIG_JOB_NAME=config_job_name_normalized,
-                IF_EXPRESSION=if_expression,
+                IF_EXPRESSION=if_expression if not job.nest else if_expression_nested,
                 RUNS_ON=", ".join(job.runs_on),
-                NEEDS=needs,
+                NEEDS=needs if not job.nest else "",
                 JOB_NAME_GH=(
                     '"' + f"{job.parameter}".replace('"', '\\"') + '"'
                     if job.parameter
@@ -350,8 +403,21 @@ class PullRequestPushYamlGen:
                     job_item = YamlGenerator.Templates.TEMPLATE_NEST.format(
                         JOB_NAME_NORMALIZED=Utils.normalize_string(job.nest),
                         NEEDS=needs,
+                        IF_EXPRESSION=(
+                            YamlGenerator.Templates.TEMPLATE_IF_EXPRESSION_SKIPPED_OR_SUCCESS
+                            if self.workflow_config.enable_cache
+                            else ""
+                        ),
                         JOB_NAME=job.nest,
                     )
+                    if self.workflow_config.enable_cache:
+                        job_item += YamlGenerator.Templates.TEMPLATE_NEST_WITH
+                    if self.workflow_config.secret_names_gh:
+                        job_item += YamlGenerator.Templates.TEMPLATE_NEST_SECRETS
+                        for secret_name in self.workflow_config.secret_names_gh:
+                            job_item += YamlGenerator.Templates.TEMPLATE_NEST_SECRET_ITEM.format(
+                                SECRET_NAME=secret_name
+                            )
 
             if not job.nest or add_nest_to_wf:
                 job_items.append(job_item)
@@ -371,9 +437,17 @@ class PullRequestPushYamlGen:
         for nest_name, jobs in nest_to_jobs.items():
             wf = YamlGenerator.Templates.TEMPLATE_CALLABLE_WORKFLOW.format(
                 NAME=nest_name,
+                SECRETS="{}" * len(self.workflow_config.secret_names_gh),
                 JOBS="{}" * len(jobs),
             )
-            nested_res[nest_name] = wf.format(*jobs)
+            secret_items = []
+            for secret_name in self.workflow_config.secret_names_gh:
+                secret_items.append(
+                    YamlGenerator.Templates.TEMPLATE_SECRET_CONFIG.format(
+                        SECRET_NAME=secret_name
+                    )
+                )
+            nested_res[nest_name] = wf.format(*secret_items, *jobs)
 
         return res, nested_res
 

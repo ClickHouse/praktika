@@ -94,7 +94,6 @@ class CIDB:
 
         for json_str in self.json_data_generator(result):
             try:
-                print(json_str)
                 response1 = session.post(
                     url=self.url,
                     params=params,

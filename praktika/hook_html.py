@@ -39,7 +39,7 @@ class HtmlRunnerHooks:
             page_url = page_url.replace(bucket, endpoint)
         page_url += f"?results={json_url_encoded}"
         summary_result.html_link = page_url
-        _ = summary_result.copy_to_s3()
+        _ = summary_result.copy_to_s3(unlock=False)
         print(f"CI Status page url [{page_url}]")
 
         res1 = GH.post_commit_status(
@@ -81,11 +81,20 @@ class HtmlRunnerHooks:
         result = Result.from_fs(_job.name)
 
         workflow_result = Result.from_s3(_workflow.name)
+        print(f"Workflow info [{workflow_result.info}], info_errors [{info_errors}]")
+
+        env_info = _Environment.get().REPORT_INFO
+        if env_info:
+            print(
+                f"WARNING: some info lines are set in Environment - append to report [{env_info}]"
+            )
+            info_errors += env_info
         if info_errors:
-            info_errors = [f"{_job.name}: {error}" for error in info_errors]
-            info_str = workflow_result.info + "\n" + "\n".join(info_errors)
+            info_errors = [f"* {_job.name}: {error}" for error in info_errors]
+            info_str = "\n".join(info_errors)
             print("Update workflow results with new info")
             workflow_result.set_info(info_str)
+
         old_status = workflow_result.status
 
         result.upload_files()
@@ -98,7 +107,12 @@ class HtmlRunnerHooks:
             )
             workflow_config_parsed = WorkflowConfigParser(_workflow).parse()
             for dependee_job in workflow_config_parsed.workflow_yaml_config.jobs:
-                if _job.name in dependee_job.needs:
+                if (
+                    _job.name in dependee_job.needs
+                    or _job._nest_name in dependee_job.needs
+                ):
+                    if _workflow.get_job(dependee_job.name).run_unless_cancelled:
+                        continue
                     print(
                         f"NOTE: Set job [{dependee_job.name}] status to [{Result.Status.SKIPPED}] due to current failure"
                     )

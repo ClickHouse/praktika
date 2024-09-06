@@ -3,7 +3,7 @@ import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Type, Dict, Any, Optional
+from typing import Type, Dict, Any, Optional, List
 import urllib.parse
 
 from praktika import Workflow
@@ -37,6 +37,7 @@ class _Environment(MetaClasses.Serializable):
     PRAKTIKA_PRERUN_STEP_EXIT_CODE: Optional[int] = None
     PRAKTIKA_RUN_STEP_EXIT_CODE: Optional[int] = None
     PARAMETER: Any = None
+    REPORT_INFO: List[str] = dataclasses.field(default_factory=list)
     name = "environment"
 
     def setup_ok(self):
@@ -59,6 +60,10 @@ class _Environment(MetaClasses.Serializable):
         if "PARAMETER" in obj:
             obj["PARAMETER"] = _to_object(obj["PARAMETER"])
         return cls(**obj)
+
+    def add_info(self, info):
+        self.REPORT_INFO.append(info)
+        self.dump()
 
     @classmethod
     def get(cls):
@@ -191,6 +196,7 @@ class _Environment(MetaClasses.Serializable):
             INSTANCE_ID=INSTANCE_ID,
             INSTANCE_LIFE_CYCLE=INSTANCE_LIFE_CYCLE,
             PARAMETER=PARAMETER,
+            REPORT_INFO=[],
         )
 
 

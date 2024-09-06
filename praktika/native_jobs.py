@@ -10,7 +10,7 @@ from praktika.gh import GH
 from praktika.hook_cache import CacheRunnerHooks
 from praktika.hook_html import HtmlRunnerHooks
 from praktika.mangle import _get_workflows
-from praktika.result import Result
+from praktika.result import Result, ResultInfo
 from praktika.runtime import WorkflowRuntime
 from praktika.settings import Settings
 from praktika.utils import Utils, Shell
@@ -45,7 +45,7 @@ _final_job = Job.Config(
         python=True,
     ),
     command=f"{Settings.PYTHON_INTERPRETER} -m praktika.native_jobs '{Settings.FINISH_WORKFLOW_JOB_NAME}'",
-    run_if_not_cancelled=True,
+    run_unless_cancelled=True,
 )
 
 
@@ -207,6 +207,7 @@ def _config_workflow(workflow: Workflow.Config, job_name):
         digest_dockers={},
         sha=_Environment.get().SHA,
         cache_success=[],
+        cache_success_base64=[],
         cache_artifacts={},
     ).dump()
 
@@ -289,34 +290,53 @@ def _config_workflow(workflow: Workflow.Config, job_name):
 def _finish_workflow(workflow, job_name):
     print(f"Start [{job_name}], workflow [{workflow.name}]")
 
-    workflow_result = Result.from_s3(workflow.name)
+    workflow_result = Result.from_s3(
+        workflow.name, lock=False
+    )  # latest job - no need to lock
 
     ready_for_merge_status = Result.Status.SUCCESS
     ready_for_merge_description = ""
     failed_results = []
+    env = _Environment.get()
+    update_final_report = False
     for result in workflow_result.results:
         if result.name == job_name or result.status in (
             Result.Status.SUCCESS,
             Result.Status.SKIPPED,
         ):
             continue
+        if not result.is_completed():
+            print(
+                f"ERROR: not finished job [{result.name}] in the workflow - set status to error"
+            )
+            result.status = Result.Status.ERROR
+            # dump workflow result after update - to have an updated result in post
+            workflow_result.dump()
+            # add error into env - should apper in the report
+            env.add_info(ResultInfo.NOT_FINALIZED + f" [{result.name}]")
+            update_final_report = True
         job = workflow.get_job(result.name)
         if not job or not job.allow_merge_on_failure:
             print(
                 f"NOTE: Result for [{result.name}] has not ok status [{result.status}]"
             )
             ready_for_merge_status = Result.Status.FAILED
-            failed_results.append(result.name)
+            failed_results.append(result.name.split("(", maxsplit=1)[0])  # cut name
 
     if failed_results:
         ready_for_merge_description = f"failed: {', '.join(failed_results)}"
 
-    GH.post_commit_status(
+    if not GH.post_commit_status(
         name=Settings.READY_FOR_MERGE_STATUS_NAME + f" [{workflow.name}]",
         status=ready_for_merge_status,
         description=ready_for_merge_description,
         url="",
-    )
+    ):
+        print(f"ERROR: failed to set status [{Settings.READY_FOR_MERGE_STATUS_NAME}]")
+        env.add_info(ResultInfo.GH_STATUS_ERROR)
+
+    if update_final_report:
+        workflow_result.copy_to_s3(unlock=False)  # no lock - no unlock
 
     Result.from_fs(job_name).set_status(Result.Status.SUCCESS).set_info(
         ready_for_merge_description

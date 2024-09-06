@@ -37,20 +37,24 @@ class Workflow:
         def is_event_push(self):
             return self.event == Workflow.Event.PUSH
 
-        def get_job(self, name: str) -> Optional[Job.Config]:
+        def get_job(self, name):
+            name = str(name)
             names = []
             for job in self.jobs:
                 if job.name == name:
                     return job
                 names.append(job.name)
-            else:
-                print(
-                    f"ERROR: Failed to find job name [{name}], workflow jobs [{names}]"
-                )
-                return None
+            raise RuntimeError(
+                f"ERROR: Failed to find job [{name}], workflow jobs [{names}]"
+            )
 
         def get_secret(self, name) -> Optional[Secret.Config]:
+            name = str(name)
+            names = []
             for secret in self.secrets:
                 if secret.name == name:
                     return secret
-            return None
+                names.append(secret.name)
+            raise RuntimeError(
+                f"ERROR: Failed to find secret [{name}], workflow secrets [{names}]"
+            )

@@ -21,19 +21,39 @@ workflow_pr = Workflow.Config(
         *Job.Config(
             name=JobNames.JOB_PARAMETRIZED_2,
             runs_on=["ubuntu-latest"],
-            command="echo Parameter is $PARAMETRIZE && python3 ./ci/tests/example_3/script_for_parametrized_job.py",
+            command="python3 ./ci/tests/example_3/script_for_parametrized_job.py",
             job_requirements=Job.Requirements(
                 python_requirements_txt="requirements.txt"
             ),
-            # example: parameter value should be json serialazible,
-            #  it will be available in the job script via Environment.PARAM[.field_name]
         ).parametrize(
-            {"name": [1, 2, "ABC"], "name_2": 123},  # parameter 1
-            {"name": [2, 3]},  # parameter 2
-            {"name": "Hi, It's praktika"},  # parameter 3
-            123,  # parameter 4
-            "I'm a string",  # parameter 5
-        ),
+            # example: parametrize over .parameter value:
+            # parameter value should be json serializable,
+            #  it will be available in the job script via Environment.PARAM[.field_name]
+            parameter=[
+                {"name": [1, 2, "ABC"], "name_2": 123},  # parameter 1
+                {"name": [2, 3]},  # parameter 2
+                {"name": "Hi, It's praktika"},  # parameter 3
+                123,  # parameter 4
+                "I'm a string",  # parameter 5
+            ],
+            # example: parametrize over runner type .runs_on
+            runs_on=[
+                ["ubuntu-latest"],
+                ["ubuntu-latest"],
+                ["ubuntu-latest"],
+                ["ubuntu-latest"],
+                ["ubuntu-latest"],
+            ],
+            # example: you can set different timeouts for parametrized jobs:
+            timeout=[
+                10,
+                15,
+                20,
+                25,
+                4,
+            ],
+            # NOTE: if parametrization over both .runs_on and .parameter their lists must be of the same size as well as .timeout
+        )
     ],
 )
 

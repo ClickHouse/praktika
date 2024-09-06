@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: ['main']
 
+# Cancel the previous wf run in PRs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # Force the stdout and stderr streams to be unbuffered
   PYTHONUNBUFFERED: 1
@@ -40,9 +45,16 @@ jobs:
           echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
+          echo "JOB_NAME=Config Workflow" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
+          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
+            # normal job case
+            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
+          else
+            # nested job case
+            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
+          fi
           cat /tmp/praktika/results/workflow_config_example_ci_with_cache.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -76,7 +88,7 @@ jobs:
   job_a:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow]
-    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success, 'Job A') }}
+    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success_base64, 'Sm9iIEE=') }}
     name: Job A
     outputs:
       data: ${{ steps.run.outputs.DATA }}
@@ -102,9 +114,16 @@ jobs:
           echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
+          echo "JOB_NAME=Job A" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
+          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
+            # normal job case
+            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
+          else
+            # nested job case
+            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
+          fi
           cat /tmp/praktika/results/workflow_config_example_ci_with_cache.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -138,7 +157,7 @@ jobs:
   job_b:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow, job_a]
-    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success, 'Job B') }}
+    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success_base64, 'Sm9iIEI=') }}
     name: Job B
     outputs:
       data: ${{ steps.run.outputs.DATA }}
@@ -164,9 +183,16 @@ jobs:
           echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
+          echo "JOB_NAME=Job B" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
+          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
+            # normal job case
+            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
+          else
+            # nested job case
+            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
+          fi
           cat /tmp/praktika/results/workflow_config_example_ci_with_cache.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:

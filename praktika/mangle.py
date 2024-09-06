@@ -29,10 +29,13 @@ def _get_workflows(name=None, file=None):
             spec.loader.exec_module(foo)
             try:
                 for workflow in foo.WORKFLOWS:
-                    if name and name == workflow.name:
-                        print(f"Read workflow [{name}] config from [{module_name}]")
-                        res = [workflow]
-                        break
+                    if name:
+                        if name == workflow.name:
+                            print(f"Read workflow [{name}] config from [{module_name}]")
+                            res = [workflow]
+                            break
+                        else:
+                            continue
                     else:
                         res += foo.WORKFLOWS
                         print(f"Read workflow configs from [{module_name}]")
@@ -42,8 +45,21 @@ def _get_workflows(name=None, file=None):
                 )
     assert res
     for workflow in res:
+        # add native jobs
         _update_workflow_with_native_jobs(workflow)
+        # fill in artifact properties, e.g. _provided_by
+        _update_workflow_artifacts(workflow)
     return res
+
+
+def _update_workflow_artifacts(workflow):
+    artifact_job = {}
+    for job in workflow.jobs:
+        for artifact_name in job.provides:
+            assert artifact_name not in artifact_job
+            artifact_job[artifact_name] = job.name
+    for artifact in workflow.artifacts:
+        artifact._provided_by = artifact_job[artifact.name]
 
 
 def _update_workflow_with_native_jobs(workflow):
@@ -90,7 +106,12 @@ def _update_workflow_with_native_jobs(workflow):
         print(f"Enable native job [{_final_job.name}] for [{workflow.name}]")
         aux_job = copy.deepcopy(_final_job)
         for job in workflow.jobs:
-            aux_job.requires.append(job.name)
+            if job._nest_name:
+                if job._nest_name not in aux_job.requires:
+                    # only nest name must be added to finish job requirements
+                    aux_job.requires.append(job._nest_name)
+            else:
+                aux_job.requires.append(job.name)
         workflow.jobs.append(aux_job)
 
 

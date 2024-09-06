@@ -7,7 +7,7 @@ if __name__ == "__main__":
     # 1. do some work
 
     # dummy job artifact
-    artifact_path = f"{Settings.OUTPUT_DIR}/artifact_{Utils.normalize_string(Environment.JOB_NAME)}.txt"
+    artifact_path = f"{Settings.OUTPUT_DIR}/some_job_artifact.txt"
     Shell.check(f"echo 'Hello World!' > {artifact_path}")
 
     # 2. dump results
