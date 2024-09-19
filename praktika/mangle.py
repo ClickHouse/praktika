@@ -106,12 +106,7 @@ def _update_workflow_with_native_jobs(workflow):
         print(f"Enable native job [{_final_job.name}] for [{workflow.name}]")
         aux_job = copy.deepcopy(_final_job)
         for job in workflow.jobs:
-            if job._nest_name:
-                if job._nest_name not in aux_job.requires:
-                    # only nest name must be added to finish job requirements
-                    aux_job.requires.append(job._nest_name)
-            else:
-                aux_job.requires.append(job.name)
+            aux_job.requires.append(job.name)
         workflow.jobs.append(aux_job)
 
 

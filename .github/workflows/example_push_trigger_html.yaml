@@ -20,7 +20,7 @@ jobs:
   config_workflow:
     runs-on: [maxs-small-fixed]
     needs: []
-    name: Config Workflow
+    name: "Config Workflow"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -61,13 +61,7 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_push_trigger_html.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_push_trigger_html.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_push_trigger_html.json
           cat /tmp/praktika/results/workflow_config_example_push_trigger_html.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -101,7 +95,7 @@ jobs:
   job_1:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow]
-    name: Job 1
+    name: "Job 1"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -142,13 +136,7 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_push_trigger_html.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_push_trigger_html.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_push_trigger_html.json
           cat /tmp/praktika/results/workflow_config_example_push_trigger_html.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -182,7 +170,7 @@ jobs:
   job_2:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow, job_1]
-    name: Job 2
+    name: "Job 2"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -223,13 +211,7 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_push_trigger_html.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_push_trigger_html.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_push_trigger_html.json
           cat /tmp/praktika/results/workflow_config_example_push_trigger_html.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:

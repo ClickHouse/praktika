@@ -22,7 +22,6 @@ class WorkflowYaml:
         gh_app_auth: bool
         run_unless_cancelled: bool
         parameter: Any
-        nest: str
 
         def __repr__(self):
             return self.name
@@ -51,7 +50,6 @@ class WorkflowYaml:
     artifact_to_config: Dict[str, ArtifactYaml]
     secret_names_gh: List[str]
     enable_cache: bool
-    nests: List[str]
 
 
 class WorkflowConfigParser:
@@ -77,7 +75,6 @@ class WorkflowConfigParser:
             job_to_config={},
             artifact_to_config={},
             enable_cache=False,
-            nests=[],
         )
 
     def parse(self):
@@ -121,20 +118,6 @@ class WorkflowConfigParser:
                     type=Artifact.Type.PHONY,
                 )
             )
-            if (
-                job._nest_name
-                and job._nest_name not in self.workflow_yaml_config.artifact_to_config
-            ):
-                # nesting job name
-                self.workflow_yaml_config.artifact_to_config[job._nest_name] = (
-                    WorkflowYaml.ArtifactYaml(
-                        name=job._nest_name,
-                        provided_by=job._nest_name,
-                        required_by=[],
-                        path="",
-                        type=Artifact.Type.PHONY,
-                    )
-                )
 
         # populate jobs
         for job in self.config.jobs:
@@ -148,7 +131,6 @@ class WorkflowConfigParser:
                 gh_app_auth=False,
                 run_unless_cancelled=job.run_unless_cancelled,
                 parameter=None,
-                nest="",
             )
             self.workflow_yaml_config.jobs.append(job_yaml_config)
             assert (
@@ -264,13 +246,6 @@ class WorkflowConfigParser:
         # populate JobYaml.parametrize
         for job in self.config.jobs:
             self.workflow_yaml_config.job_to_config[job.name].parameter = job.parameter
-
-        # populate WorkflowYaml.nests JobYaml.nest
-        for job in self.config.jobs:
-            if job.parameter and job._nest_name:
-                if job._nest_name not in self.workflow_yaml_config.nests:
-                    self.workflow_yaml_config.nests.append(job._nest_name)
-                self.workflow_yaml_config.job_to_config[job.name].nest = job._nest_name
 
         # populate secrets
         for secret_config in self.config.secrets:

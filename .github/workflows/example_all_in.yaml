@@ -20,7 +20,7 @@ jobs:
   config_workflow:
     runs-on: [maxs-small-fixed]
     needs: []
-    name: Config Workflow
+    name: "Config Workflow"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -73,13 +73,7 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
           cat /tmp/praktika/results/workflow_config_example_all_in.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -114,7 +108,7 @@ jobs:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow]
     if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success_base64, 'SnVzdCBKb2I=') }}
-    name: Just Job
+    name: "Just Job"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -167,13 +161,7 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
           cat /tmp/praktika/results/workflow_config_example_all_in.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -208,7 +196,7 @@ jobs:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow]
     if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success_base64, 'SnVzdCBKb2IgMg==') }}
-    name: Just Job 2
+    name: "Just Job 2"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -261,13 +249,7 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
           cat /tmp/praktika/results/workflow_config_example_all_in.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -361,13 +343,7 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
           cat /tmp/praktika/results/workflow_config_example_all_in.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -461,13 +437,7 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
           cat /tmp/praktika/results/workflow_config_example_all_in.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -502,7 +472,7 @@ jobs:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow, just_job, just_job_2, parametrized_job_key_1_1_2_abc_key_2_null_maxs_small_fixed, parametrized_job_key_1_2_3_maxs_small_fixed]
     if: ${{ !cancelled() }}
-    name: Finish Workflow
+    name: "Finish Workflow"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -549,13 +519,7 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
           cat /tmp/praktika/results/workflow_config_example_all_in.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:

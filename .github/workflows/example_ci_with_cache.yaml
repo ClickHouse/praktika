@@ -20,7 +20,7 @@ jobs:
   config_workflow:
     runs-on: [maxs-small-fixed]
     needs: []
-    name: Config Workflow
+    name: "Config Workflow"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -48,13 +48,7 @@ jobs:
           echo "JOB_NAME=Config Workflow" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
           cat /tmp/praktika/results/workflow_config_example_ci_with_cache.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -89,7 +83,7 @@ jobs:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow]
     if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success_base64, 'Sm9iIEE=') }}
-    name: Job A
+    name: "Job A"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -117,13 +111,7 @@ jobs:
           echo "JOB_NAME=Job A" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
           cat /tmp/praktika/results/workflow_config_example_ci_with_cache.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -158,7 +146,7 @@ jobs:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow, job_a]
     if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success_base64, 'Sm9iIEI=') }}
-    name: Job B
+    name: "Job B"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -186,13 +174,7 @@ jobs:
           echo "JOB_NAME=Job B" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
           cat /tmp/praktika/results/workflow_config_example_ci_with_cache.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:

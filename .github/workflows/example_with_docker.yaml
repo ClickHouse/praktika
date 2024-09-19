@@ -20,7 +20,7 @@ jobs:
   config_workflow:
     runs-on: [maxs-small-fixed]
     needs: []
-    name: Config Workflow
+    name: "Config Workflow"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -61,13 +61,7 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_with_docker.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_with_docker.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_with_docker.json
           cat /tmp/praktika/results/workflow_config_example_with_docker.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -102,7 +96,7 @@ jobs:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow]
     if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success_base64, 'RG9ja2VyIEJ1aWxkcw==') }}
-    name: Docker Builds
+    name: "Docker Builds"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -137,13 +131,7 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_with_docker.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_with_docker.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_with_docker.json
           cat /tmp/praktika/results/workflow_config_example_with_docker.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -178,7 +166,7 @@ jobs:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow, docker_builds]
     if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success_base64, 'U29tZSBKb2IgdG8gcnVuIGluIGRvY2tlcg==') }}
-    name: Some Job to run in docker
+    name: "Some Job to run in docker"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -219,13 +207,7 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_with_docker.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_with_docker.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_with_docker.json
           cat /tmp/praktika/results/workflow_config_example_with_docker.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:

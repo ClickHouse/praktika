@@ -20,7 +20,7 @@ jobs:
   config_workflow:
     runs-on: [maxs-small-fixed]
     needs: []
-    name: Config Workflow
+    name: "Config Workflow"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -61,13 +61,7 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
           cat /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -101,7 +95,7 @@ jobs:
   some_job_1_that_should_block_merge_on_failure:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow]
-    name: Some Job 1 that should block merge on failure
+    name: "Some Job 1 that should block merge on failure"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -142,13 +136,7 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
           cat /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -182,7 +170,7 @@ jobs:
   some_job_2_that_should_not_block_merge_on_failure:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow, some_job_1_that_should_block_merge_on_failure]
-    name: Some Job 2 that should not block merge on failure
+    name: "Some Job 2 that should not block merge on failure"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -223,13 +211,7 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
           cat /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -264,7 +246,7 @@ jobs:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow, some_job_1_that_should_block_merge_on_failure, some_job_2_that_should_not_block_merge_on_failure]
     if: ${{ !cancelled() }}
-    name: Finish Workflow
+    name: "Finish Workflow"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -299,13 +281,7 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
           cat /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:

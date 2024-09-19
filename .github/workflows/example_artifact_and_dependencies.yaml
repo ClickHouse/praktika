@@ -20,7 +20,7 @@ jobs:
   provide_artifact:
     runs-on: [ubuntu-latest]
     needs: []
-    name: Provide Artifact
+    name: "Provide Artifact"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -48,13 +48,7 @@ jobs:
           echo "JOB_NAME=Provide Artifact" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
           cat /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -94,7 +88,7 @@ jobs:
   consume_artifact:
     runs-on: [ubuntu-latest]
     needs: [provide_artifact]
-    name: Consume Artifact
+    name: "Consume Artifact"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -122,13 +116,7 @@ jobs:
           echo "JOB_NAME=Consume Artifact" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
           cat /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -168,7 +156,7 @@ jobs:
   job_a_starting_at_the_beginning:
     runs-on: [ubuntu-latest]
     needs: []
-    name: Job A starting at the beginning
+    name: "Job A starting at the beginning"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -196,13 +184,7 @@ jobs:
           echo "JOB_NAME=Job A starting at the beginning" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
           cat /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -236,7 +218,7 @@ jobs:
   job_b_starting_at_the_beginning:
     runs-on: [ubuntu-latest]
     needs: []
-    name: Job B starting at the beginning
+    name: "Job B starting at the beginning"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -264,13 +246,7 @@ jobs:
           echo "JOB_NAME=Job B starting at the beginning" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
           cat /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -304,7 +280,7 @@ jobs:
   job_c_starting_after_job_a_and_b_is_done:
     runs-on: [ubuntu-latest]
     needs: [job_a_starting_at_the_beginning, job_b_starting_at_the_beginning]
-    name: Job C starting after Job A and B is done
+    name: "Job C starting after Job A and B is done"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -332,13 +308,7 @@ jobs:
           echo "JOB_NAME=Job C starting after Job A and B is done" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
           cat /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -372,7 +342,7 @@ jobs:
   job_d_starting_after_job_c_is_done:
     runs-on: [ubuntu-latest]
     needs: [job_c_starting_after_job_a_and_b_is_done]
-    name: Job D starting after Job C is done
+    name: "Job D starting after Job C is done"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -400,13 +370,7 @@ jobs:
           echo "JOB_NAME=Job D starting after Job C is done" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
           cat /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:

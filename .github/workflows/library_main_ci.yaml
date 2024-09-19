@@ -20,7 +20,7 @@ jobs:
   unit_tests:
     runs-on: [ubuntu-latest]
     needs: []
-    name: Unit Tests
+    name: "Unit Tests"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -48,13 +48,7 @@ jobs:
           echo "JOB_NAME=Unit Tests" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_library_main_ci.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_library_main_ci.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_library_main_ci.json
           cat /tmp/praktika/results/workflow_config_library_main_ci.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
@@ -88,7 +82,7 @@ jobs:
   yaml_lint:
     runs-on: [ubuntu-latest]
     needs: []
-    name: Yaml Lint
+    name: "Yaml Lint"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -116,13 +110,7 @@ jobs:
           echo "JOB_NAME=Yaml Lint" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
-            # normal job case
-            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_library_main_ci.json
-          else
-            # nested job case
-            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_library_main_ci.json
-          fi
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_library_main_ci.json
           cat /tmp/praktika/results/workflow_config_library_main_ci.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:

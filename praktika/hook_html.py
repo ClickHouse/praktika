@@ -107,10 +107,7 @@ class HtmlRunnerHooks:
             )
             workflow_config_parsed = WorkflowConfigParser(_workflow).parse()
             for dependee_job in workflow_config_parsed.workflow_yaml_config.jobs:
-                if (
-                    _job.name in dependee_job.needs
-                    or _job._nest_name in dependee_job.needs
-                ):
+                if _job.name in dependee_job.needs:
                     if _workflow.get_job(dependee_job.name).run_unless_cancelled:
                         continue
                     print(
