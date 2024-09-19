@@ -6,6 +6,11 @@ on:
   push:
     branches: ['main']
 
+# Cancel the previous wf run in PRs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # Force the stdout and stderr streams to be unbuffered
   PYTHONUNBUFFERED: 1
@@ -15,7 +20,7 @@ jobs:
   unit_tests:
     runs-on: [ubuntu-latest]
     needs: []
-    name: Unit Tests
+    name: "Unit Tests"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -40,6 +45,7 @@ jobs:
           echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
+          echo "JOB_NAME=Unit Tests" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
           echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_library_main_ci.json
@@ -59,24 +65,24 @@ jobs:
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name "Unit Tests" --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/pre_run.log
+          python -m praktika.runner --pre-run --job-name '''Unit Tests''' --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name "Unit Tests" --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/run.log
+          python -m praktika.runner --run --job-name '''Unit Tests''' --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name "Unit Tests" --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/post_run.log
+          python -m praktika.runner --post-run --job-name '''Unit Tests''' --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/post_run.log
 
   yaml_lint:
     runs-on: [ubuntu-latest]
     needs: []
-    name: Yaml Lint
+    name: "Yaml Lint"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -101,6 +107,7 @@ jobs:
           echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
+          echo "JOB_NAME=Yaml Lint" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
           echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_library_main_ci.json
@@ -120,16 +127,16 @@ jobs:
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name "Yaml Lint" --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/pre_run.log
+          python -m praktika.runner --pre-run --job-name '''Yaml Lint''' --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name "Yaml Lint" --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/run.log
+          python -m praktika.runner --run --job-name '''Yaml Lint''' --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name "Yaml Lint" --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/post_run.log
+          python -m praktika.runner --post-run --job-name '''Yaml Lint''' --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/post_run.log

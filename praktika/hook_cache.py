@@ -1,20 +1,19 @@
 from praktika.utils import Utils
 from praktika.s3 import S3
 from praktika.cache import Cache
-from praktika.hook_interface import HookInterface
 from praktika.mangle import _get_workflows
 from praktika.runtime import WorkflowRuntime
 from praktika.settings import Settings
-from praktika.environment import Environment
+from praktika._environment import _Environment
 
 
-class CacheRunnerHooks(HookInterface):
+class CacheRunnerHooks:
     @classmethod
     def configure(cls, _workflow):
         workflow_config = WorkflowRuntime.from_fs(_workflow.name)
         cache = Cache()
-        assert Environment.get().WORKFLOW_NAME
-        workflow = _get_workflows(name=Environment.get().WORKFLOW_NAME)[0]
+        assert _Environment.get().WORKFLOW_NAME
+        workflow = _get_workflows(name=_Environment.get().WORKFLOW_NAME)[0]
         print(f"Workflow Configure, workflow [{workflow.name}]")
         assert (
             workflow.enable_cache
@@ -61,6 +60,7 @@ class CacheRunnerHooks(HookInterface):
                     not in workflow_config.cache_success
                 )
                 workflow_config.cache_success.append(job_name)
+                workflow_config.cache_success_base64.append(Utils.to_base64(job_name))
                 job_to_cache_record[job_name] = record
 
         print("Check artifacts to reuse")
@@ -72,8 +72,8 @@ class CacheRunnerHooks(HookInterface):
                             job_to_cache_record[job.name]
                         )
 
-        print(f"Write config to job output env: {Environment.get().JOB_OUTPUT_STREAM}")
-        with open(Environment.get().JOB_OUTPUT_STREAM, "a", encoding="utf8") as f:
+        print(f"Write config to job output env: {_Environment.get().JOB_OUTPUT_STREAM}")
+        with open(_Environment.get().JOB_OUTPUT_STREAM, "a", encoding="utf8") as f:
             print(
                 f"DATA={workflow_config.to_json()}",
                 file=f,
@@ -88,9 +88,11 @@ class CacheRunnerHooks(HookInterface):
 
     @classmethod
     def pre_run(cls, _workflow, _job, _required_artifacts=None):
+        path_prefixes = []
         if _job.name == Settings.CI_CONFIG_JOB_NAME:
             # SPECIAL handling
-            return
+            return path_prefixes
+        env = _Environment.get()
         runtime_config = WorkflowRuntime.from_fs(_workflow.name)
         required_artifacts = []
         if _required_artifacts:
@@ -98,13 +100,13 @@ class CacheRunnerHooks(HookInterface):
         for artifact in required_artifacts:
             if artifact.name in runtime_config.cache_artifacts:
                 record = runtime_config.cache_artifacts[artifact.name]
-                print(f"Reuse artifact form [{record}]")
-                assert S3.copy_artifact_from_s3(
-                    branch=record.branch,
-                    pr_number=record.pr_number,
-                    sha=record.sha,
-                    name=artifact.path,
+                print(f"Reuse artifact [{artifact.name}] from [{record}]")
+                path_prefixes.append(
+                    S3.get_prefix(record.pr_number, record.branch, record.sha)
                 )
+            else:
+                path_prefixes.append(S3.get_prefix(env.PR_NUMBER, env.BRANCH, env.SHA))
+        return path_prefixes
 
     @classmethod
     def run(cls, workflow, job):

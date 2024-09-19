@@ -5,7 +5,7 @@ from pathlib import Path
 from praktika import Job, Workflow, Artifact
 from praktika.digest import Digest
 from praktika.settings import Settings
-from praktika.environment import Environment
+from praktika._environment import _Environment
 from praktika.utils import Utils
 from praktika.s3 import S3
 
@@ -44,8 +44,8 @@ class Cache:
         record = Cache.CacheRecord(
             type=type_,
             sha=sha,
-            pr_number=Environment.get().PR_NUMBER,
-            branch=Environment.get().BRANCH,
+            pr_number=_Environment.get().PR_NUMBER,
+            branch=_Environment.get().BRANCH,
         )
         assert (
             Settings.CACHE_S3_PATH
@@ -66,9 +66,14 @@ class Cache:
             f"{Settings.CACHE_LOCAL_PATH}/{Utils.normalize_string(job_name)}/"
         )
         Path(record_file_local_dir).mkdir(parents=True, exist_ok=True)
-        res = S3.copy_file_from_s3(
-            s3_path=record_path, local_path=record_file_local_dir
-        )
+
+        if S3.head_object(record_path):
+            res = S3.copy_file_from_s3(
+                s3_path=record_path, local_path=record_file_local_dir
+            )
+        else:
+            res = None
+
         if res:
             print(f"Cache record found, job [{job_name}], digest [{job_digest}]")
             self.success[job_name] = True

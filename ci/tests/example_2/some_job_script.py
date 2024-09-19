@@ -7,13 +7,13 @@ if __name__ == "__main__":
     # 1. do some work
 
     # dummy job artifact
-    artifact_path = f"{Settings.OUTPUT_DIR}/artifact_{Utils.normalize_string(Environment.get().JOB_NAME)}.txt"
+    artifact_path = f"{Settings.OUTPUT_DIR}/some_job_artifact.txt"
     Shell.check(f"echo 'Hello World!' > {artifact_path}")
 
     # 2. dump results
-    Result.from_fs(Environment.get().JOB_NAME).set_success().set_info(
-        "all good"
-    ).set_files(files=[artifact_path]).set_results(
+    Result.from_fs(Environment.JOB_NAME).set_success().set_info("all good").set_files(
+        files=[artifact_path]
+    ).set_results(
         results=[
             Result(
                 name="Test 1",

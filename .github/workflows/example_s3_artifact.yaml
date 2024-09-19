@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: ['main']
 
+# Cancel the previous wf run in PRs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # Force the stdout and stderr streams to be unbuffered
   PYTHONUNBUFFERED: 1
@@ -15,7 +20,7 @@ jobs:
   provide_artifact:
     runs-on: [maxs-small]
     needs: []
-    name: Provide Artifact
+    name: "Provide Artifact"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -40,6 +45,7 @@ jobs:
           echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
+          echo "JOB_NAME=Provide Artifact" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
           echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_s3_artifact.json
@@ -59,24 +65,24 @@ jobs:
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name "Provide Artifact" --workflow-name "Example S3 Artifact" 2>&1 | tee /tmp/praktika/pre_run.log
+          python -m praktika.runner --pre-run --job-name '''Provide Artifact''' --workflow-name "Example S3 Artifact" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name "Provide Artifact" --workflow-name "Example S3 Artifact" 2>&1 | tee /tmp/praktika/run.log
+          python -m praktika.runner --run --job-name '''Provide Artifact''' --workflow-name "Example S3 Artifact" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name "Provide Artifact" --workflow-name "Example S3 Artifact" 2>&1 | tee /tmp/praktika/post_run.log
+          python -m praktika.runner --post-run --job-name '''Provide Artifact''' --workflow-name "Example S3 Artifact" 2>&1 | tee /tmp/praktika/post_run.log
 
   consume_artifact:
     runs-on: [maxs-small]
     needs: [provide_artifact]
-    name: Consume Artifact
+    name: "Consume Artifact"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -101,6 +107,7 @@ jobs:
           echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
+          echo "JOB_NAME=Consume Artifact" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
           echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_s3_artifact.json
@@ -120,16 +127,16 @@ jobs:
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name "Consume Artifact" --workflow-name "Example S3 Artifact" 2>&1 | tee /tmp/praktika/pre_run.log
+          python -m praktika.runner --pre-run --job-name '''Consume Artifact''' --workflow-name "Example S3 Artifact" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name "Consume Artifact" --workflow-name "Example S3 Artifact" 2>&1 | tee /tmp/praktika/run.log
+          python -m praktika.runner --run --job-name '''Consume Artifact''' --workflow-name "Example S3 Artifact" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name "Consume Artifact" --workflow-name "Example S3 Artifact" 2>&1 | tee /tmp/praktika/post_run.log
+          python -m praktika.runner --post-run --job-name '''Consume Artifact''' --workflow-name "Example S3 Artifact" 2>&1 | tee /tmp/praktika/post_run.log

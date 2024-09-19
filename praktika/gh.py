@@ -2,7 +2,7 @@ import json
 import time
 
 from praktika.settings import Settings
-from praktika.environment import Environment
+from praktika._environment import _Environment
 from praktika.utils import Shell
 from praktika.result import Result
 
@@ -12,17 +12,21 @@ class GH:
     def do_command_with_retries(cls, command):
         res = False
         retry_count = 0
+        out, err = "", ""
 
         while retry_count < Settings.MAX_RETRIES_GH and not res:
-            res = Shell.check(command, verbose=True)
-
+            ret_code, out, err = Shell.get_res_stdout_stderr(command, verbose=True)
+            res = ret_code == 0
+            if not res and "Validation Failed" in err:
+                print("ERROR: GH command validation error")
+                break
             if not res:
                 retry_count += 1
                 time.sleep(5)
 
         if not res:
             print(
-                f"ERROR: Failed to execute gh command [{command}] [MAX_RETRIES_GH={Settings.MAX_RETRIES_GH}] attempts"
+                f"ERROR: Failed to execute gh command [{command}] out:[{out}] err:[{err}] after [{retry_count}] attempts"
             )
         return res
 
@@ -31,9 +35,9 @@ class GH:
         cls, comment_body, or_update_comment_with_substring, repo=None, pr=None
     ):
         if not repo:
-            repo = Environment.get().REPOSITORY
+            repo = _Environment.get().REPOSITORY
         if not pr:
-            pr = Environment.get().PR_NUMBER
+            pr = _Environment.get().PR_NUMBER
         if or_update_comment_with_substring:
             print(f"check comment [{comment_body}] created")
             cmd_check_created = f'gh api -H "Accept: application/vnd.github.v3+json" \
@@ -55,8 +59,7 @@ class GH:
                              "/repos/{repo}/issues/comments/{id}" \
                              -f body=\'{comment_body}\''
                     print(f"Update existing comments [{id}]")
-                    cls.do_command_with_retries(cmd)
-                return True
+                    return cls.do_command_with_retries(cmd)
 
         cmd = f'gh pr comment {pr} --body "{comment_body}"'
         return cls.do_command_with_retries(cmd)
@@ -66,7 +69,7 @@ class GH:
         status = cls.convert_to_gh_status(status)
         command = (
             f"gh api -X POST -H 'Accept: application/vnd.github.v3+json' "
-            f"/repos/{Environment.get().REPOSITORY}/statuses/{Environment.get().SHA} "
+            f"/repos/{_Environment.get().REPOSITORY}/statuses/{_Environment.get().SHA} "
             f"-f state='{status}' -f target_url='{url}' "
             f"-f description='{description}' -f context='{name}'"
         )

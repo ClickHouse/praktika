@@ -6,7 +6,7 @@ import requests
 from jwt import jwk_from_pem, JWT
 
 from praktika import Workflow
-from praktika.environment import Environment
+from praktika._environment import _Environment
 from praktika.mangle import _get_workflows
 from praktika.settings import Settings
 from praktika.utils import Shell
@@ -61,7 +61,7 @@ class Auth:
     @classmethod
     def auth(cls) -> None:
         wf = _get_workflows(
-            Environment.get().WORKFLOW_NAME
+            _Environment.get().WORKFLOW_NAME
         )  # type: List[Workflow.Config]
         pem = wf[0].get_secret(Settings.SECRET_GH_APP_PEM_KEY).get_value()
         assert pem

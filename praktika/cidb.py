@@ -5,7 +5,7 @@ from typing import Optional
 
 import requests
 
-from praktika.environment import Environment
+from praktika._environment import _Environment
 from praktika.result import Result
 from praktika.settings import Settings
 from praktika.utils import Utils
@@ -45,7 +45,7 @@ class CIDB:
 
     @classmethod
     def json_data_generator(cls, result: Result):
-        env = Environment.get()
+        env = _Environment.get()
         base_record = cls.TableRecord(
             pull_request_number=env.PR_NUMBER,
             commit_sha=env.SHA,
@@ -94,7 +94,6 @@ class CIDB:
 
         for json_str in self.json_data_generator(result):
             try:
-                print(json_str)
                 response1 = session.post(
                     url=self.url,
                     params=params,

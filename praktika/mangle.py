@@ -1,3 +1,4 @@
+import copy
 import importlib.util
 from pathlib import Path
 from typing import Dict, Any
@@ -28,10 +29,13 @@ def _get_workflows(name=None, file=None):
             spec.loader.exec_module(foo)
             try:
                 for workflow in foo.WORKFLOWS:
-                    if name and name == workflow.name:
-                        print(f"Read workflow [{name}] config from [{module_name}]")
-                        res = [workflow]
-                        break
+                    if name:
+                        if name == workflow.name:
+                            print(f"Read workflow [{name}] config from [{module_name}]")
+                            res = [workflow]
+                            break
+                        else:
+                            continue
                     else:
                         res += foo.WORKFLOWS
                         print(f"Read workflow configs from [{module_name}]")
@@ -41,8 +45,21 @@ def _get_workflows(name=None, file=None):
                 )
     assert res
     for workflow in res:
+        # add native jobs
         _update_workflow_with_native_jobs(workflow)
+        # fill in artifact properties, e.g. _provided_by
+        _update_workflow_artifacts(workflow)
     return res
+
+
+def _update_workflow_artifacts(workflow):
+    artifact_job = {}
+    for job in workflow.jobs:
+        for artifact_name in job.provides:
+            assert artifact_name not in artifact_job
+            artifact_job[artifact_name] = job.name
+    for artifact in workflow.artifacts:
+        artifact._provided_by = artifact_job[artifact.name]
 
 
 def _update_workflow_with_native_jobs(workflow):
@@ -50,20 +67,21 @@ def _update_workflow_with_native_jobs(workflow):
         from praktika.native_jobs import _docker_build_job
 
         print(f"Enable native job [{_docker_build_job.name}] for [{workflow.name}]")
+        aux_job = copy.deepcopy(_docker_build_job)
         if workflow.enable_cache:
             print(
-                f"Add automatic digest config for [{_docker_build_job.name}] job since cache is enabled"
+                f"Add automatic digest config for [{aux_job.name}] job since cache is enabled"
             )
             docker_digest_config = Job.CacheDigestConfig()
             for docker_config in workflow.dockers:
                 docker_digest_config.include_paths.append(docker_config.path)
-            _docker_build_job.digest_config = docker_digest_config
+            aux_job.digest_config = docker_digest_config
 
-        workflow.jobs.insert(0, _docker_build_job)
+        workflow.jobs.insert(0, aux_job)
         for job in workflow.jobs[1:]:
             if not job.requires:
                 job.requires = []
-            job.requires.append(_docker_build_job.name)
+            job.requires.append(aux_job.name)
 
     if (
         workflow.enable_cache
@@ -73,21 +91,23 @@ def _update_workflow_with_native_jobs(workflow):
         from praktika.native_jobs import _workflow_config_job
 
         print(f"Enable native job [{_workflow_config_job.name}] for [{workflow.name}]")
+        aux_job = copy.deepcopy(_workflow_config_job)
         if workflow.enable_html:
-            _workflow_config_job.job_requirements.gh_app_auth = True
-        workflow.jobs.insert(0, _workflow_config_job)
+            aux_job.job_requirements.gh_app_auth = True
+        workflow.jobs.insert(0, aux_job)
         for job in workflow.jobs[1:]:
             if not job.requires:
                 job.requires = []
-            job.requires.append(_workflow_config_job.name)
+            job.requires.append(aux_job.name)
 
     if workflow.enable_merge_ready_status:
         from praktika.native_jobs import _final_job
 
         print(f"Enable native job [{_final_job.name}] for [{workflow.name}]")
+        aux_job = copy.deepcopy(_final_job)
         for job in workflow.jobs:
-            _final_job.requires.append(job.name)
-        workflow.jobs.append(_final_job)
+            aux_job.requires.append(job.name)
+        workflow.jobs.append(aux_job)
 
 
 def _get_user_settings() -> Dict[str, Any]:

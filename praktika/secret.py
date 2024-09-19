@@ -36,3 +36,6 @@ class Secret:
         def get_gh_secret(self):
             res = os.getenv(f"{self.name}")
             return res
+
+        def __repr__(self):
+            return self.name

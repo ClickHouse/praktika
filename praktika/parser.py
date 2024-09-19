@@ -1,5 +1,5 @@
 import dataclasses
-from typing import Dict, List
+from typing import Dict, List, Any
 
 from praktika import Workflow, Artifact
 from praktika.mangle import _get_workflows
@@ -20,7 +20,11 @@ class WorkflowYaml:
         artifacts_gh_provides: List["WorkflowYaml.ArtifactYaml"]
         addons: List["WorkflowYaml.JobAddonYaml"]
         gh_app_auth: bool
-        run_if_not_cancelled: bool
+        run_unless_cancelled: bool
+        parameter: Any
+
+        def __repr__(self):
+            return self.name
 
     @dataclasses.dataclass
     class ArtifactYaml:
@@ -29,6 +33,9 @@ class WorkflowYaml:
         required_by: List[str]
         path: str
         type: str
+
+        def __repr__(self):
+            return self.name
 
     @dataclasses.dataclass
     class JobAddonYaml:
@@ -70,29 +77,9 @@ class WorkflowConfigParser:
             enable_cache=False,
         )
 
-    def preprocess(self):
-        # if self.config.dockers:
-        #     docker_build_job = self.config.get_job(name=Settings.DOCKER_BUILD_JOB_NAME)
-        #     self.config.jobs.insert(0, docker_build_job)
-        #     for job in self.config.jobs[1:]:
-        #         if not job.requires:
-        #             job.requires = []
-        #         job.requires.append(docker_build_job.name)
-        #
-        # if self.config.enable_cache or self.config.enable_html:
-        #     workflow_config_job = self.config.get_job(name=Settings.CI_CONFIG_JOB_NAME)
-        #     if self.config.enable_html:
-        #         workflow_config_job.job_requirements.gh_app_auth = True
-        #     self.config.jobs.insert(0, workflow_config_job)
-        #     for job in self.config.jobs[1:]:
-        #         if not job.requires:
-        #             job.requires = []
-        #         job.requires.append(workflow_config_job.name)
-
+    def parse(self):
         self.workflow_yaml_config.enable_cache = self.config.enable_cache
 
-    def parse(self):
-        self.preprocess()
         # populate WorkflowYaml.branches
         if self.config.event in (Workflow.Event.PUSH,):
             assert (
@@ -142,7 +129,8 @@ class WorkflowConfigParser:
                 needs=[],
                 runs_on=[],
                 gh_app_auth=False,
-                run_if_not_cancelled=job.run_if_not_cancelled,
+                run_unless_cancelled=job.run_unless_cancelled,
+                parameter=None,
             )
             self.workflow_yaml_config.jobs.append(job_yaml_config)
             assert (
@@ -224,10 +212,10 @@ class WorkflowConfigParser:
             artifact_name,
             artifact,
         ) in self.workflow_yaml_config.artifact_to_config.items():
-            assert (
-                artifact.provided_by
-                and artifact.provided_by in self.workflow_yaml_config.job_to_config
-            ), f"Artifact [{artifact_name}] has no valid job providing it [{artifact.provided_by}]"
+            # assert (
+            #     artifact.provided_by
+            #     and artifact.provided_by in self.workflow_yaml_config.job_to_config
+            # ), f"Artifact [{artifact_name}] has no valid job providing it [{artifact.provided_by}]"
             for job_name in artifact.required_by:
                 if (
                     artifact.provided_by
@@ -254,6 +242,10 @@ class WorkflowConfigParser:
                 self.workflow_yaml_config.job_to_config[
                     artifact.provided_by
                 ].artifacts_gh_provides.append(artifact)
+
+        # populate JobYaml.parametrize
+        for job in self.config.jobs:
+            self.workflow_yaml_config.job_to_config[job.name].parameter = job.parameter
 
         # populate secrets
         for secret_config in self.config.secrets:

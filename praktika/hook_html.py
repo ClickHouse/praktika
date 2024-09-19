@@ -2,7 +2,7 @@ from datetime import datetime
 import urllib.parse
 from pathlib import Path
 
-from praktika.environment import Environment
+from praktika._environment import _Environment
 from praktika.gh import GH
 from praktika.parser import WorkflowConfigParser
 from praktika.settings import Settings
@@ -28,8 +28,8 @@ class HtmlRunnerHooks:
                 result = Result.generate_skipped(job.name)
             results.append(result)
         summary_result = Result.generate_pending(_workflow.name, results=results)
-        summary_result.aux_links.append(Environment.get().CHANGE_URL)
-        summary_result.aux_links.append(Environment.get().RUN_URL)
+        summary_result.aux_links.append(_Environment.get().CHANGE_URL)
+        summary_result.aux_links.append(_Environment.get().RUN_URL)
         summary_result.start_time = Utils.timestamp()
         json_url_encoded = urllib.parse.quote(summary_result.get_link(), safe="")
         page_url = "/".join(
@@ -39,7 +39,7 @@ class HtmlRunnerHooks:
             page_url = page_url.replace(bucket, endpoint)
         page_url += f"?results={json_url_encoded}"
         summary_result.html_link = page_url
-        _ = summary_result.copy_to_s3()
+        _ = summary_result.copy_to_s3(unlock=False)
         print(f"CI Status page url [{page_url}]")
 
         res1 = GH.post_commit_status(
@@ -49,7 +49,7 @@ class HtmlRunnerHooks:
             url=page_url,
         )
         res2 = GH.post_pr_comment(
-            comment_body=f"[CI Status]({page_url}), commit [{Environment.get().SHA[:8]}], workflow [{_workflow.name}]",
+            comment_body=f"[CI Status]({page_url}), commit [{_Environment.get().SHA[:8]}], workflow [{_workflow.name}]",
             or_update_comment_with_substring=f", workflow [{_workflow.name}]",
         )
         assert (
@@ -81,24 +81,35 @@ class HtmlRunnerHooks:
         result = Result.from_fs(_job.name)
 
         workflow_result = Result.from_s3(_workflow.name)
+        print(f"Workflow info [{workflow_result.info}], info_errors [{info_errors}]")
+
+        env_info = _Environment.get().REPORT_INFO
+        if env_info:
+            print(
+                f"WARNING: some info lines are set in Environment - append to report [{env_info}]"
+            )
+            info_errors += env_info
         if info_errors:
-            info_errors = [f"{_job.name}: {error}" for error in info_errors]
-            info_str = workflow_result.info + "\n" + "\n".join(info_errors)
+            info_errors = [f"* {_job.name}: {error}" for error in info_errors]
+            info_str = "\n".join(info_errors)
             print("Update workflow results with new info")
             workflow_result.set_info(info_str)
+
         old_status = workflow_result.status
 
         result.upload_files()
         workflow_result.update_sub_result(result)
 
         skipped_job_results = []
-        if Environment.get().PRAKTIKA_RUN_STEP_EXIT_CODE != 0:
+        if _Environment.get().PRAKTIKA_RUN_STEP_EXIT_CODE != 0:
             print(
                 "Current job failed - find dependee jobs in the workflow and set their statuses to skipped"
             )
             workflow_config_parsed = WorkflowConfigParser(_workflow).parse()
             for dependee_job in workflow_config_parsed.workflow_yaml_config.jobs:
                 if _job.name in dependee_job.needs:
+                    if _workflow.get_job(dependee_job.name).run_unless_cancelled:
+                        continue
                     print(
                         f"NOTE: Set job [{dependee_job.name}] status to [{Result.Status.SKIPPED}] due to current failure"
                     )

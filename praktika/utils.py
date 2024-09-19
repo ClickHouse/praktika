@@ -1,3 +1,4 @@
+import base64
 import dataclasses
 import inspect
 import json
@@ -12,6 +13,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from threading import Thread
+from types import SimpleNamespace
 from typing import Iterator, Union, Optional, TypeVar, Type, Dict, Any
 
 from praktika._settings import _Settings
@@ -32,6 +34,20 @@ class MetaClasses:
 
     @dataclasses.dataclass
     class Serializable(ABC):
+
+        @classmethod
+        def to_dict(cls, obj):
+            if dataclasses.is_dataclass(obj):
+                return {k: cls.to_dict(v) for k, v in dataclasses.asdict(obj).items()}
+            elif isinstance(obj, SimpleNamespace):
+                return {k: cls.to_dict(v) for k, v in vars(obj).items()}
+            elif isinstance(obj, list):
+                return [cls.to_dict(i) for i in obj]
+            elif isinstance(obj, dict):
+                return {k: cls.to_dict(v) for k, v in obj.items()}
+            else:
+                return obj
+
         @classmethod
         def from_dict(cls: Type[T], obj: Dict[str, Any]) -> T:
             return cls(**obj)
@@ -43,7 +59,8 @@ class MetaClasses:
                     return cls.from_dict(json.load(f))
                 except json.decoder.JSONDecodeError as ex:
                     print(f"ERROR: failed to parse json, ex [{ex}]")
-                    print(f"JSON content [{cls.file_name_static(name)}]:\n {f.read()}")
+                    print(f"JSON content [{cls.file_name_static(name)}]")
+                    Shell.check(f"cat {cls.file_name_static(name)}")
                     raise ex
 
         @classmethod
@@ -56,7 +73,7 @@ class MetaClasses:
 
         def dump(self):
             with open(self.file_name(), "w", encoding="utf8") as f:
-                json.dump(dataclasses.asdict(self), f, indent=4)
+                json.dump(self.to_dict(self), f, indent=4)
             return self
 
         @classmethod
@@ -101,7 +118,9 @@ class Shell:
         return cls.get_output(command).strip()
 
     @classmethod
-    def get_output(cls, command, strict=False):
+    def get_output(cls, command, strict=False, verbose=False):
+        if verbose:
+            print(f"Run command [{command}]")
         res = subprocess.run(
             command,
             shell=True,
@@ -116,7 +135,9 @@ class Shell:
         return res.stdout.strip()
 
     @classmethod
-    def get_res_stdout_stderr(cls, command):
+    def get_res_stdout_stderr(cls, command, verbose=True):
+        if verbose:
+            print(f"Run command [{command}]")
         res = subprocess.run(
             command,
             shell=True,
@@ -213,10 +234,12 @@ class Shell:
             )
             if timeout:
                 t = Thread(target=_check_timeout)
-                t.daemon = True  # does not block the program from exit
+                t.daemon = True
                 t.start()
             if stdin_str:
-                proc.communicate(input=stdin_str)
+                proc.stdin.write(stdin_str)
+                proc.stdin.close()
+
             if proc.stdout:
                 for line in proc.stdout:
                     sys.stdout.write(line)
@@ -280,6 +303,14 @@ class Utils:
         Shell.check("sudo dmesg --clear", verbose=True)
 
     @staticmethod
+    def to_base64(value):
+        assert isinstance(value, str), f"TODO: not supported for {type(value)}"
+        string_bytes = value.encode("utf-8")
+        base64_bytes = base64.b64encode(string_bytes)
+        base64_string = base64_bytes.decode("utf-8")
+        return base64_string
+
+    @staticmethod
     def is_hex(s):
         try:
             int(s, 16)
@@ -292,12 +323,18 @@ class Utils:
         res = string.lower()
         for r in (
             (" ", "_"),
-            ("(", "_"),
-            (")", "_"),
-            (",", "_"),
+            ("(", ""),
+            (")", ""),
+            ("{", ""),
+            ("}", ""),
+            ("'", ""),
+            ("[", ""),
+            ("]", ""),
+            (",", ""),
             ("/", "_"),
             ("-", "_"),
             (":", ""),
+            ('"', ""),
         ):
             res = res.replace(*r)
         return res

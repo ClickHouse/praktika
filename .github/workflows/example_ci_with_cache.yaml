@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: ['main']
 
+# Cancel the previous wf run in PRs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # Force the stdout and stderr streams to be unbuffered
   PYTHONUNBUFFERED: 1
@@ -15,7 +20,7 @@ jobs:
   config_workflow:
     runs-on: [maxs-small-fixed]
     needs: []
-    name: Config Workflow
+    name: "Config Workflow"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -40,6 +45,7 @@ jobs:
           echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
+          echo "JOB_NAME=Config Workflow" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
           echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
@@ -59,25 +65,25 @@ jobs:
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name "Config Workflow" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/pre_run.log
+          python -m praktika.runner --pre-run --job-name '''Config Workflow''' --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name "Config Workflow" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/run.log
+          python -m praktika.runner --run --job-name '''Config Workflow''' --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name "Config Workflow" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/post_run.log
+          python -m praktika.runner --post-run --job-name '''Config Workflow''' --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/post_run.log
 
   job_a:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow]
-    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success, 'Job A') }}
-    name: Job A
+    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success_base64, 'Sm9iIEE=') }}
+    name: "Job A"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -102,6 +108,7 @@ jobs:
           echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
+          echo "JOB_NAME=Job A" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
           echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
@@ -121,25 +128,25 @@ jobs:
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name "Job A" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/pre_run.log
+          python -m praktika.runner --pre-run --job-name '''Job A''' --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name "Job A" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/run.log
+          python -m praktika.runner --run --job-name '''Job A''' --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name "Job A" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/post_run.log
+          python -m praktika.runner --post-run --job-name '''Job A''' --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/post_run.log
 
   job_b:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow, job_a]
-    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success, 'Job B') }}
-    name: Job B
+    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success_base64, 'Sm9iIEI=') }}
+    name: "Job B"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -164,6 +171,7 @@ jobs:
           echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
+          echo "JOB_NAME=Job B" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
           echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_ci_with_cache.json
@@ -183,16 +191,16 @@ jobs:
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name "Job B" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/pre_run.log
+          python -m praktika.runner --pre-run --job-name '''Job B''' --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name "Job B" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/run.log
+          python -m praktika.runner --run --job-name '''Job B''' --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name "Job B" --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/post_run.log
+          python -m praktika.runner --post-run --job-name '''Job B''' --workflow-name "Example CI with Cache" 2>&1 | tee /tmp/praktika/post_run.log

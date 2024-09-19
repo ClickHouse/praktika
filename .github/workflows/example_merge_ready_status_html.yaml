@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: ['main']
 
+# Cancel the previous wf run in PRs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # Force the stdout and stderr streams to be unbuffered
   PYTHONUNBUFFERED: 1
@@ -15,7 +20,7 @@ jobs:
   config_workflow:
     runs-on: [maxs-small-fixed]
     needs: []
-    name: Config Workflow
+    name: "Config Workflow"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -40,6 +45,7 @@ jobs:
           echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
+          echo "JOB_NAME=Config Workflow" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
           export GH_APP_ID="${{ secrets.GH_APP_ID }}"
@@ -55,8 +61,8 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_merge_ready_status__html.json
-          cat /tmp/praktika/results/workflow_config_example_merge_ready_status__html.json
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
+          cat /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
@@ -72,24 +78,24 @@ jobs:
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name "Config Workflow" --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/pre_run.log
+          python -m praktika.runner --pre-run --job-name '''Config Workflow''' --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name "Config Workflow" --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/run.log
+          python -m praktika.runner --run --job-name '''Config Workflow''' --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name "Config Workflow" --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/post_run.log
+          python -m praktika.runner --post-run --job-name '''Config Workflow''' --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/post_run.log
 
   some_job_1_that_should_block_merge_on_failure:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow]
-    name: Some Job 1 that should block merge on failure
+    name: "Some Job 1 that should block merge on failure"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -114,6 +120,7 @@ jobs:
           echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
+          echo "JOB_NAME=Some Job 1 that should block merge on failure" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
           export GH_APP_ID="${{ secrets.GH_APP_ID }}"
@@ -129,8 +136,8 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_merge_ready_status__html.json
-          cat /tmp/praktika/results/workflow_config_example_merge_ready_status__html.json
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
+          cat /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
@@ -146,24 +153,24 @@ jobs:
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name "Some Job 1 that should block merge on failure" --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/pre_run.log
+          python -m praktika.runner --pre-run --job-name '''Some Job 1 that should block merge on failure''' --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name "Some Job 1 that should block merge on failure" --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/run.log
+          python -m praktika.runner --run --job-name '''Some Job 1 that should block merge on failure''' --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name "Some Job 1 that should block merge on failure" --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/post_run.log
+          python -m praktika.runner --post-run --job-name '''Some Job 1 that should block merge on failure''' --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/post_run.log
 
   some_job_2_that_should_not_block_merge_on_failure:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow, some_job_1_that_should_block_merge_on_failure]
-    name: Some Job 2 that should not block merge on failure
+    name: "Some Job 2 that should not block merge on failure"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -188,6 +195,7 @@ jobs:
           echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
+          echo "JOB_NAME=Some Job 2 that should not block merge on failure" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
           export GH_APP_ID="${{ secrets.GH_APP_ID }}"
@@ -203,8 +211,8 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_merge_ready_status__html.json
-          cat /tmp/praktika/results/workflow_config_example_merge_ready_status__html.json
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
+          cat /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
@@ -220,25 +228,25 @@ jobs:
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name "Some Job 2 that should not block merge on failure" --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/pre_run.log
+          python -m praktika.runner --pre-run --job-name '''Some Job 2 that should not block merge on failure''' --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name "Some Job 2 that should not block merge on failure" --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/run.log
+          python -m praktika.runner --run --job-name '''Some Job 2 that should not block merge on failure''' --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name "Some Job 2 that should not block merge on failure" --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/post_run.log
+          python -m praktika.runner --post-run --job-name '''Some Job 2 that should not block merge on failure''' --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/post_run.log
 
   finish_workflow:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow, some_job_1_that_should_block_merge_on_failure, some_job_2_that_should_not_block_merge_on_failure]
     if: ${{ !cancelled() }}
-    name: Finish Workflow
+    name: "Finish Workflow"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -257,6 +265,7 @@ jobs:
           echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
+          echo "JOB_NAME=Finish Workflow" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
           export GH_APP_ID="${{ secrets.GH_APP_ID }}"
@@ -272,8 +281,8 @@ jobs:
           MULTILINE_SECRET_SUPPORT
           EOF
           python3 -m praktika.gh_auth
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_merge_ready_status__html.json
-          cat /tmp/praktika/results/workflow_config_example_merge_ready_status__html.json
+          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
+          cat /tmp/praktika/results/workflow_config_example_merge_ready_status_html.json
           echo "::group::GITHUB ENV"
           env | grep GITHUB ||:
           env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
@@ -289,16 +298,16 @@ jobs:
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name "Finish Workflow" --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/pre_run.log
+          python -m praktika.runner --pre-run --job-name '''Finish Workflow''' --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name "Finish Workflow" --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/run.log
+          python -m praktika.runner --run --job-name '''Finish Workflow''' --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name "Finish Workflow" --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/post_run.log
+          python -m praktika.runner --post-run --job-name '''Finish Workflow''' --workflow-name "Example Merge ready Status, HTML" 2>&1 | tee /tmp/praktika/post_run.log

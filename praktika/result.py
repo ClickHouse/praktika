@@ -1,12 +1,13 @@
 import dataclasses
 import datetime
+import time
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from praktika.s3 import S3
-from praktika.utils import Utils, MetaClasses
+from praktika.utils import Utils, MetaClasses, Shell
 from praktika.settings import Settings
-from praktika.environment import Environment
+from praktika._environment import _Environment
 
 
 @dataclasses.dataclass
@@ -32,7 +33,7 @@ class Result(MetaClasses.Serializable):
 
     @staticmethod
     def get():
-        return Result.from_fs(Environment.get().JOB_NAME)
+        return Result.from_fs(_Environment.get().JOB_NAME)
 
     def is_completed(self):
         return self.status not in (Result.Status.PENDING, Result.Status.RUNNING)
@@ -71,6 +72,11 @@ class Result(MetaClasses.Serializable):
         self.dump()
         return self
 
+    def set_link(self, link) -> "Result":
+        self.links.append(link)
+        self.dump()
+        return self
+
     @classmethod
     def file_name_static(cls, name):
         return f"{Settings.RESULTS_DIR}/result_{Utils.normalize_string(name)}.json"
@@ -84,35 +90,94 @@ class Result(MetaClasses.Serializable):
         obj["results"] = sub_results
         return Result(**obj)
 
-    def copy_to_s3(self):
+    def copy_to_s3(self, unlock=True):
         assert Settings.HTML_S3_PATH, "BUG?"
         self.dump()
-        pr_number = Environment.get().PR_NUMBER
-        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=pr_number, branch=Environment.get().BRANCH, sha=Environment.get().SHA)}"
+        env = _Environment.get()
+        pr_number = env.PR_NUMBER
+        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=pr_number, branch=env.BRANCH, sha=env.SHA)}"
+        s3_path_full = f"{s3_path}/{Path(self.file_name()).name}"
         url = S3.copy_file_to_s3(s3_path=s3_path, local_path=self.file_name())
         if pr_number:
             print("Duplicate Result for PR for latest-sha html report")
-            s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=pr_number, branch=Environment.get().BRANCH, sha='latest')}"
+            s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=pr_number, branch=env.BRANCH, sha='latest')}"
             url = S3.copy_file_to_s3(s3_path=s3_path, local_path=self.file_name())
+        if unlock:
+            if not self.unlock(s3_path_full):
+                print(f"ERROR: File [{s3_path_full}] unlock failure")
+                assert False  # TODO: investigate
         return url
 
     def get_link(self):
-        pr_number = Environment.get().PR_NUMBER
-        sha = Environment.get().SHA if pr_number == 0 else "latest"
-        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=pr_number, branch=Environment.get().BRANCH, sha=sha)}"
+        env = _Environment.get()
+        pr_number = env.PR_NUMBER
+        sha = env.SHA if pr_number == 0 else "latest"
+        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=pr_number, branch=env.BRANCH, sha=sha)}"
         return S3.get_link(s3_path=s3_path, local_path=self.file_name())
 
     @classmethod
-    def from_s3(cls, name):
+    def from_s3(cls, name, lock=True):
         assert Settings.HTML_S3_PATH, "BUG?"
+        env = _Environment.get()
         file_path = cls.file_name_static(name)
         file_name = Path(file_path).name
-        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=Environment.get().PR_NUMBER, branch=Environment.get().BRANCH, sha=Environment.get().SHA)}/{file_name}"
+        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=env.PR_NUMBER, branch=env.BRANCH, sha=env.SHA)}/{file_name}"
+        if lock:
+            cls.lock(s3_path)
         if not S3.copy_file_from_s3(s3_path=s3_path, local_path=file_path):
             print(f"ERROR: failed to cp file [{s3_path}] from s3")
-            raise RuntimeError(f"ERROR: failed to cp file [{s3_path}] from s3")
+            raise RuntimeError(ResultInfo.S3_ERROR)
         result = Result.from_fs(name)
         return result
+
+    @classmethod
+    def unlock(cls, s3_path):
+        s3_path_lock = s3_path + ".lock"
+        env = _Environment.get()
+        obj = S3.head_object(s3_path_lock)
+        if not obj:
+            print("ERROR: lock file is removed")
+            assert False  # investigate
+        elif not obj.has_tags({"job": Utils.to_base64(env.JOB_NAME)}):
+            print("ERROR: lock file was acquired by another job")
+            assert False  # investigate
+
+        if not S3.delete(s3_path_lock):
+            print(f"ERROR: File [{s3_path_lock}] delete failure")
+        print("INFO: lock released")
+        return True
+
+    @classmethod
+    def lock(cls, s3_path, level=0):
+        assert level < 3, "Never"
+        env = _Environment.get()
+        s3_path_lock = s3_path + f".lock"
+        file_path_lock = f"{Settings.TEMP_DIR}/{Path(s3_path_lock).name}"
+        assert Shell.check(
+            f"echo '''{env.JOB_NAME}''' > {file_path_lock}", verbose=True
+        ), "Never"
+
+        i = 20
+        while S3.head_object(s3_path_lock):
+            print("WARNING: Failed to acquire lock - wait")
+            i -= 5
+            if i < 0:
+                raise RuntimeError("Failed to acquire lock")
+            time.sleep(5)
+
+        metadata = {"job": Utils.to_base64(env.JOB_NAME)}
+        S3.put(
+            s3_path=s3_path_lock,
+            local_path=file_path_lock,
+            metadata=metadata,
+        )
+        time.sleep(1)
+        obj = S3.head_object(s3_path_lock)
+        if not obj or not obj.has_tags(tags=metadata):
+            print(f"WARNING: locked by another job [{obj}]")
+            env.add_info(ResultInfo.S3_LOCK_FAILURE)
+            cls.lock(s3_path, level=level + 1)
+        print("INFO: lock acquired")
 
     def update_duration(self):
         if not self.duration and self.start_time:
@@ -198,7 +263,8 @@ class Result(MetaClasses.Serializable):
         cls, local_file_path, upload_to_s3: bool, text: bool = False, s3_subprefix=""
     ) -> str:
         if upload_to_s3:
-            s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=Environment.get().PR_NUMBER, branch=Environment.get().BRANCH, sha=Environment.get().SHA)}"
+            env = _Environment.get()
+            s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=env.PR_NUMBER, branch=env.BRANCH, sha=env.SHA)}"
             if s3_subprefix:
                 s3_subprefix.removeprefix("/").removesuffix("/")
                 s3_path += f"/{s3_subprefix}"
@@ -241,11 +307,22 @@ class Result(MetaClasses.Serializable):
 
 
 class ResultInfo:
-    SETUP_ENV_JOB_FAILED = "Failed to set up job env, it's praktika bug or misconfiguration, check GH Actions logs and report the issue please"
-    PRE_JOB_FAILED = "Failed to do a job pre-run step, it's praktika bug or misconfiguration, check GH Actions logs and report the issue please"
+    SETUP_ENV_JOB_FAILED = (
+        "Failed to set up job env, it's praktika bug or misconfiguration"
+    )
+    PRE_JOB_FAILED = (
+        "Failed to do a job pre-run step, it's praktika bug or misconfiguration"
+    )
     KILLED = "Job killed or terminated, no Result provided"
     NOT_FOUND_IMPOSSIBLE = (
         "No Result file (bug, or job misbehaviour, must not ever happen)"
     )
     SKIPPED_DUE_TO_PREVIOUS_FAILURE = "Skipped due to previous failure"
     TIMEOUT = "Timeout"
+
+    GH_STATUS_ERROR = "Failed to set GH commit status"
+
+    NOT_FINALIZED = "Job not properly completed, praktika BUG"
+
+    S3_ERROR = "S3 call failure"
+    S3_LOCK_FAILURE = "S3 lock failure"

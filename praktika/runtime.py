@@ -12,6 +12,8 @@ class WorkflowRuntime(MetaClasses.Serializable):
     digest_jobs: Dict[str, str]
     digest_dockers: Dict[str, str]
     cache_success: List[str]
+    # there are might be issue with special characters in job names if used directly in yaml syntax - create base64 encoded list to avoid this
+    cache_success_base64: List[str]
     cache_artifacts: Dict[str, Cache.CacheRecord]
     sha: str
 

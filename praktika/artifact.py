@@ -18,6 +18,8 @@ class Artifact:
         name: str
         type: str
         path: str
+        _provided_by: str = ""
+        _s3_path: str = ""
 
         def is_s3_artifact(self):
             return self.type == Artifact.Type.S3

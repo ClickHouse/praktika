@@ -1,5 +1,6 @@
 import argparse
 import sys
+from pathlib import Path
 
 from praktika._settings import _Settings
 from praktika.artifact import Artifact
@@ -9,7 +10,7 @@ from praktika.hook_cache import CacheRunnerHooks
 from praktika.mangle import _get_workflows
 from praktika.result import Result, ResultInfo
 from praktika.runtime import WorkflowRuntime
-from praktika.environment import Environment
+from praktika._environment import _Environment
 from praktika.settings import Settings
 from praktika.utils import Shell, Utils, TeePopen
 from praktika.s3 import S3
@@ -18,7 +19,7 @@ from praktika.s3 import S3
 class Runner:
     def pre_run(self, job_name, workflow_name):
         # Update and dump environment
-        env = Environment.from_env().set_job_name(job_name)
+        env = _Environment.from_env().dump()
         print(f"Environment: [{env}]")
 
         workflow = _get_workflows(name=workflow_name)[0]
@@ -40,17 +41,16 @@ class Runner:
                         required_artifacts.append(artifact)
         print(f"Job requires s3 artifacts [{required_artifacts}]")
         if workflow.enable_cache:
-            CacheRunnerHooks.pre_run(
+            prefixes = CacheRunnerHooks.pre_run(
                 _job=job, _workflow=workflow, _required_artifacts=required_artifacts
             )
         else:
-            for artifact in required_artifacts:
-                assert S3.copy_artifact_from_s3(
-                    branch=Environment.get().BRANCH,
-                    pr_number=Environment.get().PR_NUMBER,
-                    sha=Environment.get().SHA,
-                    name=artifact.path,
-                )
+            prefixes = [S3.get_prefix(env.PR_NUMBER, env.BRANCH, env.SHA)] * len(
+                required_artifacts
+            )
+        for artifact, prefix in zip(required_artifacts, prefixes):
+            s3_path = f"{Settings.S3_ARTIFACT_PATH}/{prefix}/{Utils.normalize_string(artifact._provided_by)}/{Path(artifact.path).name}"
+            assert S3.copy_file_from_s3(s3_path=s3_path, local_path=Settings.INPUT_DIR)
 
         # set pre-step ok in env
         env.PRAKTIKA_PRERUN_STEP_EXIT_CODE = 0
@@ -78,8 +78,6 @@ class Runner:
             cmd = job.command
 
         with TeePopen(cmd, timeout=job.timeout) as process:
-            print(f"Job process started, pid [{process.process.pid}]")
-            print("timeout", process.timeout_exceeded)
             exit_code = process.wait()
 
             result = Result.from_fs(job_name)
@@ -94,11 +92,11 @@ class Runner:
                 result.set_status(Result.Status.ERROR).set_info(ResultInfo.KILLED)
             result.dump()
 
-        env = Environment.get()
+        env = _Environment.get()
         env.PRAKTIKA_RUN_STEP_EXIT_CODE = exit_code
         env.dump()
 
-        if exit_code == 0:
+        if exit_code != 0:
             print(f"run command failed with exit code [{exit_code}]")
 
         return exit_code == 0
@@ -109,7 +107,7 @@ class Runner:
         workflow = _get_workflows(name=workflow_name)[0]
         job = workflow.get_job(job_name)
         assert job, "BUG"
-        env = Environment.get()
+        env = _Environment.get()
 
         if not env.setup_ok():
             info = "ERROR: Set up Env step failed. praktika bug or misconfiguration"
@@ -122,7 +120,6 @@ class Runner:
                 duration=0.0,
                 info=ResultInfo.SETUP_ENV_JOB_FAILED,
             ).dump()
-            info_errors.append(info)
         elif not env.prerun_ok():
             info = "ERROR: Prerun step failed. praktika bug or misconfiguration"
             print(info)
@@ -133,9 +130,8 @@ class Runner:
                 start_time=Utils.timestamp(),
                 duration=0.0,
                 info=ResultInfo.PRE_JOB_FAILED,
-                files=[Settings.POST_LOG],
+                files=[Settings.PRE_LOG],
             ).dump()
-            info_errors.append(info)
 
         if not Result.exist(job_name):
             Result(
@@ -146,19 +142,21 @@ class Runner:
                 info=ResultInfo.NOT_FOUND_IMPOSSIBLE,
             ).dump()
             print(f"ERROR: {ResultInfo.NOT_FOUND_IMPOSSIBLE}")
-            info_errors.append(ResultInfo.NOT_FOUND_IMPOSSIBLE)
 
         result = Result.from_fs(job_name)
-        if not env.run_ok() and result.info:
-            # provide job info to workflow level
-            info_errors.append(result.info)
 
         if not result.is_completed():
             result.info = ResultInfo.KILLED
             result.status = Result.Status.ERROR
             print(f"ERROR: {ResultInfo.KILLED}")
-            info_errors.append(ResultInfo.KILLED)
-        result.set_files(files=[Settings.RUN_LOG]).update_duration().dump()
+
+        if env.prerun_ok():
+            result.set_files(files=[Settings.RUN_LOG])
+        result.update_duration().dump()
+
+        if not env.run_ok() and result.info:
+            # provide job info to workflow level
+            info_errors.append(result.info)
 
         run_exit_code = env.PRAKTIKA_RUN_STEP_EXIT_CODE
         if run_exit_code == 0:
@@ -177,12 +175,9 @@ class Runner:
                     assert Shell.check(
                         f"ls -l {artifact.path}", verbose=True
                     ), f"Artifact {artifact.path} not found"
-                    assert S3.copy_artifact_to_s3(
-                        branch=Environment.get().BRANCH,
-                        pr_number=Environment.get().PR_NUMBER,
-                        sha=Environment.get().SHA,
-                        path=artifact.path,
-                    )
+                    s3_path = f"{Settings.S3_ARTIFACT_PATH}/{S3.get_prefix(env.PR_NUMBER , env.BRANCH , env.SHA)}/{Utils.normalize_string(env.JOB_NAME)}"
+                    link = S3.copy_file_to_s3(s3_path=s3_path, local_path=artifact.path)
+                    result.set_link(link)
         else:
             print(f"Job exit code [{run_exit_code} != 0] - skip artifact upload")
 
