@@ -370,7 +370,7 @@ class PullRequestPushYamlGen:
                 RUNS_ON=", ".join(job.runs_on),
                 NEEDS=needs if not job.nest else "",
                 JOB_NAME_GH=(
-                    '"' + f"{job.parameter}".replace('"', '\\"') + '"'
+                    '"' + job_name.replace('"', '\\"') + '"'
                     if job.parameter
                     else job_name or job_name
                 ),  # for nested parametrized job use parameter as name, other vise normal job name

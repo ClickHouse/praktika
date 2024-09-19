@@ -1,7 +1,7 @@
 # praktika
 
 Resilient, feature-reach CI infrastructure on top of Git Management Platform (GH Actions) and Public Cloud Provider (AWS WebServices).
-It's easy with praktika.
+It's easier with praktika.
 
 ### concepts:
 * 100% Tolerance to GitHub API Failures:
@@ -26,7 +26,7 @@ It's easy with praktika.
   * aws cli. Not required for GH-only setup (without cloud provider)
   * gh cli. Not required for setup without HTML reporting and/or Mergeable check
 
-## How to begin:
+## How to:
 
 ```sh
 # 1. install recurCIPY (TODO: python module is not yet there)
@@ -71,7 +71,7 @@ git push --set-upstream origin my_praktika
 | Pre-requisites: python          | Y | Install python dependencies as a pre-requisite job step      |
 | Secret Management               | Y | Fetch secrets from AWS SSM or GH secrets/variables           |
 | Job Timeout config and handling | Y |                                                              |
-| Matrix Jobs                     | N |                                                              |
+| Parametrized Jobs               | Y |                                                              |
 
 #### Supported GitHub features
 |                       | GitHub | GitLab | BitBucket | comment                                   |

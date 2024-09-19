@@ -298,24 +298,11 @@ jobs:
           set -o pipefail
           python -m praktika.runner --post-run --job-name '''Just Job 2''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/post_run.log
 
-  parametrized_job:
-    needs: [config_workflow, just_job, just_job_2]
-    if: ${{ !failure() && !cancelled() }}
-    name: Parametrized_job
-    uses: ./.github/workflows/parametrized_job.yaml
-    with:
-      config: ${{ needs.config_workflow.outputs.data }}
-    secrets:
-      CI_DB_URL: ${{ secrets.CI_DB_URL }}
-      CI_DB_PASSWORD: ${{ secrets.CI_DB_PASSWORD }}
-      GH_APP_ID: ${{ secrets.GH_APP_ID }}
-      GH_APP_PEM_KEY: ${{ secrets.GH_APP_PEM_KEY }}
-
-  just_another_job:
+  parametrized_job_key_1_1_2_abc_key_2_null_maxs_small_fixed:
     runs-on: [maxs-small-fixed]
-    needs: [config_workflow, parametrized_job]
-    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success_base64, 'SnVzdCBBbm90aGVyIEpvYg==') }}
-    name: Just Another Job
+    needs: [config_workflow, just_job, just_job_2]
+    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success_base64, 'UGFyYW1ldHJpemVkX2pvYiAoeyJrZXlfMSI6IFsxLCAyLCAiQUJDIl0sICJrZXlfMiI6IG51bGx9LCBbIm1heHMtc21hbGwtZml4ZWQiXSk=') }}
+    name: "Parametrized_job ({\"key_1\": [1, 2, \"ABC\"], \"key_2\": null}, [\"maxs-small-fixed\"])"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
@@ -340,9 +327,15 @@ jobs:
           echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
           echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
           echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
-          echo "JOB_NAME=Just Another Job" >> "$GITHUB_ENV"
+          echo "JOB_NAME=Parametrized_job ({"key_1": [1, 2, "ABC"], "key_2": null}, ["maxs-small-fixed"])" >> "$GITHUB_ENV"
           export PYTHONPATH=$(pwd)
           echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
+          cat >> "$GITHUB_ENV" << 'EOF'
+          PARAMETER<<MULTILINE_EOF
+          {"key_1": [1, 2, "ABC"], "key_2": null}
+          MULTILINE_EOF
+          EOF
+
           export CI_DB_URL="${{ secrets.CI_DB_URL }}"
           cat >> "$GITHUB_ENV" << 'EOF'
           CI_DB_URL<<MULTILINE_SECRET_SUPPORT
@@ -391,23 +384,123 @@ jobs:
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name '''Just Another Job''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/pre_run.log
+          python -m praktika.runner --pre-run --job-name '''Parametrized_job ({"key_1": [1, 2, "ABC"], "key_2": null}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name '''Just Another Job''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/run.log
+          python -m praktika.runner --run --job-name '''Parametrized_job ({"key_1": [1, 2, "ABC"], "key_2": null}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name '''Just Another Job''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/post_run.log
+          python -m praktika.runner --post-run --job-name '''Parametrized_job ({"key_1": [1, 2, "ABC"], "key_2": null}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/post_run.log
+
+  parametrized_job_key_1_2_3_maxs_small_fixed:
+    runs-on: [maxs-small-fixed]
+    needs: [config_workflow, just_job, just_job_2]
+    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success_base64, 'UGFyYW1ldHJpemVkX2pvYiAoeyJrZXlfMSI6IFsyLCAzXX0sIFsibWF4cy1zbWFsbC1maXhlZCJdKQ==') }}
+    name: "Parametrized_job ({\"key_1\": [2, 3]}, [\"maxs-small-fixed\"])"
+    outputs:
+      data: ${{ steps.run.outputs.DATA }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.9
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          #pip install praktika
+
+      - name: Set up env
+        run: |
+          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
+          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output /tmp/praktika/results
+          echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
+          echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
+          echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
+          echo "JOB_NAME=Parametrized_job ({"key_1": [2, 3]}, ["maxs-small-fixed"])" >> "$GITHUB_ENV"
+          export PYTHONPATH=$(pwd)
+          echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
+          cat >> "$GITHUB_ENV" << 'EOF'
+          PARAMETER<<MULTILINE_EOF
+          {"key_1": [2, 3]}
+          MULTILINE_EOF
+          EOF
+
+          export CI_DB_URL="${{ secrets.CI_DB_URL }}"
+          cat >> "$GITHUB_ENV" << 'EOF'
+          CI_DB_URL<<MULTILINE_SECRET_SUPPORT
+          ${{ secrets.CI_DB_URL }}
+          MULTILINE_SECRET_SUPPORT
+          EOF
+          export CI_DB_PASSWORD="${{ secrets.CI_DB_PASSWORD }}"
+          cat >> "$GITHUB_ENV" << 'EOF'
+          CI_DB_PASSWORD<<MULTILINE_SECRET_SUPPORT
+          ${{ secrets.CI_DB_PASSWORD }}
+          MULTILINE_SECRET_SUPPORT
+          EOF
+          export GH_APP_ID="${{ secrets.GH_APP_ID }}"
+          cat >> "$GITHUB_ENV" << 'EOF'
+          GH_APP_ID<<MULTILINE_SECRET_SUPPORT
+          ${{ secrets.GH_APP_ID }}
+          MULTILINE_SECRET_SUPPORT
+          EOF
+          export GH_APP_PEM_KEY="${{ secrets.GH_APP_PEM_KEY }}"
+          cat >> "$GITHUB_ENV" << 'EOF'
+          GH_APP_PEM_KEY<<MULTILINE_SECRET_SUPPORT
+          ${{ secrets.GH_APP_PEM_KEY }}
+          MULTILINE_SECRET_SUPPORT
+          EOF
+          python3 -m praktika.gh_auth
+          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
+            # normal job case
+            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
+          else
+            # nested job case
+            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
+          fi
+          cat /tmp/praktika/results/workflow_config_example_all_in.json
+          echo "::group::GITHUB ENV"
+          env | grep GITHUB ||:
+          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
+          echo "::endgroup::"
+          echo "::group::CI ENV"
+          env | grep CI_ ||:
+          echo "::endgroup::"
+          echo "::group::GH ENV"
+          env | grep GH_ ||:
+          echo "::endgroup::"
+          echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
+
+      - name: Pre
+        run: |
+          set -o pipefail
+          python -m praktika.runner --pre-run --job-name '''Parametrized_job ({"key_1": [2, 3]}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/pre_run.log
+
+      - name: Run
+        id: run
+        run: |
+          set -o pipefail
+          python -m praktika.runner --run --job-name '''Parametrized_job ({"key_1": [2, 3]}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/run.log
+
+      - name: Post
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          python -m praktika.runner --post-run --job-name '''Parametrized_job ({"key_1": [2, 3]}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/post_run.log
 
   finish_workflow:
     runs-on: [maxs-small-fixed]
-    needs: [config_workflow, just_job, just_job_2, parametrized_job, just_another_job]
+    needs: [config_workflow, just_job, just_job_2, parametrized_job_key_1_1_2_abc_key_2_null_maxs_small_fixed, parametrized_job_key_1_2_3_maxs_small_fixed]
     if: ${{ !cancelled() }}
     name: Finish Workflow
     outputs:

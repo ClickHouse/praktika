@@ -17,7 +17,372 @@ env:
 
 jobs:
 
-  job_parametrized_2:
+  job_parametrized_2_name_1_2_abc_name_2_123_ubuntu_latest:
+    runs-on: [ubuntu-latest]
     needs: []
-    name: JOB_PARAMETRIZED_2
-    uses: ./.github/workflows/job_parametrized_2.yaml
+    name: "JOB_PARAMETRIZED_2 ({\"name\": [1, 2, \"ABC\"], \"name_2\": 123}, [\"ubuntu-latest\"])"
+    outputs:
+      data: ${{ steps.run.outputs.DATA }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.9
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          #pip install praktika
+
+      - name: Set up env
+        run: |
+          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
+          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output /tmp/praktika/results
+          echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
+          echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
+          echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
+          echo "JOB_NAME=JOB_PARAMETRIZED_2 ({"name": [1, 2, "ABC"], "name_2": 123}, ["ubuntu-latest"])" >> "$GITHUB_ENV"
+          export PYTHONPATH=$(pwd)
+          echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
+          cat >> "$GITHUB_ENV" << 'EOF'
+          PARAMETER<<MULTILINE_EOF
+          {"name": [1, 2, "ABC"], "name_2": 123}
+          MULTILINE_EOF
+          EOF
+
+          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
+            # normal job case
+            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_parametrized_jobs.json
+          else
+            # nested job case
+            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_parametrized_jobs.json
+          fi
+          cat /tmp/praktika/results/workflow_config_example_parametrized_jobs.json
+          echo "::group::GITHUB ENV"
+          env | grep GITHUB ||:
+          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
+          echo "::endgroup::"
+          echo "::group::CI ENV"
+          env | grep CI_ ||:
+          echo "::endgroup::"
+          echo "::group::GH ENV"
+          env | grep GH_ ||:
+          echo "::endgroup::"
+          echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
+
+      - name: Pre
+        run: |
+          set -o pipefail
+          python -m praktika.runner --pre-run --job-name '''JOB_PARAMETRIZED_2 ({"name": [1, 2, "ABC"], "name_2": 123}, ["ubuntu-latest"])''' --workflow-name "Example Parametrized Jobs" 2>&1 | tee /tmp/praktika/pre_run.log
+
+      - name: Run
+        id: run
+        run: |
+          set -o pipefail
+          python -m praktika.runner --run --job-name '''JOB_PARAMETRIZED_2 ({"name": [1, 2, "ABC"], "name_2": 123}, ["ubuntu-latest"])''' --workflow-name "Example Parametrized Jobs" 2>&1 | tee /tmp/praktika/run.log
+
+      - name: Post
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          python -m praktika.runner --post-run --job-name '''JOB_PARAMETRIZED_2 ({"name": [1, 2, "ABC"], "name_2": 123}, ["ubuntu-latest"])''' --workflow-name "Example Parametrized Jobs" 2>&1 | tee /tmp/praktika/post_run.log
+
+  job_parametrized_2_name_2_3_ubuntu_latest:
+    runs-on: [ubuntu-latest]
+    needs: []
+    name: "JOB_PARAMETRIZED_2 ({\"name\": [2, 3]}, [\"ubuntu-latest\"])"
+    outputs:
+      data: ${{ steps.run.outputs.DATA }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.9
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          #pip install praktika
+
+      - name: Set up env
+        run: |
+          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
+          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output /tmp/praktika/results
+          echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
+          echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
+          echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
+          echo "JOB_NAME=JOB_PARAMETRIZED_2 ({"name": [2, 3]}, ["ubuntu-latest"])" >> "$GITHUB_ENV"
+          export PYTHONPATH=$(pwd)
+          echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
+          cat >> "$GITHUB_ENV" << 'EOF'
+          PARAMETER<<MULTILINE_EOF
+          {"name": [2, 3]}
+          MULTILINE_EOF
+          EOF
+
+          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
+            # normal job case
+            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_parametrized_jobs.json
+          else
+            # nested job case
+            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_parametrized_jobs.json
+          fi
+          cat /tmp/praktika/results/workflow_config_example_parametrized_jobs.json
+          echo "::group::GITHUB ENV"
+          env | grep GITHUB ||:
+          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
+          echo "::endgroup::"
+          echo "::group::CI ENV"
+          env | grep CI_ ||:
+          echo "::endgroup::"
+          echo "::group::GH ENV"
+          env | grep GH_ ||:
+          echo "::endgroup::"
+          echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
+
+      - name: Pre
+        run: |
+          set -o pipefail
+          python -m praktika.runner --pre-run --job-name '''JOB_PARAMETRIZED_2 ({"name": [2, 3]}, ["ubuntu-latest"])''' --workflow-name "Example Parametrized Jobs" 2>&1 | tee /tmp/praktika/pre_run.log
+
+      - name: Run
+        id: run
+        run: |
+          set -o pipefail
+          python -m praktika.runner --run --job-name '''JOB_PARAMETRIZED_2 ({"name": [2, 3]}, ["ubuntu-latest"])''' --workflow-name "Example Parametrized Jobs" 2>&1 | tee /tmp/praktika/run.log
+
+      - name: Post
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          python -m praktika.runner --post-run --job-name '''JOB_PARAMETRIZED_2 ({"name": [2, 3]}, ["ubuntu-latest"])''' --workflow-name "Example Parametrized Jobs" 2>&1 | tee /tmp/praktika/post_run.log
+
+  job_parametrized_2_name_praktika_ubuntu_latest:
+    runs-on: [ubuntu-latest]
+    needs: []
+    name: "JOB_PARAMETRIZED_2 ({\"name\": \"praktika\"}, [\"ubuntu-latest\"])"
+    outputs:
+      data: ${{ steps.run.outputs.DATA }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.9
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          #pip install praktika
+
+      - name: Set up env
+        run: |
+          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
+          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output /tmp/praktika/results
+          echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
+          echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
+          echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
+          echo "JOB_NAME=JOB_PARAMETRIZED_2 ({"name": "praktika"}, ["ubuntu-latest"])" >> "$GITHUB_ENV"
+          export PYTHONPATH=$(pwd)
+          echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
+          cat >> "$GITHUB_ENV" << 'EOF'
+          PARAMETER<<MULTILINE_EOF
+          {"name": "praktika"}
+          MULTILINE_EOF
+          EOF
+
+          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
+            # normal job case
+            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_parametrized_jobs.json
+          else
+            # nested job case
+            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_parametrized_jobs.json
+          fi
+          cat /tmp/praktika/results/workflow_config_example_parametrized_jobs.json
+          echo "::group::GITHUB ENV"
+          env | grep GITHUB ||:
+          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
+          echo "::endgroup::"
+          echo "::group::CI ENV"
+          env | grep CI_ ||:
+          echo "::endgroup::"
+          echo "::group::GH ENV"
+          env | grep GH_ ||:
+          echo "::endgroup::"
+          echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
+
+      - name: Pre
+        run: |
+          set -o pipefail
+          python -m praktika.runner --pre-run --job-name '''JOB_PARAMETRIZED_2 ({"name": "praktika"}, ["ubuntu-latest"])''' --workflow-name "Example Parametrized Jobs" 2>&1 | tee /tmp/praktika/pre_run.log
+
+      - name: Run
+        id: run
+        run: |
+          set -o pipefail
+          python -m praktika.runner --run --job-name '''JOB_PARAMETRIZED_2 ({"name": "praktika"}, ["ubuntu-latest"])''' --workflow-name "Example Parametrized Jobs" 2>&1 | tee /tmp/praktika/run.log
+
+      - name: Post
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          python -m praktika.runner --post-run --job-name '''JOB_PARAMETRIZED_2 ({"name": "praktika"}, ["ubuntu-latest"])''' --workflow-name "Example Parametrized Jobs" 2>&1 | tee /tmp/praktika/post_run.log
+
+  job_parametrized_2_123_ubuntu_latest:
+    runs-on: [ubuntu-latest]
+    needs: []
+    name: "JOB_PARAMETRIZED_2 (123, [\"ubuntu-latest\"])"
+    outputs:
+      data: ${{ steps.run.outputs.DATA }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.9
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          #pip install praktika
+
+      - name: Set up env
+        run: |
+          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
+          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output /tmp/praktika/results
+          echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
+          echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
+          echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
+          echo "JOB_NAME=JOB_PARAMETRIZED_2 (123, ["ubuntu-latest"])" >> "$GITHUB_ENV"
+          export PYTHONPATH=$(pwd)
+          echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
+          cat >> "$GITHUB_ENV" << 'EOF'
+          PARAMETER<<MULTILINE_EOF
+          123
+          MULTILINE_EOF
+          EOF
+
+          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
+            # normal job case
+            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_parametrized_jobs.json
+          else
+            # nested job case
+            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_parametrized_jobs.json
+          fi
+          cat /tmp/praktika/results/workflow_config_example_parametrized_jobs.json
+          echo "::group::GITHUB ENV"
+          env | grep GITHUB ||:
+          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
+          echo "::endgroup::"
+          echo "::group::CI ENV"
+          env | grep CI_ ||:
+          echo "::endgroup::"
+          echo "::group::GH ENV"
+          env | grep GH_ ||:
+          echo "::endgroup::"
+          echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
+
+      - name: Pre
+        run: |
+          set -o pipefail
+          python -m praktika.runner --pre-run --job-name '''JOB_PARAMETRIZED_2 (123, ["ubuntu-latest"])''' --workflow-name "Example Parametrized Jobs" 2>&1 | tee /tmp/praktika/pre_run.log
+
+      - name: Run
+        id: run
+        run: |
+          set -o pipefail
+          python -m praktika.runner --run --job-name '''JOB_PARAMETRIZED_2 (123, ["ubuntu-latest"])''' --workflow-name "Example Parametrized Jobs" 2>&1 | tee /tmp/praktika/run.log
+
+      - name: Post
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          python -m praktika.runner --post-run --job-name '''JOB_PARAMETRIZED_2 (123, ["ubuntu-latest"])''' --workflow-name "Example Parametrized Jobs" 2>&1 | tee /tmp/praktika/post_run.log
+
+  job_parametrized_2_im_a_string_ubuntu_latest:
+    runs-on: [ubuntu-latest]
+    needs: []
+    name: "JOB_PARAMETRIZED_2 (I'm a string, [\"ubuntu-latest\"])"
+    outputs:
+      data: ${{ steps.run.outputs.DATA }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.9
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          #pip install praktika
+
+      - name: Set up env
+        run: |
+          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
+          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output /tmp/praktika/results
+          echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
+          echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
+          echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
+          echo "JOB_NAME=JOB_PARAMETRIZED_2 (I'm a string, ["ubuntu-latest"])" >> "$GITHUB_ENV"
+          export PYTHONPATH=$(pwd)
+          echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
+          cat >> "$GITHUB_ENV" << 'EOF'
+          PARAMETER<<MULTILINE_EOF
+          "I'm a string"
+          MULTILINE_EOF
+          EOF
+
+          if [ -n '''${{ needs.config_workflow.outputs.data }}''' ]; then
+            # normal job case
+            echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_parametrized_jobs.json
+          else
+            # nested job case
+            echo '''${{ inputs.config }}''' > /tmp/praktika/results/workflow_config_example_parametrized_jobs.json
+          fi
+          cat /tmp/praktika/results/workflow_config_example_parametrized_jobs.json
+          echo "::group::GITHUB ENV"
+          env | grep GITHUB ||:
+          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
+          echo "::endgroup::"
+          echo "::group::CI ENV"
+          env | grep CI_ ||:
+          echo "::endgroup::"
+          echo "::group::GH ENV"
+          env | grep GH_ ||:
+          echo "::endgroup::"
+          echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
+
+      - name: Pre
+        run: |
+          set -o pipefail
+          python -m praktika.runner --pre-run --job-name '''JOB_PARAMETRIZED_2 (I'\''m a string, ["ubuntu-latest"])''' --workflow-name "Example Parametrized Jobs" 2>&1 | tee /tmp/praktika/pre_run.log
+
+      - name: Run
+        id: run
+        run: |
+          set -o pipefail
+          python -m praktika.runner --run --job-name '''JOB_PARAMETRIZED_2 (I'\''m a string, ["ubuntu-latest"])''' --workflow-name "Example Parametrized Jobs" 2>&1 | tee /tmp/praktika/run.log
+
+      - name: Post
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          python -m praktika.runner --post-run --job-name '''JOB_PARAMETRIZED_2 (I'\''m a string, ["ubuntu-latest"])''' --workflow-name "Example Parametrized Jobs" 2>&1 | tee /tmp/praktika/post_run.log

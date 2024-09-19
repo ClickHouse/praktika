@@ -76,16 +76,6 @@ workflow_pr = Workflow.Config(
                 {"key_1": [2, 3]},  # parameter value 2
             ]
         ),
-        Job.Config(
-            name=JobNames.JOB,
-            runs_on=[RunnerLabels.SMALL_FIXED],
-            # run after JobNames.JOB_PARAMETRIZED
-            requires=[JobNames.JOB_PARAMETRIZED],
-            command="python3 ./ci/tests/example_2/some_job_script.py",
-            job_requirements=Job.Requirements(
-                python_requirements_txt="requirements.txt"
-            ),
-        ),
     ],
     secrets=[
         # example: provide required secrets and store CI DB secrets names in user settings:

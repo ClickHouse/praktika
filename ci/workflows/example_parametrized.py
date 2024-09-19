@@ -21,7 +21,7 @@ workflow_pr = Workflow.Config(
         *Job.Config(
             name=JobNames.JOB_PARAMETRIZED_2,
             runs_on=["ubuntu-latest"],
-            command="python3 ./ci/tests/example_3/script_for_parametrized_job.py",
+            command="python3 ./ci/tests/example_4/parametrized_job_no_artifact.py",
             job_requirements=Job.Requirements(
                 python_requirements_txt="requirements.txt"
             ),
@@ -32,7 +32,7 @@ workflow_pr = Workflow.Config(
             parameter=[
                 {"name": [1, 2, "ABC"], "name_2": 123},  # parameter 1
                 {"name": [2, 3]},  # parameter 2
-                {"name": "Hi, It's praktika"},  # parameter 3
+                {"name": "praktika"},  # parameter 3
                 123,  # parameter 4
                 "I'm a string",  # parameter 5
             ],
