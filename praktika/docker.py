@@ -10,7 +10,7 @@ class Docker:
     class Config:
         name: str
         path: str
-        depend_on: List[str]
+        depends_on: List[str]
         amd64: bool
         arm64: bool
 
@@ -27,11 +27,11 @@ class Docker:
             tags_substr = f" -t {config.name}:latest"
 
         from_tag = ""
-        if config.depend_on:
+        if config.depends_on:
             assert (
-                len(config.depend_on) == 1
-            ), f"Only one dependency in depend_on is currently supported, docker [{config}]"
-            from_tag = f" --build-arg FROM_TAG={digests[config.depend_on[0]]}"
+                len(config.depends_on) == 1
+            ), f"Only one dependency in depends_on is currently supported, docker [{config}]"
+            from_tag = f" --build-arg FROM_TAG={digests[config.depends_on[0]]}"
 
         command = f"docker buildx build --platform {','.join(platforms)} {tags_substr} {from_tag} --push {config.path}"
         return Shell.run(command, log_file=log_file, verbose=True, strict=True)
@@ -42,8 +42,8 @@ class Docker:
         i = 0
         while i < len(dockers):
             docker = dockers[i]
-            if not docker.depend_on or all(
-                dep in ready_names for dep in docker.depend_on
+            if not docker.depends_on or all(
+                dep in ready_names for dep in docker.depends_on
             ):
                 ready_names.append(docker.name)
                 i += 1
