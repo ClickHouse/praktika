@@ -23,7 +23,7 @@ workflow_pr = Workflow.Config(
             runs_on=[RunnerLabels.SMALL_FIXED],
             command="python3 ./ci/tests/example_2/some_job_script.py",
             job_requirements=Job.Requirements(
-                python_requirements_txt="./requirements_with_gh_auth.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
         ),
         Job.Config(
@@ -32,7 +32,7 @@ workflow_pr = Workflow.Config(
             command="python3 ./ci/tests/example_2/some_job_script_2.py",
             requires=[JobNames.JOB_A],
             job_requirements=Job.Requirements(
-                python_requirements_txt="./requirements_with_gh_auth.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
             timeout=5,
             # example: This job won't set "Ready For Merge" status on failure

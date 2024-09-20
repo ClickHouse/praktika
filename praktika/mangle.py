@@ -43,7 +43,9 @@ def _get_workflows(name=None, file=None):
                 print(
                     f"WARNING: Failed to add WORKFLOWS config from [{module_name}], exception [{e}]"
                 )
-    assert res
+    if not res:
+        print(f"ERROR: failed to find workflow [{name or file}]")
+        raise RuntimeError()
     for workflow in res:
         # add native jobs
         _update_workflow_with_native_jobs(workflow)
@@ -92,8 +94,6 @@ def _update_workflow_with_native_jobs(workflow):
 
         print(f"Enable native job [{_workflow_config_job.name}] for [{workflow.name}]")
         aux_job = copy.deepcopy(_workflow_config_job)
-        if workflow.enable_html:
-            aux_job.job_requirements.gh_app_auth = True
         workflow.jobs.insert(0, aux_job)
         for job in workflow.jobs[1:]:
             if not job.requires:

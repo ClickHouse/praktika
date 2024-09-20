@@ -1,6 +1,5 @@
 import base64
 import dataclasses
-import inspect
 import json
 import os
 import re
@@ -25,12 +24,6 @@ class MetaClasses:
     class WithIter(type):
         def __iter__(cls):
             return (v for k, v in cls.__dict__.items() if not k.startswith("_"))
-
-    class FormatPrint:
-        @classmethod
-        def format_print(cls, message):
-            calling_function_name = inspect.stack()[1].function
-            print(f"{cls.__class__.__name__}::{calling_function_name}: {message}")
 
     @dataclasses.dataclass
     class Serializable(ABC):
@@ -114,8 +107,8 @@ class ContextManager:
 
 class Shell:
     @classmethod
-    def get_output_or_raise(cls, command):
-        return cls.get_output(command).strip()
+    def get_output_or_raise(cls, command, verbose=False):
+        return cls.get_output(command, verbose=verbose, strict=True).strip()
 
     @classmethod
     def get_output(cls, command, strict=False, verbose=False):
@@ -159,7 +152,7 @@ class Shell:
         )
         if res.stderr:
             print(f"WARNING: stderr: {res.stderr.strip()}")
-        return res.stdout.strip(), res.returncode
+        return res.stdout.strip(), res.stderr.strip(), res.returncode
 
     @classmethod
     def check(

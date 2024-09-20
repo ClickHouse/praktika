@@ -36,7 +36,10 @@ class _Settings:
     INPUT_DIR: str = f"{TEMP_DIR}/input"
     RESULTS_DIR: str = f"{TEMP_DIR}/results"
     PYTHON_INTERPRETER: str = "python3"
+    PYTHON_PACKET_MANAGER: str = "pip3"
     PYTHON_VERSION: str = "3.9"
+    INSTALL_PYTHON_FOR_NATIVE_JOBS: bool = False
+    INSTALL_PYTHON_REQS_FOR_NATIVE_JOBS: str = "./ci/requirements.txt"
     ENVIRONMENT_VAR_FILE: str = f"{TEMP_DIR}/environment.json"
     PRE_LOG: str = f"{TEMP_DIR}/pre_run.log"
     RUN_LOG: str = f"{TEMP_DIR}/run.log"
@@ -44,6 +47,8 @@ class _Settings:
 
     SECRET_GH_APP_ID: str = "GH_APP_ID"
     SECRET_GH_APP_PEM_KEY: str = "GH_APP_PEM_KEY"
+
+    WORKFLOW_STATUS_FILE: str = "/tmp/workflow_status.json"
 
     ######################################
     #        CI Cache settings           #
@@ -88,6 +93,9 @@ _USER_DEFINED_SETTINGS = [
     "CI_CONFIG_JOB_NAME",
     "PYTHON_INTERPRETER",
     "PYTHON_VERSION",
+    "PYTHON_PACKET_MANAGER",
+    "INSTALL_PYTHON_FOR_NATIVE_JOBS",
+    "INSTALL_PYTHON_REQS_FOR_NATIVE_JOBS",
     "MAX_RETRIES_S3",
     "MAX_RETRIES_GH",
     "VALIDATE_FILE_PATHS",

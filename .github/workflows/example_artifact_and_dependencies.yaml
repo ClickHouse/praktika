@@ -34,9 +34,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          #pip install praktika
+          python3 -m pip install --upgrade pip --break-system-packages
+          # TODO: --break-system-packages?
+          pip3 install -r ./ci/requirements.txt --break-system-packages
 
       - name: Set up env
         run: |
@@ -60,24 +60,27 @@ jobs:
           echo "::group::GH ENV"
           env | grep GH_ ||:
           echo "::endgroup::"
+          cat > /tmp/workflow_status.json << 'EOF'
+          ${ toJson(needs) }
+          EOF
           echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name '''Provide Artifact''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/pre_run.log
+          python3 -m praktika.runner --pre-run --job-name '''Provide Artifact''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name '''Provide Artifact''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/run.log
+          python3 -m praktika.runner --run --job-name '''Provide Artifact''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name '''Provide Artifact''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --post-run --job-name '''Provide Artifact''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/post_run.log
 
       - name: Upload artifact greet
         uses: actions/upload-artifact@v4
@@ -102,9 +105,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          #pip install praktika
+          python3 -m pip install --upgrade pip --break-system-packages
+          # TODO: --break-system-packages?
+          pip3 install -r ./ci/requirements.txt --break-system-packages
 
       - name: Set up env
         run: |
@@ -128,6 +131,9 @@ jobs:
           echo "::group::GH ENV"
           env | grep GH_ ||:
           echo "::endgroup::"
+          cat > /tmp/workflow_status.json << 'EOF'
+          ${ toJson(needs) }
+          EOF
           echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
 
       - name: Download artifact greet
@@ -139,19 +145,19 @@ jobs:
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name '''Consume Artifact''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/pre_run.log
+          python3 -m praktika.runner --pre-run --job-name '''Consume Artifact''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name '''Consume Artifact''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/run.log
+          python3 -m praktika.runner --run --job-name '''Consume Artifact''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name '''Consume Artifact''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --post-run --job-name '''Consume Artifact''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/post_run.log
 
   job_a_starting_at_the_beginning:
     runs-on: [ubuntu-latest]
@@ -170,9 +176,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          #pip install praktika
+          python3 -m pip install --upgrade pip --break-system-packages
+          # TODO: --break-system-packages?
+          pip3 install -r ./ci/requirements.txt --break-system-packages
 
       - name: Set up env
         run: |
@@ -196,24 +202,27 @@ jobs:
           echo "::group::GH ENV"
           env | grep GH_ ||:
           echo "::endgroup::"
+          cat > /tmp/workflow_status.json << 'EOF'
+          ${ toJson(needs) }
+          EOF
           echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name '''Job A starting at the beginning''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/pre_run.log
+          python3 -m praktika.runner --pre-run --job-name '''Job A starting at the beginning''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name '''Job A starting at the beginning''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/run.log
+          python3 -m praktika.runner --run --job-name '''Job A starting at the beginning''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name '''Job A starting at the beginning''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --post-run --job-name '''Job A starting at the beginning''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/post_run.log
 
   job_b_starting_at_the_beginning:
     runs-on: [ubuntu-latest]
@@ -232,9 +241,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          #pip install praktika
+          python3 -m pip install --upgrade pip --break-system-packages
+          # TODO: --break-system-packages?
+          pip3 install -r ./ci/requirements.txt --break-system-packages
 
       - name: Set up env
         run: |
@@ -258,24 +267,27 @@ jobs:
           echo "::group::GH ENV"
           env | grep GH_ ||:
           echo "::endgroup::"
+          cat > /tmp/workflow_status.json << 'EOF'
+          ${ toJson(needs) }
+          EOF
           echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name '''Job B starting at the beginning''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/pre_run.log
+          python3 -m praktika.runner --pre-run --job-name '''Job B starting at the beginning''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name '''Job B starting at the beginning''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/run.log
+          python3 -m praktika.runner --run --job-name '''Job B starting at the beginning''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name '''Job B starting at the beginning''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --post-run --job-name '''Job B starting at the beginning''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/post_run.log
 
   job_c_starting_after_job_a_and_b_is_done:
     runs-on: [ubuntu-latest]
@@ -294,9 +306,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          #pip install praktika
+          python3 -m pip install --upgrade pip --break-system-packages
+          # TODO: --break-system-packages?
+          pip3 install -r ./ci/requirements.txt --break-system-packages
 
       - name: Set up env
         run: |
@@ -320,24 +332,27 @@ jobs:
           echo "::group::GH ENV"
           env | grep GH_ ||:
           echo "::endgroup::"
+          cat > /tmp/workflow_status.json << 'EOF'
+          ${ toJson(needs) }
+          EOF
           echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name '''Job C starting after Job A and B is done''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/pre_run.log
+          python3 -m praktika.runner --pre-run --job-name '''Job C starting after Job A and B is done''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name '''Job C starting after Job A and B is done''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/run.log
+          python3 -m praktika.runner --run --job-name '''Job C starting after Job A and B is done''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name '''Job C starting after Job A and B is done''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --post-run --job-name '''Job C starting after Job A and B is done''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/post_run.log
 
   job_d_starting_after_job_c_is_done:
     runs-on: [ubuntu-latest]
@@ -356,9 +371,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          #pip install praktika
+          python3 -m pip install --upgrade pip --break-system-packages
+          # TODO: --break-system-packages?
+          pip3 install -r ./ci/requirements.txt --break-system-packages
 
       - name: Set up env
         run: |
@@ -382,21 +397,24 @@ jobs:
           echo "::group::GH ENV"
           env | grep GH_ ||:
           echo "::endgroup::"
+          cat > /tmp/workflow_status.json << 'EOF'
+          ${ toJson(needs) }
+          EOF
           echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name '''Job D starting after Job C is done''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/pre_run.log
+          python3 -m praktika.runner --pre-run --job-name '''Job D starting after Job C is done''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name '''Job D starting after Job C is done''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/run.log
+          python3 -m praktika.runner --run --job-name '''Job D starting after Job C is done''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name '''Job D starting after Job C is done''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --post-run --job-name '''Job D starting after Job C is done''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/post_run.log

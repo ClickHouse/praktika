@@ -9,7 +9,7 @@ from praktika.hook_html import HtmlRunnerHooks
 from praktika.hook_cache import CacheRunnerHooks
 from praktika.mangle import _get_workflows
 from praktika.result import Result, ResultInfo
-from praktika.runtime import WorkflowRuntime
+from praktika.runtime import RunConfig
 from praktika._environment import _Environment
 from praktika.settings import Settings
 from praktika.utils import Shell, Utils, TeePopen
@@ -70,7 +70,7 @@ class Runner:
         print(f"Run command [{job.command}], log file [{log_file}]")
         if job.run_in_docker:
             # TODO: support any image, including not from ci
-            docker_tag = WorkflowRuntime.from_fs(workflow_name).digest_dockers[
+            docker_tag = RunConfig.from_fs(workflow_name).digest_dockers[
                 job.run_in_docker
             ]
             cmd = f"docker run --rm -e PYTHONPATH='{_Settings.DOCKER_WD}' --volume ./:{_Settings.DOCKER_WD} --volume {_Settings.TEMP_DIR}:{_Settings.TEMP_DIR} --workdir={_Settings.DOCKER_WD} {job.run_in_docker}:{docker_tag} {job.command}"
@@ -175,7 +175,7 @@ class Runner:
                     assert Shell.check(
                         f"ls -l {artifact.path}", verbose=True
                     ), f"Artifact {artifact.path} not found"
-                    s3_path = f"{Settings.S3_ARTIFACT_PATH}/{S3.get_prefix(env.PR_NUMBER , env.BRANCH , env.SHA)}/{Utils.normalize_string(env.JOB_NAME)}"
+                    s3_path = f"{Settings.S3_ARTIFACT_PATH}/{S3.get_prefix(env.PR_NUMBER, env.BRANCH, env.SHA)}/{Utils.normalize_string(env.JOB_NAME)}"
                     link = S3.copy_file_to_s3(s3_path=s3_path, local_path=artifact.path)
                     result.set_link(link)
         else:

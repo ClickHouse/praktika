@@ -33,7 +33,7 @@ workflow_pr = Workflow.Config(
             provides=[],
             command="python3 ./ci/tests/example_2/some_job_script.py",
             job_requirements=Job.Requirements(
-                python_requirements_txt="requirements.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
         ),
         Job.Config(
@@ -44,7 +44,7 @@ workflow_pr = Workflow.Config(
             provides=[greet_artifact.name],
             command=f"echo Hello > {greet_artifact.path}; python3 ./ci/tests/example_2/some_job_script.py",
             job_requirements=Job.Requirements(
-                python_requirements_txt="requirements.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
             # enable ci cache for this job
             digest_config=Job.CacheDigestConfig(
@@ -59,7 +59,7 @@ workflow_pr = Workflow.Config(
             runs_on=[RunnerLabels.SMALL_FIXED],
             command="python3 ./ci/tests/example_3/script_for_parametrized_job.py",
             job_requirements=Job.Requirements(
-                python_requirements_txt="requirements.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
             # digest_config=Job.CacheDigestConfig(
             #     include_paths=["./ci/tests/example_3/script_for_parametrized_job.py"],

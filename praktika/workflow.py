@@ -44,9 +44,8 @@ class Workflow:
                 if job.name == name:
                     return job
                 names.append(job.name)
-            raise RuntimeError(
-                f"ERROR: Failed to find job [{name}], workflow jobs [{names}]"
-            )
+            print(f"ERROR: Failed to find job [{name}], workflow jobs [{names}]")
+            raise RuntimeError()
 
         def get_secret(self, name) -> Optional[Secret.Config]:
             name = str(name)
@@ -55,6 +54,5 @@ class Workflow:
                 if secret.name == name:
                     return secret
                 names.append(secret.name)
-            raise RuntimeError(
-                f"ERROR: Failed to find secret [{name}], workflow secrets [{names}]"
-            )
+            print(f"ERROR: Failed to find secret [{name}], workflow secrets [{names}]")
+            raise RuntimeError()

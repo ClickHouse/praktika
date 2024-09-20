@@ -80,6 +80,17 @@ class _Environment(MetaClasses.Serializable):
         self.dump()
         return self
 
+    @staticmethod
+    def get_needs_statuses():
+        if Path(_Settings.WORKFLOW_STATUS_FILE).is_file():
+            with open(_Settings.WORKFLOW_STATUS_FILE, "r", encoding="utf8") as f:
+                return json.load(f)
+        else:
+            print(
+                f"ERROR: Status file [{_Settings.WORKFLOW_STATUS_FILE}] does not exist"
+            )
+            raise RuntimeError()
+
     @classmethod
     def from_env(cls) -> "Environment":
         WORKFLOW_NAME = os.getenv("GITHUB_WORKFLOW", "")

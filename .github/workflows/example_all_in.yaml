@@ -27,16 +27,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: 3.9
-
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements_with_gh_auth.txt
-          #pip install praktika
+          python3 -m pip install --upgrade pip --break-system-packages
+          # TODO: --break-system-packages?
+          pip3 install -r ./ci/requirements.txt --break-system-packages
 
       - name: Set up env
         run: |
@@ -72,7 +67,7 @@ jobs:
           ${{ secrets.GH_APP_PEM_KEY }}
           MULTILINE_SECRET_SUPPORT
           EOF
-          python3 -m praktika.gh_auth
+          python3 -m praktika.gh_auth "Example All IN"
           echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
           cat /tmp/praktika/results/workflow_config_example_all_in.json
           echo "::group::GITHUB ENV"
@@ -85,24 +80,27 @@ jobs:
           echo "::group::GH ENV"
           env | grep GH_ ||:
           echo "::endgroup::"
+          cat > /tmp/workflow_status.json << 'EOF'
+          ${ toJson(needs) }
+          EOF
           echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name '''Config Workflow''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/pre_run.log
+          python3 -m praktika.runner --pre-run --job-name '''Config Workflow''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name '''Config Workflow''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/run.log
+          python3 -m praktika.runner --run --job-name '''Config Workflow''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name '''Config Workflow''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --post-run --job-name '''Config Workflow''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/post_run.log
 
   just_job:
     runs-on: [maxs-small-fixed]
@@ -122,9 +120,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          #pip install praktika
+          python3 -m pip install --upgrade pip --break-system-packages
+          # TODO: --break-system-packages?
+          pip3 install -r ./ci/requirements.txt --break-system-packages
 
       - name: Set up env
         run: |
@@ -160,7 +158,7 @@ jobs:
           ${{ secrets.GH_APP_PEM_KEY }}
           MULTILINE_SECRET_SUPPORT
           EOF
-          python3 -m praktika.gh_auth
+          python3 -m praktika.gh_auth "Example All IN"
           echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
           cat /tmp/praktika/results/workflow_config_example_all_in.json
           echo "::group::GITHUB ENV"
@@ -173,24 +171,27 @@ jobs:
           echo "::group::GH ENV"
           env | grep GH_ ||:
           echo "::endgroup::"
+          cat > /tmp/workflow_status.json << 'EOF'
+          ${ toJson(needs) }
+          EOF
           echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name '''Just Job''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/pre_run.log
+          python3 -m praktika.runner --pre-run --job-name '''Just Job''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name '''Just Job''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/run.log
+          python3 -m praktika.runner --run --job-name '''Just Job''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name '''Just Job''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --post-run --job-name '''Just Job''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/post_run.log
 
   just_job_2:
     runs-on: [maxs-small-fixed]
@@ -210,9 +211,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          #pip install praktika
+          python3 -m pip install --upgrade pip --break-system-packages
+          # TODO: --break-system-packages?
+          pip3 install -r ./ci/requirements.txt --break-system-packages
 
       - name: Set up env
         run: |
@@ -248,7 +249,7 @@ jobs:
           ${{ secrets.GH_APP_PEM_KEY }}
           MULTILINE_SECRET_SUPPORT
           EOF
-          python3 -m praktika.gh_auth
+          python3 -m praktika.gh_auth "Example All IN"
           echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
           cat /tmp/praktika/results/workflow_config_example_all_in.json
           echo "::group::GITHUB ENV"
@@ -261,24 +262,27 @@ jobs:
           echo "::group::GH ENV"
           env | grep GH_ ||:
           echo "::endgroup::"
+          cat > /tmp/workflow_status.json << 'EOF'
+          ${ toJson(needs) }
+          EOF
           echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name '''Just Job 2''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/pre_run.log
+          python3 -m praktika.runner --pre-run --job-name '''Just Job 2''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name '''Just Job 2''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/run.log
+          python3 -m praktika.runner --run --job-name '''Just Job 2''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name '''Just Job 2''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --post-run --job-name '''Just Job 2''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/post_run.log
 
   parametrized_job_key_1_1_2_abc_key_2_null_maxs_small_fixed:
     runs-on: [maxs-small-fixed]
@@ -298,9 +302,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          #pip install praktika
+          python3 -m pip install --upgrade pip --break-system-packages
+          # TODO: --break-system-packages?
+          pip3 install -r ./ci/requirements.txt --break-system-packages
 
       - name: Set up env
         run: |
@@ -342,7 +346,7 @@ jobs:
           ${{ secrets.GH_APP_PEM_KEY }}
           MULTILINE_SECRET_SUPPORT
           EOF
-          python3 -m praktika.gh_auth
+          python3 -m praktika.gh_auth "Example All IN"
           echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
           cat /tmp/praktika/results/workflow_config_example_all_in.json
           echo "::group::GITHUB ENV"
@@ -355,24 +359,27 @@ jobs:
           echo "::group::GH ENV"
           env | grep GH_ ||:
           echo "::endgroup::"
+          cat > /tmp/workflow_status.json << 'EOF'
+          ${ toJson(needs) }
+          EOF
           echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name '''Parametrized_job ({"key_1": [1, 2, "ABC"], "key_2": null}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/pre_run.log
+          python3 -m praktika.runner --pre-run --job-name '''Parametrized_job ({"key_1": [1, 2, "ABC"], "key_2": null}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name '''Parametrized_job ({"key_1": [1, 2, "ABC"], "key_2": null}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/run.log
+          python3 -m praktika.runner --run --job-name '''Parametrized_job ({"key_1": [1, 2, "ABC"], "key_2": null}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name '''Parametrized_job ({"key_1": [1, 2, "ABC"], "key_2": null}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --post-run --job-name '''Parametrized_job ({"key_1": [1, 2, "ABC"], "key_2": null}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/post_run.log
 
   parametrized_job_key_1_2_3_maxs_small_fixed:
     runs-on: [maxs-small-fixed]
@@ -392,9 +399,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          #pip install praktika
+          python3 -m pip install --upgrade pip --break-system-packages
+          # TODO: --break-system-packages?
+          pip3 install -r ./ci/requirements.txt --break-system-packages
 
       - name: Set up env
         run: |
@@ -436,7 +443,7 @@ jobs:
           ${{ secrets.GH_APP_PEM_KEY }}
           MULTILINE_SECRET_SUPPORT
           EOF
-          python3 -m praktika.gh_auth
+          python3 -m praktika.gh_auth "Example All IN"
           echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
           cat /tmp/praktika/results/workflow_config_example_all_in.json
           echo "::group::GITHUB ENV"
@@ -449,24 +456,27 @@ jobs:
           echo "::group::GH ENV"
           env | grep GH_ ||:
           echo "::endgroup::"
+          cat > /tmp/workflow_status.json << 'EOF'
+          ${ toJson(needs) }
+          EOF
           echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name '''Parametrized_job ({"key_1": [2, 3]}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/pre_run.log
+          python3 -m praktika.runner --pre-run --job-name '''Parametrized_job ({"key_1": [2, 3]}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name '''Parametrized_job ({"key_1": [2, 3]}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/run.log
+          python3 -m praktika.runner --run --job-name '''Parametrized_job ({"key_1": [2, 3]}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name '''Parametrized_job ({"key_1": [2, 3]}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --post-run --job-name '''Parametrized_job ({"key_1": [2, 3]}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/post_run.log
 
   finish_workflow:
     runs-on: [maxs-small-fixed]
@@ -478,11 +488,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: 3.9
 
       - name: Set up env
         run: |
@@ -518,7 +523,7 @@ jobs:
           ${{ secrets.GH_APP_PEM_KEY }}
           MULTILINE_SECRET_SUPPORT
           EOF
-          python3 -m praktika.gh_auth
+          python3 -m praktika.gh_auth "Example All IN"
           echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
           cat /tmp/praktika/results/workflow_config_example_all_in.json
           echo "::group::GITHUB ENV"
@@ -531,21 +536,24 @@ jobs:
           echo "::group::GH ENV"
           env | grep GH_ ||:
           echo "::endgroup::"
+          cat > /tmp/workflow_status.json << 'EOF'
+          ${ toJson(needs) }
+          EOF
           echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name '''Finish Workflow''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/pre_run.log
+          python3 -m praktika.runner --pre-run --job-name '''Finish Workflow''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name '''Finish Workflow''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/run.log
+          python3 -m praktika.runner --run --job-name '''Finish Workflow''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name '''Finish Workflow''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --post-run --job-name '''Finish Workflow''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/post_run.log

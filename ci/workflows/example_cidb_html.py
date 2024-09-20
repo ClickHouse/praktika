@@ -22,7 +22,7 @@ workflow = Workflow.Config(
             runs_on=[RunnerLabels.SMALL_FIXED],
             command="python3 ./ci/tests/example_2/some_job_script.py",
             job_requirements=Job.Requirements(
-                python_requirements_txt="./requirements.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
             digest_config=Job.CacheDigestConfig(
                 include_paths=["./ci/tests/example_2/some_job_script.py"],

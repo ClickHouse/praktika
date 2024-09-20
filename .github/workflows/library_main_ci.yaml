@@ -34,9 +34,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          #pip install praktika
+          python3 -m pip install --upgrade pip --break-system-packages
+          # TODO: --break-system-packages?
+          pip3 install -r ./ci/requirements.txt --break-system-packages
 
       - name: Set up env
         run: |
@@ -60,24 +60,27 @@ jobs:
           echo "::group::GH ENV"
           env | grep GH_ ||:
           echo "::endgroup::"
+          cat > /tmp/workflow_status.json << 'EOF'
+          ${ toJson(needs) }
+          EOF
           echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name '''Unit Tests''' --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/pre_run.log
+          python3 -m praktika.runner --pre-run --job-name '''Unit Tests''' --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name '''Unit Tests''' --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/run.log
+          python3 -m praktika.runner --run --job-name '''Unit Tests''' --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name '''Unit Tests''' --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --post-run --job-name '''Unit Tests''' --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/post_run.log
 
   yaml_lint:
     runs-on: [ubuntu-latest]
@@ -96,9 +99,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          #pip install praktika
+          python3 -m pip install --upgrade pip --break-system-packages
+          # TODO: --break-system-packages?
+          pip3 install -r ./ci/requirements.txt --break-system-packages
 
       - name: Set up env
         run: |
@@ -122,21 +125,24 @@ jobs:
           echo "::group::GH ENV"
           env | grep GH_ ||:
           echo "::endgroup::"
+          cat > /tmp/workflow_status.json << 'EOF'
+          ${ toJson(needs) }
+          EOF
           echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
 
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name '''Yaml Lint''' --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/pre_run.log
+          python3 -m praktika.runner --pre-run --job-name '''Yaml Lint''' --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/pre_run.log
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name '''Yaml Lint''' --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/run.log
+          python3 -m praktika.runner --run --job-name '''Yaml Lint''' --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/run.log
 
       - name: Post
         if: ${{ !cancelled() }}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name '''Yaml Lint''' --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --post-run --job-name '''Yaml Lint''' --workflow-name "Library Main CI" 2>&1 | tee /tmp/praktika/post_run.log

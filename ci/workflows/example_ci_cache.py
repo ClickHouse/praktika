@@ -38,7 +38,7 @@ workflow = Workflow.Config(
             command="python -m unittest ./ci/tests/example_1/test_example_produce_artifact.py",
             provides=[ArtifactNames.GREET],
             job_requirements=Job.Requirements(
-                python_requirements_txt="./requirements.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
             digest_config=Job.CacheDigestConfig(
                 # example: use glob to include files
@@ -51,7 +51,7 @@ workflow = Workflow.Config(
             command="python -m unittest ./ci/tests/example_1/test_example_consume_artifact.py",
             requires=[ArtifactNames.GREET],
             job_requirements=Job.Requirements(
-                python_requirements_txt="./requirements.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
             digest_config=Job.CacheDigestConfig(
                 # example: use dir to include files recursively

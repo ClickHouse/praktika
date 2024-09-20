@@ -4,8 +4,8 @@ from typing import List
 
 from praktika import Workflow, Job, Artifact
 from praktika.mangle import _get_workflows
-from praktika.parser import WorkflowConfigParser, AddonType
-from praktika.runtime import WorkflowRuntime
+from praktika.parser import WorkflowConfigParser
+from praktika.runtime import RunConfig
 from praktika.utils import Utils, Shell, ContextManager
 from praktika.settings import Settings
 
@@ -96,24 +96,27 @@ jobs:
           echo "::group::GH ENV"
           env | grep GH_ ||:
           echo "::endgroup::"
+          cat > {WORKFLOW_STATUS_FILE} << 'EOF'
+          ${{ toJson(needs) }}
+          EOF
           echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
 {DOWNLOADS_GITHUB}
       - name: Pre
         run: |
           set -o pipefail
-          python -m praktika.runner --pre-run --job-name '''{JOB_NAME}''' --workflow-name "{WORKFLOW_NAME}" 2>&1 | tee {PRE_LOG}
+          {PYTHON} -m praktika.runner --pre-run --job-name '''{JOB_NAME}''' --workflow-name "{WORKFLOW_NAME}" 2>&1 | tee {PRE_LOG}
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name '''{JOB_NAME}''' --workflow-name "{WORKFLOW_NAME}" 2>&1 | tee {RUN_LOG}
+          {PYTHON} -m praktika.runner --run --job-name '''{JOB_NAME}''' --workflow-name "{WORKFLOW_NAME}" 2>&1 | tee {RUN_LOG}
 
       - name: Post
         if: ${{{{ !cancelled() }}}}
         run: |
           set -o pipefail
-          python -m praktika.runner --post-run --job-name '''{JOB_NAME}''' --workflow-name "{WORKFLOW_NAME}" 2>&1 | tee {POST_LOG}
+          {PYTHON} -m praktika.runner --post-run --job-name '''{JOB_NAME}''' --workflow-name "{WORKFLOW_NAME}" 2>&1 | tee {POST_LOG}
 {UPLOADS_GITHUB}\
 """
 
@@ -152,16 +155,13 @@ jobs:
           python-version: {PYTHON_VERSION}
 """
 
-        TEMPLATE_PY_WITH_REQUIREMENTS = (
-            TEMPLATE_PY_INSTALL
-            + """
+        TEMPLATE_PY_WITH_REQUIREMENTS = """
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r {REQUIREMENT_PATH}
-          #pip install praktika
+          {PYTHON} -m pip install --upgrade pip --break-system-packages
+          # TODO: --break-system-packages?
+          {PIP} install -r {REQUIREMENT_PATH} --break-system-packages
 """
-        )
 
         TEMPLATE_GH_UPLOAD = """
       - name: Upload artifact {NAME}
@@ -240,20 +240,21 @@ class PullRequestPushYamlGen:
             job_name = job.name
             job_addons = []
             for addon in job.addons:
-                if addon.type == AddonType.PY:
-                    if addon.path:
-                        job_addons.append(
-                            YamlGenerator.Templates.TEMPLATE_PY_WITH_REQUIREMENTS.format(
-                                PYTHON_VERSION=Settings.PYTHON_VERSION,
-                                REQUIREMENT_PATH=addon.path,
-                            )
+                if addon.install_python:
+                    job_addons.append(
+                        YamlGenerator.Templates.TEMPLATE_PY_INSTALL.format(
+                            PYTHON_VERSION=Settings.PYTHON_VERSION
                         )
-                    else:
-                        job_addons.append(
-                            YamlGenerator.Templates.TEMPLATE_PY_INSTALL.format(
-                                PYTHON_VERSION=Settings.PYTHON_VERSION
-                            )
+                    )
+                if addon.requirements_txt_path:
+                    job_addons.append(
+                        YamlGenerator.Templates.TEMPLATE_PY_WITH_REQUIREMENTS.format(
+                            PYTHON=Settings.PYTHON_INTERPRETER,
+                            PIP=Settings.PYTHON_PACKET_MANAGER,
+                            PYTHON_VERSION=Settings.PYTHON_VERSION,
+                            REQUIREMENT_PATH=addon.requirements_txt_path,
                         )
+                    )
             uploads_github = []
             for artifact in job.artifacts_gh_provides:
                 uploads_github.append(
@@ -290,7 +291,7 @@ class PullRequestPushYamlGen:
             extra_cmds = ""
             if job.gh_app_auth:
                 extra_cmds = YamlGenerator.Templates.TEMPLATE_RUN_COMMAND.format(
-                    COMMAND="python3 -m praktika.gh_auth"
+                    COMMAND=f"{Settings.PYTHON_INTERPRETER} -m praktika.gh_auth \"{self.workflow_config.name}\""
                 )
             setup_envs = YamlGenerator.Templates.TEMPLATE_SETUP_ENV.format(
                 TEMP_DIR=Settings.TEMP_DIR,
@@ -327,16 +328,18 @@ class PullRequestPushYamlGen:
                 WORKFLOW_NAME=self.workflow_config.name,
                 SETUP_ENVS=setup_envs,
                 EXTRA_COMMANDS=extra_cmds,
-                WORKFLOW_CONFIG_FILE=WorkflowRuntime.file_name_static(
+                WORKFLOW_CONFIG_FILE=RunConfig.file_name_static(
                     self.workflow_config.name
                 ),
-                JOB_ADDONS="\n".join(job_addons),
+                JOB_ADDONS="".join(job_addons),
                 DOWNLOADS_GITHUB="\n".join(downloads_github),
                 UPLOADS_GITHUB="\n".join(uploads_github),
                 PRE_LOG=Settings.PRE_LOG,
                 RUN_LOG=Settings.RUN_LOG,
                 POST_LOG=Settings.POST_LOG,
                 STRATEGY_MATRIX=matrix_strategy,
+                PYTHON=Settings.PYTHON_INTERPRETER,
+                WORKFLOW_STATUS_FILE=Settings.WORKFLOW_STATUS_FILE,
             )
             job_items.append(job_item)
 

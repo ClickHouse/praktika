@@ -52,26 +52,26 @@ git push --set-upstream origin my_praktika
 ```
 
 #### praktika features
-|                                 |   | comment                                                      |
-|---------------------------------|---|--------------------------------------------------------------|
-| Pythonic CI pipelines           | Y | 100% python interface for creating CI pipelines              |
-| Artifacts                       | Y | Download/upload artifacts (GH, S3)                           |
-| Reports                         | Y | HTML report for CI workflow/jobs/tests                       |
-| CI Cache                        | Y | Skip not-affected job, reuse artifacts                       |
-| Docker as execution env         | Y | Support running jobs in docker natively                      |
-| ClickHouse CI DB                | Y | Export results to CI DB for analytics and observability      |
-| Custom CI DB                    | N | Provide support for Bring Your Own CI DB                     |
-| Ready For Merge condition       | Y | Allow specific job(s) to fail without blocking merge         |
-| CI Customization                | N | Support for manual CI customization within a CI run          |
-| Observability                   | N | Integration with observability platform, Grafana             |
-| Collecting logs from runners    | N | system, logs, machine init logs, etc                         |
-| Slack app                       | N | Slack app to subscribe to CI events, Alarms, etc             |
-| Main CI Dashboard               | N | Page comprising info about all running workflows/PRs/commits |
-| Automatic Backporting           | N | Automatic PR backports to release ranches                    |
-| Pre-requisites: python          | Y | Install python dependencies as a pre-requisite job step      |
-| Secret Management               | Y | Fetch secrets from AWS SSM or GH secrets/variables           |
-| Job Timeout config and handling | Y |                                                              |
-| Parametrized Jobs               | Y |                                                              |
+|                                 |   | comment                                                                           |
+|---------------------------------|---|-----------------------------------------------------------------------------------|
+| Pythonic CI pipelines           | Y | 100% python interface for creating CI pipelines                                   |
+| Artifacts                       | Y | Download/upload artifacts (GH, S3)                                                |
+| Reports                         | Y | HTML report for CI workflow/jobs/tests                                            |
+| CI Cache                        | Y | Skip not-affected job, reuse artifacts                                            |
+| Docker as execution env         | Y | Support running jobs in docker natively                                           |
+| ClickHouse CI DB                | Y | Export results to CI DB for analytics and observability                           |
+| Custom CI DB                    | N | Provide support for Bring Your Own CI DB                                          |
+| Ready For Merge condition       | Y | Allow specific job(s) to fail without blocking merge                              |
+| CI Customization                | N | Support for manual CI customization within a CI run                               |
+| Observability                   | N | Integration with observability platform, Grafana                                  |
+| Collecting logs from runners    | N | system, logs, machine init logs, etc                                              |
+| Slack app                       | N | Slack app to subscribe to CI events, Alarms, etc                                  |
+| Main CI Dashboard               | N | Page comprising info about all running workflows/PRs/commits                      |
+| Automatic Backporting           | N | Automatic PR backports to release ranches                                         |
+| Pre-requisites: python          | Y | Install python dependencies as a pre-requisite job step                           |
+| Secret Management               | Y | Fetch secrets from AWS SSM Parameter, AWS Secrets Manager or GH secrets/variables |
+| Job Timeout config and handling | Y |                                                                                   |
+| Parametrized Jobs               | Y |                                                                                   |
 
 #### Supported GitHub features
 |                       | GitHub | GitLab | BitBucket | comment                                   |
@@ -97,4 +97,4 @@ git push --set-upstream origin my_praktika
 | S3 for artifacts                    | Y   |       |       |                                                                            |
 | ASG zero-capacity-overhead scale up | N   |       |       | for instance: GH webhook + lambda. (can be enabled, but no native support) |
 | prebuild runner image (terraform)   | N   |       |       |                                                                            |
-| SSM                                 | Y   |       |       | Using secrets from SSM in workflows                                        |
+| SSM Parameter, Secrets Manager      | Y   |       |       | Using secrets from SSM and Secrets Manager in workflows                                   |
