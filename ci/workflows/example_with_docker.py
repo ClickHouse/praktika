@@ -37,14 +37,14 @@ workflow = Workflow.Config(
             path="./dockers/praktika",
             arm64=True,
             amd64=True,
-            depend_on=[],
+            depends_on=[],
         ),
         Docker.Config(
             name="clickhouse/praktika-test",
             path="./dockers/praktika-test",
             arm64=True,
             amd64=True,
-            depend_on=["clickhouse/praktika"],
+            depends_on=["clickhouse/praktika"],
         ),
     ],
     secrets=[

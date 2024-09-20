@@ -92,7 +92,7 @@ class Digest:
             hash_md5 = hashlib.md5()
 
         dependencies = []
-        for dependency_name in docker_config.depend_on:
+        for dependency_name in docker_config.depends_on:
             for dependency_config in dependency_configs:
                 if dependency_config.name == dependency_name:
                     print(

@@ -84,22 +84,35 @@ def _build_dockers(workflow, job_name):
         for docker in dockers:
             assert (
                 docker.name not in ready
-            ), f"All docker names nust be uniq [{dockers}]"
+            ), f"All docker names must be uniq [{dockers}]"
             stopwatch = Utils.Stopwatch()
             digest = Digest().calc_docker_digest(docker, dockers)
             info = f"tag: {digest}"
             log_file = f"{Settings.OUTPUT_DIR}/docker_{Utils.normalize_string(docker.name)}.log"
-            ret_code = Docker.build(
-                docker, log_file=log_file, digests=docker_digests, add_latest=False
-            )
             files = []
-            if ret_code == 0:
-                status = Result.Status.SUCCESS
+
+            out, code = Shell.get_output_and_code(
+                f"docker manifest inspect {docker.name}:{docker_digests[docker.name]}"
+            )
+            print(
+                f"Docker inspect results for {docker.name}:{docker_digests[docker.name]}: exit code [{code}], output [{out}]"
+            )
+            if "no such manifest" in out:
+                ret_code = Docker.build(
+                    docker, log_file=log_file, digests=docker_digests, add_latest=False
+                )
+                if ret_code == 0:
+                    status = Result.Status.SUCCESS
+                else:
+                    status = Result.Status.FAILED
+                    job_status = Result.Status.FAILED
+                    info += f", failed with exit code: {ret_code}, see log"
+                    files.append(log_file)
             else:
-                status = Result.Status.FAILED
-                job_status = Result.Status.FAILED
-                info += f", failed with exit code: {ret_code}, see log"
-                files.append(log_file)
+                print(
+                    f"Docker image [{docker.name}:{docker_digests[docker.name]} exists - skip build"
+                )
+                status = Result.Status.SKIPPED
             ready.append(docker.name)
             results.append(
                 Result(
