@@ -3,7 +3,7 @@ import time
 from typing import List
 
 import requests
-from jwt import jwk_from_pem, JWT
+from jwt import JWT, jwk_from_pem
 
 from praktika import Workflow
 from praktika.mangle import _get_workflows
@@ -11,7 +11,7 @@ from praktika.settings import Settings
 from praktika.utils import Shell
 
 
-class Auth:
+class GHAuth:
     @staticmethod
     def _generate_jwt(client_id, pem):
         pem = str.encode(pem)
@@ -69,4 +69,4 @@ class Auth:
 
 
 if __name__ == "__main__":
-    Auth.auth(sys.argv[1])
+    GHAuth.auth(sys.argv[1])

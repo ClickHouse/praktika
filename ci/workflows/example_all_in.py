@@ -1,7 +1,7 @@
 from typing import List
 
 from ci.settings.my_settings import RunnerLabels
-from praktika import Job, Workflow, Secret, Artifact
+from praktika import Artifact, Job, Secret, Workflow
 
 
 class JobNames:
@@ -88,18 +88,10 @@ workflow_pr = Workflow.Config(
             name="CI_DB_PASSWORD",
             type=Secret.Type.GH_SECRET,
         ),
-        Secret.Config(
-            name="GH_APP_ID",
-            type=Secret.Type.GH_SECRET,
-        ),
-        Secret.Config(
-            name="GH_APP_PEM_KEY",
-            type=Secret.Type.GH_SECRET,
-        ),
     ],
     artifacts=[greet_artifact],
     # enable HTML Report
-    enable_html=True,
+    enable_report=True,
     # enable CI Cache
     enable_cache=True,
     # enable cumulative merge than ready GH status

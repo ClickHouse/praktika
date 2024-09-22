@@ -1,7 +1,7 @@
 import dataclasses
-from typing import Dict, List, Any
+from typing import Any, Dict, List
 
-from praktika import Workflow, Artifact
+from praktika import Artifact, Workflow
 from praktika.mangle import _get_workflows
 
 
@@ -194,7 +194,7 @@ class WorkflowConfigParser:
                     addon_yaml
                 )
 
-        if self.config.enable_html:
+        if self.config.enable_report:
             for job in self.config.jobs:
                 # auth required for every job with enabled HTML, so that workflow summary status can be updated
                 self.workflow_yaml_config.job_to_config[job.name].gh_app_auth = True

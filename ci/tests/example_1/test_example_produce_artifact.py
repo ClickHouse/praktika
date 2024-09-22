@@ -1,7 +1,7 @@
 import unittest
 
-from praktika.utils import Shell
 from praktika.settings import Settings
+from praktika.utils import Shell
 
 
 class TestExample1(unittest.TestCase):

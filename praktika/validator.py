@@ -13,7 +13,7 @@ from praktika.utils import ContextManager
 class Validator:
     @classmethod
     def validate(cls):
-        print("===Start validating Pipeline and settings===")
+        print("---Start validating Pipeline and settings---")
         workflows = _get_workflows()
         for workflow in workflows:
             print(f"Validating workflow [{workflow.name}]")
@@ -55,13 +55,14 @@ class Validator:
                     Settings.CACHE_S3_PATH
                 ), f"CACHE_S3_PATH Setting must be defined if enable_cache=True, workflow [{workflow.name}]"
 
-            if workflow.enable_html:
-                assert workflow.get_secret(
-                    Settings.SECRET_GH_APP_ID
-                ), f"GH Secret GH_APP_ID must be provided with .enable_html=True, workflow [{workflow.name}]"
-                assert workflow.get_secret(
-                    Settings.SECRET_GH_APP_PEM_KEY
-                ), f"GH Secret GH_APP_PEM_KEY must be provided with .enable_html=True, workflow [{workflow.name}]"
+            if workflow.dockers:
+                cls.evaluate_check(
+                    Settings.DOCKER_BUILD_RUNS_ON,
+                    f"DOCKER_BUILD_RUNS_ON settings must be defined if workflow has dockers",
+                    workflow_name=workflow.name,
+                )
+
+            if workflow.enable_report:
                 assert (
                     Settings.HTML_S3_PATH
                 ), f"HTML_S3_PATH Setting must be defined if enable_html=True, workflow [{workflow.name}]"
@@ -92,7 +93,7 @@ class Validator:
 
             if (
                 workflow.enable_cache
-                or workflow.enable_html
+                or workflow.enable_report
                 or workflow.enable_merge_ready_status
             ):
                 for job in workflow.jobs:

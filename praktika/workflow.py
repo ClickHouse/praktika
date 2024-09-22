@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from praktika import Job, Artifact
+from praktika import Artifact, Job
 from praktika.docker import Docker
 from praktika.secret import Secret
 
@@ -27,7 +27,7 @@ class Workflow:
         dockers: List[Docker.Config] = field(default_factory=list)
         secrets: List[Secret.Config] = field(default_factory=list)
         enable_cache: bool = False
-        enable_html: bool = False
+        enable_report: bool = False
         enable_merge_ready_status: bool = False
         enable_cidb: bool = False
 
@@ -45,7 +45,7 @@ class Workflow:
                     return job
                 names.append(job.name)
             print(f"ERROR: Failed to find job [{name}], workflow jobs [{names}]")
-            raise RuntimeError()
+            raise
 
         def get_secret(self, name) -> Optional[Secret.Config]:
             name = str(name)
@@ -55,4 +55,4 @@ class Workflow:
                     return secret
                 names.append(secret.name)
             print(f"ERROR: Failed to find secret [{name}], workflow secrets [{names}]")
-            raise RuntimeError()
+            raise

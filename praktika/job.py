@@ -1,7 +1,7 @@
 import copy
 import json
 from dataclasses import dataclass, field
-from typing import Optional, List, Any
+from typing import Any, List, Optional
 
 
 class Job:
@@ -9,7 +9,6 @@ class Job:
     class Requirements:
         python: bool = False
         python_requirements_txt: str = ""
-        gh_app_auth: bool = False
 
     @dataclass
     class CacheDigestConfig:

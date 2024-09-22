@@ -1,7 +1,8 @@
 from typing import List
 
-from praktika import Job, Workflow, Docker, Secret
 from ci.settings.my_settings import RunnerLabels
+from praktika import Docker, Job, Secret, Workflow
+from praktika.result import Result
 
 
 class JobNames:
@@ -12,38 +13,36 @@ class WorkflowNames:
     NAME = "Example with Docker"
 
 
+job_1 = Job.Config(
+    name=JobNames.NAME_1,
+    runs_on=[RunnerLabels.SMALL_FIXED],
+    command="python3 ./ci/tests/example_2/some_job_script.py",
+    job_requirements=Job.Requirements(
+        python=True, python_requirements_txt="./ci/requirements.txt"
+    ),
+    digest_config=Job.CacheDigestConfig(
+        # example: use glob to include files
+        include_paths=["./ci/tests/example_2/some_job_script.py"],
+    ),
+    run_in_docker="clickhouse/praktika-test",
+)
+
 workflow = Workflow.Config(
     name=WorkflowNames.NAME,
     event=Workflow.Event.PULL_REQUEST,
     base_branches=["main"],
-    jobs=[
-        Job.Config(
-            name=JobNames.NAME_1,
-            runs_on=[RunnerLabels.SMALL_FIXED],
-            command="python3 ./ci/tests/example_2/some_job_script.py",
-            job_requirements=Job.Requirements(
-                python=True, python_requirements_txt="./ci/requirements.txt"
-            ),
-            digest_config=Job.CacheDigestConfig(
-                # example: use glob to include files
-                include_paths=["./ci/tests/example_2/some_job_script.py"],
-            ),
-            run_in_docker="clickhouse/praktika-test",
-        ),
-    ],
+    jobs=[job_1],
     dockers=[
         Docker.Config(
             name="clickhouse/praktika",
             path="./dockers/praktika",
-            arm64=True,
-            amd64=True,
+            platforms=[Docker.Platforms.AMD, Docker.Platforms.ARM],
             depends_on=[],
         ),
         Docker.Config(
             name="clickhouse/praktika-test",
             path="./dockers/praktika-test",
-            arm64=True,
-            amd64=True,
+            platforms=[Docker.Platforms.AMD, Docker.Platforms.ARM],
             depends_on=["clickhouse/praktika"],
         ),
     ],
@@ -52,19 +51,21 @@ workflow = Workflow.Config(
             name="dockerhub_robot_password",
             type=Secret.Type.AWS_SSM_VAR,
         ),
-        Secret.Config(
-            name="GH_APP_ID",
-            type=Secret.Type.GH_SECRET,
-        ),
-        Secret.Config(
-            name="GH_APP_PEM_KEY",
-            type=Secret.Type.GH_SECRET,
-        ),
     ],
     enable_cache=True,
-    enable_html=True,
+    enable_report=True,
 )
 
 WORKFLOWS = [
     workflow,
 ]  # type: List[Workflow.Config]
+
+
+if __name__ == "__main__":
+    # example: local job test inside praktika environment
+    from praktika.runner import Runner
+
+    Runner.generate_dummy_environment(workflow, job_1)
+    Runner().run(workflow, job_1)
+
+    print(Result.from_fs(job_1.name))

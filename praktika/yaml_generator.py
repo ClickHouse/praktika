@@ -1,13 +1,12 @@
 import dataclasses
-import json
 from typing import List
 
-from praktika import Workflow, Job, Artifact
+from praktika import Artifact, Job, Workflow
 from praktika.mangle import _get_workflows
 from praktika.parser import WorkflowConfigParser
 from praktika.runtime import RunConfig
-from praktika.utils import Utils, Shell, ContextManager
 from praktika.settings import Settings
+from praktika.utils import ContextManager, Shell, Utils
 
 
 class YamlGenerator:
@@ -29,6 +28,10 @@ concurrency:
 env:
   # Force the stdout and stderr streams to be unbuffered
   PYTHONUNBUFFERED: 1
+  GH_TOKEN: ${{{{{{{{ github.token }}}}}}}}
+
+# Allow updating GH commit statuses and PR comments to post an actual job reports link
+permissions: write-all
 
 jobs:
 {JOBS}\
@@ -60,9 +63,6 @@ jobs:
         required: true
 """
 
-        TEMPLATE_RUN_COMMAND = """
-          {COMMAND}\
-"""
         TEMPLATE_MATRIX = """
     strategy:
       fail-fast: false
@@ -73,7 +73,7 @@ jobs:
         TEMPLATE_JOB_0 = """
   {JOB_NAME_NORMALIZED}:
     runs-on: [{RUNS_ON}]
-    needs: [{NEEDS}]{IF_EXPRESSION}{STRATEGY_MATRIX}
+    needs: [{NEEDS}]{IF_EXPRESSION}
     name: "{JOB_NAME_GH}"
     outputs:
       data: ${{{{ steps.run.outputs.DATA }}}}
@@ -81,71 +81,34 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 {JOB_ADDONS}
-      - name: Set up env
+      - name: Prepare env script
         run: |
-{SETUP_ENVS}{EXTRA_COMMANDS}
-          echo '''${{{{ needs.{WORKFLOW_CONFIG_JOB_NAME}.outputs.data }}}}''' > {WORKFLOW_CONFIG_FILE}
-          cat {WORKFLOW_CONFIG_FILE}
-          echo "::group::GITHUB ENV"
-          env | grep GITHUB ||:
-          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
-          echo "::endgroup::"
-          echo "::group::CI ENV"
-          env | grep CI_ ||:
-          echo "::endgroup::"
-          echo "::group::GH ENV"
-          env | grep GH_ ||:
-          echo "::endgroup::"
-          cat > {WORKFLOW_STATUS_FILE} << 'EOF'
-          ${{ toJson(needs) }}
+          cat > {ENV_SETUP_SCRIPT} << 'ENV_SETUP_SCRIPT_EOF'
+{SETUP_ENVS}
+          cat > {WORKFLOW_CONFIG_FILE} << 'EOF'
+          ${{{{ needs.{WORKFLOW_CONFIG_JOB_NAME}.outputs.data }}}}
           EOF
-          echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
-{DOWNLOADS_GITHUB}
-      - name: Pre
-        run: |
-          set -o pipefail
-          {PYTHON} -m praktika.runner --pre-run --job-name '''{JOB_NAME}''' --workflow-name "{WORKFLOW_NAME}" 2>&1 | tee {PRE_LOG}
+          cat > {WORKFLOW_STATUS_FILE} << 'EOF'
+          ${{{{ toJson(needs) }}}}
+          EOF
+          ENV_SETUP_SCRIPT_EOF
 
+          rm -rf {INPUT_DIR} {OUTPUT_DIR} {TEMP_DIR}
+          mkdir -p {TEMP_DIR} {INPUT_DIR} {OUTPUT_DIR}
+{DOWNLOADS_GITHUB}
       - name: Run
         id: run
         run: |
           set -o pipefail
-          {PYTHON} -m praktika.runner --run --job-name '''{JOB_NAME}''' --workflow-name "{WORKFLOW_NAME}" 2>&1 | tee {RUN_LOG}
-
-      - name: Post
-        if: ${{{{ !cancelled() }}}}
-        run: |
-          set -o pipefail
-          {PYTHON} -m praktika.runner --post-run --job-name '''{JOB_NAME}''' --workflow-name "{WORKFLOW_NAME}" 2>&1 | tee {POST_LOG}
+          {PYTHON} -m praktika.runner --job-name '''{JOB_NAME}''' --workflow-name "{WORKFLOW_NAME}" |& tee {RUN_LOG}
 {UPLOADS_GITHUB}\
 """
 
-        TEMPLATE_SETUP_ENV = """\
-          rm -rf {INPUT_DIR} {OUTPUT_DIR} {TEMP_DIR}
-          mkdir -p {TEMP_DIR} {INPUT_DIR} {OUTPUT_DIR} {RESULT_DIR}
-          echo "TEMP_DIR=$(readlink -f {TEMP_DIR})" >> "$GITHUB_ENV"
-          echo "INPUT_DIR=$(readlink -f {INPUT_DIR})" >> "$GITHUB_ENV"
-          echo "OUTPUT_DIR=$(readlink -f {OUTPUT_DIR})" >> "$GITHUB_ENV"
-          echo "JOB_NAME={JOB_NAME}" >> "$GITHUB_ENV"
-          export PYTHONPATH=$(pwd)
-          echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"\
-"""
-
-        TEMPLATE_SETUP_ENV_PARAMETR = """\
-          cat >> "$GITHUB_ENV" << 'EOF'
-          PARAMETER<<MULTILINE_EOF
-          {PARAMETER}
-          MULTILINE_EOF
-          EOF
-"""
-
         TEMPLATE_SETUP_ENV_SECRETS = """\
-          export {SECRET_NAME}="${{{{ secrets.{SECRET_NAME} }}}}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          {SECRET_NAME}<<MULTILINE_SECRET_SUPPORT
+          export {SECRET_NAME}=$(cat<<'EOF'
           ${{{{ secrets.{SECRET_NAME} }}}}
-          MULTILINE_SECRET_SUPPORT
-          EOF\
+          EOF
+          )\
 """
 
         TEMPLATE_PY_INSTALL = """
@@ -158,8 +121,9 @@ jobs:
         TEMPLATE_PY_WITH_REQUIREMENTS = """
       - name: Install dependencies
         run: |
+          sudo apt-get update && sudo apt install -y python3-pip
+          # TODO: --break-system-packages? otherwise ubuntu's apt/apt-get complains
           {PYTHON} -m pip install --upgrade pip --break-system-packages
-          # TODO: --break-system-packages?
           {PIP} install -r {REQUIREMENT_PATH} --break-system-packages
 """
 
@@ -199,7 +163,7 @@ jobs:
         return f"{Settings.WORKFLOW_PATH_PREFIX}/{Utils.normalize_string(workflow_name)}.yaml"
 
     def generate(self, workflow_file="", workflow_config=None):
-        print("===Start generating yaml pipelines===")
+        print("---Start generating yaml pipelines---")
         if workflow_config:
             self.py_workflows = [workflow_config]
         else:
@@ -288,32 +252,13 @@ class PullRequestPushYamlGen:
                     YamlGenerator.Templates.TEMPLATE_IF_EXPRESSION_NOT_CANCELLED
                 )
 
-            extra_cmds = ""
-            if job.gh_app_auth:
-                extra_cmds = YamlGenerator.Templates.TEMPLATE_RUN_COMMAND.format(
-                    COMMAND=f"{Settings.PYTHON_INTERPRETER} -m praktika.gh_auth \"{self.workflow_config.name}\""
-                )
-            setup_envs = YamlGenerator.Templates.TEMPLATE_SETUP_ENV.format(
-                TEMP_DIR=Settings.TEMP_DIR,
-                INPUT_DIR=Settings.INPUT_DIR,
-                OUTPUT_DIR=Settings.OUTPUT_DIR,
-                RESULT_DIR=Settings.RESULTS_DIR,
-                JOB_NAME=job_name,
-            )
-            if job.parameter:
-                setup_envs += "\n"
-                setup_envs += (
-                    YamlGenerator.Templates.TEMPLATE_SETUP_ENV_PARAMETR.format(
-                        PARAMETER=json.dumps(job.parameter)
+            secrets_envs = []
+            for secret in self.workflow_config.secret_names_gh:
+                secrets_envs.append(
+                    YamlGenerator.Templates.TEMPLATE_SETUP_ENV_SECRETS.format(
+                        SECRET_NAME=secret
                     )
                 )
-            for secret in self.workflow_config.secret_names_gh:
-                setup_envs += "\n"
-                setup_envs += YamlGenerator.Templates.TEMPLATE_SETUP_ENV_SECRETS.format(
-                    SECRET_NAME=secret,
-                )
-
-            matrix_strategy = ""
 
             job_item = YamlGenerator.Templates.TEMPLATE_JOB_0.format(
                 JOB_NAME_NORMALIZED=job_name_normalized,
@@ -326,20 +271,20 @@ class PullRequestPushYamlGen:
                     "'", "'\\''"
                 ),  # ' must be escaped so that yaml commands are properly parsed
                 WORKFLOW_NAME=self.workflow_config.name,
-                SETUP_ENVS=setup_envs,
-                EXTRA_COMMANDS=extra_cmds,
+                ENV_SETUP_SCRIPT=Settings.ENV_SETUP_SCRIPT,
+                SETUP_ENVS="\n".join(secrets_envs),
                 WORKFLOW_CONFIG_FILE=RunConfig.file_name_static(
                     self.workflow_config.name
                 ),
                 JOB_ADDONS="".join(job_addons),
                 DOWNLOADS_GITHUB="\n".join(downloads_github),
                 UPLOADS_GITHUB="\n".join(uploads_github),
-                PRE_LOG=Settings.PRE_LOG,
                 RUN_LOG=Settings.RUN_LOG,
-                POST_LOG=Settings.POST_LOG,
-                STRATEGY_MATRIX=matrix_strategy,
                 PYTHON=Settings.PYTHON_INTERPRETER,
                 WORKFLOW_STATUS_FILE=Settings.WORKFLOW_STATUS_FILE,
+                TEMP_DIR=Settings.TEMP_DIR,
+                INPUT_DIR=Settings.INPUT_DIR,
+                OUTPUT_DIR=Settings.OUTPUT_DIR,
             )
             job_items.append(job_item)
 

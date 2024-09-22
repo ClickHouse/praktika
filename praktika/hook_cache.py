@@ -1,10 +1,9 @@
-from praktika.utils import Utils
-from praktika.s3 import S3
+from praktika._environment import _Environment
 from praktika.cache import Cache
 from praktika.mangle import _get_workflows
 from praktika.runtime import RunConfig
 from praktika.settings import Settings
-from praktika._environment import _Environment
+from praktika.utils import Utils
 
 
 class CacheRunnerHooks:
@@ -72,7 +71,7 @@ class CacheRunnerHooks:
                             job_to_cache_record[job.name]
                         )
 
-        print(f"Write config to job output env: {_Environment.get().JOB_OUTPUT_STREAM}")
+        print(f"Write config to GH's job output")
         with open(_Environment.get().JOB_OUTPUT_STREAM, "a", encoding="utf8") as f:
             print(
                 f"DATA={workflow_config.to_json()}",
@@ -102,10 +101,12 @@ class CacheRunnerHooks:
                 record = runtime_config.cache_artifacts[artifact.name]
                 print(f"Reuse artifact [{artifact.name}] from [{record}]")
                 path_prefixes.append(
-                    S3.get_prefix(record.pr_number, record.branch, record.sha)
+                    env.get_s3_prefix_static(
+                        record.pr_number, record.branch, record.sha
+                    )
                 )
             else:
-                path_prefixes.append(S3.get_prefix(env.PR_NUMBER, env.BRANCH, env.SHA))
+                path_prefixes.append(env.get_s3_prefix())
         return path_prefixes
 
     @classmethod

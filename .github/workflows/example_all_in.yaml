@@ -14,6 +14,10 @@ concurrency:
 env:
   # Force the stdout and stderr streams to be unbuffered
   PYTHONUNBUFFERED: 1
+  GH_TOKEN: ${{ github.token }}
+
+# Allow updating GH commit statuses and PR comments to post an actual job reports link
+permissions: write-all
 
 jobs:
 
@@ -29,78 +33,38 @@ jobs:
 
       - name: Install dependencies
         run: |
+          sudo apt-get update && sudo apt install -y python3-pip
+          # TODO: --break-system-packages? otherwise ubuntu's apt/apt-get complains
           python3 -m pip install --upgrade pip --break-system-packages
-          # TODO: --break-system-packages?
           pip3 install -r ./ci/requirements.txt --break-system-packages
 
-      - name: Set up env
+      - name: Prepare env script
         run: |
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output /tmp/praktika/results
-          echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
-          echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
-          echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
-          echo "JOB_NAME=Config Workflow" >> "$GITHUB_ENV"
-          export PYTHONPATH=$(pwd)
-          echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          export CI_DB_URL="${{ secrets.CI_DB_URL }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          CI_DB_URL<<MULTILINE_SECRET_SUPPORT
+          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export CI_DB_URL=$(cat<<'EOF'
           ${{ secrets.CI_DB_URL }}
-          MULTILINE_SECRET_SUPPORT
           EOF
-          export CI_DB_PASSWORD="${{ secrets.CI_DB_PASSWORD }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          CI_DB_PASSWORD<<MULTILINE_SECRET_SUPPORT
+          )
+          export CI_DB_PASSWORD=$(cat<<'EOF'
           ${{ secrets.CI_DB_PASSWORD }}
-          MULTILINE_SECRET_SUPPORT
           EOF
-          export GH_APP_ID="${{ secrets.GH_APP_ID }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          GH_APP_ID<<MULTILINE_SECRET_SUPPORT
-          ${{ secrets.GH_APP_ID }}
-          MULTILINE_SECRET_SUPPORT
+          )
+          cat > /tmp/praktika/workflow_config_example_all_in.json << 'EOF'
+          ${{ needs.config_workflow.outputs.data }}
           EOF
-          export GH_APP_PEM_KEY="${{ secrets.GH_APP_PEM_KEY }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          GH_APP_PEM_KEY<<MULTILINE_SECRET_SUPPORT
-          ${{ secrets.GH_APP_PEM_KEY }}
-          MULTILINE_SECRET_SUPPORT
+          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          ${{ toJson(needs) }}
           EOF
-          python3 -m praktika.gh_auth "Example All IN"
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
-          cat /tmp/praktika/results/workflow_config_example_all_in.json
-          echo "::group::GITHUB ENV"
-          env | grep GITHUB ||:
-          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
-          echo "::endgroup::"
-          echo "::group::CI ENV"
-          env | grep CI_ ||:
-          echo "::endgroup::"
-          echo "::group::GH ENV"
-          env | grep GH_ ||:
-          echo "::endgroup::"
-          cat > /tmp/workflow_status.json << 'EOF'
-          ${ toJson(needs) }
-          EOF
-          echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
+          ENV_SETUP_SCRIPT_EOF
 
-      - name: Pre
-        run: |
-          set -o pipefail
-          python3 -m praktika.runner --pre-run --job-name '''Config Workflow''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/pre_run.log
+          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
+          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python3 -m praktika.runner --run --job-name '''Config Workflow''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/run.log
-
-      - name: Post
-        if: ${{ !cancelled() }}
-        run: |
-          set -o pipefail
-          python3 -m praktika.runner --post-run --job-name '''Config Workflow''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --job-name '''Config Workflow''' --workflow-name "Example All IN" |& tee /tmp/praktika/praktika_run.log
 
   just_job:
     runs-on: [maxs-small-fixed]
@@ -120,78 +84,38 @@ jobs:
 
       - name: Install dependencies
         run: |
+          sudo apt-get update && sudo apt install -y python3-pip
+          # TODO: --break-system-packages? otherwise ubuntu's apt/apt-get complains
           python3 -m pip install --upgrade pip --break-system-packages
-          # TODO: --break-system-packages?
           pip3 install -r ./ci/requirements.txt --break-system-packages
 
-      - name: Set up env
+      - name: Prepare env script
         run: |
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output /tmp/praktika/results
-          echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
-          echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
-          echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
-          echo "JOB_NAME=Just Job" >> "$GITHUB_ENV"
-          export PYTHONPATH=$(pwd)
-          echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          export CI_DB_URL="${{ secrets.CI_DB_URL }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          CI_DB_URL<<MULTILINE_SECRET_SUPPORT
+          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export CI_DB_URL=$(cat<<'EOF'
           ${{ secrets.CI_DB_URL }}
-          MULTILINE_SECRET_SUPPORT
           EOF
-          export CI_DB_PASSWORD="${{ secrets.CI_DB_PASSWORD }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          CI_DB_PASSWORD<<MULTILINE_SECRET_SUPPORT
+          )
+          export CI_DB_PASSWORD=$(cat<<'EOF'
           ${{ secrets.CI_DB_PASSWORD }}
-          MULTILINE_SECRET_SUPPORT
           EOF
-          export GH_APP_ID="${{ secrets.GH_APP_ID }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          GH_APP_ID<<MULTILINE_SECRET_SUPPORT
-          ${{ secrets.GH_APP_ID }}
-          MULTILINE_SECRET_SUPPORT
+          )
+          cat > /tmp/praktika/workflow_config_example_all_in.json << 'EOF'
+          ${{ needs.config_workflow.outputs.data }}
           EOF
-          export GH_APP_PEM_KEY="${{ secrets.GH_APP_PEM_KEY }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          GH_APP_PEM_KEY<<MULTILINE_SECRET_SUPPORT
-          ${{ secrets.GH_APP_PEM_KEY }}
-          MULTILINE_SECRET_SUPPORT
+          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          ${{ toJson(needs) }}
           EOF
-          python3 -m praktika.gh_auth "Example All IN"
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
-          cat /tmp/praktika/results/workflow_config_example_all_in.json
-          echo "::group::GITHUB ENV"
-          env | grep GITHUB ||:
-          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
-          echo "::endgroup::"
-          echo "::group::CI ENV"
-          env | grep CI_ ||:
-          echo "::endgroup::"
-          echo "::group::GH ENV"
-          env | grep GH_ ||:
-          echo "::endgroup::"
-          cat > /tmp/workflow_status.json << 'EOF'
-          ${ toJson(needs) }
-          EOF
-          echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
+          ENV_SETUP_SCRIPT_EOF
 
-      - name: Pre
-        run: |
-          set -o pipefail
-          python3 -m praktika.runner --pre-run --job-name '''Just Job''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/pre_run.log
+          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
+          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python3 -m praktika.runner --run --job-name '''Just Job''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/run.log
-
-      - name: Post
-        if: ${{ !cancelled() }}
-        run: |
-          set -o pipefail
-          python3 -m praktika.runner --post-run --job-name '''Just Job''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --job-name '''Just Job''' --workflow-name "Example All IN" |& tee /tmp/praktika/praktika_run.log
 
   just_job_2:
     runs-on: [maxs-small-fixed]
@@ -211,78 +135,38 @@ jobs:
 
       - name: Install dependencies
         run: |
+          sudo apt-get update && sudo apt install -y python3-pip
+          # TODO: --break-system-packages? otherwise ubuntu's apt/apt-get complains
           python3 -m pip install --upgrade pip --break-system-packages
-          # TODO: --break-system-packages?
           pip3 install -r ./ci/requirements.txt --break-system-packages
 
-      - name: Set up env
+      - name: Prepare env script
         run: |
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output /tmp/praktika/results
-          echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
-          echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
-          echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
-          echo "JOB_NAME=Just Job 2" >> "$GITHUB_ENV"
-          export PYTHONPATH=$(pwd)
-          echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          export CI_DB_URL="${{ secrets.CI_DB_URL }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          CI_DB_URL<<MULTILINE_SECRET_SUPPORT
+          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export CI_DB_URL=$(cat<<'EOF'
           ${{ secrets.CI_DB_URL }}
-          MULTILINE_SECRET_SUPPORT
           EOF
-          export CI_DB_PASSWORD="${{ secrets.CI_DB_PASSWORD }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          CI_DB_PASSWORD<<MULTILINE_SECRET_SUPPORT
+          )
+          export CI_DB_PASSWORD=$(cat<<'EOF'
           ${{ secrets.CI_DB_PASSWORD }}
-          MULTILINE_SECRET_SUPPORT
           EOF
-          export GH_APP_ID="${{ secrets.GH_APP_ID }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          GH_APP_ID<<MULTILINE_SECRET_SUPPORT
-          ${{ secrets.GH_APP_ID }}
-          MULTILINE_SECRET_SUPPORT
+          )
+          cat > /tmp/praktika/workflow_config_example_all_in.json << 'EOF'
+          ${{ needs.config_workflow.outputs.data }}
           EOF
-          export GH_APP_PEM_KEY="${{ secrets.GH_APP_PEM_KEY }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          GH_APP_PEM_KEY<<MULTILINE_SECRET_SUPPORT
-          ${{ secrets.GH_APP_PEM_KEY }}
-          MULTILINE_SECRET_SUPPORT
+          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          ${{ toJson(needs) }}
           EOF
-          python3 -m praktika.gh_auth "Example All IN"
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
-          cat /tmp/praktika/results/workflow_config_example_all_in.json
-          echo "::group::GITHUB ENV"
-          env | grep GITHUB ||:
-          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
-          echo "::endgroup::"
-          echo "::group::CI ENV"
-          env | grep CI_ ||:
-          echo "::endgroup::"
-          echo "::group::GH ENV"
-          env | grep GH_ ||:
-          echo "::endgroup::"
-          cat > /tmp/workflow_status.json << 'EOF'
-          ${ toJson(needs) }
-          EOF
-          echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
+          ENV_SETUP_SCRIPT_EOF
 
-      - name: Pre
-        run: |
-          set -o pipefail
-          python3 -m praktika.runner --pre-run --job-name '''Just Job 2''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/pre_run.log
+          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
+          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python3 -m praktika.runner --run --job-name '''Just Job 2''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/run.log
-
-      - name: Post
-        if: ${{ !cancelled() }}
-        run: |
-          set -o pipefail
-          python3 -m praktika.runner --post-run --job-name '''Just Job 2''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --job-name '''Just Job 2''' --workflow-name "Example All IN" |& tee /tmp/praktika/praktika_run.log
 
   parametrized_job_key_1_1_2_abc_key_2_null_maxs_small_fixed:
     runs-on: [maxs-small-fixed]
@@ -302,84 +186,38 @@ jobs:
 
       - name: Install dependencies
         run: |
+          sudo apt-get update && sudo apt install -y python3-pip
+          # TODO: --break-system-packages? otherwise ubuntu's apt/apt-get complains
           python3 -m pip install --upgrade pip --break-system-packages
-          # TODO: --break-system-packages?
           pip3 install -r ./ci/requirements.txt --break-system-packages
 
-      - name: Set up env
+      - name: Prepare env script
         run: |
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output /tmp/praktika/results
-          echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
-          echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
-          echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
-          echo "JOB_NAME=Parametrized_job ({"key_1": [1, 2, "ABC"], "key_2": null}, ["maxs-small-fixed"])" >> "$GITHUB_ENV"
-          export PYTHONPATH=$(pwd)
-          echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          PARAMETER<<MULTILINE_EOF
-          {"key_1": [1, 2, "ABC"], "key_2": null}
-          MULTILINE_EOF
-          EOF
-
-          export CI_DB_URL="${{ secrets.CI_DB_URL }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          CI_DB_URL<<MULTILINE_SECRET_SUPPORT
+          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export CI_DB_URL=$(cat<<'EOF'
           ${{ secrets.CI_DB_URL }}
-          MULTILINE_SECRET_SUPPORT
           EOF
-          export CI_DB_PASSWORD="${{ secrets.CI_DB_PASSWORD }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          CI_DB_PASSWORD<<MULTILINE_SECRET_SUPPORT
+          )
+          export CI_DB_PASSWORD=$(cat<<'EOF'
           ${{ secrets.CI_DB_PASSWORD }}
-          MULTILINE_SECRET_SUPPORT
           EOF
-          export GH_APP_ID="${{ secrets.GH_APP_ID }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          GH_APP_ID<<MULTILINE_SECRET_SUPPORT
-          ${{ secrets.GH_APP_ID }}
-          MULTILINE_SECRET_SUPPORT
+          )
+          cat > /tmp/praktika/workflow_config_example_all_in.json << 'EOF'
+          ${{ needs.config_workflow.outputs.data }}
           EOF
-          export GH_APP_PEM_KEY="${{ secrets.GH_APP_PEM_KEY }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          GH_APP_PEM_KEY<<MULTILINE_SECRET_SUPPORT
-          ${{ secrets.GH_APP_PEM_KEY }}
-          MULTILINE_SECRET_SUPPORT
+          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          ${{ toJson(needs) }}
           EOF
-          python3 -m praktika.gh_auth "Example All IN"
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
-          cat /tmp/praktika/results/workflow_config_example_all_in.json
-          echo "::group::GITHUB ENV"
-          env | grep GITHUB ||:
-          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
-          echo "::endgroup::"
-          echo "::group::CI ENV"
-          env | grep CI_ ||:
-          echo "::endgroup::"
-          echo "::group::GH ENV"
-          env | grep GH_ ||:
-          echo "::endgroup::"
-          cat > /tmp/workflow_status.json << 'EOF'
-          ${ toJson(needs) }
-          EOF
-          echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
+          ENV_SETUP_SCRIPT_EOF
 
-      - name: Pre
-        run: |
-          set -o pipefail
-          python3 -m praktika.runner --pre-run --job-name '''Parametrized_job ({"key_1": [1, 2, "ABC"], "key_2": null}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/pre_run.log
+          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
+          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python3 -m praktika.runner --run --job-name '''Parametrized_job ({"key_1": [1, 2, "ABC"], "key_2": null}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/run.log
-
-      - name: Post
-        if: ${{ !cancelled() }}
-        run: |
-          set -o pipefail
-          python3 -m praktika.runner --post-run --job-name '''Parametrized_job ({"key_1": [1, 2, "ABC"], "key_2": null}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --job-name '''Parametrized_job ({"key_1": [1, 2, "ABC"], "key_2": null}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" |& tee /tmp/praktika/praktika_run.log
 
   parametrized_job_key_1_2_3_maxs_small_fixed:
     runs-on: [maxs-small-fixed]
@@ -399,84 +237,38 @@ jobs:
 
       - name: Install dependencies
         run: |
+          sudo apt-get update && sudo apt install -y python3-pip
+          # TODO: --break-system-packages? otherwise ubuntu's apt/apt-get complains
           python3 -m pip install --upgrade pip --break-system-packages
-          # TODO: --break-system-packages?
           pip3 install -r ./ci/requirements.txt --break-system-packages
 
-      - name: Set up env
+      - name: Prepare env script
         run: |
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output /tmp/praktika/results
-          echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
-          echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
-          echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
-          echo "JOB_NAME=Parametrized_job ({"key_1": [2, 3]}, ["maxs-small-fixed"])" >> "$GITHUB_ENV"
-          export PYTHONPATH=$(pwd)
-          echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          PARAMETER<<MULTILINE_EOF
-          {"key_1": [2, 3]}
-          MULTILINE_EOF
-          EOF
-
-          export CI_DB_URL="${{ secrets.CI_DB_URL }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          CI_DB_URL<<MULTILINE_SECRET_SUPPORT
+          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export CI_DB_URL=$(cat<<'EOF'
           ${{ secrets.CI_DB_URL }}
-          MULTILINE_SECRET_SUPPORT
           EOF
-          export CI_DB_PASSWORD="${{ secrets.CI_DB_PASSWORD }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          CI_DB_PASSWORD<<MULTILINE_SECRET_SUPPORT
+          )
+          export CI_DB_PASSWORD=$(cat<<'EOF'
           ${{ secrets.CI_DB_PASSWORD }}
-          MULTILINE_SECRET_SUPPORT
           EOF
-          export GH_APP_ID="${{ secrets.GH_APP_ID }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          GH_APP_ID<<MULTILINE_SECRET_SUPPORT
-          ${{ secrets.GH_APP_ID }}
-          MULTILINE_SECRET_SUPPORT
+          )
+          cat > /tmp/praktika/workflow_config_example_all_in.json << 'EOF'
+          ${{ needs.config_workflow.outputs.data }}
           EOF
-          export GH_APP_PEM_KEY="${{ secrets.GH_APP_PEM_KEY }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          GH_APP_PEM_KEY<<MULTILINE_SECRET_SUPPORT
-          ${{ secrets.GH_APP_PEM_KEY }}
-          MULTILINE_SECRET_SUPPORT
+          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          ${{ toJson(needs) }}
           EOF
-          python3 -m praktika.gh_auth "Example All IN"
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
-          cat /tmp/praktika/results/workflow_config_example_all_in.json
-          echo "::group::GITHUB ENV"
-          env | grep GITHUB ||:
-          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
-          echo "::endgroup::"
-          echo "::group::CI ENV"
-          env | grep CI_ ||:
-          echo "::endgroup::"
-          echo "::group::GH ENV"
-          env | grep GH_ ||:
-          echo "::endgroup::"
-          cat > /tmp/workflow_status.json << 'EOF'
-          ${ toJson(needs) }
-          EOF
-          echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
+          ENV_SETUP_SCRIPT_EOF
 
-      - name: Pre
-        run: |
-          set -o pipefail
-          python3 -m praktika.runner --pre-run --job-name '''Parametrized_job ({"key_1": [2, 3]}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/pre_run.log
+          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
+          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python3 -m praktika.runner --run --job-name '''Parametrized_job ({"key_1": [2, 3]}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/run.log
-
-      - name: Post
-        if: ${{ !cancelled() }}
-        run: |
-          set -o pipefail
-          python3 -m praktika.runner --post-run --job-name '''Parametrized_job ({"key_1": [2, 3]}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --job-name '''Parametrized_job ({"key_1": [2, 3]}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" |& tee /tmp/praktika/praktika_run.log
 
   finish_workflow:
     runs-on: [maxs-small-fixed]
@@ -489,71 +281,30 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up env
+      - name: Prepare env script
         run: |
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output /tmp/praktika/results
-          echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
-          echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
-          echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
-          echo "JOB_NAME=Finish Workflow" >> "$GITHUB_ENV"
-          export PYTHONPATH=$(pwd)
-          echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          export CI_DB_URL="${{ secrets.CI_DB_URL }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          CI_DB_URL<<MULTILINE_SECRET_SUPPORT
+          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export CI_DB_URL=$(cat<<'EOF'
           ${{ secrets.CI_DB_URL }}
-          MULTILINE_SECRET_SUPPORT
           EOF
-          export CI_DB_PASSWORD="${{ secrets.CI_DB_PASSWORD }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          CI_DB_PASSWORD<<MULTILINE_SECRET_SUPPORT
+          )
+          export CI_DB_PASSWORD=$(cat<<'EOF'
           ${{ secrets.CI_DB_PASSWORD }}
-          MULTILINE_SECRET_SUPPORT
           EOF
-          export GH_APP_ID="${{ secrets.GH_APP_ID }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          GH_APP_ID<<MULTILINE_SECRET_SUPPORT
-          ${{ secrets.GH_APP_ID }}
-          MULTILINE_SECRET_SUPPORT
+          )
+          cat > /tmp/praktika/workflow_config_example_all_in.json << 'EOF'
+          ${{ needs.config_workflow.outputs.data }}
           EOF
-          export GH_APP_PEM_KEY="${{ secrets.GH_APP_PEM_KEY }}"
-          cat >> "$GITHUB_ENV" << 'EOF'
-          GH_APP_PEM_KEY<<MULTILINE_SECRET_SUPPORT
-          ${{ secrets.GH_APP_PEM_KEY }}
-          MULTILINE_SECRET_SUPPORT
+          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          ${{ toJson(needs) }}
           EOF
-          python3 -m praktika.gh_auth "Example All IN"
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_all_in.json
-          cat /tmp/praktika/results/workflow_config_example_all_in.json
-          echo "::group::GITHUB ENV"
-          env | grep GITHUB ||:
-          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
-          echo "::endgroup::"
-          echo "::group::CI ENV"
-          env | grep CI_ ||:
-          echo "::endgroup::"
-          echo "::group::GH ENV"
-          env | grep GH_ ||:
-          echo "::endgroup::"
-          cat > /tmp/workflow_status.json << 'EOF'
-          ${ toJson(needs) }
-          EOF
-          echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
+          ENV_SETUP_SCRIPT_EOF
 
-      - name: Pre
-        run: |
-          set -o pipefail
-          python3 -m praktika.runner --pre-run --job-name '''Finish Workflow''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/pre_run.log
+          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
+          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python3 -m praktika.runner --run --job-name '''Finish Workflow''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/run.log
-
-      - name: Post
-        if: ${{ !cancelled() }}
-        run: |
-          set -o pipefail
-          python3 -m praktika.runner --post-run --job-name '''Finish Workflow''' --workflow-name "Example All IN" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --job-name '''Finish Workflow''' --workflow-name "Example All IN" |& tee /tmp/praktika/praktika_run.log

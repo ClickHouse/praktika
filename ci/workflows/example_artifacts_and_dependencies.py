@@ -1,6 +1,6 @@
 from typing import List
 
-from praktika import Job, Workflow, Artifact
+from praktika import Artifact, Job, Workflow
 from praktika.settings import Settings
 
 

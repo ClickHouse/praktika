@@ -1,5 +1,6 @@
 import dataclasses
-from typing import Optional, List, Dict, Iterable
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional
 
 
 @dataclasses.dataclass
@@ -7,14 +8,20 @@ class _Settings:
     ######################################
     #    Pipeline generation settings    #
     ######################################
+    if Path("./ci_v2").is_dir():
+        # TODO: hack for CH, remove
+        CI_PATH = "./ci_v2"
+    else:
+        CI_PATH = "./ci"
     WORKFLOW_PATH_PREFIX: str = "./.github/workflows"
-    WORKFLOWS_DIRECTORY: str = "./ci/workflows"
-    SETTINGS_DIRECTORY: str = "./ci/settings"
+    WORKFLOWS_DIRECTORY: str = f"{CI_PATH}/workflows"
+    SETTINGS_DIRECTORY: str = f"{CI_PATH}/settings"
     CI_CONFIG_JOB_NAME = "Config Workflow"
     DOCKER_BUILD_JOB_NAME = "Docker Builds"
     FINISH_WORKFLOW_JOB_NAME = "Finish Workflow"
     READY_FOR_MERGE_STATUS_NAME = "Ready for Merge"
     CI_CONFIG_RUNS_ON: Optional[List[str]] = None
+    DOCKER_BUILD_RUNS_ON: Optional[List[str]] = None
     VALIDATE_FILE_PATHS: bool = True
 
     ######################################
@@ -34,21 +41,19 @@ class _Settings:
     TEMP_DIR: str = "/tmp/praktika"
     OUTPUT_DIR: str = f"{TEMP_DIR}/output"
     INPUT_DIR: str = f"{TEMP_DIR}/input"
-    RESULTS_DIR: str = f"{TEMP_DIR}/results"
     PYTHON_INTERPRETER: str = "python3"
     PYTHON_PACKET_MANAGER: str = "pip3"
     PYTHON_VERSION: str = "3.9"
     INSTALL_PYTHON_FOR_NATIVE_JOBS: bool = False
     INSTALL_PYTHON_REQS_FOR_NATIVE_JOBS: str = "./ci/requirements.txt"
     ENVIRONMENT_VAR_FILE: str = f"{TEMP_DIR}/environment.json"
-    PRE_LOG: str = f"{TEMP_DIR}/pre_run.log"
-    RUN_LOG: str = f"{TEMP_DIR}/run.log"
-    POST_LOG: str = f"{TEMP_DIR}/post_run.log"
+    RUN_LOG: str = f"{TEMP_DIR}/praktika_run.log"
 
     SECRET_GH_APP_ID: str = "GH_APP_ID"
     SECRET_GH_APP_PEM_KEY: str = "GH_APP_PEM_KEY"
 
-    WORKFLOW_STATUS_FILE: str = "/tmp/workflow_status.json"
+    ENV_SETUP_SCRIPT: str = "/tmp/praktika_setup_env.sh"
+    WORKFLOW_STATUS_FILE: str = f"{TEMP_DIR}/workflow_status.json"
 
     ######################################
     #        CI Cache settings           #
@@ -59,7 +64,7 @@ class _Settings:
     CACHE_LOCAL_PATH: str = f"{TEMP_DIR}/ci_cache"
 
     ######################################
-    #        HTML Report settings        #
+    #        Report settings             #
     ######################################
     HTML_S3_PATH: str = ""
     HTML_PAGE_FILE: str = "./praktika/json.html"
@@ -90,6 +95,7 @@ _USER_DEFINED_SETTINGS = [
     "OUTPUT_DIR",
     "INPUT_DIR",
     "CI_CONFIG_RUNS_ON",
+    "DOCKER_BUILD_RUNS_ON",
     "CI_CONFIG_JOB_NAME",
     "PYTHON_INTERPRETER",
     "PYTHON_VERSION",

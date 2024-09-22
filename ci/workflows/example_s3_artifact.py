@@ -1,7 +1,7 @@
 from typing import List
 
 from ci.settings.my_settings import RunnerLabels
-from praktika import Job, Workflow, Artifact
+from praktika import Artifact, Job, Workflow
 from praktika.settings import Settings
 
 

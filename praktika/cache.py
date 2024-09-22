@@ -2,12 +2,12 @@ import dataclasses
 import json
 from pathlib import Path
 
-from praktika import Job, Workflow, Artifact
-from praktika.digest import Digest
-from praktika.settings import Settings
+from praktika import Artifact, Job, Workflow
 from praktika._environment import _Environment
-from praktika.utils import Utils
+from praktika.digest import Digest
 from praktika.s3 import S3
+from praktika.settings import Settings
+from praktika.utils import Utils
 
 
 class Cache:

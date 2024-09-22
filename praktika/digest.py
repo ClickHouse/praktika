@@ -1,13 +1,12 @@
 import dataclasses
-import glob
 import hashlib
-import os
 from hashlib import md5
 from typing import List
 
 from praktika import Job
 from praktika.docker import Docker
 from praktika.settings import Settings
+from praktika.utils import Utils
 
 
 class Digest:
@@ -24,11 +23,6 @@ class Digest:
         return hash_string
 
     def calc_job_digest(self, job_config: Job.Config):
-        """
-
-        :param job_config:
-        :return:
-        """
         config = job_config.digest_config
         if not config:
             return "f" * Settings.CACHE_DIGEST_LEN
@@ -38,23 +32,11 @@ class Digest:
         if cache_key in self.digest_cache:
             return self.digest_cache[cache_key]
 
-        # Get the list of included files
-        included_files_ = set()
-        for path in config.include_paths:
-            included_files_.update(self._path_to_files_recursively(path))
-
-        # Filter out excluded files
-        excluded_files = set()
-        for path in config.exclude_paths:
-            res = self._path_to_files_recursively(path)
-            if not res:
-                print(
-                    f"WARNING: DigestConfig.exclude_files path [{path}] filtered 0 files"
-                )
-            else:
-                excluded_files.update(res)
-
-        included_files = [f for f in included_files_ if f not in excluded_files]
+        included_files = Utils.traverse_paths(
+            job_config.digest_config.include_paths,
+            job_config.digest_config.exclude_paths,
+            sorted=True,
+        )
 
         print(f"calc digest: hash_key [{cache_key}], include [{included_files}] files")
         # Sort files to ensure consistent hash calculation
@@ -87,7 +69,7 @@ class Digest:
         :return:
         """
         print(f"Calculate digest for docker [{docker_config.name}]")
-        paths = self._path_to_files_recursively(docker_config.path)
+        paths = Utils.traverse_path(docker_config.path, sorted=True)
         if not hash_md5:
             hash_md5 = hashlib.md5()
 
@@ -116,21 +98,4 @@ class Digest:
                 hash_md5.update(chunk)
 
         res = hash_md5.hexdigest()[: Settings.CACHE_DIGEST_LEN]
-        return res
-
-    @staticmethod
-    def _path_to_files_recursively(path):
-        res = []
-        if os.path.isfile(path):
-            res.append(path)
-        elif os.path.isdir(path):
-            for root, dirs, files in os.walk(path):
-                for file in files:
-                    res.append(os.path.join(root, file))
-        elif "*" in str(path):
-            res.extend(
-                [f for f in glob.glob(path, recursive=True) if os.path.isfile(f)]
-            )
-        else:
-            assert False, f"File does not exist or not valid [{path}]"
         return res

@@ -21,10 +21,10 @@ It's easier with praktika.
 ### dependencies:
 * python
 * non-standard python modules:
-  * jwt module if GH App auth is needed. If HTML reporting and/or Mergeable check is enabled
+  * jwt module if GH App auth is needed. If Report and/or Mergeable check is enabled
 * non-python dependencies:
   * aws cli. Not required for GH-only setup (without cloud provider)
-  * gh cli. Not required for setup without HTML reporting and/or Mergeable check
+  * gh cli. Not required for setup without Report and/or Mergeable check
 
 ## How to:
 

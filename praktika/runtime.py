@@ -30,4 +30,6 @@ class RunConfig(MetaClasses.Serializable):
 
     @classmethod
     def file_name_static(cls, name):
-        return f"{Settings.RESULTS_DIR}/workflow_config_{Utils.normalize_string(name)}.json"
+        return (
+            f"{Settings.TEMP_DIR}/workflow_config_{Utils.normalize_string(name)}.json"
+        )
