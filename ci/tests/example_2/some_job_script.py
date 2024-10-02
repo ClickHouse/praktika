@@ -1,7 +1,6 @@
-from praktika.environment import Environment
 from praktika.result import Result
 from praktika.settings import Settings
-from praktika.utils import Utils, Shell
+from praktika.utils import Shell, Utils
 
 if __name__ == "__main__":
     # 1. do some work
@@ -11,7 +10,7 @@ if __name__ == "__main__":
     Shell.check(f"echo 'Hello World!' > {artifact_path}")
 
     # 2. dump results
-    Result.from_fs(Environment.JOB_NAME).set_success().set_info("all good").set_files(
+    Result.get().set_success().set_info("all good").set_files(
         files=[artifact_path]
     ).set_results(
         results=[

@@ -1,7 +1,7 @@
 import dataclasses
-from typing import Dict, List, Any
+from typing import Any, Dict, List
 
-from praktika import Workflow, Artifact
+from praktika import Artifact, Workflow
 from praktika.mangle import _get_workflows
 
 
@@ -39,8 +39,8 @@ class WorkflowYaml:
 
     @dataclasses.dataclass
     class JobAddonYaml:
-        type: str
-        path: str
+        install_python: bool
+        requirements_txt_path: str
 
     name: str
     event: str
@@ -186,22 +186,18 @@ class WorkflowConfigParser:
         # populate JobYaml.addons
         for job in self.config.jobs:
             if job.job_requirements:
-                if job.job_requirements.python_requirements_txt:
-                    addon_yaml = WorkflowYaml.JobAddonYaml(
-                        type=AddonType.PY,
-                        path=job.job_requirements.python_requirements_txt,
-                    )
-                    self.workflow_yaml_config.job_to_config[job.name].addons.append(
-                        addon_yaml
-                    )
-                elif job.job_requirements.python:
-                    addon_yaml = WorkflowYaml.JobAddonYaml(type=AddonType.PY, path="")
-                    self.workflow_yaml_config.job_to_config[job.name].addons.append(
-                        addon_yaml
-                    )
-                if self.config.enable_html:
-                    # auth required for evry job with enabled HTML, so that workflow summary status can be updated
-                    self.workflow_yaml_config.job_to_config[job.name].gh_app_auth = True
+                addon_yaml = WorkflowYaml.JobAddonYaml(
+                    requirements_txt_path=job.job_requirements.python_requirements_txt,
+                    install_python=job.job_requirements.python,
+                )
+                self.workflow_yaml_config.job_to_config[job.name].addons.append(
+                    addon_yaml
+                )
+
+        if self.config.enable_report:
+            for job in self.config.jobs:
+                # auth required for every job with enabled HTML, so that workflow summary status can be updated
+                self.workflow_yaml_config.job_to_config[job.name].gh_app_auth = True
 
         # populate JobYaml.runs_on
         for job in self.config.jobs:

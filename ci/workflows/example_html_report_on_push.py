@@ -2,7 +2,6 @@ from typing import List
 
 from ci.settings.my_settings import RunnerLabels
 from praktika import Job, Workflow
-from praktika.secret import Secret
 
 
 class JobNames:
@@ -11,7 +10,7 @@ class JobNames:
 
 
 class WorkflowNames:
-    NAME = "Example Push trigger, HTML"
+    NAME = "Example Push trigger, Report"
 
 
 workflow = Workflow.Config(
@@ -24,7 +23,7 @@ workflow = Workflow.Config(
             runs_on=[RunnerLabels.SMALL_FIXED],
             command="python3 ./ci/tests/example_2/some_job_script.py",
             job_requirements=Job.Requirements(
-                python_requirements_txt="./requirements_with_gh_auth.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
         ),
         Job.Config(
@@ -33,21 +32,11 @@ workflow = Workflow.Config(
             command="python3 ./ci/tests/example_2/some_job_script_2.py",
             requires=[JobNames.JOB_A],
             job_requirements=Job.Requirements(
-                python_requirements_txt="./requirements_with_gh_auth.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
         ),
     ],
-    secrets=[
-        Secret.Config(
-            name="GH_APP_ID",
-            type=Secret.Type.GH_SECRET,
-        ),
-        Secret.Config(
-            name="GH_APP_PEM_KEY",
-            type=Secret.Type.GH_SECRET,
-        ),
-    ],
-    enable_html=True,
+    enable_report=True,
 )
 
 WORKFLOWS = [

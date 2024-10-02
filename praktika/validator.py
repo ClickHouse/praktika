@@ -1,4 +1,5 @@
 import glob
+import sys
 from itertools import chain
 from pathlib import Path
 
@@ -12,13 +13,15 @@ from praktika.utils import ContextManager
 class Validator:
     @classmethod
     def validate(cls):
-        print("===Start validating Pipeline and settings===")
+        print("---Start validating Pipeline and settings---")
         workflows = _get_workflows()
         for workflow in workflows:
             print(f"Validating workflow [{workflow.name}]")
 
             cls.validate_file_paths_in_run_command(workflow)
             cls.validate_file_paths_in_digest_configs(workflow)
+            cls.validate_requirements_txt_files(workflow)
+            cls.validate_dockers(workflow)
 
             if workflow.artifacts:
                 for artifact in workflow.artifacts:
@@ -52,13 +55,14 @@ class Validator:
                     Settings.CACHE_S3_PATH
                 ), f"CACHE_S3_PATH Setting must be defined if enable_cache=True, workflow [{workflow.name}]"
 
-            if workflow.enable_html:
-                assert workflow.get_secret(
-                    "GH_APP_ID"
-                ), f"GH Secret GH_APP_ID must be provided with .enable_html=True, workflow [{workflow.name}]"
-                assert workflow.get_secret(
-                    "GH_APP_PEM_KEY"
-                ), f"GH Secret GH_APP_PEM_KEY must be provided with .enable_html=True, workflow [{workflow.name}]"
+            if workflow.dockers:
+                cls.evaluate_check(
+                    Settings.DOCKER_BUILD_RUNS_ON,
+                    f"DOCKER_BUILD_RUNS_ON settings must be defined if workflow has dockers",
+                    workflow_name=workflow.name,
+                )
+
+            if workflow.enable_report:
                 assert (
                     Settings.HTML_S3_PATH
                 ), f"HTML_S3_PATH Setting must be defined if enable_html=True, workflow [{workflow.name}]"
@@ -89,7 +93,7 @@ class Validator:
 
             if (
                 workflow.enable_cache
-                or workflow.enable_html
+                or workflow.enable_report
                 or workflow.enable_merge_ready_status
             ):
                 for job in workflow.jobs:
@@ -146,3 +150,59 @@ class Validator:
                         assert (
                             Path(include_path).is_file() or Path(include_path).is_dir()
                         ), f"Apparently file path [{include_path}] in job [{job.name}] digest_config [{job.digest_config}] invalid, workflow [{workflow.name}]. Setting to disable check: VALIDATE_FILE_PATHS"
+
+    @classmethod
+    def validate_requirements_txt_files(cls, workflow: Workflow.Config) -> None:
+        with ContextManager.cd():
+            for job in workflow.jobs:
+                if job.job_requirements:
+                    if job.job_requirements.python_requirements_txt:
+                        path = Path(job.job_requirements.python_requirements_txt)
+                        message = f"File with py requirement [{path}] does not exist"
+                        if job.name in (
+                            Settings.DOCKER_BUILD_JOB_NAME,
+                            Settings.CI_CONFIG_JOB_NAME,
+                            Settings.FINISH_WORKFLOW_JOB_NAME,
+                        ):
+                            message += '\n  If all requirements already installed on your runners - add setting INSTALL_PYTHON_REQS_FOR_NATIVE_JOBS""'
+                            message += "\n  If requirements needs to be installed - add requirements file (Settings.INSTALL_PYTHON_REQS_FOR_NATIVE_JOBS):"
+                            message += "\n      echo jwt==1.3.1 > ./ci/requirements.txt"
+                            message += (
+                                "\n      echo requests==2.32.3 >> ./ci/requirements.txt"
+                            )
+                            message += "\n      echo https://clickhouse-builds.s3.amazonaws.com/packages/praktika-0.1-py3-none-any.whl >> ./ci/requirements.txt"
+                        cls.evaluate_check(
+                            path.is_file(), message, job.name, workflow.name
+                        )
+
+    @classmethod
+    def validate_dockers(cls, workflow: Workflow.Config):
+        names = []
+        for docker in workflow.dockers:
+            cls.evaluate_check(
+                docker.name not in names,
+                f"Non uniq docker name [{docker.name}]",
+                workflow_name=workflow.name,
+            )
+            names.append(docker.name)
+        for docker in workflow.dockers:
+            for docker_dep in docker.depends_on:
+                cls.evaluate_check(
+                    docker_dep in names,
+                    f"Docker [{docker.name}] has invalid dependency [{docker_dep}]",
+                    workflow_name=workflow.name,
+                )
+
+    @classmethod
+    def evaluate_check(cls, check_ok, message, workflow_name, job_name=""):
+        message = message.split("\n")
+        messages = [message] if not isinstance(message, list) else message
+        if check_ok:
+            return
+        else:
+            print(
+                f"ERROR: Config validation failed: workflow [{workflow_name}], job [{job_name}]:"
+            )
+            for message in messages:
+                print(" ||  " + message)
+            sys.exit(1)

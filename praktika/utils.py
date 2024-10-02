@@ -1,6 +1,6 @@
 import base64
 import dataclasses
-import inspect
+import glob
 import json
 import os
 import re
@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from threading import Thread
 from types import SimpleNamespace
-from typing import Iterator, Union, Optional, TypeVar, Type, Dict, Any
+from typing import Any, Dict, Iterator, List, Optional, Type, TypeVar, Union
 
 from praktika._settings import _Settings
 
@@ -25,12 +25,6 @@ class MetaClasses:
     class WithIter(type):
         def __iter__(cls):
             return (v for k, v in cls.__dict__.items() if not k.startswith("_"))
-
-    class FormatPrint:
-        @classmethod
-        def format_print(cls, message):
-            calling_function_name = inspect.stack()[1].function
-            print(f"{cls.__class__.__name__}::{calling_function_name}: {message}")
 
     @dataclasses.dataclass
     class Serializable(ABC):
@@ -114,8 +108,8 @@ class ContextManager:
 
 class Shell:
     @classmethod
-    def get_output_or_raise(cls, command):
-        return cls.get_output(command).strip()
+    def get_output_or_raise(cls, command, verbose=False):
+        return cls.get_output(command, verbose=verbose, strict=True).strip()
 
     @classmethod
     def get_output(cls, command, strict=False, verbose=False):
@@ -159,7 +153,7 @@ class Shell:
         )
         if res.stderr:
             print(f"WARNING: stderr: {res.stderr.strip()}")
-        return res.stdout.strip(), res.returncode
+        return res.stdout.strip(), res.stderr.strip(), res.returncode
 
     @classmethod
     def check(
@@ -338,6 +332,77 @@ class Utils:
         ):
             res = res.replace(*r)
         return res
+
+    @staticmethod
+    def traverse_path(path, file_suffixes=None, sorted=False, not_exists_ok=False):
+        res = []
+
+        def is_valid_file(file):
+            if file_suffixes is None:
+                return True
+            return any(file.endswith(suffix) for suffix in file_suffixes)
+
+        if os.path.isfile(path):
+            if is_valid_file(path):
+                res.append(path)
+        elif os.path.isdir(path):
+            for root, dirs, files in os.walk(path):
+                for file in files:
+                    full_path = os.path.join(root, file)
+                    if is_valid_file(full_path):
+                        res.append(full_path)
+        elif "*" in str(path):
+            res.extend(
+                [
+                    f
+                    for f in glob.glob(path, recursive=True)
+                    if os.path.isfile(f) and is_valid_file(f)
+                ]
+            )
+        else:
+            if not_exists_ok:
+                pass
+            else:
+                assert False, f"File does not exist or not valid [{path}]"
+
+        if sorted:
+            res.sort(reverse=True)
+
+        return res
+
+    @classmethod
+    def traverse_paths(
+        cls,
+        include_paths,
+        exclude_paths,
+        file_suffixes=None,
+        sorted=False,
+        not_exists_ok=False,
+    ) -> List["str"]:
+        included_files_ = set()
+        for path in include_paths:
+            included_files_.update(cls.traverse_path(path, file_suffixes=file_suffixes))
+
+        excluded_files = set()
+        for path in exclude_paths:
+            res = cls.traverse_path(path, not_exists_ok=not_exists_ok)
+            if not res:
+                print(
+                    f"WARNING: Utils.traverse_paths excluded 0 files by path [{path}] in exclude_paths"
+                )
+            else:
+                excluded_files.update(res)
+        res = [f for f in included_files_ if f not in excluded_files]
+        if sorted:
+            res.sort(reverse=True)
+        return res
+
+    @classmethod
+    def add_to_PATH(cls, path):
+        path_cur = os.getenv("PATH", "")
+        if path_cur:
+            path += ":" + path_cur
+        os.environ["PATH"] = path
 
     class Stopwatch:
         def __init__(self):

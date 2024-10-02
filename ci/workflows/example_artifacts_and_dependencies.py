@@ -1,6 +1,6 @@
 from typing import List
 
-from praktika import Job, Workflow, Artifact
+from praktika import Artifact, Job, Workflow
 from praktika.settings import Settings
 
 
@@ -33,7 +33,7 @@ workflow_pr = Workflow.Config(
             # example: set list of artifacts that job provides
             provides=[ArtifactNames.GREET],
             job_requirements=Job.Requirements(
-                python_requirements_txt="requirements.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
         ),
         Job.Config(
@@ -43,14 +43,14 @@ workflow_pr = Workflow.Config(
             # example: set list of artifacts that job requires, job will follow all jobs that provide required artifact
             requires=[ArtifactNames.GREET],
             job_requirements=Job.Requirements(
-                python_requirements_txt="requirements.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
         ),
         Job.Config(
             name=JobNames.JOB_A,
             command="echo Dzień dobry wszystkim",
             job_requirements=Job.Requirements(
-                python_requirements_txt="requirements.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
             runs_on=["ubuntu-latest"],
         ),
@@ -58,7 +58,7 @@ workflow_pr = Workflow.Config(
             name=JobNames.JOB_B,
             command="echo Доброго ранку всім",
             job_requirements=Job.Requirements(
-                python_requirements_txt="requirements.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
             runs_on=["ubuntu-latest"],
         ),
@@ -68,7 +68,7 @@ workflow_pr = Workflow.Config(
             # example: Job names caould be also set in :requires:
             requires=[JobNames.JOB_A, JobNames.JOB_B],
             job_requirements=Job.Requirements(
-                python_requirements_txt="requirements.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
             runs_on=["ubuntu-latest"],
         ),
@@ -77,7 +77,7 @@ workflow_pr = Workflow.Config(
             command="echo Jó reggelt mindenkinek",
             requires=[JobNames.JOB_C],
             job_requirements=Job.Requirements(
-                python_requirements_txt="requirements.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
             runs_on=["ubuntu-latest"],
         ),

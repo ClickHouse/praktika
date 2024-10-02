@@ -1,16 +1,15 @@
-from praktika.utils import Utils
-from praktika.s3 import S3
+from praktika._environment import _Environment
 from praktika.cache import Cache
 from praktika.mangle import _get_workflows
-from praktika.runtime import WorkflowRuntime
+from praktika.runtime import RunConfig
 from praktika.settings import Settings
-from praktika._environment import _Environment
+from praktika.utils import Utils
 
 
 class CacheRunnerHooks:
     @classmethod
     def configure(cls, _workflow):
-        workflow_config = WorkflowRuntime.from_fs(_workflow.name)
+        workflow_config = RunConfig.from_fs(_workflow.name)
         cache = Cache()
         assert _Environment.get().WORKFLOW_NAME
         workflow = _get_workflows(name=_Environment.get().WORKFLOW_NAME)[0]
@@ -72,7 +71,7 @@ class CacheRunnerHooks:
                             job_to_cache_record[job.name]
                         )
 
-        print(f"Write config to job output env: {_Environment.get().JOB_OUTPUT_STREAM}")
+        print(f"Write config to GH's job output")
         with open(_Environment.get().JOB_OUTPUT_STREAM, "a", encoding="utf8") as f:
             print(
                 f"DATA={workflow_config.to_json()}",
@@ -93,7 +92,7 @@ class CacheRunnerHooks:
             # SPECIAL handling
             return path_prefixes
         env = _Environment.get()
-        runtime_config = WorkflowRuntime.from_fs(_workflow.name)
+        runtime_config = RunConfig.from_fs(_workflow.name)
         required_artifacts = []
         if _required_artifacts:
             required_artifacts = _required_artifacts
@@ -102,10 +101,12 @@ class CacheRunnerHooks:
                 record = runtime_config.cache_artifacts[artifact.name]
                 print(f"Reuse artifact [{artifact.name}] from [{record}]")
                 path_prefixes.append(
-                    S3.get_prefix(record.pr_number, record.branch, record.sha)
+                    env.get_s3_prefix_static(
+                        record.pr_number, record.branch, record.sha
+                    )
                 )
             else:
-                path_prefixes.append(S3.get_prefix(env.PR_NUMBER, env.BRANCH, env.SHA))
+                path_prefixes.append(env.get_s3_prefix())
         return path_prefixes
 
     @classmethod
@@ -118,6 +119,6 @@ class CacheRunnerHooks:
             return
         if job.digest_config:
             # cache is enabled, and it's a job that supposed to be cached (has defined digest config)
-            workflow_runtime = WorkflowRuntime.from_fs(workflow.name)
+            workflow_runtime = RunConfig.from_fs(workflow.name)
             job_digest = workflow_runtime.digest_jobs[job.name]
             Cache.push_success_record(job.name, job_digest, workflow_runtime.sha)

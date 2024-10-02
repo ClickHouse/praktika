@@ -6,8 +6,9 @@ import traceback
 
 import requests
 
-from praktika.utils import Shell, ContextManager
-from praktika.execution.execution_settings import ExecutionSettings, ScalingType
+from praktika.execution.execution_settings import (ExecutionSettings,
+                                                   ScalingType)
+from praktika.utils import ContextManager, Shell
 
 
 class StateMachine:
@@ -29,6 +30,10 @@ class StateMachine:
             print("State Machine: INIT -> WAIT")
             self.state = self.StateNames.WAIT
             self.state_updated_at = int(time.time())
+            # TODO: add monitoring
+            if not self.machine.is_actions_process_healthy():
+                print(f"ERROR: GH runner process unexpectedly died")
+                self.machine.self_terminate(decrease_capacity=False)
         elif self.state == self.StateNames.WAIT:
             res = self.machine.check_job_assigned()
             if res:
@@ -80,6 +85,7 @@ class StateMachine:
         self.forked = True
 
     def run(self):
+        self.machine.unconfig_actions()
         while True:
             self.kick()
             time.sleep(5)
@@ -248,6 +254,27 @@ class Machine:
         assert self.proc is not None
         return self
 
+    def is_actions_process_healthy(self):
+        try:
+            if self.proc.poll() is None:
+                return True
+
+            stdout, stderr = self.proc.communicate()
+
+            if self.proc.returncode != 0:
+                # Handle failure
+                print(
+                    f"GH Action process failed with return code {self.proc.returncode}"
+                )
+                print(f"Error output: {stderr}")
+                return False
+            else:
+                print(f"GH Action process is not running")
+                return False
+        except Exception as e:
+            print(f"GH Action process exception: {e}")
+            return False
+
     def self_terminate(self, decrease_capacity):
         print(
             f"WARNING: Self terminate is called, decrease_capacity [{decrease_capacity}]"
@@ -294,7 +321,6 @@ def handle_signal(signum, _frame):
 def run():
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
-    m = None
     try:
         m = StateMachine()
         m.run()

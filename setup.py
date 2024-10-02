@@ -1,9 +1,9 @@
-from setuptools import setup
+from setuptools import find_packages, setup
 
 setup(
     name="praktika",
     version="0.1",
-    packages=["praktika"],
+    packages=find_packages(),
     url="https://github.com/ClickHouse/praktika",
     license="Apache 2.0",
     author="Max Kainov",

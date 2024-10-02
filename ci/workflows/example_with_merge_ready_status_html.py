@@ -1,6 +1,7 @@
 from typing import List
-from praktika import Job, Workflow
+
 from ci.settings.my_settings import RunnerLabels
+from praktika import Job, Workflow
 from praktika.secret import Secret
 
 
@@ -10,7 +11,7 @@ class JobNames:
 
 
 class WorkflowNames:
-    NAME = "Example Merge ready Status, HTML"
+    NAME = "Example Merge ready Status, Report"
 
 
 workflow_pr = Workflow.Config(
@@ -23,7 +24,7 @@ workflow_pr = Workflow.Config(
             runs_on=[RunnerLabels.SMALL_FIXED],
             command="python3 ./ci/tests/example_2/some_job_script.py",
             job_requirements=Job.Requirements(
-                python_requirements_txt="./requirements_with_gh_auth.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
         ),
         Job.Config(
@@ -32,28 +33,17 @@ workflow_pr = Workflow.Config(
             command="python3 ./ci/tests/example_2/some_job_script_2.py",
             requires=[JobNames.JOB_A],
             job_requirements=Job.Requirements(
-                python_requirements_txt="./requirements_with_gh_auth.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
             timeout=5,
             # example: This job won't set "Ready For Merge" status on failure
             allow_merge_on_failure=True,
         ),
     ],
-    # example: secrets for GH authentication are required for HTML report, so that commit status and PR comment can be posted
-    secrets=[
-        Secret.Config(
-            name="GH_APP_ID",
-            type=Secret.Type.GH_SECRET,
-        ),
-        Secret.Config(
-            name="GH_APP_PEM_KEY",
-            type=Secret.Type.GH_SECRET,
-        ),
-    ],
     # example: This property enables "Ready For Merge" status for this workflow
     enable_merge_ready_status=True,
-    # example: This property enables HTML report for this workflow
-    enable_html=True,
+    # example: This property enables Report for this workflow
+    enable_report=True,
 )
 
 WORKFLOWS = [

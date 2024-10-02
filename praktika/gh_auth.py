@@ -1,25 +1,20 @@
+import sys
 import time
-from pathlib import Path
 from typing import List
 
 import requests
-from jwt import jwk_from_pem, JWT
+from jwt import JWT, jwk_from_pem
 
 from praktika import Workflow
-from praktika._environment import _Environment
 from praktika.mangle import _get_workflows
 from praktika.settings import Settings
 from praktika.utils import Shell
 
 
-class Auth:
+class GHAuth:
     @staticmethod
     def _generate_jwt(client_id, pem):
-        if Path(pem).exists():
-            with open(pem, "rb") as pem_file:
-                pem = pem_file.read()
-        else:
-            pem = str.encode(pem)
+        pem = str.encode(pem)
         signing_key = jwk_from_pem(pem)
         payload = {
             "iat": int(time.time()),
@@ -59,10 +54,8 @@ class Auth:
         return response.json()["token"]
 
     @classmethod
-    def auth(cls) -> None:
-        wf = _get_workflows(
-            _Environment.get().WORKFLOW_NAME
-        )  # type: List[Workflow.Config]
+    def auth(cls, workflow_name) -> None:
+        wf = _get_workflows(workflow_name)  # type: List[Workflow.Config]
         pem = wf[0].get_secret(Settings.SECRET_GH_APP_PEM_KEY).get_value()
         assert pem
         app_id = wf[0].get_secret(Settings.SECRET_GH_APP_ID).get_value()
@@ -76,4 +69,4 @@ class Auth:
 
 
 if __name__ == "__main__":
-    Auth.auth()
+    GHAuth.auth(sys.argv[1])

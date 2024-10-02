@@ -7,7 +7,7 @@ from praktika.utils import MetaClasses, Utils
 
 
 @dataclass
-class WorkflowRuntime(MetaClasses.Serializable):
+class RunConfig(MetaClasses.Serializable):
     name: str
     digest_jobs: Dict[str, str]
     digest_dockers: Dict[str, str]
@@ -26,8 +26,10 @@ class WorkflowRuntime(MetaClasses.Serializable):
                 cache_artifact
             )
         obj["cache_artifacts"] = cache_artifacts_deserialized
-        return WorkflowRuntime(**obj)
+        return RunConfig(**obj)
 
     @classmethod
     def file_name_static(cls, name):
-        return f"{Settings.RESULTS_DIR}/workflow_config_{Utils.normalize_string(name)}.json"
+        return (
+            f"{Settings.TEMP_DIR}/workflow_config_{Utils.normalize_string(name)}.json"
+        )

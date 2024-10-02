@@ -1,35 +1,111 @@
 import argparse
+import os
+import re
 import sys
+import traceback
 from pathlib import Path
 
-from praktika._settings import _Settings
+from praktika._environment import _Environment
 from praktika.artifact import Artifact
 from praktika.cidb import CIDB
-from praktika.hook_html import HtmlRunnerHooks
+from praktika.digest import Digest
 from praktika.hook_cache import CacheRunnerHooks
+from praktika.hook_html import HtmlRunnerHooks
 from praktika.mangle import _get_workflows
 from praktika.result import Result, ResultInfo
-from praktika.runtime import WorkflowRuntime
-from praktika._environment import _Environment
-from praktika.settings import Settings
-from praktika.utils import Shell, Utils, TeePopen
+from praktika.runtime import RunConfig
 from praktika.s3 import S3
+from praktika.settings import Settings
+from praktika.utils import Shell, TeePopen, Utils
 
 
 class Runner:
-    def pre_run(self, job_name, workflow_name):
-        # Update and dump environment
-        env = _Environment.from_env().dump()
-        print(f"Environment: [{env}]")
 
-        workflow = _get_workflows(name=workflow_name)[0]
-        print(f"Run pre-run script [{job_name}], workflow [{workflow.name}]")
+    @staticmethod
+    def generate_dummy_environment(workflow, job):
+        Shell.check(
+            f"mkdir -p {Settings.TEMP_DIR} {Settings.INPUT_DIR} {Settings.OUTPUT_DIR}"
+        )
+        _Environment(
+            WORKFLOW_NAME=workflow.name,
+            JOB_NAME=job.name,
+            REPOSITORY="",
+            BRANCH="",
+            SHA="",
+            PR_NUMBER=-1,
+            EVENT_TYPE="",
+            JOB_OUTPUT_STREAM="",
+            EVENT_FILE_PATH="",
+            CHANGE_URL="",
+            COMMIT_URL="",
+            BASE_BRANCH="",
+            RUN_URL="",
+            RUN_ID="",
+            INSTANCE_ID="",
+            INSTANCE_TYPE="",
+            INSTANCE_LIFE_CYCLE="",
+        ).dump()
+        workflow_config = RunConfig(
+            name=workflow.name,
+            digest_jobs={},
+            digest_dockers={},
+            sha="",
+            cache_success=[],
+            cache_success_base64=[],
+            cache_artifacts={},
+        )
+        for docker in workflow.dockers:
+            workflow_config.digest_dockers[docker.name] = Digest().calc_docker_digest(
+                docker, workflow.dockers
+            )
+        workflow_config.dump()
 
-        job = workflow.get_job(job_name)
-        assert job, "BUG"
+        Result.generate_pending(job.name).dump()
 
-        HtmlRunnerHooks.pre_run(workflow, job)
+    def setup_env(self, _workflow, _job):
+        # source env file to write data into fs (workflow config json, workflow status json)
+        Shell.check(f". {Settings.ENV_SETUP_SCRIPT}", verbose=True, strict=True)
 
+        # parse the same env script and apply envs from python so that this process sees them
+        with open(Settings.ENV_SETUP_SCRIPT, "r") as f:
+            content = f.read()
+        export_pattern = re.compile(
+            r"export (\w+)=\$\(cat<<\'EOF\'\n(.*?)EOF\n\)", re.DOTALL
+        )
+        matches = export_pattern.findall(content)
+        for key, value in matches:
+            value = value.strip()
+            os.environ[key] = value
+            print(f"Set environment variable {key}.")
+
+        # TODO: remove
+        os.environ["PYTHONPATH"] = os.getcwd()
+
+        print("Read GH Environment")
+        env = _Environment.from_env()
+        env.JOB_NAME = job.name
+        env.PARAMETER = job.parameter
+        env.dump()
+        print(env)
+
+        return 0
+
+    def pre_run(self, workflow, job):
+
+        env = _Environment.get()
+
+        result = Result(
+            name=job.name,
+            status=Result.Status.RUNNING,
+            start_time=Utils.timestamp(),
+        )
+        result.dump()
+
+        if workflow.enable_report and job.name != Settings.CI_CONFIG_JOB_NAME:
+            print("Update Job and Workflow Report")
+            HtmlRunnerHooks.pre_run(workflow, job)
+
+        print("Download required artifacts")
         required_artifacts = []
         if job.requires and workflow.artifacts:
             for requires_artifact_name in job.requires:
@@ -39,126 +115,103 @@ class Runner:
                         and artifact.type == Artifact.Type.S3
                     ):
                         required_artifacts.append(artifact)
-        print(f"Job requires s3 artifacts [{required_artifacts}]")
+        print(f"--- Job requires s3 artifacts [{required_artifacts}]")
         if workflow.enable_cache:
             prefixes = CacheRunnerHooks.pre_run(
                 _job=job, _workflow=workflow, _required_artifacts=required_artifacts
             )
         else:
-            prefixes = [S3.get_prefix(env.PR_NUMBER, env.BRANCH, env.SHA)] * len(
-                required_artifacts
-            )
+            prefixes = [env.get_s3_prefix()] * len(required_artifacts)
         for artifact, prefix in zip(required_artifacts, prefixes):
             s3_path = f"{Settings.S3_ARTIFACT_PATH}/{prefix}/{Utils.normalize_string(artifact._provided_by)}/{Path(artifact.path).name}"
             assert S3.copy_file_from_s3(s3_path=s3_path, local_path=Settings.INPUT_DIR)
 
-        # set pre-step ok in env
-        env.PRAKTIKA_PRERUN_STEP_EXIT_CODE = 0
-        env.dump()
-        return True
+        return 0
 
-    def run(self, job_name, workflow_name):
-        workflow = _get_workflows(name=workflow_name)[0]
-        print(f"Run script [{job_name}], workflow [{workflow.name}]")
-
-        if not workflow:
-            print(f"ERROR: failed to get workflow [{workflow.name}]")
-
-        job = workflow.get_job(job_name)
-        assert job
-        log_file = f"{_Settings.TEMP_DIR}/job_{Utils.normalize_string(job_name)}.log"
-        print(f"Run command [{job.command}], log file [{log_file}]")
+    def run(self, workflow, job):
         if job.run_in_docker:
-            # TODO: support any image, including not from ci
-            docker_tag = WorkflowRuntime.from_fs(workflow_name).digest_dockers[
+            # TODO: add support for any image, including not from ci config (e.g. ubuntu:latest)
+            docker_tag = RunConfig.from_fs(workflow.name).digest_dockers[
                 job.run_in_docker
             ]
-            cmd = f"docker run --rm -e PYTHONPATH='{_Settings.DOCKER_WD}' --volume ./:{_Settings.DOCKER_WD} --volume {_Settings.TEMP_DIR}:{_Settings.TEMP_DIR} --workdir={_Settings.DOCKER_WD} {job.run_in_docker}:{docker_tag} {job.command}"
+            cmd = f"docker run --rm --user \"$(id -u):$(id -g)\" -e PYTHONPATH='{Settings.DOCKER_WD}' --volume ./:{Settings.DOCKER_WD} --volume {Settings.TEMP_DIR}:{Settings.TEMP_DIR} --workdir={Settings.DOCKER_WD} {job.run_in_docker}:{docker_tag} {job.command}"
         else:
             cmd = job.command
+        print(f"--- Run command [{cmd}]")
 
         with TeePopen(cmd, timeout=job.timeout) as process:
             exit_code = process.wait()
 
-            result = Result.from_fs(job_name)
-            if process.timeout_exceeded:
-                print(
-                    f"WARNING: Job timed out: [{job_name}], timeout [{job.timeout}], exit code [{exit_code}]"
-                )
-                if not result.is_completed() or result.is_ok():
-                    result.set_status(Result.Status.ERROR)
-                result.set_info(ResultInfo.TIMEOUT)
-            elif exit_code != 0:
-                result.set_status(Result.Status.ERROR).set_info(ResultInfo.KILLED)
+            result = Result.from_fs(job.name)
+            if exit_code != 0:
+                if process.timeout_exceeded:
+                    print(
+                        f"WARNING: Job timed out: [{job.name}], timeout [{job.timeout}], exit code [{exit_code}]"
+                    )
+                    if not result.is_completed():
+                        result.set_status(Result.Status.ERROR).set_info(
+                            ResultInfo.TIMEOUT
+                        )
+                else:
+                    result.set_status(Result.Status.ERROR).set_info(ResultInfo.KILLED)
             result.dump()
 
-        env = _Environment.get()
-        env.PRAKTIKA_RUN_STEP_EXIT_CODE = exit_code
-        env.dump()
+        return exit_code
 
-        if exit_code != 0:
-            print(f"run command failed with exit code [{exit_code}]")
-
-        return exit_code == 0
-
-    def post_run(self, job_name, workflow_name):
-        print(f"Run post-run script [{job_name}], workflow [{workflow_name}]")
+    def post_run(
+        self, workflow, job, setup_env_exit_code, prerun_exit_code, run_exit_code
+    ):
         info_errors = []
-        workflow = _get_workflows(name=workflow_name)[0]
-        job = workflow.get_job(job_name)
-        assert job, "BUG"
         env = _Environment.get()
+        result_exist = Result.exist(job.name)
 
-        if not env.setup_ok():
-            info = "ERROR: Set up Env step failed. praktika bug or misconfiguration"
+        if setup_env_exit_code != 0:
+            info = f"ERROR: {ResultInfo.SETUP_ENV_JOB_FAILED}"
             print(info)
             # set Result with error and logs
             Result(
-                name=job_name,
+                name=job.name,
                 status=Result.Status.ERROR,
                 start_time=Utils.timestamp(),
                 duration=0.0,
-                info=ResultInfo.SETUP_ENV_JOB_FAILED,
+                info=info,
             ).dump()
-        elif not env.prerun_ok():
-            info = "ERROR: Prerun step failed. praktika bug or misconfiguration"
+        elif prerun_exit_code != 0:
+            info = f"ERROR: {ResultInfo.PRE_JOB_FAILED}"
             print(info)
             # set Result with error and logs
             Result(
-                name=job_name,
+                name=job.name,
                 status=Result.Status.ERROR,
                 start_time=Utils.timestamp(),
                 duration=0.0,
-                info=ResultInfo.PRE_JOB_FAILED,
-                files=[Settings.PRE_LOG],
+                info=info,
             ).dump()
-
-        if not Result.exist(job_name):
+        elif not result_exist:
+            info = f"ERROR: {ResultInfo.NOT_FOUND_IMPOSSIBLE}"
+            print(info)
             Result(
-                name=job_name,
+                name=job.name,
                 start_time=Utils.timestamp(),
                 duration=None,
                 status=Result.Status.ERROR,
                 info=ResultInfo.NOT_FOUND_IMPOSSIBLE,
             ).dump()
-            print(f"ERROR: {ResultInfo.NOT_FOUND_IMPOSSIBLE}")
 
-        result = Result.from_fs(job_name)
+        result = Result.from_fs(job.name)
 
         if not result.is_completed():
-            result.info = ResultInfo.KILLED
-            result.status = Result.Status.ERROR
-            print(f"ERROR: {ResultInfo.KILLED}")
+            info = f"ERROR: {ResultInfo.KILLED}"
+            print(info)
+            result.set_info(info).set_status(Result.Status.ERROR).dump()
 
-        if env.prerun_ok():
-            result.set_files(files=[Settings.RUN_LOG])
+        result.set_files(files=[Settings.RUN_LOG])
         result.update_duration().dump()
 
-        if not env.run_ok() and result.info:
+        if result.info and result.status != Result.Status.SUCCESS:
             # provide job info to workflow level
             info_errors.append(result.info)
 
-        run_exit_code = env.PRAKTIKA_RUN_STEP_EXIT_CODE
         if run_exit_code == 0:
             providing_artifacts = []
             if job.provides and workflow.artifacts:
@@ -172,14 +225,22 @@ class Runner:
             if providing_artifacts:
                 print(f"Job provides s3 artifacts [{providing_artifacts}]")
                 for artifact in providing_artifacts:
-                    assert Shell.check(
-                        f"ls -l {artifact.path}", verbose=True
-                    ), f"Artifact {artifact.path} not found"
-                    s3_path = f"{Settings.S3_ARTIFACT_PATH}/{S3.get_prefix(env.PR_NUMBER , env.BRANCH , env.SHA)}/{Utils.normalize_string(env.JOB_NAME)}"
-                    link = S3.copy_file_to_s3(s3_path=s3_path, local_path=artifact.path)
-                    result.set_link(link)
-        else:
-            print(f"Job exit code [{run_exit_code} != 0] - skip artifact upload")
+                    try:
+                        assert Shell.check(
+                            f"ls -l {artifact.path}", verbose=True
+                        ), f"Artifact {artifact.path} not found"
+                        s3_path = f"{Settings.S3_ARTIFACT_PATH}/{env.get_s3_prefix()}/{Utils.normalize_string(env.JOB_NAME)}"
+                        link = S3.copy_file_to_s3(
+                            s3_path=s3_path, local_path=artifact.path
+                        )
+                        result.set_link(link)
+                    except Exception as e:
+                        error = (
+                            f"ERROR: Failed to upload artifact [{artifact}], ex [{e}]"
+                        )
+                        print(error)
+                        info_errors.append(error)
+                        result.set_status(Result.Status.ERROR)
 
         if workflow.enable_cidb:
             print("Insert results to CIDB")
@@ -195,13 +256,17 @@ class Runner:
                 print(error)
                 info_errors.append(error)
 
-        if workflow.enable_html:
-            HtmlRunnerHooks.post_run(workflow, job, info_errors)
+        result.dump()
 
         # always in the end
-        if run_exit_code == 0:
-            if workflow.enable_cache:
+        if workflow.enable_cache:
+            print(f"Run CI cache hook")
+            if result.is_ok():
                 CacheRunnerHooks.post_run(workflow, job)
+
+        if workflow.enable_report:
+            print(f"Run html report hook")
+            HtmlRunnerHooks.post_run(workflow, job, info_errors)
 
         return True
 
@@ -237,22 +302,58 @@ def parse_args():
 if __name__ == "__main__":
     args, parser = parse_args()
 
+    assert (
+        args.job_name and args.workflow_name
+    ), f"--job-name and --workflow-name required with --run"
     res = False
-    if args.pre_run:
-        assert (
-            args.job_name and args.workflow_name
-        ), f"--job-name required with --pre-run"
-        res = Runner().pre_run(args.job_name, args.workflow_name)
-    elif args.run:
-        assert args.job_name and args.workflow_name, f"--job-name required with --run"
-        res = Runner().run(args.job_name, args.workflow_name)
-    elif args.post_run:
-        assert (
-            args.job_name and args.workflow_name
-        ), f"--job-name required with --post-run"
-        res = Runner().post_run(args.job_name, args.workflow_name)
-    else:
-        assert False
+    setup_env_code = -10
+    prerun_code = -10
+    run_code = -10
+
+    workflow = _get_workflows(name=args.workflow_name)[0]
+    job = workflow.get_job(args.job_name)
+
+    print(f"\n\n=== Setup env script [{job.name}], workflow [{workflow.name}] ===")
+    try:
+        setup_env_code = Runner().setup_env(workflow, job)
+        # Source the bash script and capture the environment variables
+        res = setup_env_code == 0
+        if not res:
+            print(f"ERROR: Setup env script failed with exit code [{setup_env_code}]")
+    except Exception as e:
+        print(f"ERROR: Setup env script failed with exception [{e}]")
+        traceback.print_exc()
+    print(f"=== Setup env finished ===\n\n")
+
+    if res:
+        res = False
+        print(f"=== Pre run script [{job.name}], workflow [{workflow.name}] ===")
+        try:
+            prerun_code = Runner().pre_run(workflow, job)
+            res = prerun_code == 0
+            if not res:
+                print(f"ERROR: Pre-run failed with exit code [{prerun_code}]")
+        except Exception as e:
+            print(f"ERROR: Pre-run script failed with exception [{e}]")
+            traceback.print_exc()
+        print(f"=== Pre run finished ===\n\n")
+
+    if res:
+        res = False
+        print(f"=== Run script [{job.name}], workflow [{workflow.name}] ===")
+        try:
+            run_code = Runner().run(workflow, job)
+            res = run_code == 0
+            if not res:
+                print(f"ERROR: Run failed with exit code [{run_code}]")
+        except Exception as e:
+            print(f"ERROR: Run script failed with exception [{e}]")
+            traceback.print_exc()
+        print(f"=== Run scrip finished ===\n\n")
+
+    print(f"=== Post run script [{job.name}], workflow [{workflow.name}] ===")
+    Runner().post_run(workflow, job, setup_env_code, prerun_code, run_code)
+    print(f"=== Post run scrip finished ===")
 
     if not res:
         sys.exit(1)

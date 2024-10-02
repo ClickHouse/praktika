@@ -1,7 +1,7 @@
 from typing import List
 
-from praktika import Job, Workflow, Secret
 from ci.settings.my_settings import RunnerLabels
+from praktika import Job, Secret, Workflow
 
 
 class JobNames:
@@ -9,7 +9,7 @@ class JobNames:
 
 
 class WorkflowNames:
-    NAME = "Example CI DB, HTML"
+    NAME = "Example CI DB, Report"
 
 
 workflow = Workflow.Config(
@@ -22,7 +22,7 @@ workflow = Workflow.Config(
             runs_on=[RunnerLabels.SMALL_FIXED],
             command="python3 ./ci/tests/example_2/some_job_script.py",
             job_requirements=Job.Requirements(
-                python_requirements_txt="./requirements.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
             digest_config=Job.CacheDigestConfig(
                 include_paths=["./ci/tests/example_2/some_job_script.py"],
@@ -40,16 +40,8 @@ workflow = Workflow.Config(
             name="CI_DB_PASSWORD",
             type=Secret.Type.GH_SECRET,
         ),
-        Secret.Config(
-            name="GH_APP_ID",
-            type=Secret.Type.GH_SECRET,
-        ),
-        Secret.Config(
-            name="GH_APP_PEM_KEY",
-            type=Secret.Type.GH_SECRET,
-        ),
     ],
-    enable_html=True,
+    enable_report=True,
     # example: enable ci db
     enable_cidb=True,
 )

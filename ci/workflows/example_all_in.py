@@ -1,7 +1,7 @@
 from typing import List
 
 from ci.settings.my_settings import RunnerLabels
-from praktika import Job, Workflow, Secret, Artifact
+from praktika import Artifact, Job, Secret, Workflow
 
 
 class JobNames:
@@ -33,7 +33,7 @@ workflow_pr = Workflow.Config(
             provides=[],
             command="python3 ./ci/tests/example_2/some_job_script.py",
             job_requirements=Job.Requirements(
-                python_requirements_txt="requirements.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
         ),
         Job.Config(
@@ -44,7 +44,7 @@ workflow_pr = Workflow.Config(
             provides=[greet_artifact.name],
             command=f"echo Hello > {greet_artifact.path}; python3 ./ci/tests/example_2/some_job_script.py",
             job_requirements=Job.Requirements(
-                python_requirements_txt="requirements.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
             # enable ci cache for this job
             digest_config=Job.CacheDigestConfig(
@@ -59,7 +59,7 @@ workflow_pr = Workflow.Config(
             runs_on=[RunnerLabels.SMALL_FIXED],
             command="python3 ./ci/tests/example_3/script_for_parametrized_job.py",
             job_requirements=Job.Requirements(
-                python_requirements_txt="requirements.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
             # digest_config=Job.CacheDigestConfig(
             #     include_paths=["./ci/tests/example_3/script_for_parametrized_job.py"],
@@ -88,18 +88,10 @@ workflow_pr = Workflow.Config(
             name="CI_DB_PASSWORD",
             type=Secret.Type.GH_SECRET,
         ),
-        Secret.Config(
-            name="GH_APP_ID",
-            type=Secret.Type.GH_SECRET,
-        ),
-        Secret.Config(
-            name="GH_APP_PEM_KEY",
-            type=Secret.Type.GH_SECRET,
-        ),
     ],
     artifacts=[greet_artifact],
     # enable HTML Report
-    enable_html=True,
+    enable_report=True,
     # enable CI Cache
     enable_cache=True,
     # enable cumulative merge than ready GH status

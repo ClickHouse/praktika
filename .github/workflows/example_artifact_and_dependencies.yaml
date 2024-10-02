@@ -14,6 +14,10 @@ concurrency:
 env:
   # Force the stdout and stderr streams to be unbuffered
   PYTHONUNBUFFERED: 1
+  GH_TOKEN: ${{ github.token }}
+
+# Allow updating GH commit statuses and PR comments to post an actual job reports link
+permissions: write-all
 
 jobs:
 
@@ -34,50 +38,31 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          #pip install praktika
+          sudo apt-get update && sudo apt install -y python3-pip
+          # TODO: --break-system-packages? otherwise ubuntu's apt/apt-get complains
+          python3 -m pip install --upgrade pip --break-system-packages
+          pip3 install -r ./ci/requirements.txt --break-system-packages
 
-      - name: Set up env
+      - name: Prepare env script
         run: |
+          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+
+          cat > /tmp/praktika/workflow_config_example_artifact_and_dependencies.json << 'EOF'
+          ${{ needs.config_workflow.outputs.data }}
+          EOF
+          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          ${{ toJson(needs) }}
+          EOF
+          ENV_SETUP_SCRIPT_EOF
+
           rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output /tmp/praktika/results
-          echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
-          echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
-          echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
-          echo "JOB_NAME=Provide Artifact" >> "$GITHUB_ENV"
-          export PYTHONPATH=$(pwd)
-          echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          cat /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          echo "::group::GITHUB ENV"
-          env | grep GITHUB ||:
-          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
-          echo "::endgroup::"
-          echo "::group::CI ENV"
-          env | grep CI_ ||:
-          echo "::endgroup::"
-          echo "::group::GH ENV"
-          env | grep GH_ ||:
-          echo "::endgroup::"
-          echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
-
-      - name: Pre
-        run: |
-          set -o pipefail
-          python -m praktika.runner --pre-run --job-name '''Provide Artifact''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/pre_run.log
+          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name '''Provide Artifact''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/run.log
-
-      - name: Post
-        if: ${{ !cancelled() }}
-        run: |
-          set -o pipefail
-          python -m praktika.runner --post-run --job-name '''Provide Artifact''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --job-name '''Provide Artifact''' --workflow-name "Example Artifact And Dependencies" |& tee /tmp/praktika/praktika_run.log
 
       - name: Upload artifact greet
         uses: actions/upload-artifact@v4
@@ -102,33 +87,25 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          #pip install praktika
+          sudo apt-get update && sudo apt install -y python3-pip
+          # TODO: --break-system-packages? otherwise ubuntu's apt/apt-get complains
+          python3 -m pip install --upgrade pip --break-system-packages
+          pip3 install -r ./ci/requirements.txt --break-system-packages
 
-      - name: Set up env
+      - name: Prepare env script
         run: |
+          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+
+          cat > /tmp/praktika/workflow_config_example_artifact_and_dependencies.json << 'EOF'
+          ${{ needs.config_workflow.outputs.data }}
+          EOF
+          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          ${{ toJson(needs) }}
+          EOF
+          ENV_SETUP_SCRIPT_EOF
+
           rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output /tmp/praktika/results
-          echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
-          echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
-          echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
-          echo "JOB_NAME=Consume Artifact" >> "$GITHUB_ENV"
-          export PYTHONPATH=$(pwd)
-          echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          cat /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          echo "::group::GITHUB ENV"
-          env | grep GITHUB ||:
-          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
-          echo "::endgroup::"
-          echo "::group::CI ENV"
-          env | grep CI_ ||:
-          echo "::endgroup::"
-          echo "::group::GH ENV"
-          env | grep GH_ ||:
-          echo "::endgroup::"
-          echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
+          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
 
       - name: Download artifact greet
         uses: actions/download-artifact@v4
@@ -136,22 +113,11 @@ jobs:
           name: greet
           path: /tmp/praktika/input
 
-      - name: Pre
-        run: |
-          set -o pipefail
-          python -m praktika.runner --pre-run --job-name '''Consume Artifact''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/pre_run.log
-
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name '''Consume Artifact''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/run.log
-
-      - name: Post
-        if: ${{ !cancelled() }}
-        run: |
-          set -o pipefail
-          python -m praktika.runner --post-run --job-name '''Consume Artifact''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --job-name '''Consume Artifact''' --workflow-name "Example Artifact And Dependencies" |& tee /tmp/praktika/praktika_run.log
 
   job_a_starting_at_the_beginning:
     runs-on: [ubuntu-latest]
@@ -170,50 +136,31 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          #pip install praktika
+          sudo apt-get update && sudo apt install -y python3-pip
+          # TODO: --break-system-packages? otherwise ubuntu's apt/apt-get complains
+          python3 -m pip install --upgrade pip --break-system-packages
+          pip3 install -r ./ci/requirements.txt --break-system-packages
 
-      - name: Set up env
+      - name: Prepare env script
         run: |
+          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+
+          cat > /tmp/praktika/workflow_config_example_artifact_and_dependencies.json << 'EOF'
+          ${{ needs.config_workflow.outputs.data }}
+          EOF
+          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          ${{ toJson(needs) }}
+          EOF
+          ENV_SETUP_SCRIPT_EOF
+
           rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output /tmp/praktika/results
-          echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
-          echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
-          echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
-          echo "JOB_NAME=Job A starting at the beginning" >> "$GITHUB_ENV"
-          export PYTHONPATH=$(pwd)
-          echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          cat /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          echo "::group::GITHUB ENV"
-          env | grep GITHUB ||:
-          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
-          echo "::endgroup::"
-          echo "::group::CI ENV"
-          env | grep CI_ ||:
-          echo "::endgroup::"
-          echo "::group::GH ENV"
-          env | grep GH_ ||:
-          echo "::endgroup::"
-          echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
-
-      - name: Pre
-        run: |
-          set -o pipefail
-          python -m praktika.runner --pre-run --job-name '''Job A starting at the beginning''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/pre_run.log
+          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name '''Job A starting at the beginning''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/run.log
-
-      - name: Post
-        if: ${{ !cancelled() }}
-        run: |
-          set -o pipefail
-          python -m praktika.runner --post-run --job-name '''Job A starting at the beginning''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --job-name '''Job A starting at the beginning''' --workflow-name "Example Artifact And Dependencies" |& tee /tmp/praktika/praktika_run.log
 
   job_b_starting_at_the_beginning:
     runs-on: [ubuntu-latest]
@@ -232,50 +179,31 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          #pip install praktika
+          sudo apt-get update && sudo apt install -y python3-pip
+          # TODO: --break-system-packages? otherwise ubuntu's apt/apt-get complains
+          python3 -m pip install --upgrade pip --break-system-packages
+          pip3 install -r ./ci/requirements.txt --break-system-packages
 
-      - name: Set up env
+      - name: Prepare env script
         run: |
+          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+
+          cat > /tmp/praktika/workflow_config_example_artifact_and_dependencies.json << 'EOF'
+          ${{ needs.config_workflow.outputs.data }}
+          EOF
+          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          ${{ toJson(needs) }}
+          EOF
+          ENV_SETUP_SCRIPT_EOF
+
           rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output /tmp/praktika/results
-          echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
-          echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
-          echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
-          echo "JOB_NAME=Job B starting at the beginning" >> "$GITHUB_ENV"
-          export PYTHONPATH=$(pwd)
-          echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          cat /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          echo "::group::GITHUB ENV"
-          env | grep GITHUB ||:
-          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
-          echo "::endgroup::"
-          echo "::group::CI ENV"
-          env | grep CI_ ||:
-          echo "::endgroup::"
-          echo "::group::GH ENV"
-          env | grep GH_ ||:
-          echo "::endgroup::"
-          echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
-
-      - name: Pre
-        run: |
-          set -o pipefail
-          python -m praktika.runner --pre-run --job-name '''Job B starting at the beginning''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/pre_run.log
+          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name '''Job B starting at the beginning''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/run.log
-
-      - name: Post
-        if: ${{ !cancelled() }}
-        run: |
-          set -o pipefail
-          python -m praktika.runner --post-run --job-name '''Job B starting at the beginning''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --job-name '''Job B starting at the beginning''' --workflow-name "Example Artifact And Dependencies" |& tee /tmp/praktika/praktika_run.log
 
   job_c_starting_after_job_a_and_b_is_done:
     runs-on: [ubuntu-latest]
@@ -294,50 +222,31 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          #pip install praktika
+          sudo apt-get update && sudo apt install -y python3-pip
+          # TODO: --break-system-packages? otherwise ubuntu's apt/apt-get complains
+          python3 -m pip install --upgrade pip --break-system-packages
+          pip3 install -r ./ci/requirements.txt --break-system-packages
 
-      - name: Set up env
+      - name: Prepare env script
         run: |
+          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+
+          cat > /tmp/praktika/workflow_config_example_artifact_and_dependencies.json << 'EOF'
+          ${{ needs.config_workflow.outputs.data }}
+          EOF
+          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          ${{ toJson(needs) }}
+          EOF
+          ENV_SETUP_SCRIPT_EOF
+
           rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output /tmp/praktika/results
-          echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
-          echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
-          echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
-          echo "JOB_NAME=Job C starting after Job A and B is done" >> "$GITHUB_ENV"
-          export PYTHONPATH=$(pwd)
-          echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          cat /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          echo "::group::GITHUB ENV"
-          env | grep GITHUB ||:
-          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
-          echo "::endgroup::"
-          echo "::group::CI ENV"
-          env | grep CI_ ||:
-          echo "::endgroup::"
-          echo "::group::GH ENV"
-          env | grep GH_ ||:
-          echo "::endgroup::"
-          echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
-
-      - name: Pre
-        run: |
-          set -o pipefail
-          python -m praktika.runner --pre-run --job-name '''Job C starting after Job A and B is done''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/pre_run.log
+          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name '''Job C starting after Job A and B is done''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/run.log
-
-      - name: Post
-        if: ${{ !cancelled() }}
-        run: |
-          set -o pipefail
-          python -m praktika.runner --post-run --job-name '''Job C starting after Job A and B is done''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --job-name '''Job C starting after Job A and B is done''' --workflow-name "Example Artifact And Dependencies" |& tee /tmp/praktika/praktika_run.log
 
   job_d_starting_after_job_c_is_done:
     runs-on: [ubuntu-latest]
@@ -356,47 +265,28 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          #pip install praktika
+          sudo apt-get update && sudo apt install -y python3-pip
+          # TODO: --break-system-packages? otherwise ubuntu's apt/apt-get complains
+          python3 -m pip install --upgrade pip --break-system-packages
+          pip3 install -r ./ci/requirements.txt --break-system-packages
 
-      - name: Set up env
+      - name: Prepare env script
         run: |
+          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+
+          cat > /tmp/praktika/workflow_config_example_artifact_and_dependencies.json << 'EOF'
+          ${{ needs.config_workflow.outputs.data }}
+          EOF
+          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          ${{ toJson(needs) }}
+          EOF
+          ENV_SETUP_SCRIPT_EOF
+
           rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output /tmp/praktika/results
-          echo "TEMP_DIR=$(readlink -f /tmp/praktika)" >> "$GITHUB_ENV"
-          echo "INPUT_DIR=$(readlink -f /tmp/praktika/input)" >> "$GITHUB_ENV"
-          echo "OUTPUT_DIR=$(readlink -f /tmp/praktika/output)" >> "$GITHUB_ENV"
-          echo "JOB_NAME=Job D starting after Job C is done" >> "$GITHUB_ENV"
-          export PYTHONPATH=$(pwd)
-          echo PYTHONPATH=$PYTHONPATH >> "$GITHUB_ENV"
-          echo '''${{ needs.config_workflow.outputs.data }}''' > /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          cat /tmp/praktika/results/workflow_config_example_artifact_and_dependencies.json
-          echo "::group::GITHUB ENV"
-          env | grep GITHUB ||:
-          env | grep -q GITHUB_EVENT_PATH && cat "$GITHUB_EVENT_PATH" ||:
-          echo "::endgroup::"
-          echo "::group::CI ENV"
-          env | grep CI_ ||:
-          echo "::endgroup::"
-          echo "::group::GH ENV"
-          env | grep GH_ ||:
-          echo "::endgroup::"
-          echo "PRAKTIKA_SETUP_STEP_EXIT_CODE=0" >> "$GITHUB_ENV"
-
-      - name: Pre
-        run: |
-          set -o pipefail
-          python -m praktika.runner --pre-run --job-name '''Job D starting after Job C is done''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/pre_run.log
+          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
 
       - name: Run
         id: run
         run: |
           set -o pipefail
-          python -m praktika.runner --run --job-name '''Job D starting after Job C is done''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/run.log
-
-      - name: Post
-        if: ${{ !cancelled() }}
-        run: |
-          set -o pipefail
-          python -m praktika.runner --post-run --job-name '''Job D starting after Job C is done''' --workflow-name "Example Artifact And Dependencies" 2>&1 | tee /tmp/praktika/post_run.log
+          python3 -m praktika.runner --job-name '''Job D starting after Job C is done''' --workflow-name "Example Artifact And Dependencies" |& tee /tmp/praktika/praktika_run.log

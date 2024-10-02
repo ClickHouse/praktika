@@ -1,4 +1,5 @@
 import unittest
+
 from praktika.settings import Settings
 
 

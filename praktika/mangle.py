@@ -1,11 +1,11 @@
 import copy
 import importlib.util
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict
 
 from praktika import Job
+from praktika._settings import _USER_DEFINED_SETTINGS, _Settings
 from praktika.utils import ContextManager
-from praktika._settings import _Settings, _USER_DEFINED_SETTINGS
 
 
 def _get_workflows(name=None, file=None):
@@ -43,7 +43,9 @@ def _get_workflows(name=None, file=None):
                 print(
                     f"WARNING: Failed to add WORKFLOWS config from [{module_name}], exception [{e}]"
                 )
-    assert res
+    if not res:
+        print(f"ERROR: failed to find workflow [{name or file}]")
+        raise RuntimeError()
     for workflow in res:
         # add native jobs
         _update_workflow_with_native_jobs(workflow)
@@ -85,15 +87,13 @@ def _update_workflow_with_native_jobs(workflow):
 
     if (
         workflow.enable_cache
-        or workflow.enable_html
+        or workflow.enable_report
         or workflow.enable_merge_ready_status
     ):
         from praktika.native_jobs import _workflow_config_job
 
         print(f"Enable native job [{_workflow_config_job.name}] for [{workflow.name}]")
         aux_job = copy.deepcopy(_workflow_config_job)
-        if workflow.enable_html:
-            aux_job.job_requirements.gh_app_auth = True
         workflow.jobs.insert(0, aux_job)
         for job in workflow.jobs[1:]:
             if not job.requires:
@@ -116,22 +116,22 @@ def _get_user_settings() -> Dict[str, Any]:
     """
     res = {}  # type: Dict[str, Any]
 
-    with ContextManager.cd():
-        directory = Path(_Settings.SETTINGS_DIRECTORY)
-        for py_file in directory.glob("*.py"):
-            module_name = py_file.name.removeprefix(".py")
-            spec = importlib.util.spec_from_file_location(
-                module_name, f"{_Settings.SETTINGS_DIRECTORY}/{module_name}"
-            )
-            assert spec
-            foo = importlib.util.module_from_spec(spec)
-            assert spec.loader
-            spec.loader.exec_module(foo)
-            for setting in _USER_DEFINED_SETTINGS:
-                try:
-                    value = getattr(foo, setting)
-                    res[setting] = value
-                    print(f"Apply user defined setting [{setting} = {value}]")
-                except Exception as e:
-                    pass
+    directory = Path(_Settings.SETTINGS_DIRECTORY)
+    for py_file in directory.glob("*.py"):
+        module_name = py_file.name.removeprefix(".py")
+        spec = importlib.util.spec_from_file_location(
+            module_name, f"{_Settings.SETTINGS_DIRECTORY}/{module_name}"
+        )
+        assert spec
+        foo = importlib.util.module_from_spec(spec)
+        assert spec.loader
+        spec.loader.exec_module(foo)
+        for setting in _USER_DEFINED_SETTINGS:
+            try:
+                value = getattr(foo, setting)
+                res[setting] = value
+                print(f"Apply user defined setting [{setting} = {value}]")
+            except Exception as e:
+                pass
+
     return res

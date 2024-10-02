@@ -2,39 +2,44 @@ import sys
 from typing import Dict
 
 from praktika import Job, Workflow
+from praktika._environment import _Environment
 from praktika.cidb import CIDB
 from praktika.digest import Digest
 from praktika.docker import Docker
-from praktika._environment import _Environment
 from praktika.gh import GH
 from praktika.hook_cache import CacheRunnerHooks
 from praktika.hook_html import HtmlRunnerHooks
 from praktika.mangle import _get_workflows
 from praktika.result import Result, ResultInfo
-from praktika.runtime import WorkflowRuntime
+from praktika.runtime import RunConfig
+from praktika.s3 import S3
 from praktika.settings import Settings
-from praktika.utils import Utils, Shell
+from praktika.utils import Shell, Utils
 
 assert Settings.CI_CONFIG_RUNS_ON
 
-# TODO: think about dependencies requirements_with_gh_auth.txt.
-#   it's not there outside of this repo
 _workflow_config_job = Job.Config(
     name=Settings.CI_CONFIG_JOB_NAME,
     runs_on=Settings.CI_CONFIG_RUNS_ON,
-    job_requirements=Job.Requirements(
-        python=True,
-        python_requirements_txt="requirements_with_gh_auth.txt",
+    job_requirements=(
+        Job.Requirements(
+            python=Settings.INSTALL_PYTHON_FOR_NATIVE_JOBS,
+            python_requirements_txt=Settings.INSTALL_PYTHON_REQS_FOR_NATIVE_JOBS,
+        )
+        if Settings.INSTALL_PYTHON_REQS_FOR_NATIVE_JOBS
+        else None
     ),
     command=f"{Settings.PYTHON_INTERPRETER} -m praktika.native_jobs '{Settings.CI_CONFIG_JOB_NAME}'",
 )
 
 _docker_build_job = Job.Config(
     name=Settings.DOCKER_BUILD_JOB_NAME,
-    runs_on=Settings.CI_CONFIG_RUNS_ON,
+    runs_on=Settings.DOCKER_BUILD_RUNS_ON,
     job_requirements=Job.Requirements(
-        python=True,
+        python=Settings.INSTALL_PYTHON_FOR_NATIVE_JOBS,
+        python_requirements_txt="",
     ),
+    timeout=4 * 3600,
     command=f"{Settings.PYTHON_INTERPRETER} -m praktika.native_jobs '{Settings.DOCKER_BUILD_JOB_NAME}'",
 )
 
@@ -42,7 +47,8 @@ _final_job = Job.Config(
     name=Settings.FINISH_WORKFLOW_JOB_NAME,
     runs_on=Settings.CI_CONFIG_RUNS_ON,
     job_requirements=Job.Requirements(
-        python=True,
+        python=Settings.INSTALL_PYTHON_FOR_NATIVE_JOBS,
+        python_requirements_txt="",
     ),
     command=f"{Settings.PYTHON_INTERPRETER} -m praktika.native_jobs '{Settings.FINISH_WORKFLOW_JOB_NAME}'",
     run_unless_cancelled=True,
@@ -86,18 +92,17 @@ def _build_dockers(workflow, job_name):
                 docker.name not in ready
             ), f"All docker names must be uniq [{dockers}]"
             stopwatch = Utils.Stopwatch()
-            digest = Digest().calc_docker_digest(docker, dockers)
-            info = f"tag: {digest}"
+            info = f"{docker.name}:{docker_digests[docker.name]}"
             log_file = f"{Settings.OUTPUT_DIR}/docker_{Utils.normalize_string(docker.name)}.log"
             files = []
 
-            out, code = Shell.get_output_and_code(
+            out, err, code = Shell.get_output_and_code(
                 f"docker manifest inspect {docker.name}:{docker_digests[docker.name]}"
             )
             print(
-                f"Docker inspect results for {docker.name}:{docker_digests[docker.name]}: exit code [{code}], output [{out}]"
+                f"Docker inspect results for {docker.name}:{docker_digests[docker.name]}: exit code [{code}], out [{out}], err [{err}]"
             )
-            if "no such manifest" in out:
+            if "no such manifest" in err:
                 ret_code = Docker.build(
                     docker, log_file=log_file, digests=docker_digests, add_latest=False
                 )
@@ -133,11 +138,10 @@ def _build_dockers(workflow, job_name):
 
 
 def _config_workflow(workflow: Workflow.Config, job_name):
-
     def _check_yaml_up_to_date():
         print("Check workflows are up to date")
         stop_watch = Utils.Stopwatch()
-        output, exit_code = Shell.get_output_and_code(
+        output, err, exit_code = Shell.get_output_and_code(
             f"git diff-index HEAD -- {Settings.WORKFLOW_PATH_PREFIX}"
         )
         info = ""
@@ -148,7 +152,7 @@ def _config_workflow(workflow: Workflow.Config, job_name):
             print("ERROR: ", info)
         else:
             Shell.check(f"{Settings.PYTHON_INTERPRETER} -m praktika --generate")
-            output, exit_code = Shell.get_output_and_code(
+            output, err, exit_code = Shell.get_output_and_code(
                 f"git diff-index HEAD -- {Settings.WORKFLOW_PATH_PREFIX}"
             )
             if exit_code != 0:
@@ -169,21 +173,20 @@ def _config_workflow(workflow: Workflow.Config, job_name):
 
     def _check_secrets(secrets):
         print("Check Secrets")
-        info = ""
         stop_watch = Utils.Stopwatch()
-        failed_secrets = []
+        infos = []
         for secret_config in secrets:
-            if not secret_config.get_value():
-                failed_secrets.append(secret_config.name)
-        if failed_secrets:
-            info = f"Secrets cannot be retrieved: {', '.join(failed_secrets)}"
+            value = secret_config.get_value()
+            if not value:
+                info = f"ERROR: Failed to read secret [{secret_config.name}]"
+                infos.append(info)
+                print(info)
 
+        info = "\n".join(infos)
         return (
             Result(
                 name="Check Secrets",
-                status=(
-                    Result.Status.FAILED if failed_secrets else Result.Status.SUCCESS
-                ),
+                status=(Result.Status.FAILED if infos else Result.Status.SUCCESS),
                 start_time=stop_watch.start_time,
                 duration=stop_watch.duration,
                 info=info,
@@ -214,7 +217,7 @@ def _config_workflow(workflow: Workflow.Config, job_name):
     info_lines = []
     job_status = Result.Status.SUCCESS
 
-    workflow_config = WorkflowRuntime(
+    workflow_config = RunConfig(
         name=workflow.name,
         digest_jobs={},
         digest_dockers={},
@@ -235,7 +238,7 @@ def _config_workflow(workflow: Workflow.Config, job_name):
     if workflow.secrets:
         result_, info = _check_secrets(workflow.secrets)
         if result_.status != Result.Status.SUCCESS:
-            print(f"ERROR: Secrets [{workflow.secrets}] are invalid")
+            print(f"ERROR: Invalid secrets in workflow [{workflow.name}]")
             job_status = Result.Status.ERROR
             info_lines.append(job_name + ": " + info)
         results.append(result_)
@@ -259,32 +262,28 @@ def _config_workflow(workflow: Workflow.Config, job_name):
         workflow_config.dump()
 
     if workflow.enable_cache:
-        print("Check cache")
+        print("Cache Lookup")
         stop_watch = Utils.Stopwatch()
         workflow_config = CacheRunnerHooks.configure(workflow)
-        # TODO: return result from function configure() call?
         results.append(
             Result(
-                name="CacheConfig",
+                name="Cache Lookup",
                 status=Result.Status.SUCCESS,
                 start_time=stop_watch.start_time,
                 duration=stop_watch.duration,
             )
         )
-        files.append(WorkflowRuntime.file_name_static(workflow.name))
+        files.append(RunConfig.file_name_static(workflow.name))
 
     workflow_config.dump()
 
-    if workflow.enable_html:
-        # must follow CacheRunnerHooks.configure(workflow) call,
-        #   to see jobs to skip
-        print("Check report")
+    if workflow.enable_report:
+        print("Init report")
         stop_watch = Utils.Stopwatch()
         HtmlRunnerHooks.configure(workflow)
-        # TODO: return result from function configure() call?
         results.append(
             Result(
-                name="ReportConfig",
+                name="Init Report",
                 status=Result.Status.SUCCESS,
                 start_time=stop_watch.start_time,
                 duration=stop_watch.duration,
@@ -302,15 +301,21 @@ def _config_workflow(workflow: Workflow.Config, job_name):
 
 def _finish_workflow(workflow, job_name):
     print(f"Start [{job_name}], workflow [{workflow.name}]")
+    env = _Environment.get()
 
-    workflow_result = Result.from_s3(
-        workflow.name, lock=False
-    )  # latest job - no need to lock
+    print("Check Actions statuses")
+    print(env.get_needs_statuses())
+
+    print("Check Workflow results")
+    S3.copy_result_from_s3(
+        Result.file_name_static(workflow.name),
+        lock=False,
+    )
+    workflow_result = Result.from_fs(workflow.name)
 
     ready_for_merge_status = Result.Status.SUCCESS
     ready_for_merge_description = ""
     failed_results = []
-    env = _Environment.get()
     update_final_report = False
     for result in workflow_result.results:
         if result.name == job_name or result.status in (
@@ -349,7 +354,10 @@ def _finish_workflow(workflow, job_name):
         env.add_info(ResultInfo.GH_STATUS_ERROR)
 
     if update_final_report:
-        workflow_result.copy_to_s3(unlock=False)  # no lock - no unlock
+        S3.copy_result_to_s3(
+            workflow_result,
+            unlock=False,
+        )  # no lock - no unlock
 
     Result.from_fs(job_name).set_status(Result.Status.SUCCESS).set_info(
         ready_for_merge_description

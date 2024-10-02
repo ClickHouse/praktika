@@ -1,13 +1,11 @@
 import dataclasses
 import datetime
-import time
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 
-from praktika.s3 import S3
-from praktika.utils import Utils, MetaClasses, Shell
-from praktika.settings import Settings
 from praktika._environment import _Environment
+from praktika._settings import _Settings
+from praktika.utils import MetaClasses, Utils
 
 
 @dataclasses.dataclass
@@ -30,6 +28,43 @@ class Result(MetaClasses.Serializable):
     info: str = ""
     aux_links: List[str] = dataclasses.field(default_factory=list)
     html_link: str = ""
+
+    @staticmethod
+    def create_from(
+            name="",
+            results: List["Result"] = None,
+            stopwatch: Utils.Stopwatch = None,
+            status="",
+    ):
+        if isinstance(status, bool):
+            status = Result.Status.SUCCESS if status else Result.Status.FAILED
+        if not results and not status:
+            print("ERROR: Either .results or .status must be provided")
+            raise
+        if not name:
+            name = _Environment.get().JOB_NAME
+            if not name:
+                print("ERROR: Failed to guess the .name")
+                raise
+        result_status = status or Result.Status.SUCCESS
+        infos = []
+        if results and not status:
+            for result in results:
+                assert result.status in (Result.Status.SUCCESS, Result.Status.FAILED)
+                if result.status != Result.Status.SUCCESS:
+                    result_status = Result.Status.FAILED
+        if results:
+            for result in results:
+                if result.info:
+                    infos.append(f"{result.name}: {result.info}")
+        return Result(
+            name=name,
+            status=result_status,
+            start_time=stopwatch.start_time if stopwatch else None,
+            duration=stopwatch.duration if stopwatch else None,
+            info="\n".join(infos) if infos else "",
+            results=results or [],
+        )
 
     @staticmethod
     def get():
@@ -79,7 +114,7 @@ class Result(MetaClasses.Serializable):
 
     @classmethod
     def file_name_static(cls, name):
-        return f"{Settings.RESULTS_DIR}/result_{Utils.normalize_string(name)}.json"
+        return f"{_Settings.TEMP_DIR}/result_{Utils.normalize_string(name)}.json"
 
     @classmethod
     def from_dict(cls, obj: Dict[str, Any]) -> "Result":
@@ -89,95 +124,6 @@ class Result(MetaClasses.Serializable):
             sub_results.append(sub_res)
         obj["results"] = sub_results
         return Result(**obj)
-
-    def copy_to_s3(self, unlock=True):
-        assert Settings.HTML_S3_PATH, "BUG?"
-        self.dump()
-        env = _Environment.get()
-        pr_number = env.PR_NUMBER
-        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=pr_number, branch=env.BRANCH, sha=env.SHA)}"
-        s3_path_full = f"{s3_path}/{Path(self.file_name()).name}"
-        url = S3.copy_file_to_s3(s3_path=s3_path, local_path=self.file_name())
-        if pr_number:
-            print("Duplicate Result for PR for latest-sha html report")
-            s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=pr_number, branch=env.BRANCH, sha='latest')}"
-            url = S3.copy_file_to_s3(s3_path=s3_path, local_path=self.file_name())
-        if unlock:
-            if not self.unlock(s3_path_full):
-                print(f"ERROR: File [{s3_path_full}] unlock failure")
-                assert False  # TODO: investigate
-        return url
-
-    def get_link(self):
-        env = _Environment.get()
-        pr_number = env.PR_NUMBER
-        sha = env.SHA if pr_number == 0 else "latest"
-        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=pr_number, branch=env.BRANCH, sha=sha)}"
-        return S3.get_link(s3_path=s3_path, local_path=self.file_name())
-
-    @classmethod
-    def from_s3(cls, name, lock=True):
-        assert Settings.HTML_S3_PATH, "BUG?"
-        env = _Environment.get()
-        file_path = cls.file_name_static(name)
-        file_name = Path(file_path).name
-        s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=env.PR_NUMBER, branch=env.BRANCH, sha=env.SHA)}/{file_name}"
-        if lock:
-            cls.lock(s3_path)
-        if not S3.copy_file_from_s3(s3_path=s3_path, local_path=file_path):
-            print(f"ERROR: failed to cp file [{s3_path}] from s3")
-            raise RuntimeError(ResultInfo.S3_ERROR)
-        result = Result.from_fs(name)
-        return result
-
-    @classmethod
-    def unlock(cls, s3_path):
-        s3_path_lock = s3_path + ".lock"
-        env = _Environment.get()
-        obj = S3.head_object(s3_path_lock)
-        if not obj:
-            print("ERROR: lock file is removed")
-            assert False  # investigate
-        elif not obj.has_tags({"job": Utils.to_base64(env.JOB_NAME)}):
-            print("ERROR: lock file was acquired by another job")
-            assert False  # investigate
-
-        if not S3.delete(s3_path_lock):
-            print(f"ERROR: File [{s3_path_lock}] delete failure")
-        print("INFO: lock released")
-        return True
-
-    @classmethod
-    def lock(cls, s3_path, level=0):
-        assert level < 3, "Never"
-        env = _Environment.get()
-        s3_path_lock = s3_path + f".lock"
-        file_path_lock = f"{Settings.TEMP_DIR}/{Path(s3_path_lock).name}"
-        assert Shell.check(
-            f"echo '''{env.JOB_NAME}''' > {file_path_lock}", verbose=True
-        ), "Never"
-
-        i = 20
-        while S3.head_object(s3_path_lock):
-            print("WARNING: Failed to acquire lock - wait")
-            i -= 5
-            if i < 0:
-                raise RuntimeError("Failed to acquire lock")
-            time.sleep(5)
-
-        metadata = {"job": Utils.to_base64(env.JOB_NAME)}
-        S3.put(
-            s3_path=s3_path_lock,
-            local_path=file_path_lock,
-            metadata=metadata,
-        )
-        time.sleep(1)
-        obj = S3.head_object(s3_path_lock)
-        if not obj or not obj.has_tags(tags=metadata):
-            print(f"WARNING: locked by another job [{obj}]")
-            env.add_info(ResultInfo.S3_LOCK_FAILURE)
-            cls.lock(s3_path, level=level + 1)
-        print("INFO: lock acquired")
 
     def update_duration(self):
         if not self.duration and self.start_time:
@@ -258,53 +204,6 @@ class Result(MetaClasses.Serializable):
             info="from cache",
         )
 
-    @classmethod
-    def upload_file_to_s3(
-        cls, local_file_path, upload_to_s3: bool, text: bool = False, s3_subprefix=""
-    ) -> str:
-        if upload_to_s3:
-            env = _Environment.get()
-            s3_path = f"{Settings.HTML_S3_PATH}/{S3.get_prefix(pr_number=env.PR_NUMBER, branch=env.BRANCH, sha=env.SHA)}"
-            if s3_subprefix:
-                s3_subprefix.removeprefix("/").removesuffix("/")
-                s3_path += f"/{s3_subprefix}"
-            html_link = S3.copy_file_to_s3(
-                s3_path=s3_path, local_path=local_file_path, text=text
-            )
-            return html_link
-        return f"file://{Path(local_file_path).absolute()}"
-
-    def upload_files(self):
-        if self.results:
-            for result_ in self.results:
-                result_.upload_files()
-        for file in self.files:
-            if not Path(file).is_file():
-                print(f"ERROR: Invalid file [{file}] in [{self.name}] - skip upload")
-                self.info += f"\nWARNING: Result file [{file}] was not found"
-                file_link = self.upload_file_to_s3(file, upload_to_s3=False)
-            else:
-                is_text = False
-                for text_file_suffix in Settings.TEXT_CONTENT_EXTENSIONS:
-                    if file.endswith(text_file_suffix):
-                        print(
-                            f"File [{file}] matches Settings.TEXT_CONTENT_EXTENSIONS [{Settings.TEXT_CONTENT_EXTENSIONS}] - add text attribute for s3 object"
-                        )
-                        is_text = True
-                        break
-                file_link = self.upload_file_to_s3(
-                    file,
-                    upload_to_s3=True,
-                    text=is_text,
-                    s3_subprefix=Utils.normalize_string(self.name),
-                )
-            self.links.append(file_link)
-        if self.files:
-            print(
-                f"Job files [{self.files}] uploaded to s3 [{self.links[-len(self.files):]}] - clean files list"
-            )
-            self.files = []
-
 
 class ResultInfo:
     SETUP_ENV_JOB_FAILED = (
@@ -322,7 +221,10 @@ class ResultInfo:
 
     GH_STATUS_ERROR = "Failed to set GH commit status"
 
-    NOT_FINALIZED = "Job not properly completed, praktika BUG"
+    NOT_FINALIZED = (
+        "Job did not not provide Result: job script bug, died CI runner or praktika bug"
+    )
 
     S3_ERROR = "S3 call failure"
-    S3_LOCK_FAILURE = "S3 lock failure"
+
+    INVALID_RESULT_STATUS = "Invalid Result Status - switched to ERROR"

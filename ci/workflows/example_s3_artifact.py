@@ -1,7 +1,7 @@
 from typing import List
 
 from ci.settings.my_settings import RunnerLabels
-from praktika import Job, Workflow, Artifact
+from praktika import Artifact, Job, Workflow
 from praktika.settings import Settings
 
 
@@ -36,7 +36,7 @@ workflow_pr = Workflow.Config(
             command='echo "Hello World" > ./artifact.txt',
             provides=[ArtifactNames.GREET],
             job_requirements=Job.Requirements(
-                python_requirements_txt="requirements.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
         ),
         Job.Config(
@@ -45,7 +45,7 @@ workflow_pr = Workflow.Config(
             command=f"cat {Settings.INPUT_DIR}/artifact.txt",
             requires=[ArtifactNames.GREET],
             job_requirements=Job.Requirements(
-                python_requirements_txt="requirements.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
         ),
     ],

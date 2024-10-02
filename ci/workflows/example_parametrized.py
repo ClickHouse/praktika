@@ -23,7 +23,7 @@ workflow_pr = Workflow.Config(
             runs_on=["ubuntu-latest"],
             command="python3 ./ci/tests/example_4/parametrized_job_no_artifact.py",
             job_requirements=Job.Requirements(
-                python_requirements_txt="requirements.txt"
+                python=True, python_requirements_txt="./ci/requirements.txt"
             ),
         ).parametrize(
             # example: parametrize over .parameter value:

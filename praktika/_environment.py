@@ -3,14 +3,11 @@ import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Type, Dict, Any, Optional, List
-import urllib.parse
+from typing import Any, Dict, List, Type
 
 from praktika import Workflow
 from praktika._settings import _Settings
-from praktika.s3 import S3
-from praktika.settings import Settings
-from praktika.utils import MetaClasses, T, Utils
+from praktika.utils import MetaClasses, T
 
 
 @dataclasses.dataclass
@@ -29,25 +26,12 @@ class _Environment(MetaClasses.Serializable):
     BASE_BRANCH: str
     RUN_ID: str
     RUN_URL: str
-    REPORT_URL: str
     INSTANCE_TYPE: str
     INSTANCE_ID: str
     INSTANCE_LIFE_CYCLE: str
-    PRAKTIKA_SETUP_STEP_EXIT_CODE: Optional[int] = None
-    PRAKTIKA_PRERUN_STEP_EXIT_CODE: Optional[int] = None
-    PRAKTIKA_RUN_STEP_EXIT_CODE: Optional[int] = None
     PARAMETER: Any = None
     REPORT_INFO: List[str] = dataclasses.field(default_factory=list)
     name = "environment"
-
-    def setup_ok(self):
-        return self.PRAKTIKA_SETUP_STEP_EXIT_CODE == 0
-
-    def prerun_ok(self):
-        return self.PRAKTIKA_PRERUN_STEP_EXIT_CODE == 0
-
-    def run_ok(self):
-        return self.PRAKTIKA_RUN_STEP_EXIT_CODE == 0
 
     @classmethod
     def file_name_static(cls, _name=""):
@@ -80,8 +64,19 @@ class _Environment(MetaClasses.Serializable):
         self.dump()
         return self
 
+    @staticmethod
+    def get_needs_statuses():
+        if Path(_Settings.WORKFLOW_STATUS_FILE).is_file():
+            with open(_Settings.WORKFLOW_STATUS_FILE, "r", encoding="utf8") as f:
+                return json.load(f)
+        else:
+            print(
+                f"ERROR: Status file [{_Settings.WORKFLOW_STATUS_FILE}] does not exist"
+            )
+            raise RuntimeError()
+
     @classmethod
-    def from_env(cls) -> "Environment":
+    def from_env(cls) -> "_Environment":
         WORKFLOW_NAME = os.getenv("GITHUB_WORKFLOW", "")
         JOB_NAME = os.getenv("JOB_NAME", "")
         REPOSITORY = os.getenv("GITHUB_REPOSITORY", "")
@@ -92,25 +87,6 @@ class _Environment(MetaClasses.Serializable):
         RUN_ID = os.getenv("GITHUB_RUN_ID", "0")
         RUN_URL = f"https://github.com/{REPOSITORY}/actions/runs/{RUN_ID}"
         BASE_BRANCH = os.getenv("GITHUB_BASE_REF", "")
-
-        if os.getenv("PRAKTIKA_SETUP_STEP_EXIT_CODE", None):
-            PRAKTIKA_SETUP_STEP_EXIT_CODE = int(
-                os.getenv("PRAKTIKA_SETUP_STEP_EXIT_CODE")
-            )
-        else:
-            PRAKTIKA_SETUP_STEP_EXIT_CODE = None
-
-        if os.getenv("PRAKTIKA_PRERUN_STEP_EXIT_CODE", None):
-            PRAKTIKA_PRERUN_STEP_EXIT_CODE = int(
-                os.getenv("PRAKTIKA_PRERUN_STEP_EXIT_CODE")
-            )
-        else:
-            PRAKTIKA_PRERUN_STEP_EXIT_CODE = None
-
-        if os.getenv("PRAKTIKA_RUN_STEP_EXIT_CODE", None):
-            PRAKTIKA_RUN_STEP_EXIT_CODE = int(os.getenv("PRAKTIKA_RUN_STEP_EXIT_CODE"))
-        else:
-            PRAKTIKA_RUN_STEP_EXIT_CODE = None
 
         if EVENT_FILE_PATH:
             with open(EVENT_FILE_PATH, "r", encoding="utf-8") as f:
@@ -137,19 +113,6 @@ class _Environment(MetaClasses.Serializable):
             CHANGE_URL = ""
             COMMIT_URL = ""
 
-        path = Settings.HTML_S3_PATH
-        for bucket, endpoint in Settings.S3_BUCKET_TO_HTTP_ENDPOINT.items():
-            if bucket in path:
-                path = path.replace(bucket, endpoint)
-                break
-        result_path = urllib.parse.quote(
-            f"https://{path}/{S3.get_prefix(PR_NUMBER, BRANCH, SHA)}/result_{Path(Utils.normalize_string(WORKFLOW_NAME))}.json",
-            safe="",
-        )
-        REPORT_URL = (
-            f"https://{path}/{Path(Settings.HTML_PAGE_FILE).name}?results={result_path}"
-        )
-
         INSTANCE_TYPE = (
             os.getenv("INSTANCE_TYPE", None)
             # or Shell.get_output("ec2metadata --instance-type")
@@ -168,11 +131,6 @@ class _Environment(MetaClasses.Serializable):
             or ""
         )
 
-        param = os.getenv("PARAMETER", None)
-        PARAMETER = None
-        if param:
-            PARAMETER = _to_object(json.loads(param))
-
         return _Environment(
             WORKFLOW_NAME=WORKFLOW_NAME,
             JOB_NAME=JOB_NAME,
@@ -188,16 +146,49 @@ class _Environment(MetaClasses.Serializable):
             COMMIT_URL=COMMIT_URL,
             RUN_URL=RUN_URL,
             BASE_BRANCH=BASE_BRANCH,
-            REPORT_URL=REPORT_URL,
-            PRAKTIKA_SETUP_STEP_EXIT_CODE=PRAKTIKA_SETUP_STEP_EXIT_CODE,
-            PRAKTIKA_PRERUN_STEP_EXIT_CODE=PRAKTIKA_PRERUN_STEP_EXIT_CODE,
-            PRAKTIKA_RUN_STEP_EXIT_CODE=PRAKTIKA_RUN_STEP_EXIT_CODE,
             INSTANCE_TYPE=INSTANCE_TYPE,
             INSTANCE_ID=INSTANCE_ID,
             INSTANCE_LIFE_CYCLE=INSTANCE_LIFE_CYCLE,
-            PARAMETER=PARAMETER,
             REPORT_INFO=[],
         )
+
+    def get_s3_prefix(self, latest=False):
+        return self.get_s3_prefix_static(self.PR_NUMBER, self.BRANCH, self.SHA, latest)
+
+    @classmethod
+    def get_s3_prefix_static(cls, pr_number, branch, sha, latest=False):
+        prefix = ""
+        if pr_number > 0:
+            prefix += f"{pr_number}"
+        else:
+            prefix += f"{branch}"
+        if latest:
+            prefix += f"/latest"
+        elif sha:
+            prefix += f"/{sha}"
+        return prefix
+
+    # TODO: find a better place for the function. This file should not import praktika.settings
+    #   as it's requires reading users config, that's why imports nested inside the function
+    def get_report_url(self):
+        import urllib
+
+        from praktika.settings import Settings
+        from praktika.utils import Utils
+
+        path = Settings.HTML_S3_PATH
+        for bucket, endpoint in Settings.S3_BUCKET_TO_HTTP_ENDPOINT.items():
+            if bucket in path:
+                path = path.replace(bucket, endpoint)
+                break
+        result_path = urllib.parse.quote(
+            f"https://{path}/{self.get_s3_prefix_static(self.PR_NUMBER, self.BRANCH, self.SHA)}/result_{Path(Utils.normalize_string(self.WORKFLOW_NAME))}.json",
+            safe="",
+        )
+        REPORT_URL = (
+            f"https://{path}/{Path(Settings.HTML_PAGE_FILE).name}?results={result_path}"
+        )
+        return REPORT_URL
 
 
 def _to_object(data):
