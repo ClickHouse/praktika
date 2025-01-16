@@ -30,6 +30,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -45,24 +47,26 @@ jobs:
 
       - name: Prepare env script
         run: |
-          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          rm -rf ./ci/tmp ./ci/tmp ./ci/tmp
+          mkdir -p ./ci/tmp ./ci/tmp ./ci/tmp
+          cat > ./ci/tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export PYTHONPATH=./ci:.
 
-          cat > /tmp/praktika/workflow_config_example_artifact_and_dependencies.json << 'EOF'
-          ${{ needs.config_workflow.outputs.data }}
-          EOF
-          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          cat > ./ci/tmp/workflow_status.json << 'EOF'
           ${{ toJson(needs) }}
           EOF
           ENV_SETUP_SCRIPT_EOF
 
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
-
       - name: Run
         id: run
         run: |
+          . ./ci/tmp/praktika_setup_env.sh
           set -o pipefail
-          python3 -m praktika.runner --job-name '''Provide Artifact''' --workflow-name "Example Artifact And Dependencies" |& tee /tmp/praktika/praktika_run.log
+          if command -v ts &> /dev/null; then
+            python3 -m praktika run 'Provide Artifact' --workflow "Example Artifact And Dependencies" --ci |& ts '[%Y-%m-%d %H:%M:%S]' | tee ./ci/tmp/praktika_run.log
+          else
+            python3 -m praktika run 'Provide Artifact' --workflow "Example Artifact And Dependencies" --ci |& tee ./ci/tmp/praktika_run.log
+          fi
 
       - name: Upload artifact greet
         uses: actions/upload-artifact@v4
@@ -79,6 +83,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -94,30 +100,32 @@ jobs:
 
       - name: Prepare env script
         run: |
-          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          rm -rf ./ci/tmp ./ci/tmp ./ci/tmp
+          mkdir -p ./ci/tmp ./ci/tmp ./ci/tmp
+          cat > ./ci/tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export PYTHONPATH=./ci:.
 
-          cat > /tmp/praktika/workflow_config_example_artifact_and_dependencies.json << 'EOF'
-          ${{ needs.config_workflow.outputs.data }}
-          EOF
-          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          cat > ./ci/tmp/workflow_status.json << 'EOF'
           ${{ toJson(needs) }}
           EOF
           ENV_SETUP_SCRIPT_EOF
-
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
 
       - name: Download artifact greet
         uses: actions/download-artifact@v4
         with:
           name: greet
-          path: /tmp/praktika/input
+          path: ./ci/tmp
 
       - name: Run
         id: run
         run: |
+          . ./ci/tmp/praktika_setup_env.sh
           set -o pipefail
-          python3 -m praktika.runner --job-name '''Consume Artifact''' --workflow-name "Example Artifact And Dependencies" |& tee /tmp/praktika/praktika_run.log
+          if command -v ts &> /dev/null; then
+            python3 -m praktika run 'Consume Artifact' --workflow "Example Artifact And Dependencies" --ci |& ts '[%Y-%m-%d %H:%M:%S]' | tee ./ci/tmp/praktika_run.log
+          else
+            python3 -m praktika run 'Consume Artifact' --workflow "Example Artifact And Dependencies" --ci |& tee ./ci/tmp/praktika_run.log
+          fi
 
   job_a_starting_at_the_beginning:
     runs-on: [ubuntu-latest]
@@ -128,6 +136,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -143,24 +153,26 @@ jobs:
 
       - name: Prepare env script
         run: |
-          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          rm -rf ./ci/tmp ./ci/tmp ./ci/tmp
+          mkdir -p ./ci/tmp ./ci/tmp ./ci/tmp
+          cat > ./ci/tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export PYTHONPATH=./ci:.
 
-          cat > /tmp/praktika/workflow_config_example_artifact_and_dependencies.json << 'EOF'
-          ${{ needs.config_workflow.outputs.data }}
-          EOF
-          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          cat > ./ci/tmp/workflow_status.json << 'EOF'
           ${{ toJson(needs) }}
           EOF
           ENV_SETUP_SCRIPT_EOF
 
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
-
       - name: Run
         id: run
         run: |
+          . ./ci/tmp/praktika_setup_env.sh
           set -o pipefail
-          python3 -m praktika.runner --job-name '''Job A starting at the beginning''' --workflow-name "Example Artifact And Dependencies" |& tee /tmp/praktika/praktika_run.log
+          if command -v ts &> /dev/null; then
+            python3 -m praktika run 'Job A starting at the beginning' --workflow "Example Artifact And Dependencies" --ci |& ts '[%Y-%m-%d %H:%M:%S]' | tee ./ci/tmp/praktika_run.log
+          else
+            python3 -m praktika run 'Job A starting at the beginning' --workflow "Example Artifact And Dependencies" --ci |& tee ./ci/tmp/praktika_run.log
+          fi
 
   job_b_starting_at_the_beginning:
     runs-on: [ubuntu-latest]
@@ -171,6 +183,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -186,24 +200,26 @@ jobs:
 
       - name: Prepare env script
         run: |
-          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          rm -rf ./ci/tmp ./ci/tmp ./ci/tmp
+          mkdir -p ./ci/tmp ./ci/tmp ./ci/tmp
+          cat > ./ci/tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export PYTHONPATH=./ci:.
 
-          cat > /tmp/praktika/workflow_config_example_artifact_and_dependencies.json << 'EOF'
-          ${{ needs.config_workflow.outputs.data }}
-          EOF
-          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          cat > ./ci/tmp/workflow_status.json << 'EOF'
           ${{ toJson(needs) }}
           EOF
           ENV_SETUP_SCRIPT_EOF
 
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
-
       - name: Run
         id: run
         run: |
+          . ./ci/tmp/praktika_setup_env.sh
           set -o pipefail
-          python3 -m praktika.runner --job-name '''Job B starting at the beginning''' --workflow-name "Example Artifact And Dependencies" |& tee /tmp/praktika/praktika_run.log
+          if command -v ts &> /dev/null; then
+            python3 -m praktika run 'Job B starting at the beginning' --workflow "Example Artifact And Dependencies" --ci |& ts '[%Y-%m-%d %H:%M:%S]' | tee ./ci/tmp/praktika_run.log
+          else
+            python3 -m praktika run 'Job B starting at the beginning' --workflow "Example Artifact And Dependencies" --ci |& tee ./ci/tmp/praktika_run.log
+          fi
 
   job_c_starting_after_job_a_and_b_is_done:
     runs-on: [ubuntu-latest]
@@ -214,6 +230,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -229,24 +247,26 @@ jobs:
 
       - name: Prepare env script
         run: |
-          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          rm -rf ./ci/tmp ./ci/tmp ./ci/tmp
+          mkdir -p ./ci/tmp ./ci/tmp ./ci/tmp
+          cat > ./ci/tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export PYTHONPATH=./ci:.
 
-          cat > /tmp/praktika/workflow_config_example_artifact_and_dependencies.json << 'EOF'
-          ${{ needs.config_workflow.outputs.data }}
-          EOF
-          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          cat > ./ci/tmp/workflow_status.json << 'EOF'
           ${{ toJson(needs) }}
           EOF
           ENV_SETUP_SCRIPT_EOF
 
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
-
       - name: Run
         id: run
         run: |
+          . ./ci/tmp/praktika_setup_env.sh
           set -o pipefail
-          python3 -m praktika.runner --job-name '''Job C starting after Job A and B is done''' --workflow-name "Example Artifact And Dependencies" |& tee /tmp/praktika/praktika_run.log
+          if command -v ts &> /dev/null; then
+            python3 -m praktika run 'Job C starting after Job A and B is done' --workflow "Example Artifact And Dependencies" --ci |& ts '[%Y-%m-%d %H:%M:%S]' | tee ./ci/tmp/praktika_run.log
+          else
+            python3 -m praktika run 'Job C starting after Job A and B is done' --workflow "Example Artifact And Dependencies" --ci |& tee ./ci/tmp/praktika_run.log
+          fi
 
   job_d_starting_after_job_c_is_done:
     runs-on: [ubuntu-latest]
@@ -257,6 +277,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -272,21 +294,23 @@ jobs:
 
       - name: Prepare env script
         run: |
-          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          rm -rf ./ci/tmp ./ci/tmp ./ci/tmp
+          mkdir -p ./ci/tmp ./ci/tmp ./ci/tmp
+          cat > ./ci/tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export PYTHONPATH=./ci:.
 
-          cat > /tmp/praktika/workflow_config_example_artifact_and_dependencies.json << 'EOF'
-          ${{ needs.config_workflow.outputs.data }}
-          EOF
-          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          cat > ./ci/tmp/workflow_status.json << 'EOF'
           ${{ toJson(needs) }}
           EOF
           ENV_SETUP_SCRIPT_EOF
 
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
-
       - name: Run
         id: run
         run: |
+          . ./ci/tmp/praktika_setup_env.sh
           set -o pipefail
-          python3 -m praktika.runner --job-name '''Job D starting after Job C is done''' --workflow-name "Example Artifact And Dependencies" |& tee /tmp/praktika/praktika_run.log
+          if command -v ts &> /dev/null; then
+            python3 -m praktika run 'Job D starting after Job C is done' --workflow "Example Artifact And Dependencies" --ci |& ts '[%Y-%m-%d %H:%M:%S]' | tee ./ci/tmp/praktika_run.log
+          else
+            python3 -m praktika run 'Job D starting after Job C is done' --workflow "Example Artifact And Dependencies" --ci |& tee ./ci/tmp/praktika_run.log
+          fi

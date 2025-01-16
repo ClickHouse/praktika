@@ -30,6 +30,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
 
       - name: Install dependencies
         run: |
@@ -40,7 +42,10 @@ jobs:
 
       - name: Prepare env script
         run: |
-          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          rm -rf ./ci/tmp ./ci/tmp ./ci/tmp
+          mkdir -p ./ci/tmp ./ci/tmp ./ci/tmp
+          cat > ./ci/tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export PYTHONPATH=./ci:.
           export CI_DB_URL=$(cat<<'EOF'
           ${{ secrets.CI_DB_URL }}
           EOF
@@ -49,22 +54,24 @@ jobs:
           ${{ secrets.CI_DB_PASSWORD }}
           EOF
           )
-          cat > /tmp/praktika/workflow_config_example_all_in.json << 'EOF'
+          cat > ./ci/tmp/workflow_config_example_all_in.json << 'EOF'
           ${{ needs.config_workflow.outputs.data }}
           EOF
-          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          cat > ./ci/tmp/workflow_status.json << 'EOF'
           ${{ toJson(needs) }}
           EOF
           ENV_SETUP_SCRIPT_EOF
 
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
-
       - name: Run
         id: run
         run: |
+          . ./ci/tmp/praktika_setup_env.sh
           set -o pipefail
-          python3 -m praktika.runner --job-name '''Config Workflow''' --workflow-name "Example All IN" |& tee /tmp/praktika/praktika_run.log
+          if command -v ts &> /dev/null; then
+            python3 -m praktika run 'Config Workflow' --workflow "Example All IN" --ci |& ts '[%Y-%m-%d %H:%M:%S]' | tee ./ci/tmp/praktika_run.log
+          else
+            python3 -m praktika run 'Config Workflow' --workflow "Example All IN" --ci |& tee ./ci/tmp/praktika_run.log
+          fi
 
   just_job:
     runs-on: [maxs-small-fixed]
@@ -76,6 +83,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -91,7 +100,10 @@ jobs:
 
       - name: Prepare env script
         run: |
-          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          rm -rf ./ci/tmp ./ci/tmp ./ci/tmp
+          mkdir -p ./ci/tmp ./ci/tmp ./ci/tmp
+          cat > ./ci/tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export PYTHONPATH=./ci:.
           export CI_DB_URL=$(cat<<'EOF'
           ${{ secrets.CI_DB_URL }}
           EOF
@@ -100,22 +112,24 @@ jobs:
           ${{ secrets.CI_DB_PASSWORD }}
           EOF
           )
-          cat > /tmp/praktika/workflow_config_example_all_in.json << 'EOF'
+          cat > ./ci/tmp/workflow_config_example_all_in.json << 'EOF'
           ${{ needs.config_workflow.outputs.data }}
           EOF
-          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          cat > ./ci/tmp/workflow_status.json << 'EOF'
           ${{ toJson(needs) }}
           EOF
           ENV_SETUP_SCRIPT_EOF
 
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
-
       - name: Run
         id: run
         run: |
+          . ./ci/tmp/praktika_setup_env.sh
           set -o pipefail
-          python3 -m praktika.runner --job-name '''Just Job''' --workflow-name "Example All IN" |& tee /tmp/praktika/praktika_run.log
+          if command -v ts &> /dev/null; then
+            python3 -m praktika run 'Just Job' --workflow "Example All IN" --ci |& ts '[%Y-%m-%d %H:%M:%S]' | tee ./ci/tmp/praktika_run.log
+          else
+            python3 -m praktika run 'Just Job' --workflow "Example All IN" --ci |& tee ./ci/tmp/praktika_run.log
+          fi
 
   just_job_2:
     runs-on: [maxs-small-fixed]
@@ -127,6 +141,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -142,7 +158,10 @@ jobs:
 
       - name: Prepare env script
         run: |
-          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          rm -rf ./ci/tmp ./ci/tmp ./ci/tmp
+          mkdir -p ./ci/tmp ./ci/tmp ./ci/tmp
+          cat > ./ci/tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export PYTHONPATH=./ci:.
           export CI_DB_URL=$(cat<<'EOF'
           ${{ secrets.CI_DB_URL }}
           EOF
@@ -151,33 +170,37 @@ jobs:
           ${{ secrets.CI_DB_PASSWORD }}
           EOF
           )
-          cat > /tmp/praktika/workflow_config_example_all_in.json << 'EOF'
+          cat > ./ci/tmp/workflow_config_example_all_in.json << 'EOF'
           ${{ needs.config_workflow.outputs.data }}
           EOF
-          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          cat > ./ci/tmp/workflow_status.json << 'EOF'
           ${{ toJson(needs) }}
           EOF
           ENV_SETUP_SCRIPT_EOF
 
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
-
       - name: Run
         id: run
         run: |
+          . ./ci/tmp/praktika_setup_env.sh
           set -o pipefail
-          python3 -m praktika.runner --job-name '''Just Job 2''' --workflow-name "Example All IN" |& tee /tmp/praktika/praktika_run.log
+          if command -v ts &> /dev/null; then
+            python3 -m praktika run 'Just Job 2' --workflow "Example All IN" --ci |& ts '[%Y-%m-%d %H:%M:%S]' | tee ./ci/tmp/praktika_run.log
+          else
+            python3 -m praktika run 'Just Job 2' --workflow "Example All IN" --ci |& tee ./ci/tmp/praktika_run.log
+          fi
 
-  parametrized_job_key_1_1_2_abc_key_2_null_maxs_small_fixed:
+  parametrized_job_key_1_1_2_abc_key_2_null:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow, just_job, just_job_2]
-    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success_base64, 'UGFyYW1ldHJpemVkX2pvYiAoeyJrZXlfMSI6IFsxLCAyLCAiQUJDIl0sICJrZXlfMiI6IG51bGx9LCBbIm1heHMtc21hbGwtZml4ZWQiXSk=') }}
-    name: "Parametrized_job ({\"key_1\": [1, 2, \"ABC\"], \"key_2\": null}, [\"maxs-small-fixed\"])"
+    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success_base64, 'UGFyYW1ldHJpemVkX2pvYiAoeyJrZXlfMSI6IFsxLCAyLCAiQUJDIl0sICJrZXlfMiI6IG51bGx9KQ==') }}
+    name: "Parametrized_job ({\"key_1\": [1, 2, \"ABC\"], \"key_2\": null})"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -193,7 +216,10 @@ jobs:
 
       - name: Prepare env script
         run: |
-          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          rm -rf ./ci/tmp ./ci/tmp ./ci/tmp
+          mkdir -p ./ci/tmp ./ci/tmp ./ci/tmp
+          cat > ./ci/tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export PYTHONPATH=./ci:.
           export CI_DB_URL=$(cat<<'EOF'
           ${{ secrets.CI_DB_URL }}
           EOF
@@ -202,33 +228,37 @@ jobs:
           ${{ secrets.CI_DB_PASSWORD }}
           EOF
           )
-          cat > /tmp/praktika/workflow_config_example_all_in.json << 'EOF'
+          cat > ./ci/tmp/workflow_config_example_all_in.json << 'EOF'
           ${{ needs.config_workflow.outputs.data }}
           EOF
-          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          cat > ./ci/tmp/workflow_status.json << 'EOF'
           ${{ toJson(needs) }}
           EOF
           ENV_SETUP_SCRIPT_EOF
 
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
-
       - name: Run
         id: run
         run: |
+          . ./ci/tmp/praktika_setup_env.sh
           set -o pipefail
-          python3 -m praktika.runner --job-name '''Parametrized_job ({"key_1": [1, 2, "ABC"], "key_2": null}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" |& tee /tmp/praktika/praktika_run.log
+          if command -v ts &> /dev/null; then
+            python3 -m praktika run 'Parametrized_job ({"key_1": [1, 2, "ABC"], "key_2": null})' --workflow "Example All IN" --ci |& ts '[%Y-%m-%d %H:%M:%S]' | tee ./ci/tmp/praktika_run.log
+          else
+            python3 -m praktika run 'Parametrized_job ({"key_1": [1, 2, "ABC"], "key_2": null})' --workflow "Example All IN" --ci |& tee ./ci/tmp/praktika_run.log
+          fi
 
-  parametrized_job_key_1_2_3_maxs_small_fixed:
+  parametrized_job_key_1_2_3:
     runs-on: [maxs-small-fixed]
     needs: [config_workflow, just_job, just_job_2]
-    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success_base64, 'UGFyYW1ldHJpemVkX2pvYiAoeyJrZXlfMSI6IFsyLCAzXX0sIFsibWF4cy1zbWFsbC1maXhlZCJdKQ==') }}
-    name: "Parametrized_job ({\"key_1\": [2, 3]}, [\"maxs-small-fixed\"])"
+    if: ${{ !failure() && !cancelled() && !contains(fromJson(needs.config_workflow.outputs.data).cache_success_base64, 'UGFyYW1ldHJpemVkX2pvYiAoeyJrZXlfMSI6IFsyLCAzXX0p') }}
+    name: "Parametrized_job ({\"key_1\": [2, 3]})"
     outputs:
       data: ${{ steps.run.outputs.DATA }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -244,7 +274,10 @@ jobs:
 
       - name: Prepare env script
         run: |
-          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          rm -rf ./ci/tmp ./ci/tmp ./ci/tmp
+          mkdir -p ./ci/tmp ./ci/tmp ./ci/tmp
+          cat > ./ci/tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export PYTHONPATH=./ci:.
           export CI_DB_URL=$(cat<<'EOF'
           ${{ secrets.CI_DB_URL }}
           EOF
@@ -253,26 +286,28 @@ jobs:
           ${{ secrets.CI_DB_PASSWORD }}
           EOF
           )
-          cat > /tmp/praktika/workflow_config_example_all_in.json << 'EOF'
+          cat > ./ci/tmp/workflow_config_example_all_in.json << 'EOF'
           ${{ needs.config_workflow.outputs.data }}
           EOF
-          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          cat > ./ci/tmp/workflow_status.json << 'EOF'
           ${{ toJson(needs) }}
           EOF
           ENV_SETUP_SCRIPT_EOF
 
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
-
       - name: Run
         id: run
         run: |
+          . ./ci/tmp/praktika_setup_env.sh
           set -o pipefail
-          python3 -m praktika.runner --job-name '''Parametrized_job ({"key_1": [2, 3]}, ["maxs-small-fixed"])''' --workflow-name "Example All IN" |& tee /tmp/praktika/praktika_run.log
+          if command -v ts &> /dev/null; then
+            python3 -m praktika run 'Parametrized_job ({"key_1": [2, 3]})' --workflow "Example All IN" --ci |& ts '[%Y-%m-%d %H:%M:%S]' | tee ./ci/tmp/praktika_run.log
+          else
+            python3 -m praktika run 'Parametrized_job ({"key_1": [2, 3]})' --workflow "Example All IN" --ci |& tee ./ci/tmp/praktika_run.log
+          fi
 
   finish_workflow:
     runs-on: [maxs-small-fixed]
-    needs: [config_workflow, just_job, just_job_2, parametrized_job_key_1_1_2_abc_key_2_null_maxs_small_fixed, parametrized_job_key_1_2_3_maxs_small_fixed]
+    needs: [config_workflow, just_job, just_job_2, parametrized_job_key_1_1_2_abc_key_2_null, parametrized_job_key_1_2_3]
     if: ${{ !cancelled() }}
     name: "Finish Workflow"
     outputs:
@@ -280,10 +315,15 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
 
       - name: Prepare env script
         run: |
-          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          rm -rf ./ci/tmp ./ci/tmp ./ci/tmp
+          mkdir -p ./ci/tmp ./ci/tmp ./ci/tmp
+          cat > ./ci/tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export PYTHONPATH=./ci:.
           export CI_DB_URL=$(cat<<'EOF'
           ${{ secrets.CI_DB_URL }}
           EOF
@@ -292,19 +332,21 @@ jobs:
           ${{ secrets.CI_DB_PASSWORD }}
           EOF
           )
-          cat > /tmp/praktika/workflow_config_example_all_in.json << 'EOF'
+          cat > ./ci/tmp/workflow_config_example_all_in.json << 'EOF'
           ${{ needs.config_workflow.outputs.data }}
           EOF
-          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          cat > ./ci/tmp/workflow_status.json << 'EOF'
           ${{ toJson(needs) }}
           EOF
           ENV_SETUP_SCRIPT_EOF
 
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
-
       - name: Run
         id: run
         run: |
+          . ./ci/tmp/praktika_setup_env.sh
           set -o pipefail
-          python3 -m praktika.runner --job-name '''Finish Workflow''' --workflow-name "Example All IN" |& tee /tmp/praktika/praktika_run.log
+          if command -v ts &> /dev/null; then
+            python3 -m praktika run 'Finish Workflow' --workflow "Example All IN" --ci |& ts '[%Y-%m-%d %H:%M:%S]' | tee ./ci/tmp/praktika_run.log
+          else
+            python3 -m praktika run 'Finish Workflow' --workflow "Example All IN" --ci |& tee ./ci/tmp/praktika_run.log
+          fi

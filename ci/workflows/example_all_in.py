@@ -66,7 +66,6 @@ workflow_pr = Workflow.Config(
             # ),
         ).parametrize(
             # example: parameter value should be json serializable,
-            #  it will be available in the job script via Environment.PARAM[.field_name]
             parameter=[
                 # parameter value can be dict, list, str, int or any json serializable
                 {

@@ -1,11 +1,10 @@
 import dataclasses
 import os
 
-from praktika.utils import Shell
+from .utils import Shell
 
 
 class Secret:
-
     class Type:
         AWS_SSM_VAR = "aws parameter"
         AWS_SSM_SECRET = "aws secret"

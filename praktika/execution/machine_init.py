@@ -6,9 +6,8 @@ import traceback
 
 import requests
 
-from praktika.execution.execution_settings import (ExecutionSettings,
-                                                   ScalingType)
-from praktika.utils import ContextManager, Shell
+from ..utils import ContextManager, Shell
+from .execution_settings import ExecutionSettings, ScalingType
 
 
 class StateMachine:
@@ -91,7 +90,10 @@ class StateMachine:
             time.sleep(5)
 
     def terminate(self):
-        self.machine.unconfig_actions()
+        try:
+            self.machine.unconfig_actions()
+        except:
+            print("WARNING: failed to unconfig runner")
         if not ExecutionSettings.LOCAL_EXECUTION:
             if self.machine is not None:
                 self.machine.self_terminate(decrease_capacity=False)
@@ -321,13 +323,15 @@ def handle_signal(signum, _frame):
 def run():
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
+    m = None
     try:
         m = StateMachine()
         m.run()
     except Exception as e:
         print(f"FATAL: Exception [{e}] - terminate instance")
         time.sleep(10)
-        m.terminate()
+        if m:
+            m.terminate()
         raise e
 
 

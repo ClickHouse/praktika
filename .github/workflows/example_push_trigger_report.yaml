@@ -30,6 +30,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
 
       - name: Install dependencies
         run: |
@@ -40,24 +42,26 @@ jobs:
 
       - name: Prepare env script
         run: |
-          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          rm -rf ./ci/tmp ./ci/tmp ./ci/tmp
+          mkdir -p ./ci/tmp ./ci/tmp ./ci/tmp
+          cat > ./ci/tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export PYTHONPATH=./ci:.
 
-          cat > /tmp/praktika/workflow_config_example_push_trigger_report.json << 'EOF'
-          ${{ needs.config_workflow.outputs.data }}
-          EOF
-          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          cat > ./ci/tmp/workflow_status.json << 'EOF'
           ${{ toJson(needs) }}
           EOF
           ENV_SETUP_SCRIPT_EOF
 
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
-
       - name: Run
         id: run
         run: |
+          . ./ci/tmp/praktika_setup_env.sh
           set -o pipefail
-          python3 -m praktika.runner --job-name '''Config Workflow''' --workflow-name "Example Push trigger, Report" |& tee /tmp/praktika/praktika_run.log
+          if command -v ts &> /dev/null; then
+            python3 -m praktika run 'Config Workflow' --workflow "Example Push trigger, Report" --ci |& ts '[%Y-%m-%d %H:%M:%S]' | tee ./ci/tmp/praktika_run.log
+          else
+            python3 -m praktika run 'Config Workflow' --workflow "Example Push trigger, Report" --ci |& tee ./ci/tmp/praktika_run.log
+          fi
 
   job_1:
     runs-on: [maxs-small-fixed]
@@ -68,6 +72,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -83,24 +89,26 @@ jobs:
 
       - name: Prepare env script
         run: |
-          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          rm -rf ./ci/tmp ./ci/tmp ./ci/tmp
+          mkdir -p ./ci/tmp ./ci/tmp ./ci/tmp
+          cat > ./ci/tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export PYTHONPATH=./ci:.
 
-          cat > /tmp/praktika/workflow_config_example_push_trigger_report.json << 'EOF'
-          ${{ needs.config_workflow.outputs.data }}
-          EOF
-          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          cat > ./ci/tmp/workflow_status.json << 'EOF'
           ${{ toJson(needs) }}
           EOF
           ENV_SETUP_SCRIPT_EOF
 
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
-
       - name: Run
         id: run
         run: |
+          . ./ci/tmp/praktika_setup_env.sh
           set -o pipefail
-          python3 -m praktika.runner --job-name '''Job 1''' --workflow-name "Example Push trigger, Report" |& tee /tmp/praktika/praktika_run.log
+          if command -v ts &> /dev/null; then
+            python3 -m praktika run 'Job 1' --workflow "Example Push trigger, Report" --ci |& ts '[%Y-%m-%d %H:%M:%S]' | tee ./ci/tmp/praktika_run.log
+          else
+            python3 -m praktika run 'Job 1' --workflow "Example Push trigger, Report" --ci |& tee ./ci/tmp/praktika_run.log
+          fi
 
   job_2:
     runs-on: [maxs-small-fixed]
@@ -111,6 +119,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -126,21 +136,23 @@ jobs:
 
       - name: Prepare env script
         run: |
-          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          rm -rf ./ci/tmp ./ci/tmp ./ci/tmp
+          mkdir -p ./ci/tmp ./ci/tmp ./ci/tmp
+          cat > ./ci/tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export PYTHONPATH=./ci:.
 
-          cat > /tmp/praktika/workflow_config_example_push_trigger_report.json << 'EOF'
-          ${{ needs.config_workflow.outputs.data }}
-          EOF
-          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          cat > ./ci/tmp/workflow_status.json << 'EOF'
           ${{ toJson(needs) }}
           EOF
           ENV_SETUP_SCRIPT_EOF
 
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
-
       - name: Run
         id: run
         run: |
+          . ./ci/tmp/praktika_setup_env.sh
           set -o pipefail
-          python3 -m praktika.runner --job-name '''Job 2''' --workflow-name "Example Push trigger, Report" |& tee /tmp/praktika/praktika_run.log
+          if command -v ts &> /dev/null; then
+            python3 -m praktika run 'Job 2' --workflow "Example Push trigger, Report" --ci |& ts '[%Y-%m-%d %H:%M:%S]' | tee ./ci/tmp/praktika_run.log
+          else
+            python3 -m praktika run 'Job 2' --workflow "Example Push trigger, Report" --ci |& tee ./ci/tmp/praktika_run.log
+          fi

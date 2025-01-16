@@ -10,6 +10,6 @@ if __name__ == "__main__":
         f"{Settings.INPUT_DIR}/artifact.txt"
     ).is_file(), "required artifact not found"
 
-    print(f"Job Parameter: {Environment.PARAMETER}")
+    print(f"Job Parameter: {Environment.JOB_NAME}")
 
     Result.get().set_success()

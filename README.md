@@ -29,8 +29,8 @@ It's easier with praktika.
 ## How to:
 
 ```sh
-# 1. install recurCIPY (TODO: python module is not yet there)
-pip install praktika
+# 1. install praktika (temporary module path until officially published)
+pip install  https://clickhouse-builds.s3.amazonaws.com/packages/praktika-0.1-py3-none-any.whl --force-reinstall
 
 # 2. checkout new branch
 git checkout -b my_praktika
@@ -38,7 +38,7 @@ git checkout -b my_praktika
 # 3. create your workflow config in python or take any as an example from ./ci/config/*
 
 # 4. generate pipeline files
-python -m praktika --generate
+praktika yaml
 
 # 5. Check pipeline files generated: ./.github/workflows/*.yaml
 
@@ -79,7 +79,7 @@ git push --set-upstream origin my_praktika
 | pull_request workflow | Y      |        |           |                                           |
 | push workflow         | Y      |        |           |                                           |
 | merge_queue workflow  | N      |        |           |                                           |
-| scheduled workflow    | N      |        |           |                                           |
+| scheduled workflow    | Y      |        |           |                                           |
 | dispatch workflow     | N      |        |           |                                           |
 | Auth with App         | Y      |        |           |                                           |
 | job artifacts         | Y      |        |           | Upload/download native platform artifacts |
