@@ -73,9 +73,9 @@ jobs:
 
         TEMPLATE_INPUT = """
       {NAME}:
-        description: "{DESCRIPTION}"
+        description: {DESCRIPTION}
         required: {IS_REQUIRED}
-        default: "{DEFAULT_VALUE}"\
+        default: {DEFAULT_VALUE}\
 """
 
         TEMPLATE_SECRET_CONFIG = """\
@@ -325,7 +325,7 @@ class PullRequestPushYamlGen:
                 NAME=input_item.name,
                 DESCRIPTION=input_item.description,
                 IS_REQUIRED="true" if input_item.is_required else "false",
-                DEFAULT_VALUE=input_item.default_value,
+                DEFAULT_VALUE=input_item.default_value or "''",
             )
 
         if self.workflow_config.event in (
