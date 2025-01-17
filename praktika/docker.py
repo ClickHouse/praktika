@@ -1,11 +1,10 @@
 import dataclasses
 from typing import List
 
-from praktika.utils import Shell
+from .utils import Shell
 
 
 class Docker:
-
     class Platforms:
         ARM = "linux/arm64"
         AMD = "linux/amd64"

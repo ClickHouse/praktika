@@ -30,6 +30,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
 
       - name: Install dependencies
         run: |
@@ -40,24 +42,26 @@ jobs:
 
       - name: Prepare env script
         run: |
-          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          rm -rf ./ci/tmp ./ci/tmp ./ci/tmp
+          mkdir -p ./ci/tmp ./ci/tmp ./ci/tmp
+          cat > ./ci/tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export PYTHONPATH=./ci:.
 
-          cat > /tmp/praktika/workflow_config_example_merge_ready_status_report.json << 'EOF'
-          ${{ needs.config_workflow.outputs.data }}
-          EOF
-          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          cat > ./ci/tmp/workflow_status.json << 'EOF'
           ${{ toJson(needs) }}
           EOF
           ENV_SETUP_SCRIPT_EOF
 
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
-
       - name: Run
         id: run
         run: |
+          . ./ci/tmp/praktika_setup_env.sh
           set -o pipefail
-          python3 -m praktika.runner --job-name '''Config Workflow''' --workflow-name "Example Merge ready Status, Report" |& tee /tmp/praktika/praktika_run.log
+          if command -v ts &> /dev/null; then
+            python3 -m praktika run 'Config Workflow' --workflow "Example Merge ready Status, Report" --ci |& ts '[%Y-%m-%d %H:%M:%S]' | tee ./ci/tmp/praktika_run.log
+          else
+            python3 -m praktika run 'Config Workflow' --workflow "Example Merge ready Status, Report" --ci |& tee ./ci/tmp/praktika_run.log
+          fi
 
   some_job_1_that_should_block_merge_on_failure:
     runs-on: [maxs-small-fixed]
@@ -68,6 +72,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -83,24 +89,26 @@ jobs:
 
       - name: Prepare env script
         run: |
-          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          rm -rf ./ci/tmp ./ci/tmp ./ci/tmp
+          mkdir -p ./ci/tmp ./ci/tmp ./ci/tmp
+          cat > ./ci/tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export PYTHONPATH=./ci:.
 
-          cat > /tmp/praktika/workflow_config_example_merge_ready_status_report.json << 'EOF'
-          ${{ needs.config_workflow.outputs.data }}
-          EOF
-          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          cat > ./ci/tmp/workflow_status.json << 'EOF'
           ${{ toJson(needs) }}
           EOF
           ENV_SETUP_SCRIPT_EOF
 
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
-
       - name: Run
         id: run
         run: |
+          . ./ci/tmp/praktika_setup_env.sh
           set -o pipefail
-          python3 -m praktika.runner --job-name '''Some Job 1 that should block merge on failure''' --workflow-name "Example Merge ready Status, Report" |& tee /tmp/praktika/praktika_run.log
+          if command -v ts &> /dev/null; then
+            python3 -m praktika run 'Some Job 1 that should block merge on failure' --workflow "Example Merge ready Status, Report" --ci |& ts '[%Y-%m-%d %H:%M:%S]' | tee ./ci/tmp/praktika_run.log
+          else
+            python3 -m praktika run 'Some Job 1 that should block merge on failure' --workflow "Example Merge ready Status, Report" --ci |& tee ./ci/tmp/praktika_run.log
+          fi
 
   some_job_2_that_should_not_block_merge_on_failure:
     runs-on: [maxs-small-fixed]
@@ -111,6 +119,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -126,24 +136,26 @@ jobs:
 
       - name: Prepare env script
         run: |
-          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          rm -rf ./ci/tmp ./ci/tmp ./ci/tmp
+          mkdir -p ./ci/tmp ./ci/tmp ./ci/tmp
+          cat > ./ci/tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export PYTHONPATH=./ci:.
 
-          cat > /tmp/praktika/workflow_config_example_merge_ready_status_report.json << 'EOF'
-          ${{ needs.config_workflow.outputs.data }}
-          EOF
-          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          cat > ./ci/tmp/workflow_status.json << 'EOF'
           ${{ toJson(needs) }}
           EOF
           ENV_SETUP_SCRIPT_EOF
 
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
-
       - name: Run
         id: run
         run: |
+          . ./ci/tmp/praktika_setup_env.sh
           set -o pipefail
-          python3 -m praktika.runner --job-name '''Some Job 2 that should not block merge on failure''' --workflow-name "Example Merge ready Status, Report" |& tee /tmp/praktika/praktika_run.log
+          if command -v ts &> /dev/null; then
+            python3 -m praktika run 'Some Job 2 that should not block merge on failure' --workflow "Example Merge ready Status, Report" --ci |& ts '[%Y-%m-%d %H:%M:%S]' | tee ./ci/tmp/praktika_run.log
+          else
+            python3 -m praktika run 'Some Job 2 that should not block merge on failure' --workflow "Example Merge ready Status, Report" --ci |& tee ./ci/tmp/praktika_run.log
+          fi
 
   finish_workflow:
     runs-on: [maxs-small-fixed]
@@ -155,24 +167,28 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
 
       - name: Prepare env script
         run: |
-          cat > /tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          rm -rf ./ci/tmp ./ci/tmp ./ci/tmp
+          mkdir -p ./ci/tmp ./ci/tmp ./ci/tmp
+          cat > ./ci/tmp/praktika_setup_env.sh << 'ENV_SETUP_SCRIPT_EOF'
+          export PYTHONPATH=./ci:.
 
-          cat > /tmp/praktika/workflow_config_example_merge_ready_status_report.json << 'EOF'
-          ${{ needs.config_workflow.outputs.data }}
-          EOF
-          cat > /tmp/praktika/workflow_status.json << 'EOF'
+          cat > ./ci/tmp/workflow_status.json << 'EOF'
           ${{ toJson(needs) }}
           EOF
           ENV_SETUP_SCRIPT_EOF
 
-          rm -rf /tmp/praktika/input /tmp/praktika/output /tmp/praktika
-          mkdir -p /tmp/praktika /tmp/praktika/input /tmp/praktika/output
-
       - name: Run
         id: run
         run: |
+          . ./ci/tmp/praktika_setup_env.sh
           set -o pipefail
-          python3 -m praktika.runner --job-name '''Finish Workflow''' --workflow-name "Example Merge ready Status, Report" |& tee /tmp/praktika/praktika_run.log
+          if command -v ts &> /dev/null; then
+            python3 -m praktika run 'Finish Workflow' --workflow "Example Merge ready Status, Report" --ci |& ts '[%Y-%m-%d %H:%M:%S]' | tee ./ci/tmp/praktika_run.log
+          else
+            python3 -m praktika run 'Finish Workflow' --workflow "Example Merge ready Status, Report" --ci |& tee ./ci/tmp/praktika_run.log
+          fi
