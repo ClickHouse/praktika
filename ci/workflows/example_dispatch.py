@@ -19,7 +19,7 @@ workflow = Workflow.Config(
         Job.Config(
             name=JobNames.JOB_A,
             runs_on=[RunnerLabels.SMALL_FIXED],
-            command="echo Hello",
+            command="python3 ./ci/tests/example_5/some_code.py",
             job_requirements=Job.Requirements(
                 python=True, python_requirements_txt="./ci/requirements.txt"
             ),
@@ -27,10 +27,16 @@ workflow = Workflow.Config(
     ],
     inputs=[
         Workflow.Config.InputConfig(
-            name="user_name", is_required=True, default_value="", description="User Name"
+            name="user_name",
+            is_required=True,
+            default_value="",
+            description="User Name",
         ),
         Workflow.Config.InputConfig(
-            name="user_age", is_required=False, default_value="0", description="User Age"
+            name="user_age",
+            is_required=False,
+            default_value="0",
+            description="User Age",
         ),
     ],
 )

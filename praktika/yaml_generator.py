@@ -285,7 +285,9 @@ class PullRequestPushYamlGen:
                 )
             if self.workflow_config.event == Workflow.Event.DISPATCH:
                 secrets_envs.append(
-                    YamlGenerator.Templates.TEMPLATE_SETUP_ENVS_INPUTS.format(WORKFLOW_INPUTS_FILE=Settings.WORKFLOW_INPUTS_FILE)
+                    YamlGenerator.Templates.TEMPLATE_SETUP_ENVS_INPUTS.format(
+                        WORKFLOW_INPUTS_FILE=Settings.WORKFLOW_INPUTS_FILE
+                    )
                 )
             if self.workflow_config.enable_cache:
                 secrets_envs.append(
