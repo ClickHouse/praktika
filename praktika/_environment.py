@@ -32,8 +32,8 @@ class _Environment(MetaClasses.Serializable):
     PR_BODY: str
     USER_LOGIN: str
     FORK_NAME: str
-    PR_LABELS: str
     LOCAL_RUN: bool = False
+    PR_LABELS: List[str] = dataclasses.field(default_factory=list)
     REPORT_INFO: List[str] = dataclasses.field(default_factory=list)
     name = "environment"
 

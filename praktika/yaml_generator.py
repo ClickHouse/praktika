@@ -135,6 +135,12 @@ jobs:
           )\
 """
 
+        TEMPLATE_SETUP_ENVS_INPUTS = """\
+          cat > {WORKFLOW_INPUTS_FILE} << 'EOF'
+          ${{{{ toJson(github.event.inputs) }}}}
+          EOF\
+"""
+
         TEMPLATE_SETUP_ENV_WF_CONFIG = """\
           cat > {WORKFLOW_CONFIG_FILE} << 'EOF'
           ${{{{ needs.{WORKFLOW_CONFIG_JOB_NAME}.outputs.data }}}}
@@ -275,6 +281,12 @@ class PullRequestPushYamlGen:
                 secrets_envs.append(
                     YamlGenerator.Templates.TEMPLATE_SETUP_ENV_SECRETS.format(
                         SECRET_NAME=secret
+                    )
+                )
+            if self.workflow_config.event == Workflow.Event.DISPATCH:
+                secrets_envs.append(
+                    YamlGenerator.Templates.TEMPLATE_SETUP_ENVS_INPUTS.format(
+                        WORKFLOW_INPUTS_FILE=Settings.WORKFLOW_INPUTS_FILE
                     )
                 )
             if self.workflow_config.enable_cache:
