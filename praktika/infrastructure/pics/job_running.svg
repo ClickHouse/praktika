@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="128" height="128" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      @keyframes rotate-keyframes {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
+      
+      .spinner-rotate {
+        animation: rotate-keyframes 1s linear infinite;
+        transform-origin: 8px 8px;
+      }
+    </style>
+  </defs>
+  
+  <title>Loading</title>
+  
+  <!-- Static background circle (50% opacity) -->
+  <path opacity="0.5" 
+        d="M8 15A7 7 0 108 1a7 7 0 000 14v0z" 
+        stroke="#936921" 
+        stroke-width="2"/>
+  
+  <!-- Rotating arc group -->
+  <g class="spinner-rotate">
+    <!-- Quarter arc that rotates -->
+    <path d="M15 8a7 7 0 01-7 7" 
+          stroke="#936921" 
+          stroke-width="2" 
+          stroke-linecap="round"/>
+  </g>
+  
+  <!-- Center filled circle -->
+  <circle cx="8" cy="8" r="4" fill="#936921"/>
+</svg>

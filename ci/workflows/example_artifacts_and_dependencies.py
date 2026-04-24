@@ -84,7 +84,7 @@ workflow_pr = Workflow.Config(
     ],
     # example: all artifacts must be defined in the workflow' list of artifacts
     artifacts=[
-        Artifact.define_gh_artifact(name=ArtifactNames.GREET, path="./hello_world.txt")
+        Artifact.Config(name=ArtifactNames.GREET, type=Artifact.Type.GH, path="./hello_world.txt")
     ],
 )
 

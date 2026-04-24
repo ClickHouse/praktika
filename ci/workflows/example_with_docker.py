@@ -49,7 +49,7 @@ workflow = Workflow.Config(
     secrets=[
         Secret.Config(
             name="dockerhub_robot_password",
-            type=Secret.Type.AWS_SSM_VAR,
+            type=Secret.Type.AWS_SSM_PARAMETER,
         ),
     ],
     enable_cache=True,
