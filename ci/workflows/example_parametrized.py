@@ -13,6 +13,7 @@ class WorkflowNames:
 
 
 workflow_pr = Workflow.Config(
+    engine="GHActions",
     name=WorkflowNames.PULL_REQUEST,
     event=Workflow.Event.PULL_REQUEST,
     base_branches=["main"],

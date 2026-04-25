@@ -45,6 +45,8 @@ def find_workflows_for_event(event):
 
     matched = []
     for wf in _get_workflows():
+        if wf.engine == "GHActions":
+            continue
         if wf.event != workflow_event:
             continue
         if event_type == "pull_request" and wf.base_branches:

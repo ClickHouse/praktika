@@ -37,9 +37,15 @@ class Validator:
                 "Setting SECRET_GH_APP must be provided with USE_CUSTOM_GH_AUTH == True",
             )
 
+        _VALID_ENGINES = ("praktika", "GHActions")
         workflows = _get_workflows(_for_validation_check=True)
         for workflow in workflows:
             print(f"Validating workflow [{workflow.name}]")
+            cls.evaluate_check(
+                workflow.engine in _VALID_ENGINES,
+                f"Invalid engine [{workflow.engine}], must be one of {_VALID_ENGINES}",
+                workflow.name,
+            )
             if Settings.USE_CUSTOM_GH_AUTH and workflow.enable_report:
                 secret = workflow.get_secret(Settings.SECRET_GH_APP)
                 cls.evaluate_check(

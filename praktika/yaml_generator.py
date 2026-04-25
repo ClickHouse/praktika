@@ -253,6 +253,9 @@ jobs:
         self.py_workflows = _get_workflows(_file_names_out=files)
         assert self.py_workflows and files
         for workflow_config, workflow_file_name in zip(self.py_workflows, files):
+            if workflow_config.engine != "GHActions":
+                print(f"Skip workflow [{workflow_config.name}] (engine={workflow_config.engine})")
+                continue
             print(f"Generate workflow [{workflow_config.name}]")
             parser = WorkflowConfigParser(workflow_config).parse()
             yaml_workflow_str = PullRequestPushYamlGen(parser).generate()
