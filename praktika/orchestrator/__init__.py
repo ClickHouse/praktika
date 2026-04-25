@@ -28,13 +28,13 @@ def _branch_matches(branch, patterns):
     return False
 
 
-def find_workflow_for_event(event):
-    """Find the workflow matching the trigger event. Returns None if no match."""
+def find_workflows_for_event(event):
+    """Find all workflows matching the trigger event. Returns empty list if no match."""
     event_type = event.get("type", "")
     workflow_event = _EVENT_MAP.get(event_type)
     if not workflow_event:
         print(f"No workflow event mapping for trigger type [{event_type}]")
-        return None
+        return []
 
     if event_type == "pull_request":
         branch = event.get("base_ref", "")
@@ -43,20 +43,20 @@ def find_workflow_for_event(event):
     else:
         branch = ""
 
-    workflows = _get_workflows()
-    for wf in workflows:
+    matched = []
+    for wf in _get_workflows():
         if wf.event != workflow_event:
             continue
-
         if event_type == "pull_request" and wf.base_branches:
             if _branch_matches(branch, wf.base_branches):
-                return wf
+                matched.append(wf)
         elif event_type == "push" and wf.branches:
             if _branch_matches(branch, wf.branches):
-                return wf
+                matched.append(wf)
 
-    print(f"No workflow found for event [{workflow_event}] branch [{branch}]")
-    return None
+    if not matched:
+        print(f"No workflow found for event [{workflow_event}] branch [{branch}]")
+    return matched
 
 
 def build_job_dag(workflow):
@@ -187,34 +187,57 @@ def _patch_top_check(check, workflow, state, error=None):
 def orchestrate(event, check=None, gh_token=None, run_id=None):
     """Single orchestrator entry-point used by both the SQS runner and the CLI.
 
-    Resolves the workflow for ``event``, builds the execution DAG, and prints the
-    plan. If ``check`` is an already-opened ``CheckRun`` (from ``run.py``), it is
-    completed here with the plan captured into ``output.text`` and an appropriate
-    conclusion (``neutral`` for normal planning / no-match, ``failure`` on crash).
-
-    If ``gh_token`` is provided, one ``JobCheckRun`` per job is opened as
-    ``queued`` (and flipped to in_progress / completed through the execution
-    loop) so every job is visible on the PR as its own check.
+    Finds all workflows matching ``event`` and runs them sequentially. Each
+    matched workflow gets its own GitHub check run (named after the workflow).
 
     The goal of this indirection is to keep ``run.py`` stable — all orchestration
     policy lives here and ships with each PR, no user_data redeploy needed.
 
-    Returns the process exit code (0 on success, 1 if orchestration crashed).
+    Returns the process exit code (0 on success, 1 if any orchestration crashed).
     """
     print(
         f"Trigger event: {event.get('type')}.{event.get('action', '')} "
         f"repo={event.get('repo', '')} sender={event.get('sender', '')}"
     )
 
-    workflow = find_workflow_for_event(event)
-    if workflow is None:
-        print("No matching workflow, exiting")
+    workflows = find_workflows_for_event(event)
+    if not workflows:
+        print("No matching workflows, exiting")
         if check is not None:
             try:
                 check.complete("neutral", output=_check_output(None, None))
             except Exception:
                 print(f"Failed to complete check run: {check}", file=sys.stderr)
         return 0
+
+    print(f"Matched {len(workflows)} workflow(s): {[wf.name for wf in workflows]}")
+
+    overall_rc = 0
+    for workflow in workflows:
+        rc = _orchestrate_single(workflow, event, gh_token=gh_token)
+        if rc != 0:
+            overall_rc = rc
+    return overall_rc
+
+
+def _orchestrate_single(workflow, event, gh_token=None):
+    """Run one workflow: open a check run, execute the DAG, close the check.
+
+    Returns 0 on success, 1 on crash.
+    """
+    from .run import CheckRun  # imported here to avoid circular import at module level
+
+    repo = event.get("repo", "")
+    head_sha = event.get("head_sha", "")
+
+    check = None
+    if gh_token:
+        try:
+            check = CheckRun.start(gh_token, repo, head_sha, workflow.name)
+        except Exception as e:
+            print(f"  [warn] failed to open check run for [{workflow.name}]: {e}")
+
+    run_id = str(check.id) if check is not None else None
 
     print(f"Matched workflow [{workflow.name}] with {len(workflow.jobs)} jobs")
 
@@ -292,7 +315,7 @@ def orchestrate(event, check=None, gh_token=None, run_id=None):
 
 
 def run(event_file):
-    """CLI entry-point (``python -m ci.praktika orchestrate <event.json>``)."""
+    """CLI entry-point (``python -m praktika orchestrate <event.json>``)."""
     with open(event_file) as f:
         event = json.load(f)
     sys.exit(orchestrate(event))

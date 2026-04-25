@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """CI engine job runner: polls a per-runner-type SQS queue, clones the PR,
-and delegates to ``ci.praktika.orchestrator.job_runner.run_job`` which
+and delegates to ``praktika.orchestrator.job_runner.run_job`` which
 ultimately invokes ``praktika.Runner.run`` for the requested job.
 
 Deployed to EC2 via user_data (same gzip+base64 baking trick as ``run.py``).
@@ -144,7 +144,7 @@ def _purge_praktika_modules():
 
 def process_job(repo_root, task, gh_token=None, local=False):
     """Set up sys.path / cwd for the cloned repo and delegate to the domain
-    entry-point ``ci.praktika.orchestrator.job_runner.run_job``.
+    entry-point ``praktika.orchestrator.job_runner.run_job``.
     """
     _purge_praktika_modules()
     sys.path[:] = [p for p in sys.path if "/work/pr-" not in p]
@@ -163,7 +163,7 @@ def process_job(repo_root, task, gh_token=None, local=False):
     with open(event_file, "w") as f:
         json.dump(task, f, indent=2)
 
-    from ci.praktika.orchestrator.job_runner import run_job
+    from praktika.orchestrator.job_runner import run_job
     return run_job(task, gh_token=gh_token, local=local)
 
 

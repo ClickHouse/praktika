@@ -133,11 +133,11 @@ partially-migrated workflows keep flowing.
 
 ```bash
 # Orchestrator infra (changes to run.py / user_data_orchestrator.sh):
-python3 -m ci.praktika infrastructure --deploy --only LaunchTemplate AutoScalingGroup
+python3 -m praktika infrastructure --deploy --only LaunchTemplate AutoScalingGroup
 # Plus terminate running orchestrator runners so the ASG relaunches on the new LT.
 
 # Runner infra (new runner types, or changes to run_job.py / user_data_ci_runner.sh):
-python3 -m ci.praktika infrastructure --deploy --only LaunchTemplate AutoScalingGroup SQSQueue
+python3 -m praktika infrastructure --deploy --only LaunchTemplate AutoScalingGroup SQSQueue
 # Plus terminate running runners on the affected pool.
 ```
 

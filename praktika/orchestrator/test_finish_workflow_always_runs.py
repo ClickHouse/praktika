@@ -15,7 +15,7 @@ Run with:
 """
 import types
 
-from ci.praktika.orchestrator.state import JobState, JobStatus, WorkflowState
+from praktika.orchestrator.state import JobState, JobStatus, WorkflowState
 
 
 def _make_state(*job_specs):

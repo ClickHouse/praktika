@@ -21,7 +21,7 @@ import time
 import pytest
 import requests
 
-from ci.praktika.orchestrator.run import CheckRun, get_github_token
+from praktika.orchestrator.run import CheckRun, get_github_token
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("CI_ENGINE_LIVE_TESTS") != "1",

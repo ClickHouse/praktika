@@ -298,15 +298,11 @@ def _purge_praktika_modules():
             del sys.modules[name]
 
 
-def process_workflow(repo_root, event, check=None, gh_token=None, run_id=None):
+def process_workflow(repo_root, event, gh_token=None):
     """Set up the import path / cwd for the cloned repo and delegate to the
     orchestrator's single entry-point. Everything workflow-related (DAG build,
-    plan, check completion) lives in ``ci.praktika.orchestrator.orchestrate`` so
-    that the runner script stays stable across PRs — orchestrator changes ship
-    with the cloned code, not with a new LT version.
-
-    ``gh_token``, if provided, is forwarded to the orchestrator so it can open
-    per-job check runs.
+    per-workflow check runs, plan, completion) lives in the cloned code so it
+    ships with each PR without requiring a new LT version.
     """
     _purge_praktika_modules()
     sys.path[:] = [p for p in sys.path if "/work/pr-" not in p]
@@ -320,21 +316,13 @@ def process_workflow(repo_root, event, check=None, gh_token=None, run_id=None):
     with open(event_file, "w") as f:
         json.dump(event, f, indent=2)
 
-    from ci.praktika.orchestrator import orchestrate
-    return orchestrate(event, check=check, gh_token=gh_token, run_id=run_id)
+    from praktika.orchestrator import orchestrate
+    return orchestrate(event, gh_token=gh_token)
 
 
 # Map event type -> check-run name. We post the check before cloning
-# (so the PR author sees it immediately), which means we have to pick the
-# name from the event alone, not from the resolved workflow config.
-_CHECK_NAME_BY_EVENT = {
-    "pull_request": "PR",
-}
-
-
 def handle_workflow(workflow):
-    """Process one SQS workflow trigger: open the check run, clone the repo,
-    run the orchestrator, and close the check run."""
+    """Process one SQS workflow trigger: clone the repo and run all matching workflows."""
     wf_type = workflow.get("type", "unknown")
     log.info(f"Processing workflow: {wf_type}")
 
@@ -345,47 +333,22 @@ def handle_workflow(workflow):
     repo = workflow.get("repo", "")
     pr_number = workflow.get("pr_number")
     head_sha = workflow.get("head_sha", "")
-    check_name = _CHECK_NAME_BY_EVENT.get(wf_type, "CI Engine")
 
-    # Mint a GitHub App token once and reuse it for the top-level check and
-    # for the per-job check runs opened inside the orchestrator.
     token = None
-    check = None
     try:
         token = get_github_token()
-        check = CheckRun.start(token, repo, head_sha, check_name)
-        log.info(f"Check run [{check_name}] id={check.id} in_progress")
     except Exception:
-        log.exception("Failed to start check run")
+        log.exception("Failed to mint GitHub token")
 
-    # Use the GitHub check run ID as the unique run identifier so the
-    # orchestrator and its runners can distinguish completions from
-    # concurrent runs on the same PR (e.g. two re-runs in quick succession).
-    run_id = str(check.id) if check is not None else None
-
-    try:
-        clone_dir, actual_sha = clone_repo(repo, head_sha, pr_number)
-        rc = process_workflow(clone_dir, workflow, check=check, gh_token=token, run_id=run_id)
-        return {
-            "status": "ok" if rc == 0 else "error",
-            "pr": pr_number,
-            "sha": actual_sha,
-            "clone_dir": clone_dir,
-            "rc": rc,
-        }
-    except Exception as e:
-        # Something blew up before/around the orchestrator (e.g. clone). Close
-        # the check as failure so it doesn't dangle in_progress forever.
-        if check is not None:
-            try:
-                check.complete("failure", output={
-                    "title": check_name,
-                    "summary": "Runner failure before orchestration",
-                    "text": f"```\n{type(e).__name__}: {e}\n```",
-                })
-            except Exception:
-                log.exception("Failed to complete check run after runner error")
-        raise
+    clone_dir, actual_sha = clone_repo(repo, head_sha, pr_number)
+    rc = process_workflow(clone_dir, workflow, gh_token=token)
+    return {
+        "status": "ok" if rc == 0 else "error",
+        "pr": pr_number,
+        "sha": actual_sha,
+        "clone_dir": clone_dir,
+        "rc": rc,
+    }
 
 
 def poll():
@@ -468,19 +431,13 @@ def local(event_file):
     )
 
     token = None
-    check = None
     if os.environ.get("CI_ENGINE_POST_CHECKS") == "1":
-        repo = event.get("repo", "")
-        head_sha = event.get("head_sha", "")
-        check_name = _CHECK_NAME_BY_EVENT.get(event.get("type", ""), "CI Engine")
         try:
             token = get_github_token()
-            check = CheckRun.start(token, repo, head_sha, check_name)
-            log.info(f"Check run [{check_name}] id={check.id} in_progress")
         except Exception:
-            log.exception("Failed to start check run")
+            log.exception("Failed to mint GitHub token")
 
-    rc = process_workflow(repo_root, event, check=check, gh_token=token)
+    rc = process_workflow(repo_root, event, gh_token=token)
     sys.exit(rc)
 
 

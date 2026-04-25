@@ -90,7 +90,7 @@ class GHAuth:
 
 
 # if __name__ == "__main__":
-#     from ci.praktika.secret import Secret
+#     from praktika.secret import Secret
 #
 #     pem = Secret.Config(
 #         name="woolenwolf_gh_app.clickhouse-app-key",
