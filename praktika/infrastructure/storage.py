@@ -3,7 +3,6 @@ from dataclasses import dataclass, field
 from typing import Any, Dict
 
 from botocore.exceptions import ClientError
-
 from ._utils import aws_client
 
 
