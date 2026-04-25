@@ -62,10 +62,7 @@ class _Settings:
     RUN_LOG: str = f"{TEMP_DIR}/job.log"
 
     USE_CUSTOM_GH_AUTH: bool = False
-    SECRET_GH_APP_ID: str = ""
-    SECRET_GH_APP_PEM_KEY: str = ""
-    SECRET_GH_APP_INSTALLATION_ID: str = ""
-    SECRET_GH_APP_REGION: str = ""
+    SECRET_GH_APP: str = "praktika-gh-app"
 
     ENV_SETUP_SCRIPT: str = f"{TEMP_DIR}/praktika_setup_env.sh"
     WORKFLOW_JOB_FILE: str = f"{TEMP_DIR}/workflow_job.json"
@@ -127,6 +124,8 @@ class _Settings:
     ######################################
     CLOUD_INFRASTRUCTURE_CONFIG_PATH: str = ""
     AWS_REGION: str = ""
+    AWS_ACCOUNT_ID: str = ""
+    AWS_PROFILE: str = ""
     # S3 path for Slack feed events storage (format: bucket/prefix)
     # Used by EventFeed and FeedSubscription for PR notification subscriptions
     EVENT_FEED_S3_PATH: str = ""
@@ -140,6 +139,8 @@ _USER_DEFINED_SETTINGS = [
     "CLOUD_INFRASTRUCTURE_CONFIG_PATH",
     "EVENT_FEED_S3_PATH",
     "AWS_REGION",
+    "AWS_ACCOUNT_ID",
+    "AWS_PROFILE",
     "S3_BUCKET_TO_HTTP_ENDPOINT",
     "TEXT_CONTENT_EXTENSIONS",
     "TEMP_DIR",
@@ -171,10 +172,6 @@ _USER_DEFINED_SETTINGS = [
     "KEEPER_STRESS_METRICS_TABLE_NAME",
     "CI_DB_INSERT_TIMEOUT_SEC",
     "USE_CUSTOM_GH_AUTH",
-    "SECRET_GH_APP_ID",
-    "SECRET_GH_APP_PEM_KEY",
-    "SECRET_GH_APP_INSTALLATION_ID",
-    "SECRET_GH_APP_REGION",
     "MAIN_BRANCH",
     "DISABLED_WORKFLOWS",
     "ENABLED_WORKFLOWS",

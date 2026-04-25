@@ -77,28 +77,15 @@ class GHAuth:
         from praktika.secret import Secret
         from praktika.settings import Settings
 
-        app_id, pem, installation_id = (
-            Secret.Config(
-                name=Settings.SECRET_GH_APP_ID,
-                type=Secret.Type.AWS_SSM_SECRET,
-                region=Settings.SECRET_GH_APP_REGION,
-            )
-            .join_with(
-                Secret.Config(
-                    name=Settings.SECRET_GH_APP_PEM_KEY,
-                    type=Secret.Type.AWS_SSM_SECRET,
-                    region=Settings.SECRET_GH_APP_REGION,
-                )
-            )
-            .join_with(
-                Secret.Config(
-                    name=Settings.SECRET_GH_APP_INSTALLATION_ID,
-                    type=Secret.Type.AWS_SSM_SECRET,
-                    region=Settings.SECRET_GH_APP_REGION,
-                )
-            )
-            .get_value()
-        )
+        app_id, pem, installation_id = Secret.Config(
+            name=[
+                f"{Settings.SECRET_GH_APP}.app-id",
+                f"{Settings.SECRET_GH_APP}.app-key",
+                f"{Settings.SECRET_GH_APP}.app-installation-id",
+            ],
+            type=Secret.Type.AWS_SSM_SECRET,
+            region=Settings.AWS_REGION,
+        ).get_value()
         cls.auth(app_id=app_id, app_key=pem, installation_id=int(installation_id))
 
 

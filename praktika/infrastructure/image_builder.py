@@ -1,3 +1,4 @@
+from ._utils import aws_client
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -45,7 +46,7 @@ class ImageBuilder:
         def _client(self):
             import boto3
 
-            return boto3.client("imagebuilder", region_name=self.region)
+            return aws_client("imagebuilder", self.region, self.name)
 
         def _split_commands(self, script: str) -> List[str]:
             return [
@@ -73,7 +74,7 @@ class ImageBuilder:
 
             import boto3
 
-            sts = boto3.client("sts", region_name=self.region)
+            sts = aws_client("sts", self.region, self.name)
             account_id = sts.get_caller_identity().get("Account", "")
             if not account_id:
                 raise Exception("Failed to resolve AWS account id via STS")

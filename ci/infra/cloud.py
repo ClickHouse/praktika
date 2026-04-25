@@ -1,0 +1,42 @@
+from praktika import CloudInfrastructure
+from praktika.infrastructure import NativeComponents, Storage, VPC
+
+CI_VPC_NAME = "praktika-ci"
+
+_runner_pools = [
+    NativeComponents.RunnerPool(
+        name="arm-2xsmall",
+        instance_type="t4g.small",
+        vpc_name=CI_VPC_NAME,
+        scaling_type=NativeComponents.RunnerPool.ScalingType.Fixed,
+        size=1,
+        max_size=1,
+    ),
+]
+
+_orchestrator_pool = NativeComponents.OrchestratorPool(
+    instance_type="t4g.small",
+    vpc_name=CI_VPC_NAME,
+    size=2,
+    max_size=2,
+)
+
+CLOUD = CloudInfrastructure.Config(
+    name="cloud_ci_infra",
+    vpcs=[
+        VPC.Config(
+            name=CI_VPC_NAME,
+            subnets=[
+                VPC.Subnet(availability_zone="eu-north-1a"),
+            ],
+        )
+    ],
+    storages=[
+        Storage.Config(name="praktika-artifacts-eu-north-1", retention_days=90, public=True),
+    ],
+    report_pages=[
+        NativeComponents.report_page_config,
+    ],
+    orchestrator_pool=_orchestrator_pool,
+    runner_pools=_runner_pools,
+)

@@ -32,7 +32,17 @@ class S3:
             return None
         if cls._boto3_client is None:
             try:
-                cls._boto3_client = boto3.client("s3")
+                from .settings import Settings
+                if Settings.AWS_PROFILE:
+                    session = boto3.Session(
+                        profile_name=Settings.AWS_PROFILE,
+                        region_name=Settings.AWS_REGION or None,
+                    )
+                    cls._boto3_client = session.client("s3")
+                else:
+                    cls._boto3_client = boto3.client(
+                        "s3", region_name=Settings.AWS_REGION or None
+                    )
             except Exception as e:
                 print(f"WARNING: Failed to initialize boto3 client: {e}")
                 return None

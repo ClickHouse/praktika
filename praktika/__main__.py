@@ -213,32 +213,13 @@ def main():
             )
 
         if args.deploy:
-            # Check if html is in the only list (case-insensitive)
-            normalized_only = (
-                [c.strip().lower() for c in args.only] if args.only else []
+            from .mangle import _get_infra_config
+
+            _get_infra_config().deploy(
+                all=args.all,
+                only=args.only,
+                is_test=args.test,
             )
-            if normalized_only and "html" in normalized_only:
-                Html.prepare(args.test)
-                # Remove html from the list for subsequent infrastructure deployment
-                remaining_components = [
-                    c
-                    for c, normalized in zip(args.only, normalized_only)
-                    if normalized != "html"
-                ]
-                if remaining_components:
-                    from .mangle import _get_infra_config
-
-                    _get_infra_config().deploy(
-                        all=args.all,
-                        only=remaining_components,
-                    )
-            else:
-                from .mangle import _get_infra_config
-
-                _get_infra_config().deploy(
-                    all=args.all,
-                    only=args.only,
-                )
 
         if args.shutdown:
             from .mangle import _get_infra_config

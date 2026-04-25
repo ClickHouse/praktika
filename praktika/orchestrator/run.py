@@ -28,15 +28,16 @@ import threading
 import time
 from datetime import datetime, timezone
 
-QUEUE_NAME = os.environ.get("SQS_QUEUE_NAME", "praktika_clickhouse_workflows")
+QUEUE_NAME = os.environ.get("SQS_QUEUE_NAME", "praktika-workflows")
 REGION = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
 INSTANCE_ID = os.environ.get("INSTANCE_ID", "local-dev")
-WORK_DIR = os.environ.get("WORK_DIR", "/opt/ci-engine/work")
+WORK_DIR = os.environ.get("WORK_DIR", "/opt/praktika/work")
 
-S3_LOG_BUCKET = "clickhouse-test-reports-private"
-S3_LOG_PREFIX = "praktika/workflow-orchestrator"
+#TODO: remove hardcoded bucket names
+S3_LOG_BUCKET = "praktika-artifacts-eu-north-1"
+S3_LOG_PREFIX = "/workflow-orchestrator"
 
-GH_APP_SECRET_ID = "woolenwolf_gh_app"
+GH_APP_SECRET = "praktika-gh-app"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,21 +45,20 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
     stream=sys.stdout,
 )
-log = logging.getLogger("ci-engine")
+log = logging.getLogger("orch")
 
 
 def get_github_token():
-    """Mint a GitHub installation token via the woolenwolf GitHub App."""
+    """Mint a GitHub installation token via the praktika GitHub App."""
     import jwt
     import requests
 
     sm = __import__("boto3").client("secretsmanager", region_name=REGION)
-    secret = json.loads(
-        sm.get_secret_value(SecretId=GH_APP_SECRET_ID)["SecretString"]
-    )
-    app_id = secret["clickhouse-app-id"]
-    app_key = secret["clickhouse-app-key"]
-    installation_id = secret["installation_id"]
+    # Single JSON secret with keys: app-key (PEM), app-installation-id, app-id
+    secret = json.loads(sm.get_secret_value(SecretId=GH_APP_SECRET)["SecretString"])
+    app_id = secret["app-id"]
+    app_key = secret["app-key"]
+    installation_id = secret["app-installation-id"]
 
     now = int(time.time())
     payload = {"iat": now - 60, "exp": now + 600, "iss": app_id}

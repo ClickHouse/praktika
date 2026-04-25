@@ -1,3 +1,4 @@
+from ._utils import aws_client
 import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
@@ -23,7 +24,7 @@ class SQSQueue:
             """Fetch queue configuration from AWS."""
             import boto3
 
-            sqs = boto3.client("sqs", region_name=self.region)
+            sqs = aws_client("sqs", self.region, self.name)
 
             try:
                 resp = sqs.get_queue_url(QueueName=self.name)
@@ -44,7 +45,7 @@ class SQSQueue:
             """Create or update the SQS queue."""
             import boto3
 
-            sqs = boto3.client("sqs", region_name=self.region)
+            sqs = aws_client("sqs", self.region, self.name)
 
             dlq_arn = None
             if self.dead_letter_queue:
@@ -112,7 +113,7 @@ class SQSQueue:
             """Delete the queue and its DLQ."""
             import boto3
 
-            sqs = boto3.client("sqs", region_name=self.region)
+            sqs = aws_client("sqs", self.region, self.name)
 
             for queue_name in [self.name, f"{self.name}-dlq"]:
                 try:

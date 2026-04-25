@@ -7,7 +7,7 @@ import os
 import boto3
 
 WEBHOOK_SECRET = os.environ.get("GH_WEBHOOK_SECRET", "")
-SQS_QUEUE_NAME = os.environ.get("SQS_QUEUE_NAME", "praktika_clickhouse_workflows")
+SQS_QUEUE_NAME = os.environ.get("SQS_QUEUE_NAME", "praktika-workflows")
 
 # Only process events from these senders (for PoC)
 ALLOWED_SENDERS = {"maxknv"}

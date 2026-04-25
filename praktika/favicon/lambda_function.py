@@ -4,6 +4,32 @@ import struct
 import zlib
 
 
+def create_avatar_png(size: int = 256) -> bytes:
+    """Generate a PNG avatar: dark background (#151515) with yellow (#FAFF69) bars."""
+    bg_color = [0x15, 0x15, 0x15, 255]
+    bar_color = [0xFA, 0xFF, 0x69, 255]
+
+    # Scale bar geometry proportionally from the 32px reference
+    scale = size / 32
+    bar_width = max(1, round(4 * scale))
+    gap = max(1, round(3 * scale))
+    num_bars = 4
+
+    image_data = bytearray(bg_color * size * size)
+
+    x = gap
+    for _ in range(num_bars):
+        bar_h = gap + random.randint(0, size - gap * 2 - bar_width)
+        y_top = size - gap - bar_h
+        for row in range(y_top, size - gap):
+            for col in range(x, x + bar_width):
+                idx = (row * size + col) * 4
+                image_data[idx : idx + 4] = bar_color
+        x += bar_width + gap
+
+    return create_png(size, size, image_data)
+
+
 def create_favicon():
     # Image dimensions
     width = 32

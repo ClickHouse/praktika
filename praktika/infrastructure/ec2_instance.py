@@ -1,3 +1,4 @@
+from ._utils import aws_client
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -80,7 +81,7 @@ class EC2Instance:
 
             import boto3
 
-            rg = boto3.client("resource-groups", region_name=self.region)
+            rg = aws_client("resource-groups", self.region, self.name)
             resp = rg.get_group(GroupName=self.host_resource_group_name)
             group = resp.get("Group") or {}
             arn = group.get("GroupArn", "")
@@ -99,7 +100,7 @@ class EC2Instance:
 
             import boto3
 
-            ec2 = boto3.client("ec2", region_name=self.region)
+            ec2 = aws_client("ec2", self.region, self.name)
             resp = ec2.describe_images(ImageIds=[self.image_id])
             images = resp.get("Images", []) or []
             root = (images[0] if images else {}).get("RootDeviceName", "")
@@ -129,7 +130,7 @@ class EC2Instance:
             """Find all existing instances matching the name."""
             import boto3
 
-            ec2 = boto3.client("ec2", region_name=self.region)
+            ec2 = aws_client("ec2", self.region, self.name)
 
             filters = [
                 {
@@ -224,7 +225,7 @@ class EC2Instance:
                 )
 
             existing_instances = self._find_existing_instances()
-            ec2 = boto3.client("ec2", region_name=self.region)
+            ec2 = aws_client("ec2", self.region, self.name)
             if existing_instances:
                 instance_ids = [inst.get("InstanceId") for inst in existing_instances]
                 states = [
@@ -397,7 +398,7 @@ class EC2Instance:
                 )
                 return self
 
-            ec2 = boto3.client("ec2", region_name=self.region)
+            ec2 = aws_client("ec2", self.region, self.name)
 
             print(
                 f"EC2Instance '{self.name}': found {len(instance_ids)} instance(s) to shutdown: {instance_ids}"

@@ -1,3 +1,4 @@
+from ._utils import aws_client
 import base64
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -26,6 +27,8 @@ class LaunchTemplate:
         # If set, will be base64-encoded and applied as LaunchTemplateData.UserData
         user_data: str = ""
         security_group_ids: List[str] = field(default_factory=list)
+        # Resolved to IDs at deploy time by looking up SG names in the VPC
+        security_group_names: List[str] = field(default_factory=list)
         iam_instance_profile_name: str = ""
         tenancy: str = ""  # e.g. "host"
         host_id: str = ""
@@ -57,7 +60,7 @@ class LaunchTemplate:
             """
             import boto3
 
-            ec2 = boto3.client("ec2", region_name=self.region)
+            ec2 = aws_client("ec2", self.region, self.name)
 
             resp = ec2.describe_launch_templates(LaunchTemplateNames=[self.name])
             lts = resp.get("LaunchTemplates", [])
@@ -91,12 +94,17 @@ class LaunchTemplate:
             if self.image_id:
                 return self.image_id
 
+            # Auto-resolve latest AL2023 ARM64 AMI for the current region
+            from .native.configs import resolve_al2023_arm64_ami
+            self.image_id = resolve_al2023_arm64_ami(self.region)
+            return self.image_id
+
             if not self.image_builder_pipeline_name:
                 return ""
 
             import boto3
 
-            client = boto3.client("imagebuilder", region_name=self.region)
+            client = aws_client("imagebuilder", self.region, self.name)
 
             pipeline_arn = ""
             paginator = client.get_paginator("list_image_pipelines")
@@ -154,9 +162,9 @@ class LaunchTemplate:
                 return self.data
 
             resolved_image_id = self._resolve_image_id()
-            if not resolved_image_id or not self.instance_type:
+            if not self.instance_type:
                 raise ValueError(
-                    f"Either data must be provided, or image_id + instance_type must be set for Launch Template '{self.name}'"
+                    f"instance_type must be set for Launch Template '{self.name}'"
                 )
 
             lt_data: Dict[str, Any] = {
@@ -184,8 +192,19 @@ class LaunchTemplate:
                 )
                 lt_data["TagSpecifications"] = tag_specs
 
-            if self.security_group_ids:
-                lt_data["SecurityGroupIds"] = list(self.security_group_ids)
+            sg_ids = list(self.security_group_ids)
+            if self.security_group_names:
+                ec2_lookup = aws_client("ec2", self.region, self.name)
+                resp = ec2_lookup.describe_security_groups(Filters=[
+                    {"Name": "group-name", "Values": self.security_group_names}
+                ])
+                resolved = {sg["GroupName"]: sg["GroupId"] for sg in resp["SecurityGroups"]}
+                for name in self.security_group_names:
+                    if name not in resolved:
+                        raise ValueError(f"Security group '{name}' not found in region {self.region}")
+                    sg_ids.append(resolved[name])
+            if sg_ids:
+                lt_data["SecurityGroupIds"] = sg_ids
 
             if self.iam_instance_profile_name:
                 lt_data["IamInstanceProfile"] = {
@@ -213,6 +232,73 @@ class LaunchTemplate:
 
             return lt_data
 
+        def _is_current_version_up_to_date(self, ec2, lt_id: str, desired: dict) -> bool:
+            try:
+                resp = ec2.describe_launch_template_versions(
+                    LaunchTemplateId=lt_id, Versions=["$Latest"]
+                )
+                versions = resp.get("LaunchTemplateVersions", [])
+                if not versions:
+                    return False
+                current = versions[0].get("LaunchTemplateData", {})
+            except Exception:
+                return False
+
+            def _norm(data: dict) -> dict:
+                out = {}
+                for key in ("ImageId", "InstanceType"):
+                    if key in data:
+                        out[key] = data[key]
+                # UserData: decode both sides before comparing — AWS may return
+                # different base64 padding/line breaks than what we encoded.
+                if "UserData" in desired:
+                    def _decode(s):
+                        try:
+                            return base64.b64decode(s).decode("utf-8") if s else ""
+                        except Exception:
+                            return s
+                    out["UserData"] = _decode(desired["UserData"])
+                    out["_current_UserData"] = _decode(current.get("UserData", ""))
+                # Security groups
+                if "SecurityGroupIds" in desired:
+                    out["SecurityGroupIds"] = sorted(desired["SecurityGroupIds"])
+                    out["_current_SecurityGroupIds"] = sorted(
+                        current.get("NetworkInterfaces", [{}])[0].get("Groups", [{}])
+                        if current.get("NetworkInterfaces")
+                        else current.get("SecurityGroupIds", [])
+                    )
+                # IAM profile: compare by name
+                dp = desired.get("IamInstanceProfile", {})
+                cp = current.get("IamInstanceProfile", {})
+                if dp:
+                    out["IamProfileName"] = dp.get("Name", "")
+                    out["_current_IamProfileName"] = cp.get("Arn", "").split("/")[-1] if cp.get("Arn") else cp.get("Name", "")
+                return out
+
+            d = _norm(desired)
+            for key, val in d.items():
+                if key.startswith("_current_"):
+                    continue
+                current_val = d.get(f"_current_{key}", current.get(key))
+                if key == "UserData":
+                    current_val = d["_current_UserData"]
+                if val != current_val:
+                    print(f"  Launch Template field changed: {key}")
+                    if key == "UserData":
+                        # Find first differing line
+                        desired_lines = val.splitlines()
+                        current_lines = current_val.splitlines()
+                        for i, (dl, cl) in enumerate(zip(desired_lines, current_lines)):
+                            if dl != cl:
+                                print(f"    First diff at line {i+1}:")
+                                print(f"    desired:  {dl!r}")
+                                print(f"    current:  {cl!r}")
+                                break
+                        else:
+                            print(f"    desired lines: {len(desired_lines)}, current lines: {len(current_lines)}")
+                    return False
+            return True
+
         def deploy(self):
             """
             Create or update (create new version) an EC2 Launch Template.
@@ -225,7 +311,7 @@ class LaunchTemplate:
 
             launch_template_data = self._build_launch_template_data()
 
-            ec2 = boto3.client("ec2", region_name=self.region)
+            ec2 = aws_client("ec2", self.region, self.name)
 
             # Determine if LT exists
             exists = False
@@ -252,13 +338,17 @@ class LaunchTemplate:
                 print(f"Successfully created Launch Template: {self.name}")
                 return self
 
-            # Exists
+            # Exists — check if current version matches desired config
             if not self.create_new_version:
                 raise ValueError(
                     f"Launch Template '{self.name}' already exists and create_new_version=False"
                 )
 
             lt_id = self._resolve_launch_template_id()
+
+            if self._is_current_version_up_to_date(ec2, lt_id, launch_template_data):
+                print(f"Launch Template '{self.name}' is already up to date, skipping")
+                return self
 
             resp = ec2.create_launch_template_version(
                 LaunchTemplateId=lt_id,
@@ -281,3 +371,15 @@ class LaunchTemplate:
                 f"Successfully created new version for Launch Template: {self.name} (version={new_version_number})"
             )
             return self
+
+        def delete(self):
+            import boto3
+            client = aws_client("ec2", self.region, self.name)
+            try:
+                client.delete_launch_template(LaunchTemplateName=self.name)
+                print(f"Deleted Launch Template '{self.name}'")
+            except client.exceptions.ClientError as e:
+                if "does not exist" in str(e).lower() or "InvalidLaunchTemplateName" in str(e):
+                    print(f"Launch Template '{self.name}' does not exist, skipping")
+                else:
+                    raise

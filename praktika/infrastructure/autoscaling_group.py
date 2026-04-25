@@ -1,3 +1,4 @@
+from ._utils import aws_client
 import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
@@ -57,7 +58,7 @@ class AutoScalingGroup:
             """
             import boto3
 
-            asg_client = boto3.client("autoscaling", region_name=self.region)
+            asg_client = aws_client("autoscaling", self.region, self.name)
 
             resp = asg_client.describe_auto_scaling_groups(
                 AutoScalingGroupNames=[self.name]
@@ -104,7 +105,7 @@ class AutoScalingGroup:
             if version in ("$Latest", "$Default"):
                 import boto3
 
-                ec2 = boto3.client("ec2", region_name=self.region)
+                ec2 = aws_client("ec2", self.region, self.name)
                 if self.launch_template_id:
                     lt_resp = ec2.describe_launch_templates(
                         LaunchTemplateIds=[self.launch_template_id]
@@ -149,7 +150,7 @@ class AutoScalingGroup:
 
             import boto3
 
-            ec2 = boto3.client("ec2", region_name=self.region)
+            ec2 = aws_client("ec2", self.region, self.name)
 
             vpc_id = self.vpc_id
             if not vpc_id:
@@ -204,9 +205,8 @@ class AutoScalingGroup:
 
             # Reduce AWS API retries to avoid long "hangs" on transient/opaque InternalFailure.
             # We want the error to surface quickly with the request payload printed below.
-            asg_client = boto3.client(
-                "autoscaling",
-                region_name=self.region,
+            asg_client = aws_client(
+                "autoscaling", self.region, self.name,
                 config=Config(retries={"max_attempts": 1, "mode": "standard"}),
             )
 
@@ -296,3 +296,17 @@ class AutoScalingGroup:
                 )
 
             return self
+
+        def delete(self):
+            import boto3
+            client = aws_client("autoscaling", self.region, self.name)
+            try:
+                client.delete_auto_scaling_group(
+                    AutoScalingGroupName=self.name, ForceDelete=True
+                )
+                print(f"Deleted Auto Scaling Group '{self.name}'")
+            except client.exceptions.ClientError as e:
+                if "not found" in str(e).lower():
+                    print(f"Auto Scaling Group '{self.name}' does not exist, skipping")
+                else:
+                    raise

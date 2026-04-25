@@ -109,6 +109,12 @@ def _get_infra_config():
     """
     from pathlib import Path
 
+    if not Settings.CLOUD_INFRASTRUCTURE_CONFIG_PATH:
+        Utils.raise_with_error(
+            "Settings.CLOUD_INFRASTRUCTURE_CONFIG_PATH is not set. "
+            "Please define it in your ci/settings/*.py file."
+        )
+
     config_path = Path(Settings.CLOUD_INFRASTRUCTURE_CONFIG_PATH)
 
     if not config_path.exists():
@@ -121,7 +127,8 @@ def _get_infra_config():
 
     if not spec or not spec.loader:
         Utils.raise_with_error(
-            f"Failed to load infrastructure config from [{Settings.CLOUD_INFRASTRUCTURE_CONFIG_PATH}]"
+            f"Failed to load infrastructure config from [{Settings.CLOUD_INFRASTRUCTURE_CONFIG_PATH}]: "
+            f"path must point to a Python (.py) file, not a directory"
         )
 
     module = importlib.util.module_from_spec(spec)
