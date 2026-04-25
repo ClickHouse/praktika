@@ -37,7 +37,7 @@ After=network.target
 
 [Service]
 Type=simple
-Environment=SQS_QUEUE_NAME=praktika_clickhouse_workflows
+Environment=SQS_QUEUE_NAME=praktika-workflows
 Environment=AWS_DEFAULT_REGION=$REGION
 Environment=INSTANCE_ID=$INSTANCE_ID
 ExecStart=/usr/bin/python3.12 -u $RUNNER_HOME/run.py

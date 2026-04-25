@@ -2,7 +2,7 @@
 """CI engine runner: polls SQS for workflow triggers, clones the repo, runs
 the orchestrator, and reports status to GitHub via the Checks API.
 
-This same file is deployed to EC2 by ``user_data_ci_engine.sh`` (the shell
+This same file is deployed to EC2 by ``user_data_orchestrator.sh`` (the shell
 script substitutes its body in at deploy time), so there is a single source
 of truth for both local and production.
 

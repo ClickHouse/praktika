@@ -284,18 +284,6 @@ class LaunchTemplate:
                     current_val = d["_current_UserData"]
                 if val != current_val:
                     print(f"  Launch Template field changed: {key}")
-                    if key == "UserData":
-                        # Find first differing line
-                        desired_lines = val.splitlines()
-                        current_lines = current_val.splitlines()
-                        for i, (dl, cl) in enumerate(zip(desired_lines, current_lines)):
-                            if dl != cl:
-                                print(f"    First diff at line {i+1}:")
-                                print(f"    desired:  {dl!r}")
-                                print(f"    current:  {cl!r}")
-                                break
-                        else:
-                            print(f"    desired lines: {len(desired_lines)}, current lines: {len(current_lines)}")
                     return False
             return True
 
@@ -348,6 +336,7 @@ class LaunchTemplate:
 
             if self._is_current_version_up_to_date(ec2, lt_id, launch_template_data):
                 print(f"Launch Template '{self.name}' is already up to date, skipping")
+                self.ext["version_updated"] = False
                 return self
 
             resp = ec2.create_launch_template_version(
@@ -367,6 +356,7 @@ class LaunchTemplate:
                 )
                 self.ext["default_version_number"] = new_version_number
 
+            self.ext["version_updated"] = True
             print(
                 f"Successfully created new version for Launch Template: {self.name} (version={new_version_number})"
             )

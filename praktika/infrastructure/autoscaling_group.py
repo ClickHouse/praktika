@@ -297,6 +297,26 @@ class AutoScalingGroup:
 
             return self
 
+        def restart(self):
+            """Start an instance refresh to replace all instances with the current LT version."""
+            client = aws_client("autoscaling", self.region, self.name)
+            try:
+                resp = client.start_instance_refresh(
+                    AutoScalingGroupName=self.name,
+                    Preferences={
+                        "MinHealthyPercentage": 0,
+                        "InstanceWarmup": 60,
+                    },
+                )
+                refresh_id = resp.get("InstanceRefreshId", "")
+                print(f"Instance refresh started for ASG '{self.name}' (id={refresh_id})")
+            except client.exceptions.ClientError as e:
+                if "InstanceRefreshInProgress" in str(e):
+                    print(f"Instance refresh already in progress for ASG '{self.name}', skipping")
+                else:
+                    raise
+            return self
+
         def delete(self):
             import boto3
             client = aws_client("autoscaling", self.region, self.name)

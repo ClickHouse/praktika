@@ -458,3 +458,16 @@ class CloudInfrastructure:
             print("\n" + "=" * 60)
             print("Shutdown completed!")
             print("=" * 60)
+
+        def restart_instances(self):
+            """Trigger an instance refresh on all configured ASGs."""
+            self._verify_account()
+            if not self.autoscaling_groups:
+                print("No ASGs configured")
+                return
+            for asg_config in self.autoscaling_groups:
+                asg_config.region = self._settings.AWS_REGION
+                print("\n" + "=" * 60)
+                print(f"Restarting instances in ASG: {asg_config.name}")
+                print("=" * 60)
+                asg_config.restart()

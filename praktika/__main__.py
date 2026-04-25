@@ -190,6 +190,12 @@ def create_parser():
         default=None,
     )
     _infra_parser.add_argument(
+        "--restart-instances",
+        help="Trigger an instance refresh on all ASGs, replacing all EC2 instances with the current launch template version",
+        action="store_true",
+        default=False,
+    )
+    _infra_parser.add_argument(
         "--test",
         help="Test mode for HTML upload (creates _test.html variant)",
         action="store_true",
@@ -207,9 +213,9 @@ def main():
         Validator().validate()
         YamlGenerator().generate()
     elif args.command == "infrastructure":
-        if not args.deploy and not args.shutdown:
+        if not args.deploy and not args.shutdown and not args.restart_instances:
             Utils.raise_with_error(
-                "infrastructure command requires either --deploy or --shutdown flag"
+                "infrastructure command requires --deploy, --shutdown, or --restart-instances"
             )
 
         if args.deploy:
@@ -228,6 +234,11 @@ def main():
                 force=True,
                 only=args.only,
             )
+
+        if args.restart_instances:
+            from .mangle import _get_infra_config
+
+            _get_infra_config().restart_instances()
     elif args.command == "orchestrate":
         from .orchestrator import run as orchestrate_run
 

@@ -10,11 +10,11 @@ def ci_engine_user_data():
     import gzip
 
     run_py = (_HERE / "../../orchestrator/run.py").read_text()
-    template = (_HERE / "user_data_ci_engine.sh").read_text()
+    template = (_HERE / "user_data_orchestrator.sh").read_text()
     placeholder = "__RUN_PY_CONTENTS__"
     if placeholder not in template:
         raise RuntimeError(
-            f"user_data_ci_engine.sh is missing {placeholder} placeholder"
+            f"user_data_orchestrator.sh is missing {placeholder} placeholder"
         )
     encoded = base64.b64encode(gzip.compress(run_py.encode("utf-8"), mtime=0)).decode("ascii")
     return template.replace(placeholder, encoded)

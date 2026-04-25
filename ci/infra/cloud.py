@@ -1,4 +1,4 @@
-from praktika import CloudInfrastructure
+from praktika.infrastructure.cloud import CloudInfrastructure
 from praktika.infrastructure import NativeComponents, Storage, VPC
 
 CI_VPC_NAME = "praktika-ci"

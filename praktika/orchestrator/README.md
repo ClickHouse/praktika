@@ -132,7 +132,7 @@ partially-migrated workflows keep flowing.
 ## Deploy
 
 ```bash
-# Orchestrator infra (changes to run.py / user_data_ci_engine.sh):
+# Orchestrator infra (changes to run.py / user_data_orchestrator.sh):
 python3 -m ci.praktika infrastructure --deploy --only LaunchTemplate AutoScalingGroup
 # Plus terminate running orchestrator runners so the ASG relaunches on the new LT.
 
