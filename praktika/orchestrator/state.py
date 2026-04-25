@@ -171,13 +171,14 @@ class JobState:
         ws = self._workflow_state
         if ws is None or not ws.can_post_checks:
             return
+        check_name = f"{ws.workflow.name} / {self.name}"
         try:
             self.check = JobCheckRun.queue(
-                ws._gh_token, ws._repo, ws._head_sha, self.name
+                ws._gh_token, ws._repo, ws._head_sha, check_name
             )
         except Exception as e:
             print(
-                f"  [warn] could not queue check for {self.name!r}: "
+                f"  [warn] could not queue check for {check_name!r}: "
                 f"{type(e).__name__}: {e}"
             )
 
@@ -411,7 +412,7 @@ class WorkflowState:
         summary = f"{len(applied)} job(s) skipped"
         try:
             check = JobCheckRun.queue(
-                self._gh_token, self._repo, self._head_sha, "Skipped Jobs"
+                self._gh_token, self._repo, self._head_sha, f"{self.workflow.name} / Skipped Jobs"
             )
             check.complete(
                 "skipped",
