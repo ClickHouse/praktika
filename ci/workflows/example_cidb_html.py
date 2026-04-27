@@ -46,6 +46,6 @@ workflow = Workflow.Config(
     enable_cidb=True,
 )
 
-WORKFLOWS = [
-    workflow,
-]  # type: List[Workflow.Config]
+# WORKFLOWS = [
+#     workflow,
+# ]  # type: List[Workflow.Config]

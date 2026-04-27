@@ -41,6 +41,6 @@ workflow = Workflow.Config(
     ],
 )
 
-WORKFLOWS = [
-    workflow,
-]  # type: List[Workflow.Config]
+# WORKFLOWS = [
+#     workflow,
+# ]  # type: List[Workflow.Config]

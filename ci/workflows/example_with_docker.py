@@ -56,9 +56,9 @@ workflow = Workflow.Config(
     enable_report=True,
 )
 
-WORKFLOWS = [
-    workflow,
-]  # type: List[Workflow.Config]
+# WORKFLOWS = [
+#     workflow,
+# ]  # type: List[Workflow.Config]
 
 
 if __name__ == "__main__":

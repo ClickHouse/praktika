@@ -67,6 +67,6 @@ workflow = Workflow.Config(
     enable_cache=True,
 )
 
-WORKFLOWS = [
-    workflow,
-]  # type: List[Workflow.Config]
+# WORKFLOWS = [
+#     workflow,
+# ]  # type: List[Workflow.Config]

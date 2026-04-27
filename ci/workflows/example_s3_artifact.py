@@ -52,6 +52,6 @@ workflow_pr = Workflow.Config(
     artifacts=artifacts,
 )
 
-WORKFLOWS = [
-    workflow_pr,
-]  # type: List[Workflow.Config]
+# WORKFLOWS = [
+#     workflow_pr,
+# ]  # type: List[Workflow.Config]

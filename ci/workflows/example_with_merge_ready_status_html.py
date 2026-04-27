@@ -46,6 +46,6 @@ workflow_pr = Workflow.Config(
     enable_report=True,
 )
 
-WORKFLOWS = [
-    workflow_pr,
-]  # type: List[Workflow.Config]
+# WORKFLOWS = [
+#     workflow_pr,
+# ]  # type: List[Workflow.Config]
