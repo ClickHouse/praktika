@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: praktika
+Version: 0.1
+Summary: CI Infrastructure Framework
+Home-page: https://github.com/ClickHouse/praktika
+Author: Max Kainov
+Author-email: max.kainov@clickhouse.com
+License: Apache 2.0
+License-File: LICENSE
+Dynamic: author
+Dynamic: author-email
+Dynamic: home-page
+Dynamic: license
+Dynamic: license-file
+Dynamic: summary

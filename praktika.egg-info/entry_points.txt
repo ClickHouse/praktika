@@ -1,0 +1,2 @@
+[console_scripts]
+praktika = praktika.__main__:main

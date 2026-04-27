@@ -202,6 +202,15 @@ def orchestrate(event, check=None, gh_token=None, run_id=None):
         f"repo={event.get('repo', '')} sender={event.get('sender', '')}"
     )
 
+    if gh_token is None:
+        try:
+            from ..gh_auth import GHAuth
+            from ..utils import Shell
+            GHAuth.auth_from_settings()
+            gh_token = Shell.get_output("gh auth token", strict=True)
+        except Exception as e:
+            print(f"  [warn] could not mint GH token: {e}")
+
     workflows = find_workflows_for_event(event)
     if not workflows:
         print("No matching workflows, exiting")
@@ -227,7 +236,7 @@ def _orchestrate_single(workflow, event, gh_token=None):
 
     Returns 0 on success, 1 on crash.
     """
-    from .run import CheckRun  # imported here to avoid circular import at module level
+    from .check_run import CheckRun
 
     repo = event.get("repo", "")
     head_sha = event.get("head_sha", "")

@@ -12,6 +12,9 @@ echo "=== CI engine runner bootstrap ==="
 # 2026-04-29). System python3 stays put for AL2023's own tooling.
 dnf install -y python3 python3-pip python3.12 python3.12-pip git jq awscli
 python3.12 -m pip install boto3 pyjwt cryptography requests
+python3.12 -m pip install --force-reinstall \
+  "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1-py3-none-any.whl" \
+  --break-system-packages
 
 # Create runner workdir
 RUNNER_HOME=/opt/ci-engine

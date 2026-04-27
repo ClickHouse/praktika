@@ -15,6 +15,9 @@ echo "=== CI runner bootstrap ==="
 # (cloud-init, dnf-plugins, ...).
 dnf install -y python3 python3-pip python3.12 python3.12-pip git jq awscli docker
 python3.12 -m pip install boto3 pyjwt cryptography requests
+python3.12 -m pip install --force-reinstall \
+  "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1-py3-none-any.whl" \
+  --break-system-packages
 
 # Job scripts shell out to `python3 ./ci/jobs/...` without qualifying the
 # minor version, so we need `python3` in PATH to resolve to 3.12 too —
