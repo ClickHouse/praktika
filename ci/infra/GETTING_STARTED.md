@@ -40,6 +40,24 @@ aws secretsmanager create-secret \
 
 ## 3. Deploy infrastructure
 
+### 3a. Publish the praktika package to S3
+
+Orchestrators and runners install praktika from S3 at boot and before each run.
+Build and upload the wheel whenever the package changes:
+
+```bash
+# Build
+python3 -m pip install build --quiet
+python3 -m build --wheel --outdir dist/
+
+# Upload (the bucket and key are fixed — instances fetch from this exact URL)
+aws s3 cp dist/praktika-0.1-py3-none-any.whl \
+  s3://praktika-artifacts-eu-north-1/packages/praktika-0.1-py3-none-any.whl \
+  --profile "$AWS_PROFILE"
+```
+
+### 3b. Deploy AWS infrastructure
+
 ```bash
 python3 -m praktika infrastructure --deploy
 ```
@@ -53,7 +71,7 @@ This will:
 - Create the workflow orchestrator Launch Template and Auto Scaling Group
 - Create runner pool Launch Template, Auto Scaling Group, and SQS queue
 
-## 3. Configure GitHub Webhook
+## 4. Configure GitHub Webhook
 
 In your GitHub repository or organization go to **Settings → Webhooks → Add webhook** and set:
 
@@ -71,6 +89,6 @@ In your GitHub repository or organization go to **Settings → Webhooks → Add 
 - Check suites
 - Merge groups *(skip if not used as a trigger)*
 
-## 4. Next steps
+## 5. Next steps
 
 > TODO: describe how to define workflows in `ci/workflows/`, add jobs, configure runner labels, etc.
