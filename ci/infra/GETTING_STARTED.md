@@ -53,7 +53,9 @@ python3 -m build --wheel --outdir dist/
 # Upload (the bucket and key are fixed — instances fetch from this exact URL)
 aws s3 cp dist/praktika-0.1-py3-none-any.whl \
   s3://praktika-artifacts-eu-north-1/packages/praktika-0.1-py3-none-any.whl \
-  --profile "$AWS_PROFILE"
+  --profile Box
+pip install --force-reinstall "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/pr
+aktika-0.1-py3-none-any.whl" --break-system-packages
 ```
 
 ### 3b. Deploy AWS infrastructure
