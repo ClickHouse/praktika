@@ -1,3 +1,6 @@
 __pycache__/
 ci/tmp/
 *.secret
+build/
+dist/
+*.egg-info/
