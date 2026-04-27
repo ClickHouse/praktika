@@ -11,6 +11,11 @@ echo "=== CI engine runner bootstrap ==="
 # 3.9 so boto3 stops spamming deprecation warnings (Python 3.9 support ends
 # 2026-04-29). System python3 stays put for AL2023's own tooling.
 dnf install -y python3 python3-pip python3.12 python3.12-pip git jq awscli
+
+# GitHub CLI (needed by praktika orchestrate to post check runs via gh auth token)
+curl -fsSL https://cli.github.com/packages/rpm/gh-cli.repo \
+  -o /etc/yum.repos.d/gh-cli.repo
+dnf install -y gh
 python3.12 -m pip install boto3 pyjwt cryptography requests
 python3.12 -m pip install --force-reinstall \
   "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1-py3-none-any.whl" \
