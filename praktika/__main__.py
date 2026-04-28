@@ -149,13 +149,34 @@ def create_parser():
     _yaml_parser = subparsers.add_parser("yaml", help="Generate YAML workflows")
 
     orch_parser = subparsers.add_parser(
-        "orchestrate", help="Process a CI trigger event and run the matching workflow"
+        "orchestrate", help="Run a workflow or a single job"
     )
-    orch_parser.add_argument(
-        "event_file",
-        help="Path to JSON file with the trigger event",
-        type=str,
+    orch_sub = orch_parser.add_subparsers(dest="orch_command")
+
+    wf_parser = orch_sub.add_parser(
+        "workflow", help="Orchestrate all matching workflows for a trigger event"
     )
+    wf_parser.add_argument(
+        "event_file", nargs="?", default=None,
+        help="Path to trigger event JSON (auto-generated from git if omitted)",
+    )
+    wf_parser.add_argument("--event-type", default="pull_request",
+        choices=["pull_request", "push"])
+    wf_parser.add_argument("--repo", default=None)
+    wf_parser.add_argument("--head-sha", default=None)
+    wf_parser.add_argument("--head-ref", default=None)
+    wf_parser.add_argument("--base-ref", default="main")
+    wf_parser.add_argument("--pr-number", default=None, type=int)
+    wf_parser.add_argument("--sender", default=None)
+    wf_parser.add_argument("--ci", action="store_true", default=False,
+        help="CI mode: authenticate to GitHub and post check runs")
+
+    job_parser = orch_sub.add_parser(
+        "job", help="Run a single job from a task JSON"
+    )
+    job_parser.add_argument("task_file", help="Path to task JSON file")
+    job_parser.add_argument("--ci", action="store_true", default=False,
+        help="CI mode: authenticate to GitHub and post check run updates")
 
     _infra_parser = subparsers.add_parser(
         "infrastructure", help="Manage cloud infrastructure and HTML reports"
@@ -240,9 +261,18 @@ def main():
 
             _get_infra_config().restart_instances()
     elif args.command == "orchestrate":
-        from .orchestrator import run as orchestrate_run
-
-        orchestrate_run(args.event_file)
+        if args.orch_command == "workflow":
+            from .orchestrator import run as orchestrate_run
+            orchestrate_run(args.event_file, args)
+        elif args.orch_command == "job":
+            import json as _json
+            from .orchestrator.job_runner import run_job
+            with open(args.task_file) as f:
+                task = _json.load(f)
+            sys.exit(run_job(task, local=not args.ci))
+        else:
+            orch_parser.print_help()
+            sys.exit(1)
     elif args.command == "run":
         from .mangle import _get_workflows
         from .runner import Runner
