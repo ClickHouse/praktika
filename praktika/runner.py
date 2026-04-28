@@ -934,11 +934,7 @@ class Runner:
         # the environment before calling Runner.run(); skip the GHA setup_env step.
         _ci_engine_env = Path(Settings.TEMP_DIR + "/environment.json").is_file()
 
-        if local_run:
-            self.generate_local_run_environment(
-                workflow, job, pr=pr, sha=sha, branch=branch
-            )
-        elif _ci_engine_env:
+        if _ci_engine_env:
             setup_env_code = 0  # environment already ready
         else:
             print(
@@ -958,7 +954,7 @@ class Runner:
                 Info().store_traceback()
             print(f"=== Setup env finished ===\n\n")
 
-        if res and (not local_run or ((pr or branch) and sha)):
+        if res and not local_run:
             res = False
             print(f"=== Pre run script [{job.name}], workflow [{workflow.name}] ===")
             try:

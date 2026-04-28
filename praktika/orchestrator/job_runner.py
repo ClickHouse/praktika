@@ -247,8 +247,7 @@ def run_job(task, gh_token=None, local=False):
     # Pre-populate ci/tmp/environment.json BEFORE calling _get_workflows(), because
     # _get_workflows() triggers Info() -> _Environment.get() and would fall back to
     # the dummy from_env() path if the file doesn't exist yet.
-    if not local:
-        _build_ci_environment(task, job_name=job_name)
+    _build_ci_environment(task, job_name=job_name)
 
     workflows = _get_workflows(name=workflow_name)
     if not workflows:
@@ -329,7 +328,7 @@ def run_job(task, gh_token=None, local=False):
     # COMMIT_AUTHORS, etc. The orchestrator relays this payload into every
     # subsequent job's task so each runner starts from the same environment
     # GHA would have assembled from step outputs.
-    env_snapshot = _read_env_file() if not local else None
+    env_snapshot = _read_env_file()
 
     # Report the real result back to the orchestrator so wait() can flip the
     # job to SUCCESS or FAILURE and advance the DAG.
