@@ -204,13 +204,14 @@ class JobState:
         self._create_check()
 
         queue = _queue_for_runs_on(self.job.runs_on)
+        ws = self._workflow_state
         dispatched = False
-        if queue is not None and self._workflow_state is not None:
-            dispatched = self._workflow_state._dispatch(self, queue)
+        if ws is not None and (queue is not None or ws.local_mode):
+            dispatched = ws._dispatch(self, queue or "local")
 
         self.dispatched = dispatched
         tag = "[KICK ]" if dispatched else "[START]"
-        suffix = f"  -> {queue}" if dispatched else ""
+        suffix = f"  -> {queue or 'local'}" if dispatched else ""
         print(f"{tag} {self.name:70s} runs_on={runs_on}{suffix}")
 
         # Only stub jobs need the orchestrator to drive the check forward —
@@ -286,8 +287,9 @@ class WorkflowState:
     on the PR until the orchestrator actually decides to run a job.
     """
 
-    def __init__(self, workflow, event=None, gh_token=None, repo=None, head_sha=None, run_id=None):
+    def __init__(self, workflow, event=None, gh_token=None, repo=None, head_sha=None, run_id=None, local_mode=False):
         self.workflow = workflow
+        self.local_mode = local_mode
         self._event = event or {}
         self._gh_token = gh_token
         self._repo = repo
@@ -437,10 +439,30 @@ class WorkflowState:
         doesn't exist, SQS error). Failures are logged — callers treat a
         non-dispatched job the same as the stub (wait() auto-completes it).
         """
+        task = {
+            "type": "job_task",
+            "repo": self._event.get("repo", ""),
+            "pr_number": self._event.get("pr_number"),
+            "head_sha": self._event.get("head_sha", ""),
+            "head_ref": self._event.get("head_ref", ""),
+            "base_ref": self._event.get("base_ref", ""),
+            "sender": self._event.get("sender", ""),
+            "title": self._event.get("title", ""),
+            "labels": self._event.get("labels", []),
+            "workflow_name": self.workflow.name,
+            "job_name": job_state.name,
+            "runs_on": list(job_state.job.runs_on) if job_state.job.runs_on else [],
+            "completions_queue_url": self._completions_queue_url,
+            "check_run_id": job_state.check.id if job_state.check else None,
+            "environment": self._environment,
+        }
+
+        if self.local_mode:
+            return self._dispatch_local(job_state, task)
+
         try:
             if self._sqs is None:
                 import boto3
-
                 region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
                 self._sqs = boto3.client("sqs", region_name=region)
 
@@ -449,32 +471,6 @@ class WorkflowState:
                 url = self._sqs.get_queue_url(QueueName=queue_name)["QueueUrl"]
                 self._queue_urls[queue_name] = url
 
-            task = {
-                "type": "job_task",
-                "repo": self._event.get("repo", ""),
-                "pr_number": self._event.get("pr_number"),
-                "head_sha": self._event.get("head_sha", ""),
-                "head_ref": self._event.get("head_ref", ""),
-                # base_ref drives env.BASE_BRANCH, which native_jobs.py uses to
-                # build `git log origin/<BASE_BRANCH>..<SHA>` when collecting
-                # commit authors. An empty BASE_BRANCH makes Config Workflow
-                # fail with `ambiguous argument 'origin/..<sha>'`.
-                "base_ref": self._event.get("base_ref", ""),
-                "sender": self._event.get("sender", ""),
-                "title": self._event.get("title", ""),
-                "labels": self._event.get("labels", []),
-                "workflow_name": self.workflow.name,
-                "job_name": job_state.name,
-                "runs_on": list(job_state.job.runs_on) if job_state.job.runs_on else [],
-                "completions_queue_url": self._completions_queue_url,
-                # The runner uses this to flip the check to in_progress when it
-                # picks the task up and to complete it when the job finishes.
-                "check_run_id": job_state.check.id if job_state.check else None,
-                # Latest environment.json snapshot from an upstream job
-                # (typically Config Workflow). None for the first job; the
-                # runner falls back to building a fresh env from task fields.
-                "environment": self._environment,
-            }
             self._sqs.send_message(QueueUrl=url, MessageBody=json.dumps(task))
             return True
         except Exception as e:
@@ -483,6 +479,20 @@ class WorkflowState:
                 f"{type(e).__name__}: {e}"
             )
             return False
+
+    def _dispatch_local(self, job_state, task):
+        """Run the job synchronously as a subprocess."""
+        import subprocess
+        from ..settings import Settings
+
+        task_file = os.path.join(Settings.TEMP_DIR, f"task_{job_state.name.replace(' ', '_')}.json")
+        os.makedirs(Settings.TEMP_DIR, exist_ok=True)
+        with open(task_file, "w") as f:
+            json.dump(task, f, indent=2)
+
+        result = subprocess.run(["praktika", "orchestrate", "job", task_file])
+        job_state.finish(success=(result.returncode == 0))
+        return True
 
     # ------------------------------------------------------------ lifecycle
 
