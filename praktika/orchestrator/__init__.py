@@ -1,3 +1,4 @@
+import contextlib
 import io
 import json
 import re
@@ -186,14 +187,13 @@ def _patch_top_check(check, workflow, state, error=None):
         print(f"  [warn] top-level check PATCH failed: {type(e).__name__}: {e}")
 
 
-def orchestrate(event, check=None, gh_token=None, run_id=None):
+def orchestrate(event, check=None, gh_token=None, run_id=None, ci=True):
     """Single orchestrator entry-point used by both the SQS runner and the CLI.
 
     Finds all workflows matching ``event`` and runs them sequentially. Each
     matched workflow gets its own GitHub check run (named after the workflow).
 
-    The goal of this indirection is to keep ``run.py`` stable — all orchestration
-    policy lives here and ships with each PR, no user_data redeploy needed.
+    ``ci=False``: local/dry-run mode — no GH auth, no check runs, no buffering.
 
     Returns the process exit code (0 on success, 1 if any orchestration crashed).
     """
@@ -202,10 +202,12 @@ def orchestrate(event, check=None, gh_token=None, run_id=None):
         f"repo={event.get('repo', '')} sender={event.get('sender', '')}"
     )
 
-    if gh_token is None:
+    if ci and gh_token is None:
         try:
             from ..gh_auth import GHAuth
-            gh_token = GHAuth.get_installation_token()
+            from ..utils import Shell
+            GHAuth.auth_from_settings()
+            gh_token = Shell.get_output("gh auth token", strict=True)
         except Exception as e:
             print(f"  [warn] could not mint GH token: {e}")
 
@@ -223,13 +225,13 @@ def orchestrate(event, check=None, gh_token=None, run_id=None):
 
     overall_rc = 0
     for workflow in workflows:
-        rc = _orchestrate_single(workflow, event, gh_token=gh_token)
+        rc = _orchestrate_single(workflow, event, gh_token=gh_token, local_mode=not ci)
         if rc != 0:
             overall_rc = rc
     return overall_rc
 
 
-def _orchestrate_single(workflow, event, gh_token=None):
+def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
     """Run one workflow: open a check run, execute the DAG, close the check.
 
     Returns 0 on success, 1 on crash.
@@ -250,18 +252,14 @@ def _orchestrate_single(workflow, event, gh_token=None):
 
     print(f"Matched workflow [{workflow.name}] with {len(workflow.jobs)} jobs")
 
-    # Capture the plan + live execution output so we can attach it to the
-    # check run body. The "Trigger event" / "Matched workflow" lines stay
-    # outside the redirect so they land in the systemd journal for live SSM
-    # debugging.
-    buf = io.StringIO()
+    from .state import WorkflowState
+
+    # In CI mode capture output for the check run body; in local mode print inline.
+    buf = io.StringIO() if not local_mode else None
     error = None
     state = None
     try:
-        with redirect_stdout(buf):
-            # Local import avoids a circular dependency (state.py imports
-            # build_job_dag from this module).
-            from .state import WorkflowState
+        with (redirect_stdout(buf) if buf is not None else contextlib.nullcontext()):
 
             state = WorkflowState(
                 workflow,
@@ -270,43 +268,35 @@ def _orchestrate_single(workflow, event, gh_token=None):
                 repo=event.get("repo", ""),
                 head_sha=event.get("head_sha", ""),
                 run_id=run_id,
+                local_mode=local_mode,
             )
             state.print_plan()
-            # Initial snapshot once the DAG exists — drops the "Planning..."
-            # placeholder the top-level check started with.
             _patch_top_check(check, workflow, state)
 
             cancel_handled = False
             while state.not_finished():
-                # A cancel signal arrived mid-run: mark every PENDING job
-                # that isn't `run_unless_cancelled` as CANCELLED, then keep
-                # going so the unconditional post-run jobs (Finish Workflow)
-                # still get dispatched and completed through the normal
-                # queue path.
                 if state.cancelled and not cancel_handled:
                     state.cancel_pending_jobs()
                     cancel_handled = True
                 for job in state.get_ready():
                     job.kick()
                 state.wait()
-                # Refresh the top-level check on every iteration — each
-                # wait() return is a batch of state transitions
-                # (completions + skips + filters). See PROTOCOL.md.
                 _patch_top_check(check, workflow, state)
 
             state.print_summary()
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
-        buf.write(f"\n\nError: {error}\n")
+        if buf is not None:
+            buf.write(f"\n\nError: {error}\n")
+        else:
+            print(f"\n\nError: {error}")
     finally:
-        # Always delete the per-run queue, even on cancel or exception —
-        # nothing else will consume it once this run exits.
         if state is not None:
             state.cleanup()
 
-    plan_text = buf.getvalue()
-    sys.stdout.write(plan_text)
-    sys.stdout.flush()
+    if buf is not None:
+        sys.stdout.write(buf.getvalue())
+        sys.stdout.flush()
 
     if check is not None:
         if error is not None:
@@ -323,8 +313,65 @@ def _orchestrate_single(workflow, event, gh_token=None):
     return 0 if error is None else 1
 
 
-def run(event_file):
-    """CLI entry-point (``python -m praktika orchestrate <event.json>``)."""
-    with open(event_file) as f:
-        event = json.load(f)
-    sys.exit(orchestrate(event))
+def _git_output(*args):
+    import subprocess
+    r = subprocess.run(["git"] + list(args), capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def _build_event(args):
+    """Build a trigger event dict from CLI args + current git state."""
+    import re
+    import subprocess
+
+    repo = args.repo
+    if not repo:
+        remote = _git_output("remote", "get-url", "origin")
+        m = re.search(r"github\.com[:/](.+?)(?:\.git)?$", remote)
+        repo = m.group(1) if m else ""
+
+    head_sha = args.head_sha or _git_output("rev-parse", "HEAD")
+    head_ref = args.head_ref or _git_output("branch", "--show-current")
+    sender = args.sender or _git_output("config", "user.name")
+
+    pr_number = args.pr_number
+    if pr_number is None:
+        r = subprocess.run(
+            ["gh", "pr", "view", "--json", "number", "-q", ".number"],
+            capture_output=True, text=True,
+        )
+        try:
+            pr_number = int(r.stdout.strip()) if r.returncode == 0 else 0
+        except ValueError:
+            pr_number = 0
+
+    event = {
+        "type": args.event_type,
+        "action": "synchronize",
+        "repo": repo,
+        "head_sha": head_sha,
+        "head_ref": head_ref,
+        "base_ref": args.base_ref,
+        "pr_number": pr_number,
+        "sender": sender,
+        "title": "",
+        "draft": False,
+        "labels": [],
+    }
+    print(
+        f"Event: {event['type']}.{event['action']} "
+        f"PR#{event['pr_number']} [{event['head_ref']} -> {event['base_ref']}] "
+        f"sha={event['head_sha'][:12] if event['head_sha'] else ''}"
+    )
+    return event
+
+
+def run(event_file=None, args=None):
+    """CLI entry-point (``praktika orchestrate workflow [event.json]``)."""
+    if event_file:
+        with open(event_file) as f:
+            event = json.load(f)
+    else:
+        event = _build_event(args)
+    ci = getattr(args, "ci", False)
+    sys.exit(orchestrate(event, ci=ci))
