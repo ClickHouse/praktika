@@ -96,7 +96,7 @@ workflow_pr = Workflow.Config(
     # enable cumulative merge than ready GH status
     enable_merge_ready_status=True,
     # report results to ci db
-    enable_cidb=True,
+    enable_cidb=False,
     enable_gh_summary_comment=True,
 )
 

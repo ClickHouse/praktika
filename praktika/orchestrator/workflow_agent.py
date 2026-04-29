@@ -154,13 +154,12 @@ def _git(args, cwd=None):
     return result.stdout
 
 
-def clone_repo(repo, head_sha, pr_number):
+def clone_repo(repo, head_sha, pr_number, token):
     clone_dir = os.path.join(WORK_DIR, f"pr-{pr_number}")
     if os.path.exists(clone_dir):
         shutil.rmtree(clone_dir)
     os.makedirs(clone_dir, exist_ok=True)
 
-    token = _get_github_token()
     clone_url = f"https://x-access-token:{token}@github.com/{repo}.git"
     log.info(f"Cloning {repo} PR#{pr_number} at {head_sha[:12]}")
 
@@ -198,7 +197,18 @@ def handle_workflow(event):
     pr_number = event.get("pr_number")
     head_sha = event.get("head_sha", "")
 
-    clone_dir, actual_sha = clone_repo(repo, head_sha, pr_number)
+    # Mint a fresh GitHub App installation token (≈1h validity), use it
+    # for cloning, and persist it via `gh auth login --with-token` so the
+    # orchestrate-workflow subprocess and everything it spawns inherit
+    # authenticated `gh` CLI state without having to thread a token
+    # through env vars or CLI flags.
+    gh_token = _get_github_token()
+    subprocess.run(
+        ["gh", "auth", "login", "--with-token"],
+        input=gh_token, text=True, check=True,
+    )
+
+    clone_dir, actual_sha = clone_repo(repo, head_sha, pr_number, gh_token)
 
     src = _resolve_praktika_install_source(clone_dir)
     if src:

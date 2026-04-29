@@ -259,9 +259,16 @@ def main():
         elif args.orch_command == "job":
             import json as _json
             from .orchestrator.job_runner import run_job
+            from .utils import Shell
             with open(args.task_file) as f:
                 task = _json.load(f)
-            sys.exit(run_job(task, local=not args.ci))
+            # `gh` CLI is already authenticated by the agent (see
+            # job_agent.handle_task); pull the token out of `gh auth token`
+            # for `_patch_check_run`, which uses requests directly.
+            gh_token = None
+            if args.ci:
+                gh_token = Shell.get_output("gh auth token") or None
+            sys.exit(run_job(task, gh_token=gh_token, local=not args.ci))
         else:
             orch_parser.print_help()
             sys.exit(1)

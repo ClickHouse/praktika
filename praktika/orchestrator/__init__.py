@@ -200,13 +200,21 @@ def orchestrate(event, check=None, gh_token=None, run_id=None, ci=True):
     )
 
     if ci and gh_token is None:
+        # `gh` CLI is already authenticated by the agent (workflow_agent
+        # runs `gh auth login --with-token` before invoking this
+        # subprocess); just extract the token. Falls back to
+        # GHAuth.auth_from_settings for the local-dev case where a user
+        # runs `praktika orchestrate workflow --ci` directly.
+        from ..utils import Shell
         try:
-            from ..gh_auth import GHAuth
-            from ..utils import Shell
-            GHAuth.auth_from_settings()
             gh_token = Shell.get_output("gh auth token", strict=True)
-        except Exception as e:
-            print(f"  [warn] could not mint GH token: {e}")
+        except Exception:
+            try:
+                from ..gh_auth import GHAuth
+                GHAuth.auth_from_settings()
+                gh_token = Shell.get_output("gh auth token", strict=True)
+            except Exception as e:
+                print(f"  [warn] could not mint GH token: {e}")
 
     workflows = find_workflows_for_event(event)
     if not workflows:
