@@ -97,6 +97,7 @@ workflow_pr = Workflow.Config(
     enable_merge_ready_status=True,
     # report results to ci db
     enable_cidb=True,
+    enable_gh_summary_comment=True,
 )
 
 WORKFLOWS = [

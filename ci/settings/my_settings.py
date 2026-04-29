@@ -1,6 +1,6 @@
 class RunnerLabels:
-    SMALL = "maxs-small"
-    SMALL_FIXED = "maxs-small-fixed"
+    SMALL = "arm-2xsmall"
+    SMALL_FIXED = "arm-2xsmall"
 
 CI_CONFIG_RUNS_ON = [RunnerLabels.SMALL_FIXED]
 DOCKER_BUILD_RUNS_ON = [RunnerLabels.SMALL_FIXED]

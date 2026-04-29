@@ -4,10 +4,10 @@
 Deployed to EC2 via user_data_orchestrator.sh. For each SQS message:
   1. Clone the PR head
   2. pip install --force-reinstall praktika (picks up latest package)
-  3. Run `python3.12 -m praktika orchestrate <event.json>` as a subprocess
+  3. Run `praktika orchestrate workflow <event.json> --ci` as a subprocess
 
 Local use (no SQS): run step 3 directly:
-    python3 -m praktika orchestrate path/to/event.json
+    praktika orchestrate workflow path/to/event.json --ci
 """
 import json
 import logging
@@ -186,7 +186,7 @@ def handle_workflow(event):
 
     log.info(f"Running orchestrator for PR#{pr_number}")
     result = subprocess.run(
-        ["praktika", "orchestrate", event_file],
+        ["praktika", "orchestrate", "workflow", event_file, "--ci"],
         cwd=clone_dir,
     )
 

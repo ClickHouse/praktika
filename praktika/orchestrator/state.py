@@ -28,17 +28,18 @@ from enum import Enum
 from . import build_job_dag
 
 
-# Convention: any `runs_on` label starting with ``praktika-`` is the name of
-# its SQS queue (``runs_on = "praktika-arm-2xsmall"`` -> queue
-# ``praktika-arm-2xsmall``).
+# Convention (matches RunnerPool): a workflow's ``runs_on=[X]`` routes to
+# the SQS queue ``praktika-X``. The runner pool of the same name listens
+# on that queue. So a label of ``arm-2xsmall`` dispatches to queue
+# ``praktika-arm-2xsmall``.
 _QUEUE_PREFIX = "praktika-"
 
 
 def _queue_for_runs_on(runs_on):
-    """Return the SQS queue name for the first praktika-prefixed label, or None."""
+    """First non-empty ``runs_on`` label → ``praktika-<label>`` queue name."""
     for label in runs_on or ():
-        if label.startswith(_QUEUE_PREFIX):
-            return label
+        if label:
+            return f"{_QUEUE_PREFIX}{label}"
     return None
 
 
