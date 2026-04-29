@@ -113,6 +113,34 @@ class VisibilityHeartbeat:
                 log.warning(f"change_message_visibility failed: {type(e).__name__}: {e}")
 
 
+def _resolve_praktika_install_source(clone_dir):
+    """Where ``pip install`` should pull praktika from for this dispatch.
+
+    Reads ``Settings.PRAKTIKA_INSTALL_SOURCE`` from the cloned tree using
+    the praktika the agent was bootstrapped with. Three cases:
+
+      * empty / unset / older praktika without the knob → ``None``
+        (skip the per-dispatch install; reuse the bootstrap wheel)
+      * URL (``http://`` / ``https://``) → return as-is for pip
+      * anything else → joined onto ``clone_dir`` (relative path inside
+        the PR tree, e.g. ``"."`` for the praktika repo itself)
+    """
+    code = (
+        "from praktika.settings import Settings;"
+        "print(getattr(Settings, 'PRAKTIKA_INSTALL_SOURCE', '') or '', end='')"
+    )
+    res = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=clone_dir, capture_output=True, text=True,
+    )
+    src = res.stdout.strip() if res.returncode == 0 else ""
+    if not src:
+        return None
+    if src.startswith(("http://", "https://")):
+        return src
+    return os.path.join(clone_dir, src)
+
+
 def _git(args, cwd=None):
     result = subprocess.run(
         ["git", *(["-C", cwd] if cwd else []), *args],
@@ -172,12 +200,16 @@ def handle_workflow(event):
 
     clone_dir, actual_sha = clone_repo(repo, head_sha, pr_number)
 
-    log.info(f"Installing praktika from {PRAKTIKA_WHL}")
-    subprocess.run(
-        ["python3.12", "-m", "pip", "install", "--force-reinstall",
-         PRAKTIKA_WHL, "--break-system-packages"],
-        check=True,
-    )
+    src = _resolve_praktika_install_source(clone_dir)
+    if src:
+        log.info(f"Installing praktika from {src}")
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--force-reinstall",
+             src, "--break-system-packages"],
+            check=True,
+        )
+    else:
+        log.info("Reusing bootstrap praktika install")
 
     event_file = os.path.join(clone_dir, "ci", "tmp", "event.json")
     os.makedirs(os.path.dirname(event_file), exist_ok=True)

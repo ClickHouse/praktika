@@ -129,6 +129,18 @@ class _Settings:
     # S3 path for Slack feed events storage (format: bucket/prefix)
     # Used by EventFeed and FeedSubscription for PR notification subscriptions
     EVENT_FEED_S3_PATH: str = ""
+    # Where the workflow/job agents should install praktika from on every
+    # dispatch. Three forms:
+    #   ""             — skip the per-dispatch install; reuse whatever
+    #                    praktika the agent was bootstrapped with. Default;
+    #                    fine for stable consumer projects.
+    #   "https://..."  — pip install <url>; pulls a wheel from that URL.
+    #   "<rel/path>"   — pip install <clone_dir>/<rel/path>; resolves
+    #                    relative to the cloned PR tree, so a PR's praktika
+    #                    changes take effect on the very dispatch that
+    #                    picked the PR up. Use "." for the praktika repo
+    #                    itself.
+    PRAKTIKA_INSTALL_SOURCE: str = ""
 
 
 _USER_DEFINED_SETTINGS = [
@@ -182,6 +194,7 @@ _USER_DEFINED_SETTINGS = [
     "CI_DB_READ_USER",
     "CI_DB_READ_URL",
     "TEST_FAILURE_PATTERNS",
+    "PRAKTIKA_INSTALL_SOURCE",
 ]
 
 

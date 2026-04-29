@@ -25,6 +25,10 @@ DOCKER_BUILD_AMD_RUNS_ON = [RunnerLabels.SMALL_FIXED]
 DOCKERHUB_USERNAME = "robotclickhouse"
 DOCKERHUB_SECRET = "dockerhub_robot_password"
 
+# Install praktika from the cloned PR tree (setup.py lives at the repo root).
+# Per-PR praktika changes take effect on the dispatch that picked the PR up.
+PRAKTIKA_INSTALL_SOURCE = "."
+
 CI_DB_DB_NAME = "default"
 CI_DB_TABLE_NAME = "checks"
 SECRET_CI_DB_URL = "CI_DB_URL"
