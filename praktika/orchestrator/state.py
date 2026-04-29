@@ -12,10 +12,12 @@ kick/wait interface so the orchestrator's main loop reads as:
         state.wait()
     state.print_summary()
 
-The current kick/wait implementation is a stub (`kick` just announces the job
-and flips it to RUNNING, `wait` immediately completes every RUNNING job as
-SUCCESS). The real implementation will launch EC2 runners in `kick` and poll
-SSM / SQS / an artifact bus in `wait`.
+`kick` dispatches each job: in CI mode by sending a ``job_task`` to the
+runner-specific SQS queue (the runner picks it up, executes, and posts a
+``job_completion`` message back); in local mode by running ``praktika
+orchestrate job`` synchronously as a subprocess. ``wait`` long-polls the
+per-run completions queue in CI mode, and is a no-op in local mode (the
+sync subprocess already advanced state by the time it returned).
 """
 import json
 import os
@@ -28,9 +30,7 @@ from . import build_job_dag
 
 # Convention: any `runs_on` label starting with ``praktika-`` is the name of
 # its SQS queue (``runs_on = "praktika-arm-2xsmall"`` -> queue
-# ``praktika-arm-2xsmall``). Labels that don't match (e.g. ``self-hosted``)
-# fall through to the stub — wait() immediately marks them SUCCESS, like
-# before — so jobs whose runner type isn't deployed yet still flow through.
+# ``praktika-arm-2xsmall``).
 _QUEUE_PREFIX = "praktika-"
 
 
@@ -49,10 +49,9 @@ class JobCheckRun:
     the PR UI as pending) at the moment the orchestrator kicks the job,
     ``set_in_progress`` flips it once a runner picks the task up, and
     ``complete`` closes it with a conclusion
-    (``success``/``failure``/``skipped``/``neutral``). For jobs dispatched
-    to a real runner queue the last two transitions happen on the runner
-    side via the REST API; for stub jobs the orchestrator drives the whole
-    lifecycle itself.
+    (``success``/``failure``/``skipped``/``neutral``). The
+    ``set_in_progress`` and ``complete`` transitions happen on the runner
+    side via the REST API once it picks up the job_task message.
     """
 
     @staticmethod
@@ -141,7 +140,6 @@ class JobState:
         self.check = None  # JobCheckRun, created lazily on kick()
         self._workflow_state = workflow_state  # back-ref for SQS dispatch
         self.status = JobStatus.PENDING
-        self.dispatched = False  # True once kick() sends to a real runner queue
         self.rc = None
         self.started_at = None
         self.finished_at = None
@@ -184,14 +182,19 @@ class JobState:
 
     def kick(self):
         """Transition READY -> RUNNING, post the pending check, and dispatch
-        to the runner queue if the job's ``runs_on`` includes a
-        praktika-prefixed label.
+        to the runner.
 
-        For dispatched jobs the runner is responsible for flipping the check
-        to ``in_progress`` at pickup and for concluding it — the orchestrator
-        only queues it here. For stub jobs (no real runner) the orchestrator
-        drives the full lifecycle, so we flip to ``in_progress`` right away
-        and ``finish`` closes the check.
+        Two dispatch paths, one print:
+          * local mode → ``_dispatch_local`` runs the job synchronously as a
+            subprocess and calls ``finish`` before returning;
+          * CI mode  → ``_dispatch`` sends a ``job_task`` to the per-runner
+            SQS queue and returns immediately; the runner concludes the
+            check and posts ``job_completion`` back, which ``wait()`` picks
+            up to drive ``finish``.
+
+        Either way the ``[KICK ]`` line is printed before the dispatch call
+        so the local subprocess's own output (and the eventual ``[DONE ]``
+        from ``finish``) appears beneath it in chronological order.
         """
         if self.status != JobStatus.READY:
             return
@@ -203,28 +206,29 @@ class JobState:
         # the PR until the orchestrator actually decides to run the job.
         self._create_check()
 
-        queue = _queue_for_runs_on(self.job.runs_on)
         ws = self._workflow_state
-        dispatched = False
-        if ws is not None and (queue is not None or ws.local_mode):
-            dispatched = ws._dispatch(self, queue or "local")
+        target = (
+            "local"
+            if ws is not None and ws.local_mode
+            else _queue_for_runs_on(self.job.runs_on)
+        )
+        assert target is not None, (
+            f"Job {self.name!r} has no dispatch target: runs_on={self.job.runs_on!r} "
+            f"and orchestrator is not in local mode"
+        )
 
-        self.dispatched = dispatched
-        tag = "[KICK ]" if dispatched else "[START]"
-        suffix = f"  -> {queue or 'local'}" if dispatched else ""
-        print(f"{tag} {self.name:70s} runs_on={runs_on}{suffix}")
-
-        # Only stub jobs need the orchestrator to drive the check forward —
-        # the runner owns the in_progress/complete transitions otherwise.
-        if not dispatched:
-            self._update_check(lambda c: c.set_in_progress())
+        print(f"[KICK ] {self.name:70s} runs_on={runs_on}  -> {target}")
+        if not ws._dispatch(self, target):
+            # Dispatch failed (e.g. SQS error) — fail the job; nothing else
+            # will ever drive it forward.
+            self.finish(success=False)
 
     def finish(self, success=True):
-        """Transition RUNNING -> SUCCESS/FAILURE and emit a finish message.
+        """Transition RUNNING -> SUCCESS/FAILURE and emit a finish line.
 
-        The check run is concluded here only for stub jobs; dispatched jobs
-        have already been concluded by the runner before it posted the
-        completion message that triggers this call.
+        The runner concludes the check itself before posting the completion
+        message that drives this call, so the orchestrator does nothing
+        check-related here.
         """
         if self.status != JobStatus.RUNNING:
             return
@@ -234,9 +238,6 @@ class JobState:
         duration = self.finished_at - (self.started_at or self.finished_at)
         tag = "[DONE ]" if success else "[FAIL ]"
         print(f"{tag} {self.name:70s} ({duration:.1f}s)")
-        if not self.dispatched:
-            conclusion = "success" if success else "failure"
-            self._update_check(lambda c: c.complete(conclusion))
 
     def skip(self, reason=""):
         """Transition PENDING -> SKIPPED.
@@ -317,8 +318,9 @@ class WorkflowState:
         # every message on this queue is addressed to us, so wait() needs no
         # run_id filtering and cancel messages can't be stolen by a
         # concurrent run. The queue is deleted in cleanup() at end of run.
-        # Only created when gh_token is set (EC2 mode); in local/dev mode
-        # gh_token is absent and wait() falls back to the stub.
+        # Only created when gh_token is set (EC2 mode); in local mode
+        # gh_token is absent, dispatch is synchronous, and there is no
+        # completions queue at all.
         pr = (event or {}).get("pr_number")
         if gh_token and pr:
             self._completions_queue_name = f"praktika-wf-{pr}-{self._run_id}"
@@ -436,8 +438,8 @@ class WorkflowState:
         """Send a ``job_task`` message to ``queue_name`` for ``job_state``.
 
         Returns True on success, False on any failure (missing boto3, queue
-        doesn't exist, SQS error). Failures are logged — callers treat a
-        non-dispatched job the same as the stub (wait() auto-completes it).
+        doesn't exist, SQS error). On failure ``kick()`` fails the job —
+        nothing else will ever drive it forward.
         """
         task = {
             "type": "job_task",
@@ -481,7 +483,15 @@ class WorkflowState:
             return False
 
     def _dispatch_local(self, job_state, task):
-        """Run the job synchronously as a subprocess."""
+        """Run the job synchronously as a subprocess.
+
+        After the child exits, snapshot ``environment.json`` and store it as
+        ``self._environment`` so downstream jobs in the same local run inherit
+        whatever the upstream job wrote (most importantly ``WORKFLOW_CONFIG``
+        from Config Workflow). In SQS mode this hand-off goes through the
+        ``job_completion`` message that ``wait()`` consumes; locally there is
+        no message round-trip, so we read the file directly — same result.
+        """
         import subprocess
         from ..settings import Settings
 
@@ -492,6 +502,19 @@ class WorkflowState:
 
         env = {**os.environ, "PRAKTIKA_LOCAL_RUN": "1"}
         result = subprocess.run(["praktika", "orchestrate", "job", task_file], env=env)
+
+        env_path = os.path.join(Settings.TEMP_DIR, "environment.json")
+        if os.path.isfile(env_path):
+            try:
+                with open(env_path, "r", encoding="utf-8") as f:
+                    env_snapshot = json.load(f)
+                self._environment = env_snapshot
+                wc = env_snapshot.get("WORKFLOW_CONFIG")
+                if isinstance(wc, dict):
+                    self.apply_filtered_jobs(wc.get("filtered_jobs") or {})
+            except Exception as e:
+                print(f"  [warn] could not read env snapshot from {env_path}: {e}")
+
         job_state.finish(success=(result.returncode == 0))
         return True
 
@@ -551,22 +574,17 @@ class WorkflowState:
     def wait(self):
         """Block until at least one RUNNING job transitions to a terminal state.
 
-        Long-polls the per-workflow completions queue (created in __init__).
-        Falls back to the stub (instant SUCCESS) when no queue is available,
-        e.g. in local mode or when SQS credentials are absent.
+        Local mode dispatched the job synchronously inside ``kick`` and the
+        job is already in a terminal state by the time we get here; nothing
+        to wait on. CI mode long-polls the per-workflow completions queue
+        for ``job_completion`` / ``cancel`` messages and drives the DAG
+        from there.
         """
-        # Always complete stub (non-dispatched) RUNNING jobs immediately —
-        # they have no real runner and will never send a completion message.
-        for js in list(self.jobs.values()):
-            if js.status == JobStatus.RUNNING and not js.dispatched:
-                js.finish(success=True)
-
         if not self._completions_queue_url or self._sqs is None:
-            return  # no real queue; stub jobs already finished above
+            return  # local mode — kick() already finished the job
 
         # Only long-poll if there are still dispatched jobs in-flight.
-        if not any(js.status == JobStatus.RUNNING and js.dispatched
-                   for js in self.jobs.values()):
+        if not any(js.status == JobStatus.RUNNING for js in self.jobs.values()):
             return
 
         resp = self._sqs.receive_message(

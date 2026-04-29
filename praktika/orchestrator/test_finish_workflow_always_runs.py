@@ -43,7 +43,6 @@ def _make_state(*job_specs):
         )
         js.check = None
         js.status = status
-        js.dispatched = False
         js.rc = None
         js.started_at = None
         js.finished_at = None

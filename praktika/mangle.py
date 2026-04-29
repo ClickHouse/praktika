@@ -88,9 +88,10 @@ def _get_workflows(
                 if isinstance(_file_names_out, list):
                     _file_names_out.append(py_file.name.removeprefix(".py"))
         except Exception as e:
-            print(
-                f"WARNING: Failed to add WORKFLOWS config from [{module_name}], exception [{e}]"
-            )
+            pass
+            # print(
+            #     f"WARNING: Failed to add WORKFLOWS config from [{module_name}], exception [{e}]"
+            # )
     if not res:
         Utils.raise_with_error(f"Failed to find [{name or file or 'any'}] workflow")
 

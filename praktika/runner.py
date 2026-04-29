@@ -157,7 +157,7 @@ class Runner:
 
         return 0
 
-    def _pre_run(self, workflow, job, local_run=False):
+    def _pre_run(self, workflow, job, local_job_run=False):
         if job.name == Settings.CI_CONFIG_JOB_NAME:
             GH.print_actions_debug_info()
         dirty = Shell.get_output("git status --short", verbose=False) or ""
@@ -180,7 +180,7 @@ class Runner:
             )
         result.dump()
 
-        if not local_run:
+        if not local_job_run:
             if workflow.enable_report and job.name != Settings.CI_CONFIG_JOB_NAME:
                 print("Update Job and Workflow Report")
                 HtmlRunnerHooks.pre_run(workflow, job)
@@ -252,7 +252,7 @@ class Runner:
                     if artifact.compress_zst:
                         Utils.decompress_file(Path(Settings.INPUT_DIR) / artifact_path)
 
-        if not local_run and job.needs_submodules and Settings.ENABLE_SUBMODULE_CACHE:
+        if not local_job_run and job.needs_submodules and Settings.ENABLE_SUBMODULE_CACHE:
             self._restore_submodule_cache()
 
         return 0
@@ -909,8 +909,8 @@ class Runner:
         workflow,
         job,
         docker="",
-        local_run=False,
-        run_hooks=True,
+        local_job_run=False,
+        local_orchestrator_run=False,
         no_docker=False,
         param=None,
         test="",
@@ -923,6 +923,28 @@ class Runner:
         path_1="",
         workers=None,
     ):
+        """Execute one job.
+
+        Three modes, controlled by the two ``local_*`` flags:
+
+          * ``local_job_run=True`` — `praktika run` dev sandbox used by
+            project (job) developers. Generates a dummy local environment
+            and runs the job command. Skips hooks, skips pre/post-run
+            scaffolding entirely. Artifact download stays available via
+            the legacy ``--pr/--branch + --sha`` escape hatch.
+          * ``local_orchestrator_run=True`` — orchestrator-dispatched local
+            run for CI developers in this project. Full pipeline against
+            the local-fs S3 backend: pre-run, post-run, hooks, artifact
+            upload/download, the lot.
+          * both False — real CI (GitHub Actions or orchestrator on EC2).
+            Full pipeline.
+
+        The two local flags are mutually exclusive.
+        """
+        assert not (
+            local_job_run and local_orchestrator_run
+        ), "local_job_run and local_orchestrator_run are mutually exclusive"
+
         self._load_local_env()
 
         res = True
@@ -930,31 +952,11 @@ class Runner:
         prerun_code = -10
         run_code = -10
 
-        # When ci/tmp/environment.json already exists the CI engine has pre-populated
-        # the environment before calling Runner.run(); skip the GHA setup_env step.
-        _ci_engine_env = Path(Settings.TEMP_DIR + "/environment.json").is_file()
-
-        # Four execution modes, parameterized by (local_run, _ci_engine_env):
-        #   1. local_run=True,  _ci_engine_env=True   — orchestrator dispatched a
-        #                                                job locally; simulate the
-        #                                                full pipeline against
-        #                                                the local-fs S3 backend.
-        #   2. local_run=True,  _ci_engine_env=False  — `praktika run` dev sandbox;
-        #                                                no orchestrator, no real
-        #                                                CI. Skip everything that
-        #                                                isn't strictly required
-        #                                                to run the job command.
-        #   3. local_run=False, _ci_engine_env=True   — orchestrator-dispatched
-        #                                                CI job. Full pipeline.
-        #   4. local_run=False, _ci_engine_env=False  — GHA-dispatched job.
-        #                                                Full pipeline.
-        # `dev_sandbox` collapses these to a single skip-extras gate: only mode 2
-        # is a true sandbox; the rest go through the full pre-run path.
-        dev_sandbox = local_run and not _ci_engine_env
-
-        if _ci_engine_env:
-            setup_env_code = 0  # environment already ready
-        elif local_run:
+        if local_orchestrator_run:
+            # Orchestrator (CI or local) has already dumped environment.json;
+            # nothing to do here.
+            setup_env_code = 0
+        elif local_job_run:
             self.generate_local_run_environment(
                 workflow, job, pr=pr, sha=sha, branch=branch
             )
@@ -976,15 +978,14 @@ class Runner:
                 Info().store_traceback()
             print(f"=== Setup env finished ===\n\n")
 
-        # Mode 1 needs the running Result dumped and required artifacts pulled
-        # from local S3 — both happen inside _pre_run. Mode 2 keeps the legacy
-        # `--pr/--branch + --sha` escape hatch that wires up artifact download
-        # for ad-hoc dev runs.
-        if res and (not dev_sandbox or ((pr or branch) and sha)):
+        # Pre-run dumps the running Result and pulls required artifacts from S3.
+        # The dev-sandbox path skips it unless the user passed the legacy
+        # ``--pr/--branch + --sha`` escape hatch to wire up artifact download.
+        if res and (not local_job_run or ((pr or branch) and sha)):
             res = False
             print(f"=== Pre run script [{job.name}], workflow [{workflow.name}] ===")
             try:
-                prerun_code = self._pre_run(workflow, job, local_run=dev_sandbox)
+                prerun_code = self._pre_run(workflow, job, local_job_run=local_job_run)
                 res = prerun_code == 0
                 if not res:
                     print(f"ERROR: Pre-run failed with exit code [{prerun_code}]")
@@ -995,7 +996,7 @@ class Runner:
             print(f"=== Pre run finished ===\n\n")
 
         prehook_result = None
-        if res and run_hooks and job.pre_hooks:
+        if res and not local_job_run and job.pre_hooks:
             print(f"=== Pre-hooks [{job.name}], workflow [{workflow.name}] ===")
             sw_ = Utils.Stopwatch()
             results_ = []
@@ -1042,7 +1043,11 @@ class Runner:
 
             print(f"=== Run script finished ===\n\n")
 
-        if run_hooks:
+        # Post-run wraps up the Result, runs job post_hooks, and uploads
+        # provides=[...] artifacts so downstream jobs can consume them. Only
+        # the dev-sandbox path opts out — orchestrator-local and CI both need
+        # the full hand-off.
+        if not local_job_run:
             result = self._get_result_object(
                 job, setup_env_code, prerun_code, run_code
             )
@@ -1064,13 +1069,12 @@ class Runner:
                 )
                 print(f"=== Post hooks finished ===")
 
-            if not local_run:
-                print(f"=== Post run script [{job.name}], workflow [{workflow.name}] ===")
-                post_res = self._post_run(
-                    result, workflow, job, run_code
-                )
-                res = res and post_res
-                print(f"=== Post run script finished ===")
+            print(f"=== Post run script [{job.name}], workflow [{workflow.name}] ===")
+            post_res = self._post_run(
+                result, workflow, job, run_code
+            )
+            res = res and post_res
+            print(f"=== Post run script finished ===")
 
             result.dump()
 

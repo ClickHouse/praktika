@@ -278,11 +278,13 @@ def run_job(task, gh_token=None, local=False):
     # branch only when there's no pr_number (push-triggered workflows).
     pr = task.get("pr_number")
     branch = None if pr else task.get("head_ref")
+    # Orchestrator-dispatched jobs always go through the full pipeline
+    # (pre-run, hooks, post-run, artifact upload) — what differs between
+    # `--ci` and local mode is the S3 backend, not the runner shape.
     kwargs = {
         "workflow": workflow,
         "job": job,
-        "local_run": local,
-        "run_hooks": not local,
+        "local_orchestrator_run": True,
         "docker": task.get("docker", ""),
         "no_docker": task.get("no_docker", False),
         "param": task.get("param"),
