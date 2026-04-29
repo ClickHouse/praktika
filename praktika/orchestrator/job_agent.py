@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Orchestrator polling loop.
+"""Per-runner-pool job polling loop.
 
-Deployed to EC2 via user_data_orchestrator.sh. For each SQS message:
-  1. Clone the PR head
-  2. pip install --force-reinstall praktika (picks up latest package)
-  3. Run `praktika orchestrate workflow <event.json> --ci` as a subprocess
+Mirrors ``workflow_agent.py`` but on the runner side: long-poll the
+per-pool SQS queue (``praktika-<runs_on>``), and for every ``job_task``
+message clone the PR head, install the latest praktika wheel, and run
+``praktika orchestrate job <task.json> --ci`` as a subprocess. Each PR
+runs in its own clone + subprocess so a `git push` to the PR is
+immediately effective without restarting this daemon.
 
-Local use (no SQS): run step 3 directly:
-    praktika orchestrate workflow path/to/event.json --ci
+Env:
+    RUNNER_QUEUE_NAME    SQS queue this runner polls (one per runs_on label)
+    AWS_DEFAULT_REGION
+    INSTANCE_ID
+    WORK_DIR             where PRs are cloned (default /opt/praktika/work)
 """
 import json
 import logging
@@ -19,13 +24,13 @@ import threading
 import time
 from datetime import datetime, timezone
 
-QUEUE_NAME = os.environ.get("SQS_QUEUE_NAME", "praktika-workflows")
+QUEUE_NAME = os.environ.get("RUNNER_QUEUE_NAME", "")
 REGION = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
 INSTANCE_ID = os.environ.get("INSTANCE_ID", "local-dev")
 WORK_DIR = os.environ.get("WORK_DIR", "/opt/praktika/work")
 
 S3_LOG_BUCKET = "praktika-artifacts-eu-north-1"
-S3_LOG_PREFIX = "/workflow-orchestrator"
+S3_LOG_PREFIX = "/job-runner"
 
 PRAKTIKA_WHL = (
     "https://praktika-artifacts-eu-north-1.s3.amazonaws.com"
@@ -38,11 +43,11 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
     stream=sys.stdout,
 )
-log = logging.getLogger("orch")
+log = logging.getLogger("job-agent")
 
 
 def _get_github_token():
-    """Mint a GitHub installation token for cloning (uses boto3 directly)."""
+    """Mint a GitHub installation token for cloning."""
     import jwt
     import requests as _requests
 
@@ -158,17 +163,18 @@ def upload_log(s3, message):
     log.info(f"Log uploaded to s3://{S3_LOG_BUCKET}/{key}")
 
 
-def handle_workflow(event):
-    wf_type = event.get("type", "unknown")
-    log.info(f"Processing: {wf_type}")
+def handle_task(task):
+    task_type = task.get("type", "unknown")
+    job_name = task.get("job_name", "?")
+    log.info(f"Processing task: {task_type} job={job_name!r}")
 
-    if wf_type != "pull_request":
-        log.info(f"Unknown event type: {wf_type}, skipping")
-        return {"status": "skipped", "reason": f"unknown type: {wf_type}"}
+    if task_type != "job_task":
+        log.info(f"Unknown task type: {task_type}, skipping")
+        return {"status": "skipped", "reason": f"unknown type: {task_type}"}
 
-    repo = event.get("repo", "")
-    pr_number = event.get("pr_number")
-    head_sha = event.get("head_sha", "")
+    repo = task.get("repo", "")
+    pr_number = task.get("pr_number")
+    head_sha = task.get("head_sha", "")
 
     clone_dir, actual_sha = clone_repo(repo, head_sha, pr_number)
 
@@ -179,14 +185,14 @@ def handle_workflow(event):
         check=True,
     )
 
-    event_file = os.path.join(clone_dir, "ci", "tmp", "event.json")
-    os.makedirs(os.path.dirname(event_file), exist_ok=True)
-    with open(event_file, "w") as f:
-        json.dump(event, f, indent=2)
+    task_file = os.path.join(clone_dir, "ci", "tmp", "task.json")
+    os.makedirs(os.path.dirname(task_file), exist_ok=True)
+    with open(task_file, "w") as f:
+        json.dump(task, f, indent=2)
 
-    log.info(f"Running orchestrator for PR#{pr_number}")
+    log.info(f"Running job {job_name!r} for PR#{pr_number}")
     result = subprocess.run(
-        ["praktika", "orchestrate", "workflow", event_file, "--ci"],
+        ["praktika", "orchestrate", "job", task_file, "--ci"],
         cwd=clone_dir,
     )
 
@@ -194,12 +200,17 @@ def handle_workflow(event):
         "status": "ok" if result.returncode == 0 else "error",
         "pr": pr_number,
         "sha": actual_sha,
+        "job": job_name,
         "rc": result.returncode,
     }
 
 
 def poll():
     import boto3
+
+    if not QUEUE_NAME:
+        log.error("RUNNER_QUEUE_NAME not set — cannot start runner")
+        sys.exit(1)
 
     sqs = boto3.client("sqs", region_name=REGION)
     s3 = boto3.client("s3", region_name=REGION)
@@ -231,25 +242,25 @@ def poll():
         msg = messages[0]
         receipt = msg["ReceiptHandle"]
         try:
-            event = json.loads(msg["Body"])
-            log.info(f"RECEIVED: {json.dumps(event)}")
+            task = json.loads(msg["Body"])
+            log.info(f"RECEIVED: {json.dumps(task)}")
 
             with VisibilityHeartbeat(sqs, queue_url, receipt, visibility):
-                result = handle_workflow(event)
+                result = handle_task(task)
                 sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt)
                 log.info("DONE: message deleted")
 
             upload_log(s3, {
-                "event": "workflow_processed",
+                "event": "task_processed",
                 "instance_id": INSTANCE_ID,
-                "trigger": event,
+                "task": task,
                 "result": result,
                 "time": datetime.now(timezone.utc).isoformat(),
             })
         except Exception as e:
             log.exception("ERROR processing message")
             upload_log(s3, {
-                "event": "workflow_error",
+                "event": "task_error",
                 "instance_id": INSTANCE_ID,
                 "error": str(e),
                 "time": datetime.now(timezone.utc).isoformat(),

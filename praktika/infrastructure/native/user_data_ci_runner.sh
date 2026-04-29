@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Praktika CI job runner bootstrap. Polls a per-runner-type SQS queue and
-# invokes `praktika.Runner.run` for each task. Deployed per runner type: one
-# LT bakes this script with a different `RUNNER_QUEUE_NAME` substituted in.
-# The `run_job.py` body is gzip+base64 encoded to stay under the 16 KB
-# EC2 user_data limit (same trick as the orchestrator's user_data).
+# Praktika job agent bootstrap. Polls a per-runner-type SQS queue and
+# invokes `praktika orchestrate job ...` for each task. Deployed per runner
+# type: one LT bakes this script with a different `RUNNER_QUEUE_NAME`. The
+# agent body is gzip+base64 encoded to stay under the 16 KB EC2 user_data
+# limit (same trick as the workflow agent's user_data).
 set -xeuo pipefail
 
-echo "=== CI runner bootstrap ==="
+echo "=== Job agent bootstrap ==="
 
 # Install dependencies. Explicitly pull Python 3.12 alongside the system
 # Python 3.9 (AL2023 default) so boto3 stops spamming deprecation warnings
@@ -69,13 +69,13 @@ TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-met
 REGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
 INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
 
-# Write run_job.py (body injected by ci/infra/cloud.py at deploy time).
-echo '__RUN_JOB_PY_CONTENTS__' | base64 -d | gunzip > "$RUNNER_HOME/run_job.py"
+# Write job_agent.py (body injected by user_data.runner_user_data at deploy time).
+echo '__RUN_JOB_PY_CONTENTS__' | base64 -d | gunzip > "$RUNNER_HOME/job_agent.py"
 
 # Write systemd service. RUNNER_QUEUE_NAME is baked in per runner type.
-cat > /etc/systemd/system/ci-runner.service << EOF
+cat > /etc/systemd/system/job-agent.service << EOF
 [Unit]
-Description=Praktika CI Job Runner
+Description=Praktika Job Agent
 After=network.target
 
 [Service]
@@ -83,7 +83,7 @@ Type=simple
 Environment=RUNNER_QUEUE_NAME=__RUNNER_QUEUE_NAME__
 Environment=AWS_DEFAULT_REGION=$REGION
 Environment=INSTANCE_ID=$INSTANCE_ID
-ExecStart=/usr/bin/python3.12 -u $RUNNER_HOME/run_job.py
+ExecStart=/usr/bin/python3.12 -u $RUNNER_HOME/job_agent.py
 Restart=always
 RestartSec=5
 
@@ -92,7 +92,7 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable ci-runner
-systemctl start ci-runner
+systemctl enable job-agent
+systemctl start job-agent
 
-echo "=== CI runner ready ==="
+echo "=== Job agent ready ==="

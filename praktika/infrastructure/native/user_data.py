@@ -9,7 +9,7 @@ def ci_engine_user_data():
     import base64
     import gzip
 
-    run_py = (_HERE / "../../orchestrator/run.py").read_text()
+    run_py = (_HERE / "../../orchestrator/workflow_agent.py").read_text()
     template = (_HERE / "user_data_orchestrator.sh").read_text()
     placeholder = "__RUN_PY_CONTENTS__"
     if placeholder not in template:
@@ -24,7 +24,7 @@ def runner_user_data(queue_name):
     import base64
     import gzip
 
-    run_job_py = (_HERE / "../../orchestrator/run_job.py").read_text()
+    run_job_py = (_HERE / "../../orchestrator/job_agent.py").read_text()
     template = (_HERE / "user_data_ci_runner.sh").read_text()
     for ph in ("__RUN_JOB_PY_CONTENTS__", "__RUNNER_QUEUE_NAME__"):
         if ph not in template:

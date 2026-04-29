@@ -17,23 +17,26 @@ SQS praktika_clickhouse_workflows
     |
     v
 Orchestrator ASG (praktika-workflow-orchestrator-asg)
-    user_data -> run.py -> orchestrate()
-        |-- open per-workflow GitHub check run (`PR`, in_progress)
-        |-- find_workflow_for_event  -- match event + branch to Workflow.Config
-        |-- build_job_dag            -- resolve requires/run_after into topo levels
-        |-- WorkflowState + execution loop
-        |       for each JobState kicked:
-        |         open per-job GitHub check run (queued -> in_progress)
-        |         if runs_on contains a "praktika-*" label:
-        |           send {type: "job_task", ...} to SQS queue <label>
-        |         else (stub): wait() completes as success immediately
-        |-- close per-workflow check (neutral, plan text in output.text)
+    user_data -> workflow_agent.py
+        |-- clone the PR head
+        |-- pip install --force-reinstall praktika (latest WHL)
+        |-- subprocess: praktika orchestrate workflow event.json --ci
+        |       |-- open per-workflow GitHub check run (`PR`, in_progress)
+        |       |-- find_workflow_for_event
+        |       |-- build_job_dag
+        |       |-- WorkflowState execution loop:
+        |       |     for each JobState kicked:
+        |       |       open per-job GitHub check run (queued -> in_progress)
+        |       |       send {type: "job_task", ...} to SQS queue praktika-<runs_on>
+        |       |-- close per-workflow check
     |
-    v  (SQS: one queue per runner type, named after runs_on label)
+    v  (SQS: one queue per runner pool, named praktika-<runs_on>)
 Runner ASGs (e.g. praktika-arm-2xsmall)
-    user_data -> run_job.py -> job_runner.run_job()
-        |-- look up praktika Workflow + Job from the task
-        |-- Runner().run(workflow=wf, job=job, local_run=False, run_hooks=True, ...)
+    user_data -> job_agent.py
+        |-- clone the PR head
+        |-- pip install --force-reinstall praktika
+        |-- subprocess: praktika orchestrate job task.json --ci
+        |       |-- job_runner.run_job(task) -> Runner().run(...)
 ```
 
 ## Code split (intentional)
@@ -44,8 +47,8 @@ module that ships with each PR:
 
 |                   | Baked into user_data (needs LT+ASG redeploy to change) | Ships with each PR (plain `git push`) |
 |-------------------|--------------------------------------------------------|---------------------------------------|
-| **Orchestrator**  | `run.py` — SQS poll, clone, GH App token, `CheckRun` HTTP, S3 log | `__init__.py::orchestrate`, `state.py` (`WorkflowState`, `JobState`, `JobCheckRun`) |
-| **Job runner**    | `run_job.py` — SQS poll, clone, GH App token, S3 log   | `job_runner.py::run_job` (maps task -> `praktika.Runner.run`) |
+| **Workflow side** | `workflow_agent.py` — SQS poll, clone, GH App token, S3 log | `__init__.py::orchestrate`, `state.py` (`WorkflowState`, `JobState`, `JobCheckRun`) |
+| **Job side**      | `job_agent.py` — SQS poll, clone, GH App token, S3 log | `job_runner.py::run_job` (maps task -> `praktika.Runner.run`) |
 
 When you want to tweak workflow orchestration or job-execution policy, you
 only need `git push`. Only the stable scripts require an LT/ASG redeploy.
@@ -78,25 +81,25 @@ Requires AWS SSM access and S3 write permission to `clickhouse-test-reports-priv
 
 ## Local testing
 
-### Orchestrator (no AWS required)
+### Workflow side (no AWS required)
 
 ```bash
-python3 ci/praktika/orchestrator/run.py --local tmp/sandbox/test_message.json
+praktika orchestrate workflow            # auto-builds the event from git state
+praktika orchestrate workflow event.json # or load a pre-built event
 ```
 
-Loads workflow configs, matches the event to a workflow, builds the DAG, walks
-the execution loop (currently stubs job kick + wait), prints the plan + START
-/ DONE / summary. Posts real GitHub check runs only if `CI_ENGINE_POST_CHECKS=1`
-and AWS creds are available.
+Without `--ci` this runs in local-orchestrator mode: every job is dispatched as a
+synchronous subprocess (`praktika orchestrate job task.json`) against the
+local-fs S3 backend. Useful for end-to-end smoke tests on your machine.
 
-### Job runner (single-job sandbox)
+### Job side (single-job sandbox)
 
 ```bash
-python3 ci/praktika/orchestrator/run_job.py --local tmp/sandbox/style_check_task.json
+praktika orchestrate job task.json
 ```
 
-Invokes `praktika.Runner.run` with `local_run=True` for the job named in the
-task. The real EC2 runner uses `local_run=False` + `run_hooks=True`.
+Invokes `praktika.Runner.run` with `local_orchestrator_run=True` for the job
+named in the task.
 
 Task JSON shape (what the orchestrator sends over SQS):
 
@@ -122,21 +125,20 @@ in `ci/infra/cloud.py`. Names derive from a single base:
 |----------|------|
 | ASG      | `praktika-{name}` |
 | LT       | `praktika-{name}-lt` |
-| SQS queue | `praktika-{name}` (matches the `runs_on` label 1:1) |
+| SQS queue | `praktika-{name}` |
 
-A job's `runs_on` list is checked for any label starting with `praktika-`; the
-first match is treated as the SQS queue name. Labels that don't match
-(e.g. `self-hosted`, legacy `private-*`) fall through to the no-op stub so
-partially-migrated workflows keep flowing.
+A job's `runs_on=[X]` routes to queue `praktika-X`. There's no fallback —
+if the queue doesn't exist, the dispatch fails and the job is marked
+FAILURE.
 
 ## Deploy
 
 ```bash
-# Orchestrator infra (changes to run.py / user_data_orchestrator.sh):
+# Workflow agent infra (changes to workflow_agent.py / user_data_orchestrator.sh):
 python3 -m praktika infrastructure --deploy --only LaunchTemplate AutoScalingGroup
-# Plus terminate running orchestrator runners so the ASG relaunches on the new LT.
+# Plus terminate running orchestrator instances so the ASG relaunches on the new LT.
 
-# Runner infra (new runner types, or changes to run_job.py / user_data_ci_runner.sh):
+# Job agent infra (new runner types, or changes to job_agent.py / user_data_ci_runner.sh):
 python3 -m praktika infrastructure --deploy --only LaunchTemplate AutoScalingGroup SQSQueue
 # Plus terminate running runners on the affected pool.
 ```
@@ -154,8 +156,8 @@ redeploy. `$Latest` is not honored at runtime.
 - DAG-aware execution loop (`WorkflowState.get_ready` / `kick` / `wait`)
 - SQS dispatch from `JobState.kick()` to per-type runner queues
 - Job runner infra helper (`_runner_infra`), one deployed pool: `praktika-arm-2xsmall`
-- Local sandbox: `run_job.py --local <task.json>` runs a real job end-to-end
-  through `praktika.Runner.run`
+- Local sandbox: `praktika orchestrate job <task.json>` runs a real job
+  end-to-end through `praktika.Runner.run` against the local-fs S3 backend
 
 ## TODO
 

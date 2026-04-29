@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Minimal CI engine runner: polls SQS for workflow triggers and executes them.
-# The `run.py` body below is substituted at deploy time from
-# `ci/praktika/orchestrator/run.py` (see `ci/infra/cloud.py`), so the same
-# code runs both locally and on the EC2 runners.
+# Praktika workflow agent: polls SQS for workflow triggers and dispatches
+# each one. The agent body below is substituted at deploy time from
+# `praktika/orchestrator/workflow_agent.py` (see `user_data.py`), so the
+# same code runs both locally and on the EC2 orchestrator instances.
 set -xeuo pipefail
 
-echo "=== CI engine runner bootstrap ==="
+echo "=== Workflow agent bootstrap ==="
 
 # Install dependencies. Pull Python 3.12 alongside the AL2023 system Python
 # 3.9 so boto3 stops spamming deprecation warnings (Python 3.9 support ends
@@ -30,17 +30,17 @@ TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-met
 REGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
 INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
 
-# Write the runner script. The body is gzip+base64 encoded at deploy time
-# (`ci/infra/cloud.py::_ci_engine_user_data`) so the script fits into the
-# 16 KB EC2 user_data limit; we decode it back here.
-echo '__RUN_PY_CONTENTS__' | base64 -d | gunzip > "$RUNNER_HOME/run.py"
+# Write the agent script. The body is gzip+base64 encoded at deploy time
+# (user_data.ci_engine_user_data) so the script fits into the 16 KB EC2
+# user_data limit; we decode it back here.
+echo '__RUN_PY_CONTENTS__' | base64 -d | gunzip > "$RUNNER_HOME/workflow_agent.py"
 
-chmod +x "$RUNNER_HOME/run.py"
+chmod +x "$RUNNER_HOME/workflow_agent.py"
 
 # Write systemd service
-cat > /etc/systemd/system/ci-engine.service << EOF
+cat > /etc/systemd/system/workflow-agent.service << EOF
 [Unit]
-Description=Praktika CI Engine Runner
+Description=Praktika Workflow Agent
 After=network.target
 
 [Service]
@@ -48,7 +48,7 @@ Type=simple
 Environment=SQS_QUEUE_NAME=praktika-workflows
 Environment=AWS_DEFAULT_REGION=$REGION
 Environment=INSTANCE_ID=$INSTANCE_ID
-ExecStart=/usr/bin/python3.12 -u $RUNNER_HOME/run.py
+ExecStart=/usr/bin/python3.12 -u $RUNNER_HOME/workflow_agent.py
 Restart=always
 RestartSec=5
 
@@ -57,7 +57,7 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable ci-engine
-systemctl start ci-engine
+systemctl enable workflow-agent
+systemctl start workflow-agent
 
-echo "=== CI engine runner ready ==="
+echo "=== Workflow agent ready ==="
