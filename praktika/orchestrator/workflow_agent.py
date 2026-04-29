@@ -188,12 +188,10 @@ def handle_workflow(event):
     result = subprocess.run(
         ["praktika", "orchestrate", "workflow", event_file, "--ci"],
         cwd=clone_dir,
-        capture_output=True,
+        stderr=subprocess.PIPE,
         text=True,
     )
 
-    if result.stdout:
-        log.info(result.stdout.rstrip())
     if result.returncode != 0 and result.stderr:
         log.error(result.stderr.rstrip())
 
