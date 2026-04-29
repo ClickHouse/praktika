@@ -17,8 +17,8 @@ _runner_pools = [
 _orchestrator_pool = NativeComponents.OrchestratorPool(
     instance_type="t4g.small",
     vpc_name=CI_VPC_NAME,
-    size=2,
-    max_size=2,
+    size=1,
+    max_size=1,
 )
 
 CLOUD = CloudInfrastructure.Config(

@@ -1,0 +1,24 @@
+{
+  "event": "workflow_processed",
+  "instance_id": "i-0e51b617e6d4d6dee",
+  "trigger": {
+    "type": "pull_request",
+    "action": "synchronize",
+    "pr_number": 122,
+    "head_sha": "48341c26d2319f1f120169dcd1d1f079d3b25050",
+    "head_ref": "ci_standalone_engine",
+    "base_ref": "main",
+    "repo": "ClickHouse/praktika",
+    "sender": "maxknv",
+    "title": "CI Standalone engine",
+    "draft": false,
+    "labels": []
+  },
+  "result": {
+    "status": "ok",
+    "pr": 122,
+    "sha": "48341c26d2319f1f120169dcd1d1f079d3b25050",
+    "rc": 0
+  },
+  "time": "2026-04-29T14:10:25.675659+00:00"
+}

@@ -30,7 +30,7 @@ INSTANCE_ID = os.environ.get("INSTANCE_ID", "local-dev")
 WORK_DIR = os.environ.get("WORK_DIR", "/opt/praktika/work")
 
 S3_LOG_BUCKET = "praktika-artifacts-eu-north-1"
-S3_LOG_PREFIX = "/job-runner"
+S3_LOG_PREFIX = "job-runner"
 
 PRAKTIKA_WHL = (
     "https://praktika-artifacts-eu-north-1.s3.amazonaws.com"
@@ -194,7 +194,14 @@ def handle_task(task):
     result = subprocess.run(
         ["praktika", "orchestrate", "job", task_file, "--ci"],
         cwd=clone_dir,
+        capture_output=True,
+        text=True,
     )
+
+    if result.stdout:
+        log.info(result.stdout.rstrip())
+    if result.returncode != 0 and result.stderr:
+        log.error(result.stderr.rstrip())
 
     return {
         "status": "ok" if result.returncode == 0 else "error",
@@ -202,6 +209,7 @@ def handle_task(task):
         "sha": actual_sha,
         "job": job_name,
         "rc": result.returncode,
+        "stderr": result.stderr.strip()[:500] if result.stderr else "",
     }
 
 

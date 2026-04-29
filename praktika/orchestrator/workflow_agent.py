@@ -25,7 +25,7 @@ INSTANCE_ID = os.environ.get("INSTANCE_ID", "local-dev")
 WORK_DIR = os.environ.get("WORK_DIR", "/opt/praktika/work")
 
 S3_LOG_BUCKET = "praktika-artifacts-eu-north-1"
-S3_LOG_PREFIX = "/workflow-orchestrator"
+S3_LOG_PREFIX = "workflow-orchestrator"
 
 PRAKTIKA_WHL = (
     "https://praktika-artifacts-eu-north-1.s3.amazonaws.com"
@@ -188,13 +188,21 @@ def handle_workflow(event):
     result = subprocess.run(
         ["praktika", "orchestrate", "workflow", event_file, "--ci"],
         cwd=clone_dir,
+        capture_output=True,
+        text=True,
     )
+
+    if result.stdout:
+        log.info(result.stdout.rstrip())
+    if result.returncode != 0 and result.stderr:
+        log.error(result.stderr.rstrip())
 
     return {
         "status": "ok" if result.returncode == 0 else "error",
         "pr": pr_number,
         "sha": actual_sha,
         "rc": result.returncode,
+        "stderr": result.stderr.strip()[:500] if result.stderr else "",
     }
 
 
