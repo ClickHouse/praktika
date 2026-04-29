@@ -86,7 +86,7 @@ def _build_check_output(job_name, rc):
         return None
 
 
-def _build_ci_environment(task, job_name=None, job=None):
+def _build_ci_environment(task, job_name=None, job=None, local_run=False):
     """Construct a `_Environment` from our SQS task and dump it to
     ``ci/tmp/environment.json`` so that ``_Environment.get()`` returns it
     instead of falling through to ``from_env()`` (which would produce a
@@ -170,6 +170,7 @@ def _build_ci_environment(task, job_name=None, job=None):
         "INSTANCE_TYPE": instance_type,
         "INSTANCE_LIFE_CYCLE": instance_life_cycle,
         "TRACEBACKS": [],
+        "LOCAL_RUN": bool(local_run),
     }
 
     carried = task.get("environment")
@@ -211,6 +212,7 @@ def _build_ci_environment(task, job_name=None, job=None):
             # JOB_KV_DATA doesn't need to mirror COMMIT_AUTHORS.
             JOB_KV_DATA={"commit_authors": commit_authors},
             WORKFLOW_CONFIG=None,
+            LOCAL_RUN=bool(local_run),
         )
     env.dump()
     return env
@@ -247,7 +249,11 @@ def run_job(task, gh_token=None, local=False):
     # Pre-populate ci/tmp/environment.json BEFORE calling _get_workflows(), because
     # _get_workflows() triggers Info() -> _Environment.get() and would fall back to
     # the dummy from_env() path if the file doesn't exist yet.
-    _build_ci_environment(task, job_name=job_name)
+    _build_ci_environment(task, job_name=job_name, local_run=local)
+    # Make sure modules that key off of the env var (e.g. praktika.s3) see local
+    # mode regardless of whether they look at the env var or the dumped env.
+    if local:
+        os.environ["PRAKTIKA_LOCAL_RUN"] = "1"
 
     workflows = _get_workflows(name=workflow_name)
     if not workflows:

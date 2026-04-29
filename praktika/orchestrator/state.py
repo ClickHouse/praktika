@@ -490,7 +490,8 @@ class WorkflowState:
         with open(task_file, "w") as f:
             json.dump(task, f, indent=2)
 
-        result = subprocess.run(["praktika", "orchestrate", "job", task_file])
+        env = {**os.environ, "PRAKTIKA_LOCAL_RUN": "1"}
+        result = subprocess.run(["praktika", "orchestrate", "job", task_file], env=env)
         job_state.finish(success=(result.returncode == 0))
         return True
 

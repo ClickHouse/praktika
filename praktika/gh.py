@@ -657,6 +657,12 @@ class GH:
 
     @classmethod
     def print_actions_debug_info(cls):
+        # Outside GitHub Actions GITHUB_EVENT_PATH is empty, which would turn
+        # `cat $GITHUB_EVENT_PATH` into a bare `cat` that hangs reading from
+        # the controlling TTY. Skip the whole dump in that case — it's GHA
+        # debug info and useless without the real env.
+        if not os.getenv("GITHUB_ACTIONS"):
+            return
         cls.print_log_in_group("GITHUB_ENVS", Shell.get_output("env | grep ^GITHUB_"))
         cls.print_log_in_group(
             "GITHUB_EVENT", Shell.get_output("cat $GITHUB_EVENT_PATH")

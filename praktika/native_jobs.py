@@ -465,7 +465,7 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
     #         print(f"ERROR: Invalid secrets in workflow [{workflow.name}]")
     #     results.append(result_)
 
-    if results[-1].is_ok() and workflow.enable_cidb:
+    if results[-1].is_ok() and workflow.enable_cidb and not Info().is_local_run:
         result_ = _check_db(workflow)
         results.append(result_)
 

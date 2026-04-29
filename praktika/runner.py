@@ -934,8 +934,30 @@ class Runner:
         # the environment before calling Runner.run(); skip the GHA setup_env step.
         _ci_engine_env = Path(Settings.TEMP_DIR + "/environment.json").is_file()
 
+        # Four execution modes, parameterized by (local_run, _ci_engine_env):
+        #   1. local_run=True,  _ci_engine_env=True   — orchestrator dispatched a
+        #                                                job locally; simulate the
+        #                                                full pipeline against
+        #                                                the local-fs S3 backend.
+        #   2. local_run=True,  _ci_engine_env=False  — `praktika run` dev sandbox;
+        #                                                no orchestrator, no real
+        #                                                CI. Skip everything that
+        #                                                isn't strictly required
+        #                                                to run the job command.
+        #   3. local_run=False, _ci_engine_env=True   — orchestrator-dispatched
+        #                                                CI job. Full pipeline.
+        #   4. local_run=False, _ci_engine_env=False  — GHA-dispatched job.
+        #                                                Full pipeline.
+        # `dev_sandbox` collapses these to a single skip-extras gate: only mode 2
+        # is a true sandbox; the rest go through the full pre-run path.
+        dev_sandbox = local_run and not _ci_engine_env
+
         if _ci_engine_env:
             setup_env_code = 0  # environment already ready
+        elif local_run:
+            self.generate_local_run_environment(
+                workflow, job, pr=pr, sha=sha, branch=branch
+            )
         else:
             print(
                 f"\n\n=== Setup env script [{job.name}], workflow [{workflow.name}] ==="
@@ -954,11 +976,15 @@ class Runner:
                 Info().store_traceback()
             print(f"=== Setup env finished ===\n\n")
 
-        if res and not local_run:
+        # Mode 1 needs the running Result dumped and required artifacts pulled
+        # from local S3 — both happen inside _pre_run. Mode 2 keeps the legacy
+        # `--pr/--branch + --sha` escape hatch that wires up artifact download
+        # for ad-hoc dev runs.
+        if res and (not dev_sandbox or ((pr or branch) and sha)):
             res = False
             print(f"=== Pre run script [{job.name}], workflow [{workflow.name}] ===")
             try:
-                prerun_code = self._pre_run(workflow, job, local_run=local_run)
+                prerun_code = self._pre_run(workflow, job, local_run=dev_sandbox)
                 res = prerun_code == 0
                 if not res:
                     print(f"ERROR: Pre-run failed with exit code [{prerun_code}]")
