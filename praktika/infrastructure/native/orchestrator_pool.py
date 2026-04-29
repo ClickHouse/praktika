@@ -93,6 +93,7 @@ class OrchestratorPool:
                             "Action": [
                                 "sqs:ReceiveMessage",
                                 "sqs:DeleteMessage",
+                                "sqs:ChangeMessageVisibility",
                                 "sqs:SendMessage",
                                 "sqs:GetQueueUrl",
                                 "sqs:GetQueueAttributes",

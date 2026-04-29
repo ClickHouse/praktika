@@ -7,22 +7,14 @@ from .utils import Shell
 
 
 def _aws_cli_flags(region: str = "") -> str:
-    """Return ``--region X --profile Y`` flags for ``aws`` CLI calls.
+    """Return ``--region X`` flags for ``aws`` CLI calls.
 
-    Profile is sourced from ``Settings.AWS_PROFILE`` so local dev
-    invocations land on the same account as the deployed runners
-    (which use IAM roles and leave AWS_PROFILE empty). Without this,
-    a developer's default profile may target a different account and
-    AWS returns ResourceNotFoundException for every secret lookup.
+    Profile selection is left to the AWS CLI default credentials chain
+    (``AWS_PROFILE`` env var locally, IAM instance role on EC2) so
+    project settings can't leak a developer's profile name onto
+    runners that don't have it configured.
     """
-    from .settings import Settings
-
-    parts = []
-    if region:
-        parts.append(f"--region {region}")
-    if Settings.AWS_PROFILE:
-        parts.append(f"--profile {Settings.AWS_PROFILE}")
-    return (" " + " ".join(parts)) if parts else ""
+    return f" --region {region}" if region else ""
 
 
 class Secret:
