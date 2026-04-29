@@ -6,6 +6,25 @@ from typing import List, Union
 from .utils import Shell
 
 
+def _aws_cli_flags(region: str = "") -> str:
+    """Return ``--region X --profile Y`` flags for ``aws`` CLI calls.
+
+    Profile is sourced from ``Settings.AWS_PROFILE`` so local dev
+    invocations land on the same account as the deployed runners
+    (which use IAM roles and leave AWS_PROFILE empty). Without this,
+    a developer's default profile may target a different account and
+    AWS returns ResourceNotFoundException for every secret lookup.
+    """
+    from .settings import Settings
+
+    parts = []
+    if region:
+        parts.append(f"--region {region}")
+    if Settings.AWS_PROFILE:
+        parts.append(f"--profile {Settings.AWS_PROFILE}")
+    return (" " + " ".join(parts)) if parts else ""
+
+
 class Secret:
 
     class Type:
@@ -49,11 +68,9 @@ class Secret:
                 assert False, f"Not supported secret type, secret [{self}]"
 
         def get_aws_ssm_parameter(self):
-            region = ""
-            if self.region:
-                region = f" --region {self.region}"
+            flags = _aws_cli_flags(self.region)
             res = Shell.get_output(
-                f"aws ssm get-parameter --name {self.name} --with-decryption --output text --query Parameter.Value {region}",
+                f"aws ssm get-parameter --name {self.name} --with-decryption --output text --query Parameter.Value{flags}",
                 strict=True,
             )
             return res
@@ -62,12 +79,10 @@ class Secret:
             """
             Request multiple parameters at once to avoid rate limiting
             """
-            region = ""
-            if self.region:
-                region = f" --region {self.region}"
+            flags = _aws_cli_flags(self.region)
             assert isinstance(self.name, list)
             res = Shell.get_output(
-                f"aws ssm get-parameters --names {' '.join(self.name)} --with-decryption --output text --query 'Parameters[*].[Name,Value]' {region}",
+                f"aws ssm get-parameters --names {' '.join(self.name)} --with-decryption --output text --query 'Parameters[*].[Name,Value]'{flags}",
                 strict=True,
             )
             name_value_pairs = res.split("\n")
@@ -93,10 +108,8 @@ class Secret:
             name, secret_key_name = self.name, ""
             if "." in self.name:
                 name, secret_key_name = self.name.split(".", 1)
-            region = ""
-            if self.region:
-                region = f" --region {self.region}"
-            cmd = f"aws secretsmanager get-secret-value --secret-id  {name} --query SecretString --output text {region}"
+            flags = _aws_cli_flags(self.region)
+            cmd = f"aws secretsmanager get-secret-value --secret-id {name} --query SecretString --output text{flags}"
             if secret_key_name:
                 cmd += f" | jq -r '.[\"{secret_key_name}\"]'"
             res = Shell.get_output(cmd, verbose=True, strict=True)
@@ -111,7 +124,7 @@ class Secret:
             """
             assert isinstance(self.name, list)
 
-            region = f" --region {self.region}" if self.region else ""
+            flags = _aws_cli_flags(self.region)
 
             # Parse each name into (root, key); key is None when there is no dot
             parsed = [(n.split(".", 1) if "." in n else (n, None)) for n in self.name]
@@ -124,7 +137,7 @@ class Secret:
             results = [None] * len(self.name)
 
             for root, indices in root_to_indices.items():
-                cmd = f"aws secretsmanager get-secret-value --secret-id {root} --query SecretString --output text{region}"
+                cmd = f"aws secretsmanager get-secret-value --secret-id {root} --query SecretString --output text{flags}"
                 secret_string = Shell.get_output(cmd, verbose=True, strict=True)
                 keys = [parsed[idx][1] for idx in indices]
                 # Only parse JSON when at least one entry requests a specific key;

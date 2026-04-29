@@ -1,10 +1,7 @@
-import contextlib
-import io
 import json
 import re
 import sys
 from collections import defaultdict, deque
-from contextlib import redirect_stdout
 from dataclasses import dataclass
 from typing import Optional
 
@@ -254,49 +251,42 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
 
     from .state import WorkflowState
 
-    # In CI mode capture output for the check run body; in local mode print inline.
-    buf = io.StringIO() if not local_mode else None
+    # The top-level check body is rendered from `state.md_status()` (a live
+    # per-job table) by `_check_output`, not from this stream — so we print
+    # straight to stdout. Lets the user (or `journalctl -fu workflow-agent`)
+    # see progress in real time, especially important when the loop hangs.
     error = None
     state = None
     try:
-        with (redirect_stdout(buf) if buf is not None else contextlib.nullcontext()):
+        state = WorkflowState(
+            workflow,
+            event=event,
+            gh_token=gh_token,
+            repo=event.get("repo", ""),
+            head_sha=event.get("head_sha", ""),
+            run_id=run_id,
+            local_mode=local_mode,
+        )
+        state.print_plan()
+        _patch_top_check(check, workflow, state)
 
-            state = WorkflowState(
-                workflow,
-                event=event,
-                gh_token=gh_token,
-                repo=event.get("repo", ""),
-                head_sha=event.get("head_sha", ""),
-                run_id=run_id,
-                local_mode=local_mode,
-            )
-            state.print_plan()
+        cancel_handled = False
+        while state.not_finished():
+            if state.cancelled and not cancel_handled:
+                state.cancel_pending_jobs()
+                cancel_handled = True
+            for job in state.get_ready():
+                job.kick()
+            state.wait()
             _patch_top_check(check, workflow, state)
 
-            cancel_handled = False
-            while state.not_finished():
-                if state.cancelled and not cancel_handled:
-                    state.cancel_pending_jobs()
-                    cancel_handled = True
-                for job in state.get_ready():
-                    job.kick()
-                state.wait()
-                _patch_top_check(check, workflow, state)
-
-            state.print_summary()
+        state.print_summary()
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
-        if buf is not None:
-            buf.write(f"\n\nError: {error}\n")
-        else:
-            print(f"\n\nError: {error}")
+        print(f"\n\nError: {error}")
     finally:
         if state is not None:
             state.cleanup()
-
-    if buf is not None:
-        sys.stdout.write(buf.getvalue())
-        sys.stdout.flush()
 
     if check is not None:
         if error is not None:

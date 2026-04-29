@@ -314,30 +314,30 @@ class WorkflowState:
         self._environment = None
         self.cancelled = False              # set by wait() on cancel message
 
-        # Create a per-run completions queue `praktika-wf-{pr}-{run_id}`.
+        # Create a per-run completions queue `praktika-wf-{pr_or_uuid}-{run_id}`.
         # One queue per run (not per PR) means there is no cross-run traffic:
         # every message on this queue is addressed to us, so wait() needs no
         # run_id filtering and cancel messages can't be stolen by a
         # concurrent run. The queue is deleted in cleanup() at end of run.
-        # Only created when gh_token is set (EC2 mode); in local mode
-        # gh_token is absent, dispatch is synchronous, and there is no
-        # completions queue at all.
-        pr = (event or {}).get("pr_number")
-        if gh_token and pr:
-            self._completions_queue_name = f"praktika-wf-{pr}-{self._run_id}"
-            try:
-                import boto3
-                region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-                self._sqs = boto3.client("sqs", region_name=region)
-                resp = self._sqs.create_queue(
-                    QueueName=self._completions_queue_name,
-                    Attributes={"MessageRetentionPeriod": "3600"},  # 1 h
-                )
-                self._completions_queue_url = resp["QueueUrl"]
-                self._queue_urls[self._completions_queue_name] = self._completions_queue_url
-                print(f"Using completions queue: {self._completions_queue_name}")
-            except Exception as e:
-                print(f"  [warn] could not create completions queue: {type(e).__name__}: {e}")
+        # Only created in CI mode (SQS dispatch); local mode runs jobs
+        # synchronously inside `kick`, so there is nothing to long-poll.
+        # Failure to create the queue is fatal — without it, dispatched
+        # jobs can never report completion and the orchestrator would
+        # spin-lock indefinitely. Better to fail fast.
+        if not local_mode:
+            pr = (event or {}).get("pr_number")
+            suffix = str(pr) if pr else f"u{uuid.uuid4().hex[:8]}"
+            self._completions_queue_name = f"praktika-wf-{suffix}-{self._run_id}"
+            import boto3
+            region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+            self._sqs = boto3.client("sqs", region_name=region)
+            resp = self._sqs.create_queue(
+                QueueName=self._completions_queue_name,
+                Attributes={"MessageRetentionPeriod": "3600"},  # 1 h
+            )
+            self._completions_queue_url = resp["QueueUrl"]
+            self._queue_urls[self._completions_queue_name] = self._completions_queue_url
+            print(f"Using completions queue: {self._completions_queue_name}")
         else:
             self._completions_queue_name = None
 
