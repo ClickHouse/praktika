@@ -65,15 +65,15 @@ workflow_pr = Workflow.Config(
             #     include_paths=["./ci/tests/example_3/script_for_parametrized_job.py"],
             # ),
         ).parametrize(
-            # example: parameter value should be json serializable,
-            parameter=[
-                # parameter value can be dict, list, str, int or any json serializable
-                {
+            Job.ParamSet(
+                parameter={
                     "key_1": [1, 2, "ABC"],
                     "key_2": None,
-                },  # parameter value 1
-                {"key_1": [2, 3]},  # parameter value 2
-            ]
+                },
+            ),
+            Job.ParamSet(
+                parameter={"key_1": [2, 3]},
+            ),
         ),
     ],
     secrets=[

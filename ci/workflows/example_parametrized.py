@@ -26,33 +26,31 @@ workflow_pr = Workflow.Config(
                 python=True, python_requirements_txt="./ci/requirements.txt"
             ),
         ).parametrize(
-            # example: parametrize over .parameter value:
-            # parameter value should be json serializable,
-            #  it will be available in the job script via Environment.PARAM[.field_name]
-            parameter=[
-                {"name": [1, 2, "ABC"], "name_2": 123},  # parameter 1
-                {"name": [2, 3]},  # parameter 2
-                {"name": "praktika"},  # parameter 3
-                123,  # parameter 4
-                "I'm a string",  # parameter 5
-            ],
-            # example: parametrize over runner type .runs_on
-            runs_on=[
-                ["ubuntu-latest"],
-                ["ubuntu-latest"],
-                ["ubuntu-latest"],
-                ["ubuntu-latest"],
-                ["ubuntu-latest"],
-            ],
-            # example: you can set different timeouts for parametrized jobs:
-            timeout=[
-                10,
-                15,
-                20,
-                25,
-                4,
-            ],
-            # NOTE: if parametrization over both .runs_on and .parameter their lists must be of the same size as well as .timeout
+            Job.ParamSet(
+                parameter={"name": [1, 2, "ABC"], "name_2": 123},
+                runs_on=["ubuntu-latest"],
+                timeout=10,
+            ),
+            Job.ParamSet(
+                parameter={"name": [2, 3]},
+                runs_on=["ubuntu-latest"],
+                timeout=15,
+            ),
+            Job.ParamSet(
+                parameter={"name": "praktika"},
+                runs_on=["ubuntu-latest"],
+                timeout=20,
+            ),
+            Job.ParamSet(
+                parameter=123,
+                runs_on=["ubuntu-latest"],
+                timeout=25,
+            ),
+            Job.ParamSet(
+                parameter="I'm a string",
+                runs_on=["ubuntu-latest"],
+                timeout=4,
+            ),
         )
     ],
 )
