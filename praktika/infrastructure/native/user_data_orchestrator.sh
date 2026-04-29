@@ -45,6 +45,12 @@ After=network.target
 
 [Service]
 Type=simple
+# HOME must be set explicitly: \`gh auth login --with-token\` writes auth
+# state to \$HOME/.config/gh/hosts.yml, and Type=simple services don't get
+# HOME from systemd by default. Without it the agent's gh-auth call
+# silently no-ops (writes nowhere usable), and child processes can't post
+# commit statuses or check-run updates.
+Environment=HOME=/root
 Environment=SQS_QUEUE_NAME=praktika-workflows
 Environment=AWS_DEFAULT_REGION=$REGION
 Environment=INSTANCE_ID=$INSTANCE_ID

@@ -4,3 +4,4 @@ ci/tmp/
 build/
 dist/
 *.egg-info/
+*.gz
