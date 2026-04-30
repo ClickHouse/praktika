@@ -1076,7 +1076,5 @@ class Runner:
             res = res and post_res
             print(f"=== Post run script finished ===")
 
-            result.dump()
-
         if not res:
             sys.exit(1)
