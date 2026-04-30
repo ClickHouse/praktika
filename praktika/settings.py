@@ -55,7 +55,6 @@ class _Settings:
     PYTHON_INTERPRETER: str = "python3"
     PYTHON_PACKET_MANAGER: str = "pip3"
     PYTHON_VERSION: str = "3.9"
-    PYTHONPATHS: str = ""
     INSTALL_PYTHON_FOR_NATIVE_JOBS: bool = False
     INSTALL_PYTHON_REQS_FOR_NATIVE_JOBS: str = "./ci/requirements.txt"
     ENVIRONMENT_VAR_FILE: str = f"{TEMP_DIR}/environment.json"
@@ -187,7 +186,6 @@ _USER_DEFINED_SETTINGS = [
     "MAIN_BRANCH",
     "DISABLED_WORKFLOWS",
     "ENABLED_WORKFLOWS",
-    "PYTHONPATHS",
     "DEFAULT_LOCAL_TEST_WORKFLOW",
     "COMPRESS_THRESHOLD_MB",
     "ENABLE_SUBMODULE_CACHE",

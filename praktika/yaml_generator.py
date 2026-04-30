@@ -399,7 +399,7 @@ class PullRequestPushYamlGen:
                 UNIQUE_WORK_DIRS=" ".join(
                     {Settings.TEMP_DIR, Settings.INPUT_DIR, Settings.OUTPUT_DIR}
                 ),
-                PYTHONPATH_EXTRA=Settings.PYTHONPATHS,
+                PYTHONPATH_EXTRA="",
             )
             job_items.append(job_item)
 
