@@ -102,12 +102,13 @@ class TestRunner(unittest.TestCase):
         task = {
             "workflow_name": "DummyRunnerTest",
             "job_name": "dummy",
-            # Push-event shape: branch + sha, no pr_number.
+            # PR-event shape: pr_number + base_ref + sha.
+            "pr_number": 1,
+            "base_ref": "main",
             "head_ref": "test-branch",
             "head_sha": "0" * 40,
             "repo": "test-org/test-repo",
         }
-
         self._bootstrap_workflow_state(task)
         rc = run_job(task, gh_token=None, local=True)
         self.assertEqual(rc, 0, f"run_job returned non-zero exit code [{rc}]")

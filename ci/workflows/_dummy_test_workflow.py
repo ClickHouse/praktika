@@ -26,8 +26,8 @@ if os.environ.get("PRAKTIKA_DUMMY_TEST_ACTIVE") == "1":
     WORKFLOWS = [
         Workflow.Config(
             name="DummyRunnerTest",
-            event=Workflow.Event.PUSH,
-            branches=["main"],
+            event=Workflow.Event.PULL_REQUEST,
+            base_branches=["main"],
             jobs=[
                 Job.Config(
                     name="dummy",
