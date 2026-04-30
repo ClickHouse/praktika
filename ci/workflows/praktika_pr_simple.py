@@ -18,6 +18,18 @@ workflow = Workflow.Config(
     base_branches=["main"],
     jobs=[
         Job.Config(
+            name="Unit Tests",
+            runs_on=[RunnerLabels.SMALL_FIXED],
+            command="python3 -m unittest discover -s ./ci/tests -p 'test_*.py'",
+            job_requirements=_REQ,
+        ),
+        Job.Config(
+            name="Yaml Lint",
+            runs_on=[RunnerLabels.SMALL_FIXED],
+            command="yamllint . --config-file=.yamllint",
+            job_requirements=_REQ,
+        ),
+        Job.Config(
             name="Provide Artifact",
             runs_on=[RunnerLabels.SMALL_FIXED],
             command='echo "Hello from praktika" > ./artifact.txt',
