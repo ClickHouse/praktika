@@ -138,7 +138,7 @@ FAILURE.
 python3 -m praktika infrastructure --deploy --only LaunchTemplate AutoScalingGroup
 # Plus terminate running orchestrator instances so the ASG relaunches on the new LT.
 
-# Job agent infra (new runner types, or changes to job_agent.py / user_data_ci_runner.sh):
+# Job agent infra (new runner types, or changes to job_agent.py / user_data_runner.sh):
 python3 -m praktika infrastructure --deploy --only LaunchTemplate AutoScalingGroup SQSQueue
 # Plus terminate running runners on the affected pool.
 ```
