@@ -378,7 +378,7 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
         report_url_latest_sha = info.get_report_url(latest=True)
         report_url_current_sha = info.get_report_url(latest=False)
         body = f"Workflow [[{workflow.name}]({report_url_latest_sha})], commit [{env.SHA[:8]}]"
-        if os.getenv("GITHUB_ACTIONS"):
+        if os.environ.get("PRAKTIKA_LOCAL_RUN") != "1":
             res2 = not bool(env.PR_NUMBER) or GH.post_updateable_comment(
                 comment_tags_and_bodies={
                     "report": body,
@@ -398,7 +398,7 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
                     "Failed to set both GH commit status and PR comment with Workflow Status, cannot proceed"
                 )
         else:
-            print("NOTE: Skipping GH status/comment posting (CI engine, not GitHub Actions)")
+            print("NOTE: Skipping GH status/comment posting (PRAKTIKA_LOCAL_RUN=1)")
 
     _ = RunConfig(
         name=workflow.name,
