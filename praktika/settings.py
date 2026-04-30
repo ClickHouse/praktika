@@ -13,7 +13,7 @@ class _Settings:
     CI_PATH = "./ci"
     WORKFLOW_PATH_PREFIX: str = "./.github/workflows"
     WORKFLOWS_DIRECTORY: str = f"{CI_PATH}/workflows"
-    SETTINGS_DIRECTORY: str = "./settings"
+    SETTINGS_DIRECTORY: str = "./ci/settings"
     CI_CONFIG_JOB_NAME = "Config Workflow"
 
     # Enables a single job (DOCKER_BUILD_MANIFEST_JOB_NAME) for building all platforms and merge

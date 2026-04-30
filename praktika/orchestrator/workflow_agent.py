@@ -120,7 +120,7 @@ def _resolve_praktika_install_source(clone_dir):
     Returns the pip install source, or None to skip the per-dispatch install.
     """
     import importlib.util
-    settings_file = os.path.join(clone_dir, "settings", "settings.py")
+    settings_file = os.path.join(clone_dir, "ci", "settings", "settings.py")
     if not os.path.exists(settings_file):
         return None
     try:
