@@ -289,7 +289,20 @@ class GH:
             --jq \'[.[] | {{id: .id, body: .body}}]\' --paginate'
         output = Shell.get_output(cmd_check_created, verbose=verbose)
 
-        comments = json.loads(output)
+        if not output or not output.strip():
+            print(
+                "WARNING: gh api returned no output when listing PR comments — "
+                "skipping comment update (likely unauthenticated or rate-limited)"
+            )
+            return False
+        try:
+            comments = json.loads(output)
+        except json.JSONDecodeError as e:
+            print(
+                f"WARNING: failed to parse gh api response as JSON ({e}); "
+                f"output starts with: {output[:200]!r}"
+            )
+            return False
 
         comment_to_update = None
         id_to_update = None
