@@ -314,10 +314,11 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
                 workflow.get_secret(Settings.SECRET_CI_DB_PASSWORD).get_value(),
             ).check()
             status = Result.Status.OK if res else Result.Status.FAIL
-        except Exception as e:
-            traceback.print_exc()
+        except Exception:
+            tb = traceback.format_exc()
+            print(tb)
             status = Result.Status.ERROR
-            info = f"Failed to check CI DB: {type(e).__name__}: {e}"
+            info = f"Failed to check CI DB:\n{tb}"
         return Result(
             name="Check CI DB",
             status=status,

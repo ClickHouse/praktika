@@ -176,6 +176,10 @@ class TestRunner(unittest.TestCase):
         check_db = check_db_results[0]
         self.assertEqual(check_db.status, Result.Status.ERROR)
         self.assertIn("Failed to check CI DB", check_db.info)
+        # Full traceback should be captured so the report is actionable
+        # without grepping the raw job log.
+        self.assertIn("Traceback", check_db.info)
+        self.assertIn("RuntimeError", check_db.info)
 
 
 if __name__ == "__main__":
