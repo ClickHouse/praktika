@@ -4,15 +4,16 @@ Gated behind ``PRAKTIKA_DUMMY_TEST_ACTIVE`` so that live yaml/run paths
 and the ``native_jobs`` subprocess only see this workflow when the test
 sets the env var. The enabled features mirror ``praktika_pr_advanced.py``
 so the test exercises the broad Config Workflow code paths (secrets,
-cache, cidb summary, merge-ready status). When active, this module also
-overrides ``Settings.SECRET_CI_DB_*`` to point at a non-existent dummy
-secret so ``_check_db`` reproduces the misconfigured-runner failure even
-when the developer's shell happens to export real CI_DB_* vars.
+cache, cidb summary, merge-ready status). The cidb secret names match
+the dummy values that ``ci/settings/_test_overrides.py`` writes into
+``Settings.SECRET_CI_DB_*`` so ``_check_db`` looks the dummy secrets up
+through ``workflow.get_secret`` and then fails at ``get_value`` time
+(no env var with the dummy name is ever set), reproducing the
+misconfigured-runner failure regardless of the developer's shell.
 """
 import os
 
 from praktika import Job, Secret, Workflow
-from praktika.settings import Settings
 
 
 _DUMMY_DB_URL = "DUMMY_TEST_CI_DB_URL_NONEXISTENT"
@@ -22,10 +23,6 @@ _DUMMY_DB_PASSWORD = "DUMMY_TEST_CI_DB_PASSWORD_NONEXISTENT"
 WORKFLOWS = []
 
 if os.environ.get("PRAKTIKA_DUMMY_TEST_ACTIVE") == "1":
-    Settings.SECRET_CI_DB_URL = _DUMMY_DB_URL
-    Settings.SECRET_CI_DB_USER = _DUMMY_DB_USER
-    Settings.SECRET_CI_DB_PASSWORD = _DUMMY_DB_PASSWORD
-
     WORKFLOWS = [
         Workflow.Config(
             name="DummyRunnerTest",

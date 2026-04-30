@@ -6,10 +6,14 @@ workflow so the tests exercise both ``_build_ci_environment`` and
 S3 mode (``PRAKTIKA_LOCAL_RUN=1``) so no real S3 calls happen.
 
 The dummy workflow is gated behind ``PRAKTIKA_DUMMY_TEST_ACTIVE`` so the
-live paths — and the ``native_jobs`` subprocess that Config Workflow
-spawns — only see it when the test sets the env var. ``Shell.check`` is
-patched so the destructive ``git clean -ffd`` issued by
-``Runner._pre_run`` against a dirty working tree is a no-op.
+live paths — and the ``native_jobs`` subprocess Config Workflow spawns
+— only see it when the test sets the env var. The same env var flips
+``ci/settings/_test_overrides.py`` into a mock-Settings mode that
+redirects ``Settings.TEMP_DIR`` to ``./ci/tmp/_test_runner`` (so test
+state never collides with the outer praktika job's ``./ci/tmp``) and
+points ``Settings.SECRET_CI_DB_*`` at non-existent dummy secrets.
+``Shell.check`` is patched so the destructive ``git clean -ffd`` issued
+by ``Runner._pre_run`` against a dirty working tree is a no-op.
 """
 import os
 import shutil
@@ -17,18 +21,30 @@ import unittest
 from pathlib import Path
 
 
+_TEST_TEMP_DIR = "./ci/tmp/_test_runner"
+_DUMMY_DB_URL = "DUMMY_TEST_CI_DB_URL_NONEXISTENT"
+_DUMMY_DB_USER = "DUMMY_TEST_CI_DB_USER_NONEXISTENT"
+_DUMMY_DB_PASSWORD = "DUMMY_TEST_CI_DB_PASSWORD_NONEXISTENT"
+
+
 class TestRunner(unittest.TestCase):
     def setUp(self):
         from praktika.settings import Settings
         from praktika.utils import Shell
 
-        # _dummy_test_workflow.py reads PRAKTIKA_DUMMY_TEST_ACTIVE to
-        # decide whether to expose its WORKFLOWS list and to override
-        # Settings.SECRET_CI_DB_* to point at a dummy secret name. The
-        # subprocess that native_jobs.py spawns inherits this env var
-        # and runs the same import-time mock.
+        # Subprocesses spawned by Runner.run inherit these and run
+        # ``ci/settings/_test_overrides.py`` on praktika.settings import.
+        # The parent test process imported praktika.settings at unittest
+        # discovery time (before this setUp), so the override file's
+        # ``if`` branch was False then; mirror its mutations manually.
         os.environ["PRAKTIKA_DUMMY_TEST_ACTIVE"] = "1"
         os.environ["PRAKTIKA_LOCAL_RUN"] = "1"
+        Settings.TEMP_DIR = _TEST_TEMP_DIR
+        Settings.OUTPUT_DIR = _TEST_TEMP_DIR
+        Settings.INPUT_DIR = _TEST_TEMP_DIR
+        Settings.SECRET_CI_DB_URL = _DUMMY_DB_URL
+        Settings.SECRET_CI_DB_USER = _DUMMY_DB_USER
+        Settings.SECRET_CI_DB_PASSWORD = _DUMMY_DB_PASSWORD
 
         # Stash and patch Shell.check so the test never invokes
         # `git clean -ffd` against the developer's working tree.
@@ -43,9 +59,10 @@ class TestRunner(unittest.TestCase):
         Shell.check = staticmethod(_safe_check)
 
         # Start from a clean tmp dir so prior runs don't leak state.
-        for path in (Settings.TEMP_DIR, "./ci/tmp/s3_local"):
-            if Path(path).is_dir():
-                shutil.rmtree(path)
+        # Settings.TEMP_DIR is now the test-only override, so this
+        # cannot touch the outer praktika job's ./ci/tmp.
+        if Path(Settings.TEMP_DIR).is_dir():
+            shutil.rmtree(Settings.TEMP_DIR)
 
     def tearDown(self):
         from praktika.utils import Shell
