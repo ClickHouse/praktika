@@ -154,7 +154,7 @@ jobs:
           rm -rf {UNIQUE_WORK_DIRS}
           mkdir -p {UNIQUE_WORK_DIRS}
           cat > {ENV_SETUP_SCRIPT} << 'ENV_SETUP_SCRIPT_EOF'
-          export PYTHONPATH=./ci:.:{PYTHONPATH_EXTRA}
+          export PYTHONPATH=./ci:.
 {SETUP_ENVS}
           cat > {WORKFLOW_JOB_FILE} << 'EOF'
           ${{{{ toJson(job) }}}}
@@ -399,7 +399,6 @@ class PullRequestPushYamlGen:
                 UNIQUE_WORK_DIRS=" ".join(
                     {Settings.TEMP_DIR, Settings.INPUT_DIR, Settings.OUTPUT_DIR}
                 ),
-                PYTHONPATH_EXTRA="",
             )
             job_items.append(job_item)
 
