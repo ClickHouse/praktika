@@ -429,11 +429,15 @@ class Result(MetaClasses.Serializable):
 
         refs = []
         for url in self.links or []:
-            refs.append(f"- {url}")
+            from urllib.parse import urlsplit
+
+            path = urlsplit(url).path
+            label = path.rsplit("/", 1)[-1] if path else ""
+            refs.append(f"- [{label or url}]({url})")
         for f in self.files or []:
-            refs.append(f"- `{f}`")
+            refs.append(f"- `{Path(str(f)).name}`")
         if refs:
-            lines.append("### Artifacts")
+            lines.append("**Artifacts:**")
             lines.extend(refs)
             lines.append("")
 
