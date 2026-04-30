@@ -14,7 +14,6 @@ from .utils import Shell, Utils
 class Job:
     @dataclass
     class Requirements:
-        python: bool = False
         python_requirements_txt: str = ""
 
     @dataclass

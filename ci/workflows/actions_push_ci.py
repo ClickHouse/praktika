@@ -1,7 +1,7 @@
 """GHActions Push CI — unit tests and lint on push to main."""
 from praktika import Job, Workflow
 
-_REQ = Job.Requirements(python=True, python_requirements_txt="./ci/requirements.txt")
+_REQ = Job.Requirements(python_requirements_txt="./ci/requirements.txt")
 
 WORKFLOWS = [
     Workflow.Config(

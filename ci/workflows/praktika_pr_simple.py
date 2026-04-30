@@ -8,7 +8,7 @@ from praktika import Artifact, Job, Workflow
 from ci.settings.settings import RunnerLabels
 from praktika.settings import Settings
 
-_REQ = Job.Requirements(python=True, python_requirements_txt="./ci/requirements.txt")
+_REQ = Job.Requirements(python_requirements_txt="./ci/requirements.txt")
 
 artifact = Artifact.Config(name="greet", type=Artifact.Type.S3, path="./artifact.txt")
 

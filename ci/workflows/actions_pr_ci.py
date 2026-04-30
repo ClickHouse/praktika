@@ -2,7 +2,7 @@
 from praktika import Artifact, Job, Workflow
 from praktika.settings import Settings
 
-_REQ = Job.Requirements(python=True, python_requirements_txt="./ci/requirements.txt")
+_REQ = Job.Requirements(python_requirements_txt="./ci/requirements.txt")
 
 WORKFLOWS = [
     Workflow.Config(

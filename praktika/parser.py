@@ -41,7 +41,6 @@ class WorkflowYaml:
 
     @dataclasses.dataclass
     class JobAddonYaml:
-        install_python: bool
         requirements_txt_path: str
 
     name: str
@@ -202,7 +201,6 @@ class WorkflowConfigParser:
             if job.job_requirements:
                 addon_yaml = WorkflowYaml.JobAddonYaml(
                     requirements_txt_path=job.job_requirements.python_requirements_txt,
-                    install_python=job.job_requirements.python,
                 )
                 self.workflow_yaml_config.job_to_config[job.name].addons.append(
                     addon_yaml

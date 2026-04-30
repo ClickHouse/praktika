@@ -19,7 +19,7 @@ workflow = Workflow.Config(
             runs_on=[RunnerLabels.SMALL_FIXED],
             command="python3 ./ci/tests/example_5/some_code.py",
             job_requirements=Job.Requirements(
-                python=True, python_requirements_txt="./ci/requirements.txt"
+                python_requirements_txt="./ci/requirements.txt"
             ),
         ),
     ],

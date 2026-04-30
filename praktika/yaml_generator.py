@@ -155,7 +155,7 @@ jobs:
           rm -rf {UNIQUE_WORK_DIRS}
           mkdir -p {UNIQUE_WORK_DIRS}
           cat > {ENV_SETUP_SCRIPT} << 'ENV_SETUP_SCRIPT_EOF'
-          export PYTHONPATH=./ci:.
+          export PYTHONPATH=.
 {SETUP_ENVS}
           cat > {WORKFLOW_JOB_FILE} << 'EOF'
           ${{{{ toJson(job) }}}}
@@ -169,10 +169,7 @@ jobs:
         id: run
         run: |
           . {ENV_SETUP_SCRIPT}
-          set -o pipefail
-          PYTHONUNBUFFERED=1 python3 -m praktika run '{JOB_NAME}' --workflow "{WORKFLOW_NAME}" --ci 2>&1 | python3 -u -c 'import sys,datetime
-          prefix=lambda: datetime.datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
-          for line in sys.stdin: sys.stdout.write(prefix() + " " + line); sys.stdout.flush()' | tee {TEMP_DIR}/job.log
+          PYTHONUNBUFFERED=1 python3 -m praktika run '{JOB_NAME}' --workflow "{WORKFLOW_NAME}" --ci --timestamp
 {UPLOADS_GITHUB}\
 """
 
@@ -196,13 +193,6 @@ jobs:
           EOF\
 """
 
-        TEMPLATE_PY_INSTALL = """
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: {PYTHON_VERSION}
-"""
-
         TEMPLATE_PY_WITH_REQUIREMENTS = """
       - name: Install dependencies
         run: |
@@ -214,7 +204,7 @@ jobs:
 
         TEMPLATE_GH_UPLOAD = """
       - name: Upload artifact {NAME}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: {NAME}
           path: {PATH}
@@ -222,7 +212,7 @@ jobs:
 
         TEMPLATE_GH_DOWNLOAD = """
       - name: Download artifact {NAME}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: {NAME}
           path: {PATH}
@@ -298,18 +288,11 @@ class PullRequestPushYamlGen:
             job_name = job.name
             job_addons = []
             for addon in job.addons:
-                if addon.install_python:
-                    job_addons.append(
-                        YamlGenerator.Templates.TEMPLATE_PY_INSTALL.format(
-                            PYTHON_VERSION=Settings.PYTHON_VERSION
-                        )
-                    )
                 if addon.requirements_txt_path:
                     job_addons.append(
                         YamlGenerator.Templates.TEMPLATE_PY_WITH_REQUIREMENTS.format(
                             PYTHON=Settings.PYTHON_INTERPRETER,
                             PIP=Settings.PYTHON_PACKET_MANAGER,
-                            PYTHON_VERSION=Settings.PYTHON_VERSION,
                             REQUIREMENT_PATH=addon.requirements_txt_path,
                         )
                     )
@@ -393,11 +376,8 @@ class PullRequestPushYamlGen:
                 JOB_ADDONS="".join(job_addons),
                 DOWNLOADS_GITHUB="\n".join(downloads_github),
                 UPLOADS_GITHUB="\n".join(uploads_github),
-                RUN_LOG=Settings.RUN_LOG,
-                PYTHON=Settings.PYTHON_INTERPRETER,
                 WORKFLOW_JOB_FILE=Settings.WORKFLOW_JOB_FILE,
                 WORKFLOW_STATUS_FILE=Settings.WORKFLOW_STATUS_FILE,
-                TEMP_DIR=Settings.TEMP_DIR,
                 UNIQUE_WORK_DIRS=" ".join(
                     {Settings.TEMP_DIR, Settings.INPUT_DIR, Settings.OUTPUT_DIR}
                 ),
