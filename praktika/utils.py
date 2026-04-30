@@ -403,6 +403,12 @@ class Shell:
                     stderr_thread.join()
 
                     proc.wait()  # Wait for the process to finish
+                    # Close the pipe FDs Popen opened so the GC doesn't
+                    # log ResourceWarning for "unclosed file" later.
+                    proc.stdout.close()
+                    proc.stderr.close()
+                    if proc.stdin is not None:
+                        proc.stdin.close()
 
                 if proc.returncode == 0:
                     return 0
