@@ -38,7 +38,15 @@ class Validator:
             )
 
         _VALID_ENGINES = ("praktika", "GHActions")
-        workflows = _get_workflows(_for_validation_check=True)
+        files = []
+        workflows = _get_workflows(_for_validation_check=True, _file_names_out=files)
+        from collections import Counter
+        file_counts = Counter(files)
+        for file, count in file_counts.items():
+            cls.evaluate_check_simple(
+                count == 1,
+                f"Workflow file [{file}] must define exactly one workflow in WORKFLOWS (found {count})",
+            )
         for workflow in workflows:
             print(f"Validating workflow [{workflow.name}]")
             cls.evaluate_check(
