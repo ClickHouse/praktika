@@ -12,6 +12,14 @@ _runner_pools = [
         size=1,
         max_size=1,
     ),
+    NativeComponents.RunnerPool(
+        name="amd-2xsmall",
+        instance_type="t3a.small",
+        vpc_name=CI_VPC_NAME,
+        scaling_type=NativeComponents.RunnerPool.ScalingType.Fixed,
+        size=1,
+        max_size=1,
+    ),
 ]
 
 _orchestrator_pool = NativeComponents.OrchestratorPool(

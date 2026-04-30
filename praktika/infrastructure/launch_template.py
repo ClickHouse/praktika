@@ -94,9 +94,16 @@ class LaunchTemplate:
             if self.image_id:
                 return self.image_id
 
-            # Auto-resolve latest AL2023 ARM64 AMI for the current region
-            from .native.configs import resolve_al2023_arm64_ami
-            self.image_id = resolve_al2023_arm64_ami(self.region)
+            # Detect architecture from instance type: Graviton families end in 'g'
+            # (t4g, m6g, c6g, r6g, ...). Everything else is x86_64.
+            family = (self.instance_type or "").split(".")[0]
+            is_arm = family.endswith("g")
+            if is_arm:
+                from .native.configs import resolve_al2023_arm64_ami
+                self.image_id = resolve_al2023_arm64_ami(self.region)
+            else:
+                from .native.configs import resolve_al2023_x86_64_ami
+                self.image_id = resolve_al2023_x86_64_ami(self.region)
             return self.image_id
 
             if not self.image_builder_pipeline_name:

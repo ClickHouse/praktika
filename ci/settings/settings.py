@@ -1,6 +1,7 @@
 class RunnerLabels:
     SMALL = "arm-2xsmall"
     SMALL_FIXED = "arm-2xsmall"
+    SMALL_AMD = "amd-2xsmall"
 
 CI_CONFIG_RUNS_ON = [RunnerLabels.SMALL_FIXED]
 DOCKER_BUILD_RUNS_ON = [RunnerLabels.SMALL_FIXED]
@@ -20,7 +21,7 @@ S3_BUCKET_TO_HTTP_ENDPOINT = {S3_ARTIFACT_PATH: f"{S3_ARTIFACT_PATH}.s3.amazonaw
 
 DOCKER_MERGE_RUNS_ON = [RunnerLabels.SMALL_FIXED]
 DOCKER_BUILD_ARM_RUNS_ON = [RunnerLabels.SMALL]
-DOCKER_BUILD_AMD_RUNS_ON = [RunnerLabels.SMALL_FIXED]
+DOCKER_BUILD_AMD_RUNS_ON = [RunnerLabels.SMALL_AMD]
 
 DOCKERHUB_USERNAME = "robotclickhouse"
 DOCKERHUB_SECRET = "dockerhub_robot_password"
@@ -34,4 +35,3 @@ CI_DB_TABLE_NAME = "checks"
 SECRET_CI_DB_URL = "CI_DB_URL"
 SECRET_CI_DB_USER = "CI_DB_USER"
 SECRET_CI_DB_PASSWORD = "CI_DB_PASSWORD"
-
