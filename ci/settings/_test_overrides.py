@@ -1,4 +1,4 @@
-"""Settings overrides that activate when ``PRAKTIKA_DUMMY_TEST_ACTIVE=1``.
+"""Settings overrides that activate when ``PRAKTIKA_TEST_ACTIVE=1``.
 
 Loaded automatically by ``praktika.settings._get_settings()`` because the
 filename matches the ``*_overrides.py`` glob. Subprocesses spawned by
@@ -18,7 +18,7 @@ manually in ``setUp``.
 import os
 
 
-if os.environ.get("PRAKTIKA_DUMMY_TEST_ACTIVE") == "1":
+if os.environ.get("PRAKTIKA_TEST_ACTIVE") == "1":
     TEMP_DIR = "./ci/tmp/_test_runner"
     OUTPUT_DIR = TEMP_DIR
     INPUT_DIR = TEMP_DIR

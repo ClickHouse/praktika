@@ -5,7 +5,7 @@ workflow so the tests exercise both ``_build_ci_environment`` and
 ``Runner.run`` (with the full pre/post-run pipeline). Runs in local-fs
 S3 mode (``PRAKTIKA_LOCAL_RUN=1``) so no real S3 calls happen.
 
-The dummy workflow is gated behind ``PRAKTIKA_DUMMY_TEST_ACTIVE`` so the
+The dummy workflow is gated behind ``PRAKTIKA_TEST_ACTIVE`` so the
 live paths — and the ``native_jobs`` subprocess Config Workflow spawns
 — only see it when the test sets the env var. The same env var flips
 ``ci/settings/_test_overrides.py`` into a mock-Settings mode that
@@ -37,7 +37,7 @@ class TestRunner(unittest.TestCase):
         # The parent test process imported praktika.settings at unittest
         # discovery time (before this setUp), so the override file's
         # ``if`` branch was False then; mirror its mutations manually.
-        os.environ["PRAKTIKA_DUMMY_TEST_ACTIVE"] = "1"
+        os.environ["PRAKTIKA_TEST_ACTIVE"] = "1"
         os.environ["PRAKTIKA_LOCAL_RUN"] = "1"
         Settings.TEMP_DIR = _TEST_TEMP_DIR
         Settings.OUTPUT_DIR = _TEST_TEMP_DIR
@@ -68,7 +68,7 @@ class TestRunner(unittest.TestCase):
         from praktika.utils import Shell
 
         Shell.check = self._orig_shell_check
-        os.environ.pop("PRAKTIKA_DUMMY_TEST_ACTIVE", None)
+        os.environ.pop("PRAKTIKA_TEST_ACTIVE", None)
         os.environ.pop("PRAKTIKA_LOCAL_RUN", None)
 
     def _bootstrap_workflow_state(self, task):

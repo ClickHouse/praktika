@@ -432,13 +432,13 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
 
     # checks:
     if not results or results[-1].is_ok():
-        if os.getenv("GITHUB_ACTIONS"):
+        if os.environ.get("PRAKTIKA_TEST_ACTIVE") != "1":
             result_ = _check_yaml_up_to_date()
             if result_.status != Result.Status.OK:
                 print("ERROR: yaml files are outdated - regenerate, commit and push")
             results.append(result_)
         else:
-            print("NOTE: Skipping yaml-up-to-date check (CI engine, not GitHub Actions)")
+            print("NOTE: Skipping yaml-up-to-date check (PRAKTIKA_TEST_ACTIVE=1)")
 
     # TODO: commented out to decrease risk of throttling:
     #       An error occurred (ThrottlingException) when calling the GetParameter operation (reached max retries: 2): Rate exceeded

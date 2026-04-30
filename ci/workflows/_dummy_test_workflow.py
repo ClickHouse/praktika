@@ -1,6 +1,6 @@
 """Workflow used only by ci/tests/test_runner.py.
 
-Gated behind ``PRAKTIKA_DUMMY_TEST_ACTIVE`` so that live yaml/run paths
+Gated behind ``PRAKTIKA_TEST_ACTIVE`` so that live yaml/run paths
 and the ``native_jobs`` subprocess only see this workflow when the test
 sets the env var. The enabled features mirror ``praktika_pr_advanced.py``
 so the test exercises the broad Config Workflow code paths (secrets,
@@ -22,7 +22,7 @@ _DUMMY_DB_PASSWORD = "DUMMY_TEST_CI_DB_PASSWORD_NONEXISTENT"
 
 WORKFLOWS = []
 
-if os.environ.get("PRAKTIKA_DUMMY_TEST_ACTIVE") == "1":
+if os.environ.get("PRAKTIKA_TEST_ACTIVE") == "1":
     WORKFLOWS = [
         Workflow.Config(
             name="DummyRunnerTest",
