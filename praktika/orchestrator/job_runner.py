@@ -153,6 +153,7 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
     )
 
     job_output = f"{Settings.TEMP_DIR}/job_output"
+    Path(Settings.TEMP_DIR).mkdir(parents=True, exist_ok=True)
     Path(job_output).touch()
 
     jname = job_name or (job.name if job else "")

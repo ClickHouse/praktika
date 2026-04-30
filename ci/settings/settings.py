@@ -30,6 +30,8 @@ DOCKERHUB_SECRET = "dockerhub_robot_password"
 # Per-PR praktika changes take effect on the dispatch that picked the PR up.
 PRAKTIKA_INSTALL_SOURCE = "."
 
+DISABLED_WORKFLOWS = ["_dummy_test_workflow.py"]
+
 CI_DB_DB_NAME = "default"
 CI_DB_TABLE_NAME = "checks"
 SECRET_CI_DB_URL = "CI_DB_URL"

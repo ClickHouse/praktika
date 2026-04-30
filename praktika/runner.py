@@ -1,4 +1,5 @@
 import dataclasses
+import datetime
 import glob
 import hashlib
 import json
@@ -6,6 +7,7 @@ import os
 import re
 import shlex
 import sys
+import textwrap
 import traceback
 from pathlib import Path
 
@@ -25,6 +27,88 @@ from .s3 import S3
 from .settings import Settings
 from .usage import ComputeUsage, StorageUsage
 from .utils import Shell, TeePopen, Utils
+
+_WRAP_WIDTH = 160
+_TIMESTAMP_INDENT = len(
+    datetime.datetime(2000, 1, 1).strftime("[%Y-%m-%d %H:%M:%S] ")
+)
+
+
+class _TimestampedStream:
+    """Prepends a [YYYY-MM-DD HH:MM:SS] timestamp to each output line."""
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._at_line_start = True
+
+    def write(self, data):
+        if not data:
+            return
+        parts = data.split("\n")
+        for i, part in enumerate(parts):
+            is_last = i == len(parts) - 1
+            if self._at_line_start and part:
+                ts = datetime.datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")
+                self._stream.write(ts + part)
+            elif part:
+                self._stream.write(part)
+            if not is_last:
+                self._stream.write("\n")
+                self._at_line_start = True
+            else:
+                self._at_line_start = not part
+
+    def flush(self):
+        self._stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+class _TeeStream:
+    """Writes to a terminal stream (with line wrapping) and a log file (without wrapping)."""
+
+    def __init__(self, terminal, log, subsequent_indent=0):
+        self._terminal = terminal
+        self._log = log
+        self._subsequent_indent = " " * subsequent_indent
+        self._at_line_start = True
+
+    def write(self, data):
+        if not data:
+            return
+        self._log.write(data)
+        parts = data.split("\n")
+        for i, part in enumerate(parts):
+            is_last = i == len(parts) - 1
+            if self._at_line_start and part:
+                self._terminal.write(
+                    textwrap.fill(
+                        part,
+                        width=_WRAP_WIDTH,
+                        subsequent_indent=self._subsequent_indent,
+                        break_long_words=False,
+                        break_on_hyphens=False,
+                        expand_tabs=False,
+                        replace_whitespace=False,
+                        drop_whitespace=False,
+                    )
+                )
+            elif part:
+                self._terminal.write(part)
+            if not is_last:
+                self._terminal.write("\n")
+                self._at_line_start = True
+            else:
+                self._at_line_start = not part
+
+    def flush(self):
+        self._terminal.flush()
+        self._log.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._terminal, name)
+
 
 _GH_authenticated = False
 
@@ -905,6 +989,67 @@ class Runner:
             pass
 
     def run(
+        self,
+        workflow,
+        job,
+        docker="",
+        local_job_run=False,
+        local_orchestrator_run=False,
+        no_docker=False,
+        param=None,
+        test="",
+        pr=None,
+        sha=None,
+        branch=None,
+        count=None,
+        debug=False,
+        path="",
+        path_1="",
+        workers=None,
+        timestamp=False,
+    ):
+        """Execute one job — public entry. Tees stdout/stderr to
+        ``Settings.RUN_LOG`` so every engine (GHA, orchestrator) gets the
+        same job log file without having to wire up the redirect itself.
+        """
+        log_dir = os.path.dirname(Settings.RUN_LOG)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
+        log_file = open(Settings.RUN_LOG, "w", buffering=1)
+        try:
+            tee = _TeeStream(
+                original_stdout,
+                log_file,
+                subsequent_indent=_TIMESTAMP_INDENT if timestamp else 0,
+            )
+            sys.stdout = _TimestampedStream(tee) if timestamp else tee
+            sys.stderr = sys.stdout
+            return self._run_one(
+                workflow=workflow,
+                job=job,
+                docker=docker,
+                local_job_run=local_job_run,
+                local_orchestrator_run=local_orchestrator_run,
+                no_docker=no_docker,
+                param=param,
+                test=test,
+                pr=pr,
+                sha=sha,
+                branch=branch,
+                count=count,
+                debug=debug,
+                path=path,
+                path_1=path_1,
+                workers=workers,
+            )
+        finally:
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
+            log_file.close()
+
+    def _run_one(
         self,
         workflow,
         job,
