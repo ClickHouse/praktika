@@ -1,5 +1,6 @@
 import dataclasses
 import math
+from pathlib import Path
 from typing import List
 
 from . import Artifact, Job, Workflow
@@ -259,8 +260,9 @@ jobs:
             print(f"Generate workflow [{workflow_config.name}]")
             parser = WorkflowConfigParser(workflow_config).parse()
             yaml_workflow_str = PullRequestPushYamlGen(parser).generate()
-            with open(self._get_workflow_file_name(workflow_file_name), "w") as f:
-                f.write(yaml_workflow_str)
+            out = Path(self._get_workflow_file_name(workflow_file_name))
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(yaml_workflow_str)
 
         Shell.check("git add ./.github/workflows/*.yml")
 
