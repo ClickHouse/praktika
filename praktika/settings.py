@@ -13,7 +13,7 @@ class _Settings:
     CI_PATH = "./ci"
     WORKFLOW_PATH_PREFIX: str = "./.github/workflows"
     WORKFLOWS_DIRECTORY: str = f"{CI_PATH}/workflows"
-    SETTINGS_DIRECTORY: str = f"{CI_PATH}/settings"
+    SETTINGS_DIRECTORY: str = "./settings"
     CI_CONFIG_JOB_NAME = "Config Workflow"
 
     # Enables a single job (DOCKER_BUILD_MANIFEST_JOB_NAME) for building all platforms and merge
@@ -198,33 +198,30 @@ _USER_DEFINED_SETTINGS = [
 ]
 
 
+def _load_settings_module(path: Path, res: "_Settings") -> None:
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    assert spec and spec.loader
+    foo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(foo)
+    for setting in _USER_DEFINED_SETTINGS:
+        try:
+            res.__setattr__(setting, getattr(foo, setting))
+        except AttributeError:
+            pass
+
+
 def _get_settings() -> _Settings:
     res = _Settings()
+    settings_dir = Path(_Settings.SETTINGS_DIRECTORY)
 
-    directory = Path(_Settings.SETTINGS_DIRECTORY)
+    # Primary settings file
+    primary = settings_dir / "settings.py"
+    if primary.is_file():
+        _load_settings_module(primary, res)
 
-    py_files = list(directory.glob("*.py"))
-    # Support for overriding settings (if for whatever reason you need to override setting(s) in your fork)
-    # Sort: First files without "overrides", then files with "overrides"
-    sorted_files = sorted(py_files, key=lambda f: "_overrides" in f.name)
-
-    for py_file in sorted_files:
-        module_name = py_file.name.removeprefix(".py")
-        spec = importlib.util.spec_from_file_location(
-            module_name, f"{_Settings.SETTINGS_DIRECTORY}/{module_name}"
-        )
-        assert spec
-        foo = importlib.util.module_from_spec(spec)
-        assert spec.loader
-        spec.loader.exec_module(foo)
-        for setting in _USER_DEFINED_SETTINGS:
-            try:
-                value = getattr(foo, setting)
-                res.__setattr__(setting, value)
-                # print(f"- read user defined setting [{setting} = {value}]")
-            except Exception as e:
-                # print(f"Exception while read user settings: {e}")
-                pass
+    # Optional override files, applied in sorted order
+    for override in sorted(settings_dir.glob("*_overrides.py")):
+        _load_settings_module(override, res)
 
     return res
 

@@ -61,7 +61,7 @@ usermod -aG docker ec2-user || true
 systemctl enable --now docker
 
 # Runner workdir
-RUNNER_HOME=/opt/ci-engine
+RUNNER_HOME=/opt/praktika
 mkdir -p "$RUNNER_HOME" "$RUNNER_HOME/work"
 
 # Instance identity via IMDS

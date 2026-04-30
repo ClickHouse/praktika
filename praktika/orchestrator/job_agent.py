@@ -25,7 +25,7 @@ import time
 from datetime import datetime, timezone
 
 QUEUE_NAME = os.environ.get("RUNNER_QUEUE_NAME", "")
-REGION = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+REGION = os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION") or ""
 INSTANCE_ID = os.environ.get("INSTANCE_ID", "local-dev")
 WORK_DIR = os.environ.get("WORK_DIR", "/opt/praktika/work")
 
@@ -119,26 +119,23 @@ class VisibilityHeartbeat:
 
 
 def _resolve_praktika_install_source(clone_dir):
-    """Where ``pip install`` should pull praktika from for this dispatch.
+    """Read PRAKTIKA_INSTALL_SOURCE directly from settings/settings.py.
 
-    Reads ``Settings.PRAKTIKA_INSTALL_SOURCE`` from the cloned tree using
-    the praktika the agent was bootstrapped with. Three cases:
-
-      * empty / unset / older praktika without the knob → ``None``
-        (skip the per-dispatch install; reuse the bootstrap wheel)
-      * URL (``http://`` / ``https://``) → return as-is for pip
-      * anything else → joined onto ``clone_dir`` (relative path inside
-        the PR tree, e.g. ``"."`` for the praktika repo itself)
+    No praktika install required — uses importlib on the raw file.
+    Returns the pip install source, or None to skip the per-dispatch install.
     """
-    code = (
-        "from praktika.settings import Settings;"
-        "print(getattr(Settings, 'PRAKTIKA_INSTALL_SOURCE', '') or '', end='')"
-    )
-    res = subprocess.run(
-        [sys.executable, "-c", code],
-        cwd=clone_dir, capture_output=True, text=True,
-    )
-    src = res.stdout.strip() if res.returncode == 0 else ""
+    import importlib.util
+    settings_file = os.path.join(clone_dir, "settings", "settings.py")
+    if not os.path.exists(settings_file):
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("repo_settings", settings_file)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        src = getattr(mod, "PRAKTIKA_INSTALL_SOURCE", "") or ""
+    except Exception as e:
+        log.warning(f"Could not read PRAKTIKA_INSTALL_SOURCE from {settings_file}: {e}")
+        return None
     if not src:
         return None
     if src.startswith(("http://", "https://")):

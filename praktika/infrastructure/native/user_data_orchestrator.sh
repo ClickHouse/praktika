@@ -22,7 +22,7 @@ python3.12 -m pip install --force-reinstall \
   --break-system-packages
 
 # Create runner workdir
-RUNNER_HOME=/opt/ci-engine
+RUNNER_HOME=/opt/praktika
 mkdir -p "$RUNNER_HOME" "$RUNNER_HOME/work"
 
 # Fetch instance identity via IMDS
