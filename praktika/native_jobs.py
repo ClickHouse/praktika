@@ -40,13 +40,6 @@ def _GH_Auth(force=False):
 _workflow_config_job = Job.Config(
     name=Settings.CI_CONFIG_JOB_NAME,
     runs_on=Settings.CI_CONFIG_RUNS_ON,
-    job_requirements=(
-        Job.Requirements(
-            python_requirements_txt=Settings.INSTALL_PYTHON_REQS_FOR_NATIVE_JOBS,
-        )
-        if Settings.INSTALL_PYTHON_REQS_FOR_NATIVE_JOBS
-        else None
-    ),
     command=f"{Settings.PYTHON_INTERPRETER} -m praktika.native_jobs '{Settings.CI_CONFIG_JOB_NAME}'",
     timeout=600,
 )

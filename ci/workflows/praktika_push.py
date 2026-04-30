@@ -11,6 +11,13 @@ class WorkflowNames:
     NAME = "Example Push trigger, Report"
 
 
+_INSTALL_DEPS = (
+    "sudo apt-get update && sudo apt install -y python3-pip && "
+    "python3 -m pip install --upgrade pip --break-system-packages && "
+    "pip3 install -r ./ci/requirements.txt --break-system-packages"
+)
+
+
 workflow = Workflow.Config(
     name=WorkflowNames.NAME,
     event=Workflow.Event.PUSH,
@@ -20,18 +27,14 @@ workflow = Workflow.Config(
             name=JobNames.JOB_A,
             runs_on=[RunnerLabels.SMALL_FIXED],
             command="python3 ./ci/tests/example_2/some_job_script.py",
-            job_requirements=Job.Requirements(
-                python_requirements_txt="./ci/requirements.txt"
-            ),
+            pre_hooks=[_INSTALL_DEPS],
         ),
         Job.Config(
             name=JobNames.JOB_B,
             runs_on=[RunnerLabels.SMALL_FIXED],
             command="python3 ./ci/tests/example_2/some_job_script_2.py",
             requires=[JobNames.JOB_A],
-            job_requirements=Job.Requirements(
-                python_requirements_txt="./ci/requirements.txt"
-            ),
+            pre_hooks=[_INSTALL_DEPS],
         ),
     ],
     enable_report=True,

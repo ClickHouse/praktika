@@ -1,9 +1,8 @@
-import dataclasses
 import math
 from pathlib import Path
 from typing import List
 
-from . import Artifact, Job, Workflow
+from . import Job, Workflow
 from .mangle import _get_workflows
 from .parser import WorkflowConfigParser
 from .settings import Settings
@@ -149,7 +148,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{{{ env.CHECKOUT_REF }}}}
-{JOB_ADDONS}
       - name: Prepare env script
         run: |
           rm -rf {UNIQUE_WORK_DIRS}
@@ -191,15 +189,6 @@ jobs:
           cat > {WORKFLOW_INPUTS_FILE} << 'EOF'
           ${{{{ toJson(github.event.inputs) }}}}
           EOF\
-"""
-
-        TEMPLATE_PY_WITH_REQUIREMENTS = """
-      - name: Install dependencies
-        run: |
-          sudo apt-get update && sudo apt install -y python3-pip
-          # TODO: --break-system-packages? otherwise ubuntu's apt/apt-get complains
-          {PYTHON} -m pip install --upgrade pip --break-system-packages
-          {PIP} install -r {REQUIREMENT_PATH} --break-system-packages
 """
 
         TEMPLATE_GH_UPLOAD = """
@@ -286,16 +275,6 @@ class PullRequestPushYamlGen:
                 sorted(map(Utils.normalize_string, _all_needs(job.name)))
             )
             job_name = job.name
-            job_addons = []
-            for addon in job.addons:
-                if addon.requirements_txt_path:
-                    job_addons.append(
-                        YamlGenerator.Templates.TEMPLATE_PY_WITH_REQUIREMENTS.format(
-                            PYTHON=Settings.PYTHON_INTERPRETER,
-                            PIP=Settings.PYTHON_PACKET_MANAGER,
-                            REQUIREMENT_PATH=addon.requirements_txt_path,
-                        )
-                    )
             uploads_github = []
             for artifact in job.artifacts_gh_provides:
                 uploads_github.append(
@@ -373,7 +352,6 @@ class PullRequestPushYamlGen:
                 WORKFLOW_NAME=self.workflow_config.name,
                 ENV_SETUP_SCRIPT=Settings.ENV_SETUP_SCRIPT,
                 SETUP_ENVS="\n".join(secrets_envs),
-                JOB_ADDONS="".join(job_addons),
                 DOWNLOADS_GITHUB="\n".join(downloads_github),
                 UPLOADS_GITHUB="\n".join(uploads_github),
                 WORKFLOW_JOB_FILE=Settings.WORKFLOW_JOB_FILE,
@@ -487,32 +465,6 @@ class PullRequestPushYamlGen:
         return res
 
 
-@dataclasses.dataclass
-class AuxConfig:
-    # defines aux step to install dependencies
-    addon: Job.Requirements
-    # defines aux step(s) to upload GH artifacts
-    uploads_gh: List[Artifact.Config]
-    # defines aux step(s) to download GH artifacts
-    downloads_gh: List[Artifact.Config]
-
-    def get_aux_workflow_name(self):
-        suffix = ""
-        if self.addon.python_requirements_txt:
-            suffix += "_py"
-        for _ in self.uploads_gh:
-            suffix += "_uplgh"
-        for _ in self.downloads_gh:
-            suffix += "_dnlgh"
-        return f"{Settings.WORKFLOW_PATH_PREFIX}/aux_job{suffix}.yml"
-
-    def get_aux_workflow_input(self):
-        res = ""
-        if self.addon.python_requirements_txt:
-            res += f"      requirements_txt: {self.addon.python_requirements_txt}"
-        return res
-
-
 if __name__ == "__main__":
     WFS = [
         Workflow.Config(
@@ -523,9 +475,6 @@ if __name__ == "__main__":
                     name="Hello World",
                     runs_on=["foo"],
                     command="bar",
-                    job_requirements=Job.Requirements(
-                        python_requirements_txt="./requirement.txt"
-                    ),
                 )
             ],
             enable_cache=True,

@@ -54,7 +54,6 @@ class _Settings:
     INPUT_DIR: str = f"{TEMP_DIR}"
     PYTHON_INTERPRETER: str = "python3"
     PYTHON_PACKET_MANAGER: str = "pip3"
-    INSTALL_PYTHON_REQS_FOR_NATIVE_JOBS: str = "./ci/requirements.txt"
     ENVIRONMENT_VAR_FILE: str = f"{TEMP_DIR}/environment.json"
     RUN_LOG: str = f"{TEMP_DIR}/job.log"
 
@@ -163,7 +162,6 @@ _USER_DEFINED_SETTINGS = [
     "CI_CONFIG_JOB_NAME",
     "PYTHON_INTERPRETER",
     "PYTHON_PACKET_MANAGER",
-    "INSTALL_PYTHON_REQS_FOR_NATIVE_JOBS",
     "MAX_RETRIES_S3",
     "MAX_RETRIES_GH",
     "VALIDATE_FILE_PATHS",

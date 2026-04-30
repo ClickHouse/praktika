@@ -30,14 +30,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ env.CHECKOUT_REF }}
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update && sudo apt install -y python3-pip
-          # TODO: --break-system-packages? otherwise ubuntu's apt/apt-get complains
-          python3 -m pip install --upgrade pip --break-system-packages
-          pip3 install -r ./ci/requirements.txt --break-system-packages
-
       - name: Prepare env script
         run: |
           rm -rf ./ci/tmp
@@ -71,14 +63,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ env.CHECKOUT_REF }}
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update && sudo apt install -y python3-pip
-          # TODO: --break-system-packages? otherwise ubuntu's apt/apt-get complains
-          python3 -m pip install --upgrade pip --break-system-packages
-          pip3 install -r ./ci/requirements.txt --break-system-packages
-
       - name: Prepare env script
         run: |
           rm -rf ./ci/tmp
@@ -112,14 +96,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ env.CHECKOUT_REF }}
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update && sudo apt install -y python3-pip
-          # TODO: --break-system-packages? otherwise ubuntu's apt/apt-get complains
-          python3 -m pip install --upgrade pip --break-system-packages
-          pip3 install -r ./ci/requirements.txt --break-system-packages
-
       - name: Prepare env script
         run: |
           rm -rf ./ci/tmp
@@ -159,14 +135,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ env.CHECKOUT_REF }}
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update && sudo apt install -y python3-pip
-          # TODO: --break-system-packages? otherwise ubuntu's apt/apt-get complains
-          python3 -m pip install --upgrade pip --break-system-packages
-          pip3 install -r ./ci/requirements.txt --break-system-packages
-
       - name: Prepare env script
         run: |
           rm -rf ./ci/tmp
@@ -206,14 +174,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ env.CHECKOUT_REF }}
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update && sudo apt install -y python3-pip
-          # TODO: --break-system-packages? otherwise ubuntu's apt/apt-get complains
-          python3 -m pip install --upgrade pip --break-system-packages
-          pip3 install -r ./ci/requirements.txt --break-system-packages
-
       - name: Prepare env script
         run: |
           rm -rf ./ci/tmp
@@ -247,14 +207,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ env.CHECKOUT_REF }}
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update && sudo apt install -y python3-pip
-          # TODO: --break-system-packages? otherwise ubuntu's apt/apt-get complains
-          python3 -m pip install --upgrade pip --break-system-packages
-          pip3 install -r ./ci/requirements.txt --break-system-packages
-
       - name: Prepare env script
         run: |
           rm -rf ./ci/tmp
@@ -288,14 +240,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ env.CHECKOUT_REF }}
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update && sudo apt install -y python3-pip
-          # TODO: --break-system-packages? otherwise ubuntu's apt/apt-get complains
-          python3 -m pip install --upgrade pip --break-system-packages
-          pip3 install -r ./ci/requirements.txt --break-system-packages
-
       - name: Prepare env script
         run: |
           rm -rf ./ci/tmp
@@ -329,14 +273,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ env.CHECKOUT_REF }}
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update && sudo apt install -y python3-pip
-          # TODO: --break-system-packages? otherwise ubuntu's apt/apt-get complains
-          python3 -m pip install --upgrade pip --break-system-packages
-          pip3 install -r ./ci/requirements.txt --break-system-packages
-
       - name: Prepare env script
         run: |
           rm -rf ./ci/tmp
@@ -370,14 +306,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ env.CHECKOUT_REF }}
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update && sudo apt install -y python3-pip
-          # TODO: --break-system-packages? otherwise ubuntu's apt/apt-get complains
-          python3 -m pip install --upgrade pip --break-system-packages
-          pip3 install -r ./ci/requirements.txt --break-system-packages
-
       - name: Prepare env script
         run: |
           rm -rf ./ci/tmp

@@ -83,7 +83,6 @@ class Validator:
 
             cls.validate_file_paths_in_run_command(workflow)
             cls.validate_file_paths_in_digest_configs(workflow)
-            cls.validate_requirements_txt_files(workflow)
             cls.validate_dockers(workflow)
             cls.validate_job_names(workflow)
 
@@ -318,27 +317,6 @@ class Validator:
                     assert (
                         Path(include_path).is_file() or Path(include_path).is_dir()
                     ), f"Invalid file path [{include_path}] in job [{job.name}] digest_config, workflow [{workflow.name}]. Setting to disable check: VALIDATE_FILE_PATHS"
-
-    @classmethod
-    def validate_requirements_txt_files(cls, workflow: Workflow.Config) -> None:
-        for job in workflow.jobs:
-            if job.job_requirements:
-                if job.job_requirements.python_requirements_txt:
-                    path = Path(job.job_requirements.python_requirements_txt)
-                    message = f"File with py requirement [{path}] does not exist"
-                    if job.name in (
-                        Settings.DOCKER_BUILD_AMD_LINUX_AND_MERGE_JOB_NAME,
-                        Settings.CI_CONFIG_JOB_NAME,
-                        Settings.FINISH_WORKFLOW_JOB_NAME,
-                    ):
-                        message += '\n  If all requirements already installed on your runners - add setting INSTALL_PYTHON_REQS_FOR_NATIVE_JOBS""'
-                        message += "\n  If requirements needs to be installed - add requirements file (Settings.INSTALL_PYTHON_REQS_FOR_NATIVE_JOBS):"
-                        message += "\n      echo jwt==1.3.1 > ./ci/requirements.txt"
-                        message += (
-                            "\n      echo requests==2.32.4 >> ./ci/requirements.txt"
-                        )
-                        message += "\n      echo https://clickhouse-builds.s3.amazonaws.com/packages/praktika-0.1-py3-none-any.whl >> ./ci/requirements.txt"
-                    cls.evaluate_check(path.is_file(), message, job.name, workflow.name)
 
     @classmethod
     def validate_dockers(cls, workflow: Workflow.Config):

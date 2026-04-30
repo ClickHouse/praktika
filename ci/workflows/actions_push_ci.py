@@ -1,7 +1,11 @@
 """GHActions Push CI — unit tests and lint on push to main."""
 from praktika import Job, Workflow
 
-_REQ = Job.Requirements(python_requirements_txt="./ci/requirements.txt")
+_INSTALL_DEPS = (
+    "sudo apt-get update && sudo apt install -y python3-pip && "
+    "python3 -m pip install --upgrade pip --break-system-packages && "
+    "pip3 install -r ./ci/requirements.txt --break-system-packages"
+)
 
 WORKFLOWS = [
     Workflow.Config(
@@ -13,13 +17,13 @@ WORKFLOWS = [
             Job.Config(
                 name="Unit Tests",
                 command="python -m unittest discover -s ./ci/tests -p 'test_*.py'",
-                job_requirements=_REQ,
+                pre_hooks=[_INSTALL_DEPS],
                 runs_on=["ubuntu-latest"],
             ),
             Job.Config(
                 name="Yaml Lint",
                 command="yamllint . --config-file=.yamllint",
-                job_requirements=_REQ,
+                pre_hooks=[_INSTALL_DEPS],
                 runs_on=["ubuntu-latest"],
             ),
         ],

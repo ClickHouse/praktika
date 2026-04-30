@@ -10,6 +10,13 @@ class WorkflowNames:
     NAME = "Example Dispatch"
 
 
+_INSTALL_DEPS = (
+    "sudo apt-get update && sudo apt install -y python3-pip && "
+    "python3 -m pip install --upgrade pip --break-system-packages && "
+    "pip3 install -r ./ci/requirements.txt --break-system-packages"
+)
+
+
 workflow = Workflow.Config(
     name=WorkflowNames.NAME,
     event=Workflow.Event.DISPATCH,
@@ -18,9 +25,7 @@ workflow = Workflow.Config(
             name=JobNames.JOB_A,
             runs_on=[RunnerLabels.SMALL_FIXED],
             command="python3 ./ci/tests/example_5/some_code.py",
-            job_requirements=Job.Requirements(
-                python_requirements_txt="./ci/requirements.txt"
-            ),
+            pre_hooks=[_INSTALL_DEPS],
         ),
     ],
     inputs=[

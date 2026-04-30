@@ -13,10 +13,6 @@ from .utils import Shell, Utils
 
 class Job:
     @dataclass
-    class Requirements:
-        python_requirements_txt: str = ""
-
-    @dataclass
     class CacheDigestConfig:
         include_paths: List[str] = field(default_factory=list)
         exclude_paths: List[str] = field(default_factory=list)
@@ -56,8 +52,6 @@ class Job:
         # What job provides
         #   May be only `Artifact.Config.name`
         provides: List[str] = field(default_factory=list)
-
-        job_requirements: Optional["Job.Requirements"] = None
 
         timeout: int = 5 * 3600
 
