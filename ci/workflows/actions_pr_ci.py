@@ -3,9 +3,8 @@ from praktika import Artifact, Job, Workflow
 from praktika.settings import Settings
 
 _INSTALL_DEPS = (
-    "sudo apt-get update && sudo apt install -y python3-pip && "
-    "python3 -m pip install --upgrade pip --break-system-packages && "
-    "pip3 install -r ./ci/requirements.txt --break-system-packages"
+    "python3 -m pip install -r ./ci/requirements.txt --break-system-packages "
+    "|| python3 -m pip install -r ./ci/requirements.txt"
 )
 
 WORKFLOWS = [
