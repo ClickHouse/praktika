@@ -109,9 +109,15 @@ class TestRunner(unittest.TestCase):
         # A successful upload writes to the local-fs S3 mirror under
         # TEMP_DIR/s3_local/...; a failed upload falls back to a bare
         # file:// pointing at the original (often non-existent) path.
+        # The S3 key includes both the normalized workflow and job names
+        # so artifacts from concurrent workflows don't collide.
         self.assertTrue(
-            any("s3_local" in link and "job.log" in link for link in result.links),
-            f"Expected job.log to be uploaded to local-fs S3, got: {result.links}",
+            any(
+                "s3_local" in link
+                and "/dummyrunnertest/dummy/job.log" in link
+                for link in result.links
+            ),
+            f"Expected job.log under <workflow>/<job>/, got: {result.links}",
         )
 
 
