@@ -41,6 +41,7 @@ workflow = Workflow.Config(
             name="Parametrized",
             runs_on=[RunnerLabels.SMALL_FIXED],
             command="python3 ./ci/tests/example_3/script_for_parametrized_job.py",
+            requires=[artifact.name],
             job_requirements=_REQ,
         ).parametrize(
             Job.ParamSet(parameter={"key_1": [1, 2, "ABC"]}),
