@@ -103,18 +103,33 @@ class S3:
 
     @classmethod
     def _get_boto3_client(cls):
-        # Profile selection is left to the boto3 default credentials chain:
-        # `AWS_PROFILE` env var locally, IAM instance role on EC2. Reading
-        # the profile from praktika's project settings would leak the
-        # developer's profile name (e.g. "Box") onto runner EC2s where no
-        # such profile exists, so we don't.
+        # Honor Settings.AWS_PROFILE on developer machines so SSO / named
+        # profiles work without having to export AWS_PROFILE in the shell.
+        # On EC2 runners the configured profile typically isn't present in
+        # ~/.aws/config (the runner authenticates via its instance role),
+        # so probe `available_profiles` and only pin the profile when it
+        # actually exists; otherwise fall through to the default credentials
+        # chain.
         if not BOTO3_AVAILABLE:
             return None
         if cls._boto3_client is None:
+            region = Settings.AWS_REGION or None
             try:
-                cls._boto3_client = boto3.client(
-                    "s3", region_name=Settings.AWS_REGION or None
-                )
+                if Settings.AWS_PROFILE:
+                    import botocore.session
+
+                    if (
+                        Settings.AWS_PROFILE
+                        in botocore.session.Session().available_profiles
+                    ):
+                        cls._boto3_client = boto3.Session(
+                            profile_name=Settings.AWS_PROFILE,
+                            region_name=region,
+                        ).client("s3")
+                    else:
+                        cls._boto3_client = boto3.client("s3", region_name=region)
+                else:
+                    cls._boto3_client = boto3.client("s3", region_name=region)
             except Exception as e:
                 print(f"WARNING: Failed to initialize boto3 client: {e}")
                 return None

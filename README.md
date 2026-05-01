@@ -76,3 +76,4 @@ Short-term:
    them by hand
 * **`schedule` and `workflow_dispatch` workflows** — cron-driven and
    manually-triggered pipelines on the standalone engine
+* **versioning**
