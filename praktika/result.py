@@ -420,12 +420,11 @@ class Result(MetaClasses.Serializable):
             return s if len(s) <= 120 else s[:117] + "..."
 
         lines = []
-        dur = f" in {int(self.duration)}s" if self.duration else ""
-        lines.append(f"**Status:** `{self.status}`{dur}")
+        # GitHub already renders status + duration as the check summary
+        # header, so don't repeat it in the body.
         if self.info:
-            lines.append("")
             lines.append(_escape(self.info))
-        lines.append("")
+            lines.append("")
 
         refs = []
         for url in self.links or []:

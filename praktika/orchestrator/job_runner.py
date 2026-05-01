@@ -80,7 +80,7 @@ def _build_check_output(job_name, rc):
         if len(text) > limit:
             text = text[:limit] + "\n\n_… (truncated)_\n"
         dur = f" in {int(result.duration)}s" if result.duration else ""
-        summary = f"{result.status}{dur}"
+        summary = f"**{result.status}**{dur}"
         return {"title": job_name, "summary": summary, "text": text}
     except Exception as e:
         print(f"  [warn] could not render job Result as MD: {type(e).__name__}: {e}")

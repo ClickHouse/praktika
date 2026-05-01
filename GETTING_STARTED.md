@@ -38,27 +38,7 @@ aws secretsmanager create-secret \
 ```
 
 
-## 3. Deploy infrastructure
-
-### 3a. Publish the praktika package to S3
-
-Orchestrators and runners install praktika from S3 at boot and before each run.
-Build and upload the wheel whenever the package changes:
-
-```bash
-# Build
-python3 -m pip install build --quiet
-python3 -m build --wheel --outdir dist/
-
-# Upload (the bucket and key are fixed — instances fetch from this exact URL)
-aws s3 cp dist/praktika-0.1-py3-none-any.whl \
-  s3://praktika-artifacts-eu-north-1/packages/praktika-0.1-py3-none-any.whl \
-  --profile Box
-pip install --force-reinstall "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/pr
-aktika-0.1-py3-none-any.whl" --break-system-packages
-```
-
-### 3b. Deploy AWS infrastructure
+## 3. Deploy AWS infrastructure
 
 ```bash
 python3 -m praktika infrastructure --deploy

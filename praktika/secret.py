@@ -144,8 +144,9 @@ class Secret:
         def get_gh_secret(self):
             res = os.getenv(f"{self.name}")
             if not res:
-                print(f"ERROR: Failed to get secret [{self.name}]")
-                raise RuntimeError()
+                raise RuntimeError(
+                    f"Failed to get GH_SECRET [{self.name}]: env var is unset or empty"
+                )
             return res
 
         def join_with(self, other):
