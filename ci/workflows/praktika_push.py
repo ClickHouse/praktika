@@ -19,7 +19,9 @@ _INSTALL_BUILD = (
 workflow = Workflow.Config(
     name="Praktika MainCI",
     event=Workflow.Event.PUSH,
-    branches=["main"],
+    # ci_standalone_engine is here temporarily so we can shake out the
+    # push -> wheel-publish pipeline without merging to main first.
+    branches=["main", "ci_standalone_engine"],
     jobs=[
         Job.Config(
             name="Publish wheel",
