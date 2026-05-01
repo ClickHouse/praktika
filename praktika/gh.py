@@ -282,6 +282,13 @@ class GH:
         if not pr:
             pr = _Environment.get().PR_NUMBER
 
+        if not pr or not str(pr).isdigit() or int(pr) <= 0:
+            print(
+                f"WARNING: post_updateable_comment called without a valid PR number "
+                f"(got {pr!r}); skipping comment update"
+            )
+            return False
+
         TAG_COMMENT_START = "<!-- CI automatic comment start :{TAG}: -->"
         TAG_COMMENT_END = "<!-- CI automatic comment end :{TAG}: -->"
         cmd_check_created = f'gh api -H "Accept: application/vnd.github.v3+json" \

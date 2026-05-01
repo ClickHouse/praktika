@@ -59,22 +59,36 @@ in one command, and wiring up the GitHub webhook.
 
 ## Roadmap
 
-Short-term:
+**Execution engine**
+- **Runner pool autoscaling** — Lambda watching SQS queue depth to scale
+  runner pools up/down on demand
+- **Job cancel / job rerun** — cancel an in-flight job from the GitHub UI;
+  re-run a single failed job without rerunning the whole workflow
+- **`schedule` and `workflow_dispatch` workflows** — cron-driven and
+  manually-triggered pipelines on the standalone engine
+- **Config and Finish stages on the orchestrator** — run the auto-injected
+  setup/teardown jobs in-process instead of consuming a runner slot
+- **Centralized event routing** — have MainCI walk every workflow's active
+  triggers (events, branch filters, cron schedules) and publish a routing
+  table the webhook lambda consumes, so the lambda knows which branches to
+  accept, which schedules to fire, and which events to drop without each
+  workflow encoding that in the lambda by hand
 
-* orchestrator/runner **logs export and/or collection**
-* **Runner pool autoscaling** — Lambda watching SQS queue depth to scale
-   runner pools up/down on demand
-* **CI DB** — provisioning and configuration for an analytics database to
-   stream every job/test result into
+**Observability**
+- **Log export for orchestrator and runners** — live tail and persisted
+  archive, accessible without SSM
+- **CI DB provisioning** — bring the ClickHouse cluster and schema under
+  praktika-managed infrastructure (today only the writer side ships with
+  praktika; the cluster is provisioned out-of-band)
 
-* **Private-access gateway (VPN)** — for reaching the HTML report page and
-   the CI DB when those run on private (non-public) endpoints. Optionally
-   also gives developers SSH access to runner instances for debugging.
-* **Job cancel / job rerun** — cancel an in-flight job from the GitHub UI;
-   re-run a single failed job without re-running the whole workflow
-* **`praktika init`** — scaffold a new project with a starter
-   `ci/workflows/` and `ci/infra/cloud.py` so adopters do not have to copy
-   them by hand
-* **`schedule` and `workflow_dispatch` workflows** — cron-driven and
-   manually-triggered pipelines on the standalone engine
-* **versioning**
+**Networking**
+- **Private-access gateway (VPN)** — reach the HTML report and CI DB when
+  those run on private endpoints; optionally also SSH to runner instances
+  for debugging
+
+**Project ergonomics**
+- **`praktika init`** — scaffold a new project with a starter
+  `ci/workflows/` and `ci/infra/cloud.py` so adopters do not have to copy
+  them by hand
+- **Versioned releases** — pinned, semver-tagged praktika packages with a
+  documented upgrade path between versions

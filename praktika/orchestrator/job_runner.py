@@ -123,7 +123,7 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
     from ..utils import Shell
 
     repo = task.get("repo", "")
-    pr_number = task.get("pr_number") or -1
+    pr_number = task.get("pr_number") or 0  # set to 0 for non-pr event (push, dispatch, cron)
     sha = task.get("head_sha", "")
 
     base_url = f"https://github.com/{repo}"

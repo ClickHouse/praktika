@@ -11,12 +11,7 @@ SQS_QUEUE_NAME = os.environ.get("SQS_QUEUE_NAME", "praktika-workflows")
 
 # Only process events from these senders (for PoC)
 ALLOWED_SENDERS = {"maxknv"}
-
-# Push events on these branches trigger the standalone engine. ``main``
-# is the production target; ``ci_standalone_engine`` is here temporarily
-# while the push pipeline is being shaken out so PRs against that branch
-# can run their wheel-publish job before merging.
-ALLOWED_PUSH_BRANCHES = {"main", "ci_standalone_engine"}
+ALLOWED_PUSH_BRANCHES = {"main"}
 
 
 def _get_raw_body(event) -> str:

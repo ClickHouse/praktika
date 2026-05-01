@@ -19,17 +19,11 @@ _INSTALL_BUILD = (
 workflow = Workflow.Config(
     name="Praktika MainCI",
     event=Workflow.Event.PUSH,
-    # ci_standalone_engine is here temporarily so we can shake out the
-    # push -> wheel-publish pipeline without merging to main first.
-    branches=["main", "ci_standalone_engine"],
+    branches=["main"],
     jobs=[
         Job.Config(
             name="Publish wheel",
             runs_on=[RunnerLabels.SMALL_FIXED],
-            # The actual build + upload is shelled to a script so the
-            # validator's first-slash-token check sees a real path
-            # (./ci/scripts/publish_wheel.sh) instead of the build's
-            # not-yet-existing dist/ directory.
             command="bash ./ci/scripts/publish_wheel.sh",
             pre_hooks=[_INSTALL_BUILD],
         ),
