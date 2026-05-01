@@ -157,18 +157,32 @@ def _git(args, cwd=None):
 
 
 def clone_repo(repo, head_sha, pr_number, token):
-    clone_dir = os.path.join(WORK_DIR, f"pr-{pr_number}")
+    """Clone repo at head_sha into a per-task work dir.
+
+    Job tasks carry a ``head_sha`` regardless of whether the originating
+    event was a PR or a push, so fetch the SHA directly when there's no
+    pr_number to drive a ``refs/pull/<n>/head`` fetch.
+    """
+    if pr_number:
+        clone_dir = os.path.join(WORK_DIR, f"pr-{pr_number}")
+    else:
+        clone_dir = os.path.join(WORK_DIR, f"push-{head_sha[:12] or 'unknown'}")
     if os.path.exists(clone_dir):
         shutil.rmtree(clone_dir)
     os.makedirs(clone_dir, exist_ok=True)
 
     clone_url = f"https://x-access-token:{token}@github.com/{repo}.git"
-    log.info(f"Cloning {repo} PR#{pr_number} at {head_sha[:12]}")
+    target = f"PR#{pr_number}" if pr_number else f"sha {head_sha[:12]}"
+    log.info(f"Cloning {repo} {target}")
 
     _git(["init", clone_dir])
     _git(["remote", "add", "origin", clone_url], cwd=clone_dir)
-    _git(["fetch", "--depth=1", "origin", f"+refs/pull/{pr_number}/head:refs/heads/pr-head"], cwd=clone_dir)
-    _git(["checkout", "pr-head"], cwd=clone_dir)
+    if pr_number:
+        _git(["fetch", "--depth=1", "origin", f"+refs/pull/{pr_number}/head:refs/heads/pr-head"], cwd=clone_dir)
+        _git(["checkout", "pr-head"], cwd=clone_dir)
+    else:
+        _git(["fetch", "--depth=1", "origin", head_sha], cwd=clone_dir)
+        _git(["checkout", head_sha], cwd=clone_dir)
 
     actual_sha = _git(["rev-parse", "HEAD"], cwd=clone_dir).strip()
     log.info(f"Checked out {actual_sha[:12]} in {clone_dir}")
