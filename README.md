@@ -61,6 +61,7 @@ in one command, and wiring up the GitHub webhook.
 
 Short-term:
 
+* orchestrator/runner **logs export and/or collection**
 * **Runner pool autoscaling** — Lambda watching SQS queue depth to scale
    runner pools up/down on demand
 * **CI DB** — provisioning and configuration for an analytics database to

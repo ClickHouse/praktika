@@ -37,7 +37,7 @@ def find_workflows_for_event(event):
     if event_type == "pull_request":
         branch = event.get("base_ref", "")
     elif event_type == "push":
-        branch = event.get("branch", "")
+        branch = event.get("head_ref", "")
     else:
         branch = ""
 

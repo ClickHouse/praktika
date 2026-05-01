@@ -209,7 +209,7 @@ def handle_workflow(event):
     repo = event.get("repo", "")
     pr_number = event.get("pr_number")
     head_sha = event.get("head_sha", "")
-    branch = event.get("branch", "")
+    branch = event.get("head_ref", "")
 
     # Mint a fresh GitHub App installation token (≈1h validity), use it
     # for cloning, and persist it via `gh auth login --with-token` so the

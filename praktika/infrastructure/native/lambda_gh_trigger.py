@@ -87,7 +87,11 @@ def _build_push_workflow(payload):
         return None
     return {
         "type": "push",
-        "branch": branch,
+        # head_ref carries the branch the push happened on. Match the
+        # PR-event shape so every downstream consumer (orchestrator
+        # workflow matcher, _dispatch's task builder,
+        # _build_ci_environment) reads the same field name.
+        "head_ref": branch,
         "head_sha": head_sha,
         "repo": payload.get("repository", {}).get("full_name", ""),
         "sender": payload.get("sender", {}).get("login", ""),
