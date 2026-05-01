@@ -1,15 +1,6 @@
 from ci.settings.settings import RunnerLabels
 from praktika import Job, Workflow
 
-
-class JobNames:
-    JOB_A = "Hello User Name"
-
-
-class WorkflowNames:
-    NAME = "Example Dispatch"
-
-
 _INSTALL_DEPS = (
     "python3 -m pip install -r ./ci/requirements.txt --break-system-packages "
     "|| python3 -m pip install -r ./ci/requirements.txt"
@@ -17,11 +8,12 @@ _INSTALL_DEPS = (
 
 
 workflow = Workflow.Config(
-    name=WorkflowNames.NAME,
+    engine="GHActions",
+    name="GHActions Dispatch Workflow",
     event=Workflow.Event.DISPATCH,
     jobs=[
         Job.Config(
-            name=JobNames.JOB_A,
+            name="Hello User Name",
             runs_on=[RunnerLabels.SMALL_FIXED],
             command="python3 ./ci/tests/example_5/some_code.py",
             pre_hooks=[_INSTALL_DEPS],
@@ -43,6 +35,4 @@ workflow = Workflow.Config(
     ],
 )
 
-# WORKFLOWS = [
-#     workflow,
-# ]  # type: List[Workflow.Config]
+WORKFLOWS = [workflow]

@@ -151,19 +151,35 @@ def _git(args, cwd=None):
     return result.stdout
 
 
-def clone_repo(repo, head_sha, pr_number, token):
-    clone_dir = os.path.join(WORK_DIR, f"pr-{pr_number}")
+def clone_repo(repo, head_sha, pr_number, token, branch=None):
+    """Clone repo into a per-event work dir.
+
+    PR events fetch ``refs/pull/<pr>/head``; push events fetch the head
+    SHA directly off the branch's ref.
+    """
+    if pr_number:
+        clone_dir = os.path.join(WORK_DIR, f"pr-{pr_number}")
+    else:
+        slug = (branch or head_sha[:12] or "push").replace("/", "_")
+        clone_dir = os.path.join(WORK_DIR, f"push-{slug}")
     if os.path.exists(clone_dir):
         shutil.rmtree(clone_dir)
     os.makedirs(clone_dir, exist_ok=True)
 
     clone_url = f"https://x-access-token:{token}@github.com/{repo}.git"
-    log.info(f"Cloning {repo} PR#{pr_number} at {head_sha[:12]}")
+    if pr_number:
+        log.info(f"Cloning {repo} PR#{pr_number} at {head_sha[:12]}")
+    else:
+        log.info(f"Cloning {repo} branch={branch} at {head_sha[:12]}")
 
     _git(["init", clone_dir])
     _git(["remote", "add", "origin", clone_url], cwd=clone_dir)
-    _git(["fetch", "--depth=1", "origin", f"+refs/pull/{pr_number}/head:refs/heads/pr-head"], cwd=clone_dir)
-    _git(["checkout", "pr-head"], cwd=clone_dir)
+    if pr_number:
+        _git(["fetch", "--depth=1", "origin", f"+refs/pull/{pr_number}/head:refs/heads/pr-head"], cwd=clone_dir)
+        _git(["checkout", "pr-head"], cwd=clone_dir)
+    else:
+        _git(["fetch", "--depth=1", "origin", head_sha], cwd=clone_dir)
+        _git(["checkout", head_sha], cwd=clone_dir)
 
     actual_sha = _git(["rev-parse", "HEAD"], cwd=clone_dir).strip()
     log.info(f"Checked out {actual_sha[:12]} in {clone_dir}")
@@ -186,13 +202,14 @@ def handle_workflow(event):
     wf_type = event.get("type", "unknown")
     log.info(f"Processing: {wf_type}")
 
-    if wf_type != "pull_request":
+    if wf_type not in ("pull_request", "push"):
         log.info(f"Unknown event type: {wf_type}, skipping")
         return {"status": "skipped", "reason": f"unknown type: {wf_type}"}
 
     repo = event.get("repo", "")
     pr_number = event.get("pr_number")
     head_sha = event.get("head_sha", "")
+    branch = event.get("branch", "")
 
     # Mint a fresh GitHub App installation token (≈1h validity), use it
     # for cloning, and persist it via `gh auth login --with-token` so the
@@ -205,7 +222,7 @@ def handle_workflow(event):
         input=gh_token, text=True, check=True,
     )
 
-    clone_dir, actual_sha = clone_repo(repo, head_sha, pr_number, gh_token)
+    clone_dir, actual_sha = clone_repo(repo, head_sha, pr_number, gh_token, branch=branch)
 
     src = _resolve_praktika_install_source(clone_dir)
     if src:
@@ -223,7 +240,8 @@ def handle_workflow(event):
     with open(event_file, "w") as f:
         json.dump(event, f, indent=2)
 
-    log.info(f"Running orchestrator for PR#{pr_number}")
+    target = f"PR#{pr_number}" if pr_number else f"branch={branch}"
+    log.info(f"Running orchestrator for {target}")
     result = subprocess.run(
         ["praktika", "orchestrate", "workflow", event_file, "--ci"],
         cwd=clone_dir,
@@ -237,6 +255,7 @@ def handle_workflow(event):
     return {
         "status": "ok" if result.returncode == 0 else "error",
         "pr": pr_number,
+        "branch": branch,
         "sha": actual_sha,
         "rc": result.returncode,
         "stderr": result.stderr.strip()[:500] if result.stderr else "",

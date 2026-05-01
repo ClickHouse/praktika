@@ -59,16 +59,20 @@ in one command, and wiring up the GitHub webhook.
 
 ## Roadmap
 
-Short-term, in priority order:
+Short-term:
 
-1. **Runner pool autoscaling** — Lambda watching SQS queue depth to scale
+* **Runner pool autoscaling** — Lambda watching SQS queue depth to scale
    runner pools up/down on demand
-2. **CI DB** — provisioning and configuration for an analytics database to
+* **CI DB** — provisioning and configuration for an analytics database to
    stream every job/test result into
-3. **`schedule` and `workflow_dispatch` workflows** — cron-driven and
-   manually-triggered pipelines on the standalone engine
-4. **Private-access gateway (VPN)** — for reaching the HTML report page and
+
+* **Private-access gateway (VPN)** — for reaching the HTML report page and
    the CI DB when those run on private (non-public) endpoints. Optionally
    also gives developers SSH access to runner instances for debugging.
-5. **Job cancel / job rerun** — cancel an in-flight job from the GitHub UI;
+* **Job cancel / job rerun** — cancel an in-flight job from the GitHub UI;
    re-run a single failed job without re-running the whole workflow
+* **`praktika init`** — scaffold a new project with a starter
+   `ci/workflows/` and `ci/infra/cloud.py` so adopters do not have to copy
+   them by hand
+* **`schedule` and `workflow_dispatch` workflows** — cron-driven and
+   manually-triggered pipelines on the standalone engine

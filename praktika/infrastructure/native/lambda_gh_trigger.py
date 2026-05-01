@@ -12,6 +12,12 @@ SQS_QUEUE_NAME = os.environ.get("SQS_QUEUE_NAME", "praktika-workflows")
 # Only process events from these senders (for PoC)
 ALLOWED_SENDERS = {"maxknv"}
 
+# Push events on these branches trigger the standalone engine. ``main``
+# is the production target; ``ci_standalone_engine`` is here temporarily
+# while the push pipeline is being shaken out so PRs against that branch
+# can run their wheel-publish job before merging.
+ALLOWED_PUSH_BRANCHES = {"main", "ci_standalone_engine"}
+
 
 def _get_raw_body(event) -> str:
     body = event.get("body", "")
@@ -64,6 +70,27 @@ def _build_workflow(action, payload):
         "title": pr.get("title", ""),
         "draft": pr.get("draft", False),
         "labels": [l.get("name", "") for l in pr.get("labels", [])],
+    }
+
+
+def _build_push_workflow(payload):
+    """Build a CI workflow message from a push event. Returns None to skip
+    (refs that aren't branch pushes, or branches not on the allow-list)."""
+    ref = payload.get("ref", "")
+    if not ref.startswith("refs/heads/"):
+        return None
+    branch = ref[len("refs/heads/") :]
+    if branch not in ALLOWED_PUSH_BRANCHES:
+        return None
+    head_sha = payload.get("after") or payload.get("head_commit", {}).get("id", "")
+    if not head_sha:
+        return None
+    return {
+        "type": "push",
+        "branch": branch,
+        "head_sha": head_sha,
+        "repo": payload.get("repository", {}).get("full_name", ""),
+        "sender": payload.get("sender", {}).get("login", ""),
     }
 
 
@@ -179,7 +206,15 @@ def _enqueue(workflow, delivery_id):
             "delivery_id": {"DataType": "String", "StringValue": delivery_id},
         },
     )
-    print(f"ENQUEUED: {workflow['type']}.{workflow['action']} PR#{workflow['pr_number']} delivery={delivery_id}")
+    label = workflow["type"]
+    if workflow.get("action"):
+        label += f".{workflow['action']}"
+    target = (
+        f"PR#{workflow['pr_number']}"
+        if workflow.get("pr_number")
+        else f"branch={workflow.get('branch', '?')}"
+    )
+    print(f"ENQUEUED: {label} {target} delivery={delivery_id}")
 
 
 def lambda_handler(event, context):
@@ -254,6 +289,21 @@ def lambda_handler(event, context):
                 print(f"SKIP: check_suite.rerequested — no PR or sender not allowed")
         else:
             print(f"SKIP: check_suite.{action} not handled")
+        return {"statusCode": 200, "body": "ok"}
+
+    if gh_event == "push":
+        if sender not in ALLOWED_SENDERS:
+            print(f"SKIP: push sender {sender} not in allowed list")
+            return {"statusCode": 200, "body": "ok"}
+        workflow = _build_push_workflow(payload)
+        if workflow:
+            _enqueue(workflow, delivery_id)
+            print(
+                f"PUSH: branch={workflow['branch']} sha={workflow['head_sha'][:12]}"
+            )
+        else:
+            ref = payload.get("ref", "")
+            print(f"SKIP: push ref {ref} not on the allow-list")
         return {"statusCode": 200, "body": "ok"}
 
     if gh_event != "pull_request":
