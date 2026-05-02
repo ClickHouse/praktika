@@ -27,8 +27,11 @@ class LaunchTemplate:
         # If set, will be base64-encoded and applied as LaunchTemplateData.UserData
         user_data: str = ""
         security_group_ids: List[str] = field(default_factory=list)
-        # Resolved to IDs at deploy time by looking up SG names in the VPC
+        # Resolved to IDs at deploy time by looking up SG names in the VPC.
+        # Requires `vpc_name` so the lookup is scoped (SG names are unique
+        # within a VPC, not globally).
         security_group_names: List[str] = field(default_factory=list)
+        vpc_name: str = ""
         iam_instance_profile_name: str = ""
         tenancy: str = ""  # e.g. "host"
         host_id: str = ""
@@ -201,15 +204,14 @@ class LaunchTemplate:
 
             sg_ids = list(self.security_group_ids)
             if self.security_group_names:
-                ec2_lookup = aws_client("ec2", self.region, self.name)
-                resp = ec2_lookup.describe_security_groups(Filters=[
-                    {"Name": "group-name", "Values": self.security_group_names}
-                ])
-                resolved = {sg["GroupName"]: sg["GroupId"] for sg in resp["SecurityGroups"]}
-                for name in self.security_group_names:
-                    if name not in resolved:
-                        raise ValueError(f"Security group '{name}' not found in region {self.region}")
-                    sg_ids.append(resolved[name])
+                if not self.vpc_name:
+                    raise ValueError(
+                        f"LaunchTemplate '{self.name}' has security_group_names but no vpc_name; "
+                        f"set vpc_name to scope the SG lookup."
+                    )
+                from .vpc import VPC
+                lookup = VPC.Lookup(name=self.vpc_name, region=self.region)
+                sg_ids.extend(lookup.resolve_security_group_ids(self.security_group_names))
             if sg_ids:
                 lt_data["SecurityGroupIds"] = sg_ids
 

@@ -32,6 +32,5 @@ PRAKTIKA_INSTALL_SOURCE = "."
 
 CI_DB_DB_NAME = "default"
 CI_DB_TABLE_NAME = "checks"
-SECRET_CI_DB_URL = "CI_DB_URL"
-SECRET_CI_DB_USER = "CI_DB_USER"
-SECRET_CI_DB_PASSWORD = "CI_DB_PASSWORD"
+# JSON connection blob auto-published by NativeComponents.CIDBCluster.deploy().
+SECRET_CI_DB_CONNECTION = "praktika-cidb-connection"

@@ -40,6 +40,10 @@ report_page_config = ReportPage.Config(
 GH_TRIGGER_ROLE_NAME = "praktika-gh-trigger-role"
 GH_TRIGGER_WEBHOOK_SECRET_NAME = "praktika-gh-trigger-webhook-secret"
 
+CIDB_ROLE_NAME = "praktika-cidb-role"
+CIDB_INSTANCE_PROFILE_NAME = "praktika-cidb-profile"
+CIDB_ADMIN_PASSWORD_SECRET_NAME = "praktika-cidb-admin-password"
+
 lambda_gh_trigger_config = Lambda.Config(
     name="praktika-gh-trigger",
     path=f"{os.path.dirname(__file__)}/lambda_gh_trigger.py",

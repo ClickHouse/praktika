@@ -29,6 +29,12 @@ _orchestrator_pool = NativeComponents.OrchestratorPool(
     max_size=1,
 )
 
+_cidb_cluster = NativeComponents.CIDBCluster(
+    vpc_name=CI_VPC_NAME,
+    instance_type="t4g.large",
+    size=1,
+)
+
 CLOUD = CloudInfrastructure.Config(
     name="cloud_ci_infra",
     vpcs=[
@@ -47,4 +53,5 @@ CLOUD = CloudInfrastructure.Config(
     ],
     orchestrator_pool=_orchestrator_pool,
     runner_pools=_runner_pools,
+    cidb_cluster=_cidb_cluster,
 )

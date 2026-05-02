@@ -45,6 +45,13 @@ class EC2Instance:
         root_volume_type: str = ""  # e.g. gp3
         root_volume_encrypted: bool = False
 
+        # Additional block device mappings (passed through verbatim to EC2 API).
+        # Use for non-root EBS volumes — e.g. a data disk for stateful services.
+        # Example: [{"DeviceName": "/dev/sdf",
+        #            "Ebs": {"VolumeSize": 100, "VolumeType": "gp3",
+        #                    "DeleteOnTermination": False}}]
+        extra_block_device_mappings: List[Dict[str, Any]] = field(default_factory=list)
+
         # Placement
         tenancy: str = ""  # e.g. "host"
 
@@ -301,6 +308,7 @@ class EC2Instance:
             if self.user_data:
                 req["UserData"] = self.user_data
 
+            block_device_mappings: List[Dict[str, Any]] = []
             if (
                 self.root_volume_size
                 or self.root_volume_type
@@ -320,12 +328,18 @@ class EC2Instance:
                 if self.root_volume_encrypted:
                     ebs["Encrypted"] = True
 
-                req["BlockDeviceMappings"] = [
+                block_device_mappings.append(
                     {
                         "DeviceName": device_name,
                         "Ebs": ebs,
                     }
-                ]
+                )
+
+            if self.extra_block_device_mappings:
+                block_device_mappings.extend(self.extra_block_device_mappings)
+
+            if block_device_mappings:
+                req["BlockDeviceMappings"] = block_device_mappings
 
             placement = self._desired_placement()
             if placement:

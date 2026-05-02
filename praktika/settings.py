@@ -96,9 +96,13 @@ class _Settings:
     ######################################
     #        CI DB Settings              #
     ######################################
-    SECRET_CI_DB_URL: str = ""
-    SECRET_CI_DB_USER: str = ""
-    SECRET_CI_DB_PASSWORD: str = ""
+    # SSM/secret name holding a JSON connection blob:
+    #   {"url": "http://host:8123", "user": null, "password": null}
+    # Auto-published by NativeComponents.CIDBCluster.deploy() for CIDB
+    # instances praktika manages. Null/empty user+password means "send no
+    # auth header" — runners rely on the server-side <no_password/> ACL
+    # gated by VPC CIDR.
+    SECRET_CI_DB_CONNECTION: str = ""
     CI_DB_DB_NAME = ""
     CI_DB_TABLE_NAME = ""
     KEEPER_STRESS_METRICS_DB_NAME = "keeper_stress_tests"
@@ -168,9 +172,7 @@ _USER_DEFINED_SETTINGS = [
     "DOCKERHUB_USERNAME",
     "DOCKERHUB_SECRET",
     "READY_FOR_MERGE_CUSTOM_STATUS_NAME",
-    "SECRET_CI_DB_URL",
-    "SECRET_CI_DB_USER",
-    "SECRET_CI_DB_PASSWORD",
+    "SECRET_CI_DB_CONNECTION",
     "CI_DB_DB_NAME",
     "CI_DB_TABLE_NAME",
     "KEEPER_STRESS_METRICS_DB_NAME",

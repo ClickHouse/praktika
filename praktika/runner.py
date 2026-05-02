@@ -753,21 +753,11 @@ class Runner:
         if workflow.enable_cidb:
             print("Insert results to CIDB")
             try:
-                url_secret = workflow.get_secret(Settings.SECRET_CI_DB_URL)
-                user_secret = workflow.get_secret(Settings.SECRET_CI_DB_USER)
-                passwd_secret = workflow.get_secret(Settings.SECRET_CI_DB_PASSWORD)
-                assert url_secret and user_secret and passwd_secret
-                # request all secret at once to avoid rate limiting
-                url, user, pwd = (
-                    url_secret.join_with(user_secret)
-                    .join_with(passwd_secret)
-                    .get_value()
+                conn_secret = workflow.get_secret(Settings.SECRET_CI_DB_CONNECTION)
+                assert conn_secret
+                ci_db = CIDB.from_connection_secret(conn_secret.get_value()).insert(
+                    result, result_name_for_cidb=job.result_name_for_cidb
                 )
-                ci_db = CIDB(
-                    url=url,
-                    user=user,
-                    passwd=pwd,
-                ).insert(result, result_name_for_cidb=job.result_name_for_cidb)
             except Exception as ex:
                 traceback.print_exc()
                 error = f"Failed to insert data into CI DB, exception [{ex}]"

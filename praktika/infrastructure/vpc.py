@@ -12,6 +12,76 @@ class VPC:
         cidr: str = "10.0.0.0/18"
 
     @dataclass
+    class Lookup:
+        """Resolve VPC, subnet, and security-group IDs by Name tag at deploy time.
+
+        Used by infrastructure components that take a `vpc_name` config option
+        and need to translate it into VPC/subnet/SG IDs without plumbing the
+        `VPC.Config` object through. The VPC id is cached internally so chained
+        lookups (subnet + SGs) only `DescribeVpcs` once.
+        """
+
+        name: str
+        region: str
+        _ec2: Any = field(default=None, init=False, repr=False)
+        _vpc_id: str = field(default="", init=False, repr=False)
+
+        def _client(self):
+            if self._ec2 is None:
+                self._ec2 = aws_client("ec2", self.region, f"vpc-lookup-{self.name}")
+            return self._ec2
+
+        @property
+        def vpc_id(self) -> str:
+            if not self._vpc_id:
+                resp = self._client().describe_vpcs(
+                    Filters=[{"Name": "tag:Name", "Values": [self.name]}]
+                )
+                vpcs = resp.get("Vpcs", [])
+                if not vpcs:
+                    raise ValueError(
+                        f"VPC '{self.name}' not found in region {self.region}"
+                    )
+                self._vpc_id = vpcs[0]["VpcId"]
+            return self._vpc_id
+
+        def first_subnet_id(self) -> str:
+            """Pick a stable subnet from the VPC. Sorted by AZ name so
+            re-deploys land in the same one."""
+            resp = self._client().describe_subnets(
+                Filters=[{"Name": "vpc-id", "Values": [self.vpc_id]}]
+            )
+            subnets = resp.get("Subnets", [])
+            if not subnets:
+                raise ValueError(
+                    f"VPC '{self.name}' ({self.vpc_id}) has no subnets — "
+                    f"deploy the VPC first"
+                )
+            subnets.sort(key=lambda s: s.get("AvailabilityZone", ""))
+            return subnets[0]["SubnetId"]
+
+        def resolve_security_group_ids(self, names) -> List[str]:
+            """Translate SG names to IDs, scoped to this VPC. Empty input → []."""
+            names = list(names or [])
+            if not names:
+                return []
+            resp = self._client().describe_security_groups(
+                Filters=[
+                    {"Name": "group-name", "Values": names},
+                    {"Name": "vpc-id", "Values": [self.vpc_id]},
+                ]
+            )
+            by_name = {sg["GroupName"]: sg["GroupId"] for sg in resp.get("SecurityGroups", [])}
+            out = []
+            for n in names:
+                if n not in by_name:
+                    raise ValueError(
+                        f"Security group '{n}' not found in VPC '{self.name}' ({self.vpc_id})"
+                    )
+                out.append(by_name[n])
+            return out
+
+    @dataclass
     class Config:
         """A self-contained VPC setup: VPC, subnets, internet gateway, and route table.
 

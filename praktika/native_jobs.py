@@ -301,10 +301,8 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
     def _check_db(workflow):
         stop_watch = Utils.Stopwatch()
         try:
-            res, info = CIDB(
-                workflow.get_secret(Settings.SECRET_CI_DB_URL).get_value(),
-                workflow.get_secret(Settings.SECRET_CI_DB_USER).get_value(),
-                workflow.get_secret(Settings.SECRET_CI_DB_PASSWORD).get_value(),
+            res, info = CIDB.from_connection_secret(
+                workflow.get_secret(Settings.SECRET_CI_DB_CONNECTION).get_value()
             ).check()
             status = Result.Status.OK if res else Result.Status.FAIL
         except Exception:

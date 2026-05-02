@@ -22,9 +22,7 @@ from pathlib import Path
 
 
 _TEST_TEMP_DIR = "./ci/tmp/_test_runner"
-_DUMMY_DB_URL = "DUMMY_TEST_CI_DB_URL_NONEXISTENT"
-_DUMMY_DB_USER = "DUMMY_TEST_CI_DB_USER_NONEXISTENT"
-_DUMMY_DB_PASSWORD = "DUMMY_TEST_CI_DB_PASSWORD_NONEXISTENT"
+_DUMMY_DB_CONNECTION = "DUMMY_TEST_CI_DB_CONNECTION_NONEXISTENT"
 
 
 class TestRunner(unittest.TestCase):
@@ -42,9 +40,7 @@ class TestRunner(unittest.TestCase):
         Settings.TEMP_DIR = _TEST_TEMP_DIR
         Settings.OUTPUT_DIR = _TEST_TEMP_DIR
         Settings.INPUT_DIR = _TEST_TEMP_DIR
-        Settings.SECRET_CI_DB_URL = _DUMMY_DB_URL
-        Settings.SECRET_CI_DB_USER = _DUMMY_DB_USER
-        Settings.SECRET_CI_DB_PASSWORD = _DUMMY_DB_PASSWORD
+        Settings.SECRET_CI_DB_CONNECTION = _DUMMY_DB_CONNECTION
 
         # Stash and patch Shell.check so the test never invokes
         # `git clean -ffd` against the developer's working tree.
@@ -139,7 +135,7 @@ class TestRunner(unittest.TestCase):
 
     def test_config_workflow_failure_is_handled_gracefully(self):
         """Reproduce the misconfigured-runner failure: Config Workflow's
-        ``_check_db`` fetches the CI_DB_URL secret via ``get_value()``,
+        ``_check_db`` fetches the CI DB connection secret via ``get_value()``,
         which raises RuntimeError when the env var isn't set. The check
         must catch the raise locally, surface it as a FAIL/ERROR sub-result
         with diagnostic info, and let the rest of Config Workflow run —
@@ -174,7 +170,7 @@ class TestRunner(unittest.TestCase):
             )
 
         self.assertNotEqual(
-            rc, 0, "Config Workflow should fail when CI_DB_URL env var is missing"
+            rc, 0, "Config Workflow should fail when CI DB connection env var is missing"
         )
         result = Result.from_fs(Settings.CI_CONFIG_JOB_NAME)
         self.assertEqual(

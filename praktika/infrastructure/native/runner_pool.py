@@ -162,6 +162,7 @@ class RunnerPool:
             instance_type=self.instance_type,
             security_group_ids=self.security_group_ids,
             security_group_names=self.security_group_names,
+            vpc_name=self.vpc_name,
             iam_instance_profile_name=self.iam_instance_profile_name,
             set_default_version_to_latest=True,
             user_data=runner_user_data(queue_name),

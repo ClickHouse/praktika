@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from .image_builder import ImageBuilder
     from .lambda_function import Lambda
     from .launch_template import LaunchTemplate
+    from .native.cidb_cluster import CIDBCluster
     from .native.orchestrator_pool import OrchestratorPool
     from .native.runner_pool import RunnerPool
     from .secret_parameter import SecretParameter
@@ -54,6 +55,7 @@ class CloudInfrastructure:
         vpcs: List["VPC.Config"] = field(default_factory=list)
         runner_pools: List["RunnerPool"] = field(default_factory=list)
         orchestrator_pool: Optional["OrchestratorPool"] = None
+        cidb_cluster: Optional["CIDBCluster"] = None
         _settings: Optional[_Settings] = None
 
         def __post_init__(self):
@@ -86,21 +88,64 @@ class CloudInfrastructure:
                 self.autoscaling_groups.append(pool.autoscaling_group)
                 self.sqs_queues.append(pool.queue)
 
+            if self.cidb_cluster:
+                # CIDB instance launches happen via CIDBCluster.deploy() (it
+                # also authorizes SG ingress); only the supporting IAM/secret
+                # are registered here so they roll out in the standard order.
+                _add_role(self.cidb_cluster.ec2_role)
+                _add_profile(self.cidb_cluster.instance_profile)
+                self.secret_parameters.append(self.cidb_cluster.admin_password_secret)
+
         def _verify_account(self):
             if not self._settings or not self._settings.AWS_ACCOUNT_ID:
                 raise ValueError(
                     "Settings.AWS_ACCOUNT_ID is not set. "
                     "Define it in your ci/settings/*.py to prevent accidental deploys to the wrong account."
                 )
+            from botocore.exceptions import (
+                BotoCoreError,
+                ClientError,
+                NoCredentialsError,
+                ProfileNotFound,
+            )
+
             from ._utils import aws_client
-            sts = aws_client("sts", self._settings.AWS_REGION, "account-check")
-            actual = sts.get_caller_identity()["Account"]
+
+            profile = self._settings.AWS_PROFILE or "<default>"
+            try:
+                sts = aws_client("sts", self._settings.AWS_REGION, "account-check")
+                actual = sts.get_caller_identity()["Account"]
+            except ProfileNotFound as e:
+                raise SystemExit(
+                    f"AWS profile [{profile}] not found: {e}. "
+                    f"Configure it in ~/.aws/config or update Settings.AWS_PROFILE."
+                )
+            except NoCredentialsError:
+                raise SystemExit(
+                    f"No AWS credentials available for profile [{profile}]. "
+                    f"Run: aws sso login --profile {profile}"
+                )
+            except (ClientError, BotoCoreError) as e:
+                msg = str(e)
+                if (
+                    "UnauthorizedSSOTokenError" in type(e).__name__
+                    or "expired" in msg.lower()
+                    or "Session token not found or invalid" in msg
+                    or "InvalidGrantException" in msg
+                ):
+                    raise SystemExit(
+                        f"AWS SSO session for profile [{profile}] is expired or invalid. "
+                        f"Run: aws sso login --profile {profile}"
+                    )
+                raise SystemExit(
+                    f"AWS auth check failed for profile [{profile}]: {e}"
+                )
             if actual != self._settings.AWS_ACCOUNT_ID:
                 raise RuntimeError(
                     f"AWS account mismatch: configured={self._settings.AWS_ACCOUNT_ID}, "
                     f"actual={actual}. Aborting to prevent accidental changes to the wrong account."
                 )
-            print(f"AWS account verified: {actual}")
+            print(f"AWS account verified: {actual} (profile: {profile})")
 
         def deploy(
             self,
@@ -260,6 +305,19 @@ class CloudInfrastructure:
                     print("=" * 60)
                     secret_config.deploy()
 
+            # Deploy CI DB cluster: authorizes SG ingress for ClickHouse ports
+            # and launches each replica EC2. Runs after SecretParameter so the
+            # admin password is in SSM before user_data fetches it.
+            if (
+                _wants("CIDBCluster", "CIDB", "CIDBClusters", "CI_DB")
+                and self.cidb_cluster
+            ):
+                self.cidb_cluster.region = self._settings.AWS_REGION
+                print("\n" + "=" * 60)
+                print(f"Deploying CIDB Cluster (size={self.cidb_cluster.size})")
+                print("=" * 60)
+                self.cidb_cluster.deploy()
+
             # Deploy S3 buckets
             if _wants("Storage", "Storages", "S3", "Bucket", "Buckets"):
                 for storage_config in self.storages:
@@ -409,6 +467,19 @@ class CloudInfrastructure:
                 for c in self.ec2_instances:
                     c.region = self._settings.AWS_REGION
                     _confirm_and_run(f"EC2Instance {c.name}", lambda cfg=c: cfg.shutdown(force=force))
+
+            if (
+                _wants("CIDBCluster", "CIDB", "CIDBClusters", "CI_DB")
+                and self.cidb_cluster
+            ):
+                # Note: data EBS volumes are created with DeleteOnTermination=False
+                # so terminating the instances leaves orphan volumes intact.
+                for c in self.cidb_cluster.instances:
+                    c.region = self._settings.AWS_REGION
+                    _confirm_and_run(
+                        f"CIDB Instance {c.name}",
+                        lambda cfg=c: cfg.shutdown(force=force),
+                    )
 
             if _wants("LaunchTemplate", "LaunchTemplates"):
                 for c in self.launch_templates:

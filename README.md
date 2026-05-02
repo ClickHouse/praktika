@@ -53,9 +53,9 @@ in one command, and wiring up the GitHub webhook.
 - SSM Parameter Store and Secrets Manager bindings for workflow secrets
 - API Gateway + Lambda webhook receiver to ingest GitHub events
 - CI DB integration — every job/test result streamed for analytics. The CI DB
-  itself (ClickHouse cluster + table schema) is provisioned and managed
-  outside of praktika; praktika just writes to whatever endpoint
-  `Settings.SECRET_CI_DB_URL` points at.
+  itself (single-node OSS ClickHouse + embedded Keeper) is now a native
+  component (`NativeComponents.CIDBCluster`), or you can point praktika at an
+  existing endpoint via `Settings.SECRET_CI_DB_CONNECTION`.
 
 ## Roadmap
 

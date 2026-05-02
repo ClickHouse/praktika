@@ -246,18 +246,8 @@ class Validator:
 
             if workflow.enable_cidb:
                 cls.evaluate_check(
-                    Settings.SECRET_CI_DB_URL,
-                    "Settings.SECRET_CI_DB_URL must be provided if workflow.enable_cidb=True",
-                    workflow,
-                )
-                cls.evaluate_check(
-                    Settings.SECRET_CI_DB_USER,
-                    "Settings.SECRET_CI_DB_USER must be provided if workflow.enable_cidb=True",
-                    workflow,
-                )
-                cls.evaluate_check(
-                    Settings.SECRET_CI_DB_PASSWORD,
-                    "Settings.SECRET_CI_DB_PASSWORD must be provided if workflow.enable_cidb=True",
+                    Settings.SECRET_CI_DB_CONNECTION,
+                    "Settings.SECRET_CI_DB_CONNECTION must be provided if workflow.enable_cidb=True",
                     workflow,
                 )
                 cls.evaluate_check(
