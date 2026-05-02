@@ -236,10 +236,13 @@ class CIDBCluster:
         read at job time (Settings.SECRET_CI_DB_CONNECTION points to it).
 
         The blob has the shape ``{"url", "user", "password"}`` so a single
-        secret carries everything CIDB.from_connection_secret() needs. We
-        publish ``user`` and ``password`` as JSON null because the
-        runner-facing CH user is configured ``<no_password/>`` plus a
-        VPC-CIDR network ACL — clients should send no auth header.
+        secret carries everything CIDB.from_connection_secret() needs.
+        ``user`` must name the `runner` CH user explicitly: ClickHouse has
+        no anonymous mode and falls back to `default` when no
+        X-ClickHouse-User header is sent, and we lock `default` to
+        localhost so a runner-IP request would hit 401. ``password`` is
+        null because the runner user is configured ``<no_password/>`` —
+        any value (including an absent header) is accepted.
         """
         import json as _json
 
@@ -266,7 +269,7 @@ class CIDBCluster:
 
         connection = {
             "url": f"http://{ip}:8123",
-            "user": None,
+            "user": "runner",
             "password": None,
         }
         ssm = aws_client("ssm", self.region, "cidb-connection")
