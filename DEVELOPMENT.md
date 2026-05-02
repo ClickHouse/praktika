@@ -42,7 +42,7 @@ Pick the ASG and unit for the side you're debugging:
 
 ```bash
 # Pick a side
-ASG=praktika-arm-2xsmall ; UNIT=job-agent
+ASG=praktika-amd-2xsmall ; UNIT=job-agent
 # or:
 # ASG=praktika-workflow-orchestrator-asg ; UNIT=workflow-agent
 

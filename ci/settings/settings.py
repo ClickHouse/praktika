@@ -1,10 +1,8 @@
 class RunnerLabels:
-    SMALL = "arm-2xsmall"
-    SMALL_FIXED = "arm-2xsmall"
+    SMALL_ARM = "arm-2xsmall"
     SMALL_AMD = "amd-2xsmall"
 
-CI_CONFIG_RUNS_ON = [RunnerLabels.SMALL_FIXED]
-DOCKER_BUILD_RUNS_ON = [RunnerLabels.SMALL_FIXED]
+CI_CONFIG_RUNS_ON = [RunnerLabels.SMALL_ARM]
 
 AWS_REGION = "eu-north-1"
 AWS_ACCOUNT_ID = "420943511422"
@@ -19,8 +17,8 @@ CACHE_S3_PATH = "{S3_ARTIFACT_PATH}/ci_cache"
 
 S3_BUCKET_TO_HTTP_ENDPOINT = {S3_ARTIFACT_PATH: f"{S3_ARTIFACT_PATH}.s3.amazonaws.com", S3_REPORT_BUCKET: f"{S3_REPORT_BUCKET}.s3.amazonaws.com"}
 
-DOCKER_MERGE_RUNS_ON = [RunnerLabels.SMALL]
-DOCKER_BUILD_ARM_RUNS_ON = [RunnerLabels.SMALL]
+DOCKER_MERGE_RUNS_ON = [RunnerLabels.SMALL_ARM]
+DOCKER_BUILD_ARM_RUNS_ON = [RunnerLabels.SMALL_ARM]
 DOCKER_BUILD_AMD_RUNS_ON = [RunnerLabels.SMALL_AMD]
 
 DOCKERHUB_USERNAME = "robotclickhouse"

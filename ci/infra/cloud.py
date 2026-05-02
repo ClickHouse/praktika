@@ -14,7 +14,7 @@ _runner_pools = [
     ),
     NativeComponents.RunnerPool(
         name="amd-2xsmall",
-        instance_type="t3a.small",
+        instance_type="t3.small",
         vpc_name=CI_VPC_NAME,
         scaling_type=NativeComponents.RunnerPool.ScalingType.Fixed,
         size=1,

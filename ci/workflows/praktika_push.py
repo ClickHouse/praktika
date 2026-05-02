@@ -23,7 +23,7 @@ workflow = Workflow.Config(
     jobs=[
         Job.Config(
             name="Publish wheel",
-            runs_on=[RunnerLabels.SMALL_FIXED],
+            runs_on=[RunnerLabels.SMALL_ARM],
             command="bash ./ci/scripts/publish_wheel.sh",
             pre_hooks=[_INSTALL_BUILD],
         ),

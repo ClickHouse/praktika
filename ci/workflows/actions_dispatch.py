@@ -14,7 +14,7 @@ workflow = Workflow.Config(
     jobs=[
         Job.Config(
             name="Hello User Name",
-            runs_on=[RunnerLabels.SMALL_FIXED],
+            runs_on=[RunnerLabels.SMALL_ARM],
             command="python3 ./ci/tests/example_5/some_code.py",
             pre_hooks=[_INSTALL_DEPS],
         ),

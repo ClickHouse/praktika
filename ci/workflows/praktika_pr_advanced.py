@@ -23,7 +23,7 @@ workflow = Workflow.Config(
         # S3 artifact with cache digest
         Job.Config(
             name="Build",
-            runs_on=[RunnerLabels.SMALL_FIXED],
+            runs_on=[RunnerLabels.SMALL_ARM],
             command='echo "Hello from praktika" > ./artifact.txt && python3 ./ci/tests/example_2/some_job_script.py',
             provides=[artifact.name],
             pre_hooks=[_INSTALL_DEPS],
@@ -34,7 +34,7 @@ workflow = Workflow.Config(
         # Consumes artifact, also cached
         Job.Config(
             name="Test",
-            runs_on=[RunnerLabels.SMALL_FIXED],
+            runs_on=[RunnerLabels.SMALL_ARM],
             command=f"cat {Settings.INPUT_DIR}/artifact.txt && python3 ./ci/tests/example_1/test_example_consume_artifact.py",
             requires=[artifact.name],
             pre_hooks=[_INSTALL_DEPS],
@@ -46,7 +46,7 @@ workflow = Workflow.Config(
         # Docker job
         Job.Config(
             name="Docker Job",
-            runs_on=[RunnerLabels.SMALL_FIXED],
+            runs_on=[RunnerLabels.SMALL_ARM],
             command="python3 ./ci/tests/example_2/some_job_script.py",
             pre_hooks=[_INSTALL_DEPS],
             digest_config=Job.CacheDigestConfig(
@@ -57,7 +57,7 @@ workflow = Workflow.Config(
         # Parametrized with digests
         *Job.Config(
             name="Parametrized",
-            runs_on=[RunnerLabels.SMALL_FIXED],
+            runs_on=[RunnerLabels.SMALL_ARM],
             command="python3 ./ci/tests/example_3/script_for_parametrized_job.py",
             pre_hooks=[_INSTALL_DEPS],
             requires=[artifact.name],

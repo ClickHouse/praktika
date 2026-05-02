@@ -74,12 +74,15 @@ class JobCheckRun:
         return resp.json() if resp.content else {}
 
     @classmethod
-    def queue(cls, token, repo, head_sha, name):
+    def queue(cls, token, repo, head_sha, name, output=None):
+        body = {"name": name, "head_sha": head_sha, "status": "queued"}
+        if output is not None:
+            body["output"] = output
         data = cls._api(
             "POST",
             f"https://api.github.com/repos/{repo}/check-runs",
             token,
-            {"name": name, "head_sha": head_sha, "status": "queued"},
+            body,
         )
         return cls(token, repo, data["id"], name)
 
@@ -163,7 +166,10 @@ class JobState:
         """Queue the GitHub check run (status=queued) — called at kick time.
 
         Shows up in the PR as a pending check the moment the orchestrator
-        decides to run the job, not back at workflow-start time.
+        decides to run the job, not back at workflow-start time. The check
+        output names the target runner pool so reviewers can tell what
+        kind of runner the job was dispatched to (and spot when a job is
+        stuck waiting on an empty pool).
         """
         if self.check is not None:
             return
@@ -171,9 +177,14 @@ class JobState:
         if ws is None or not ws.can_post_checks:
             return
         check_name = f"{ws.workflow.name} / {self.name}"
+        runs_on = ", ".join(self.job.runs_on) if self.job.runs_on else "default"
+        output = {
+            "title": f"Issued to runner: {runs_on}",
+            "summary": f"Job dispatched to runner pool `{runs_on}`.",
+        }
         try:
             self.check = JobCheckRun.queue(
-                ws._gh_token, ws._repo, ws._head_sha, check_name
+                ws._gh_token, ws._repo, ws._head_sha, check_name, output=output
             )
         except Exception as e:
             print(

@@ -125,12 +125,19 @@ def _build_dockers(workflow, job_name):
             job_info = "Failed to install docker buildx driver"
 
     if job_status == Result.Status.OK:
-        if not Info().is_local_run and not Docker.login(
-            Settings.DOCKERHUB_USERNAME,
-            user_password=workflow.get_secret(Settings.DOCKERHUB_SECRET).get_value(),
-        ):
-            job_status = Result.Status.FAIL
-            job_info = "Failed to login to dockerhub"
+        if not Info().is_local_run:
+            try:
+                dockerhub_password = workflow.get_secret(
+                    Settings.DOCKERHUB_SECRET
+                ).get_value()
+            except Exception as e:
+                job_status = Result.Status.FAIL
+                job_info = f"Failed to get DockerHub secret [{Settings.DOCKERHUB_SECRET}]: {e}"
+            if job_status == Result.Status.OK and not Docker.login(
+                Settings.DOCKERHUB_USERNAME, user_password=dockerhub_password
+            ):
+                job_status = Result.Status.FAIL
+                job_info = "Failed to login to dockerhub"
 
     if (
         job_status == Result.Status.OK

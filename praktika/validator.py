@@ -75,6 +75,12 @@ class Validator:
                     f"Invalid Job.Config.runs_on [{job.runs_on}] for [{job.name}]",
                     workflow.name,
                 )
+                if workflow.engine != "GHActions":
+                    cls.evaluate_check(
+                        len(job.runs_on) == 1,
+                        f"Non-GHActions workflow jobs must have exactly one runs_on label, got [{job.runs_on}] for [{job.name}]",
+                        workflow.name,
+                    )
                 cls.evaluate_check(
                     "PARAMETER" not in job.command,
                     f"Job parametrization config issue: job name [{job.name}], job command: [{job.command}]",
