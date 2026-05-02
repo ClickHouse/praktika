@@ -60,6 +60,18 @@ in one command, and wiring up the GitHub webhook.
 ## Roadmap
 
 **Execution engine**
+- **Workflow cancellation** — orchestrator must handle cancel signals while
+  blocked in `wait()`: a runner that never picks up a job leaves the
+  orchestrator stuck indefinitely, and a cancel that arrives (e.g. from a
+  new push) is only processed after the blocked call returns; the fix
+  requires either a timeout + cancel-queue poll loop inside `wait()`, or
+  running cancel handling on a separate thread/task
+- **GitHub App token refresh** — the orchestrator acquires a GH App token
+  at startup and reuses it for the lifetime of the workflow; tokens expire
+  after ~1 hour, so long-running workflows (or workflows that stall in
+  `wait()`) start getting 401s on every check-run PATCH, leaving all
+  check statuses stuck; the token must be re-acquired before each GitHub
+  API call (or cached with an expiry check)
 - **Runner pool autoscaling** — Lambda watching SQS queue depth to scale
   runner pools up/down on demand
 - **Job cancel / job rerun** — cancel an in-flight job from the GitHub UI;
