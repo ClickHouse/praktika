@@ -43,7 +43,7 @@ def find_workflows_for_event(event):
 
     matched = []
     for wf in _get_workflows():
-        if wf.engine == "GHActions":
+        if wf.engine == Workflow.Engine.GH_ACTIONS:
             continue
         if wf.event != workflow_event:
             continue
@@ -170,7 +170,7 @@ def _check_output(workflow, state, error=None):
     return {"title": title, "summary": summary, "text": text}
 
 
-def _patch_top_check(check, workflow, state, error=None):
+def _patch_top_check(check, workflow, state, error=None, details_url=None):
     """PATCH the top-level workflow check with the current Markdown snapshot.
 
     Wrapped in try/except: a stuck GitHub API call must not kill the
@@ -179,7 +179,7 @@ def _patch_top_check(check, workflow, state, error=None):
     if check is None:
         return
     try:
-        check.update(output=_check_output(workflow, state, error=error))
+        check.update(output=_check_output(workflow, state, error=error), details_url=details_url)
     except Exception as e:
         print(f"  [warn] top-level check PATCH failed: {type(e).__name__}: {e}")
 
@@ -246,6 +246,17 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
     repo = event.get("repo", "")
     head_sha = event.get("head_sha", "")
 
+    report_url = None
+    if workflow.enable_report:
+        from ..info import Info
+        report_url = Info.get_specific_report_url_static(
+            pr_number=event.get("pr_number") or 0,
+            branch=event.get("head_ref", ""),
+            sha=head_sha,
+            job_name="",
+            workflow_name=workflow.name,
+        )
+
     check = None
     if gh_token:
         try:
@@ -276,7 +287,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
             local_mode=local_mode,
         )
         state.print_plan()
-        _patch_top_check(check, workflow, state)
+        _patch_top_check(check, workflow, state, details_url=report_url)
 
         cancel_handled = False
         while state.not_finished():
@@ -286,7 +297,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
             for job in state.get_ready():
                 job.kick()
             state.wait()
-            _patch_top_check(check, workflow, state)
+            _patch_top_check(check, workflow, state, details_url=report_url)
 
         state.print_summary()
     except Exception as e:
@@ -304,7 +315,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
         else:
             conclusion = "neutral"
         try:
-            check.complete(conclusion, output=_check_output(workflow, state, error=error))
+            check.complete(conclusion, output=_check_output(workflow, state, error=error), details_url=report_url)
         except Exception:
             print(f"Failed to complete check run: {check}", file=sys.stderr)
 

@@ -392,12 +392,16 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
                     "review": "",
                 },
             )
-            res1 = GH.post_commit_status(
-                name=workflow.name,
-                status=Result.Status.PENDING,
-                description="",
-                url=report_url_current_sha,
-            )
+            if workflow.engine == Workflow.Engine.GH_ACTIONS:
+                res1 = GH.post_commit_status(
+                    name=workflow.name,
+                    status=Result.Status.PENDING,
+                    description="",
+                    url=report_url_current_sha,
+                )
+            else:
+                # standalone engine use its own checks, extra status is redundant.
+                pass
             if not (res1 or res2):
                 Utils.raise_with_error(
                     "Failed to set both GH commit status and PR comment with Workflow Status, cannot proceed"

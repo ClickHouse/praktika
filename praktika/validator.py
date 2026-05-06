@@ -37,7 +37,7 @@ class Validator:
                 "Setting SECRET_GH_APP must be provided with USE_CUSTOM_GH_AUTH == True",
             )
 
-        _VALID_ENGINES = ("praktika", "GHActions")
+        _VALID_ENGINES = (Workflow.Engine.PRAKTIKA, Workflow.Engine.GH_ACTIONS)
         files = []
         workflows = _get_workflows(_for_validation_check=True, _file_names_out=files)
         from collections import Counter
@@ -75,7 +75,7 @@ class Validator:
                     f"Invalid Job.Config.runs_on [{job.runs_on}] for [{job.name}]",
                     workflow.name,
                 )
-                if workflow.engine != "GHActions":
+                if workflow.engine != Workflow.Engine.GH_ACTIONS:
                     cls.evaluate_check(
                         len(job.runs_on) == 1,
                         f"Non-GHActions workflow jobs must have exactly one runs_on label, got [{job.runs_on}] for [{job.name}]",

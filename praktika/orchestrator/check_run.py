@@ -47,10 +47,12 @@ class CheckRun:
         self.id = id
         self.name = name
 
-    def complete(self, conclusion, output=None):
+    def complete(self, conclusion, output=None, details_url=None):
         body = {"status": "completed", "conclusion": conclusion}
         if output is not None:
             body["output"] = output
+        if details_url is not None:
+            body["details_url"] = details_url
         self._api(
             "PATCH",
             f"https://api.github.com/repos/{self.repo}/check-runs/{self.id}",

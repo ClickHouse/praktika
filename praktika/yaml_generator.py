@@ -233,7 +233,7 @@ jobs:
         self.py_workflows = _get_workflows(_file_names_out=files)
         assert self.py_workflows and files
         for workflow_config, workflow_file_name in zip(self.py_workflows, files):
-            if workflow_config.engine != "GHActions":
+            if workflow_config.engine != Workflow.Engine.GH_ACTIONS:
                 print(f"Skip workflow [{workflow_config.name}] (engine={workflow_config.engine})")
                 continue
             print(f"Generate workflow [{workflow_config.name}]")

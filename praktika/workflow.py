@@ -15,6 +15,10 @@ class Workflow:
         DISPATCH = "dispatch"
         MERGE_QUEUE = "merge_queue"
 
+    class Engine:
+        PRAKTIKA = "praktika"
+        GH_ACTIONS = "GHActions"
+
     @dataclass
     class Config:
         """
@@ -25,8 +29,7 @@ class Workflow:
         name: str
         event: str
         jobs: List[Job.Config]
-        # "GHActions" = run via GitHub Actions YAML; "praktika" = run via native CI
-        engine: str = "praktika"
+        engine: str = Engine.PRAKTIKA
         branches: List[str] = field(default_factory=list)
         base_branches: List[str] = field(default_factory=list)
         artifacts: List[Artifact.Config] = field(default_factory=list)
