@@ -21,8 +21,7 @@ DOCKER_MERGE_RUNS_ON = [RunnerLabels.SMALL_ARM]
 DOCKER_BUILD_ARM_RUNS_ON = [RunnerLabels.SMALL_ARM]
 DOCKER_BUILD_AMD_RUNS_ON = [RunnerLabels.SMALL_AMD]
 
-DOCKERHUB_USERNAME = "robotclickhouse"
-DOCKERHUB_SECRET = "dockerhub_robot_password"
+SECRET_DOCKER_REGISTRY = "praktika-docker-registry-connection"
 
 # Install praktika from the cloned PR tree (setup.py lives at the repo root).
 # Per-PR praktika changes take effect on the dispatch that picked the PR up.

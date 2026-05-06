@@ -224,14 +224,11 @@ class Validator:
 
             if workflow.dockers and not workflow.disable_dockers_build:
                 assert (
-                    Settings.DOCKERHUB_USERNAME
-                ), f"Settings.DOCKERHUB_USERNAME must be provided if workflow has dockers, workflow [{workflow.name}]"
-                assert (
-                    Settings.DOCKERHUB_SECRET
-                ), f"Settings.DOCKERHUB_SECRET must be provided if workflow has dockers, workflow [{workflow.name}]"
+                    Settings.SECRET_DOCKER_REGISTRY
+                ), f"Settings.SECRET_DOCKER_REGISTRY must be provided if workflow has dockers, workflow [{workflow.name}]"
                 assert workflow.get_secret(
-                    Settings.DOCKERHUB_SECRET
-                ), f"Secret [{Settings.DOCKERHUB_SECRET}] must have configuration in workflow.secrets, workflow [{workflow.name}]"
+                    Settings.SECRET_DOCKER_REGISTRY
+                ), f"Secret [{Settings.SECRET_DOCKER_REGISTRY}] must have configuration in workflow.secrets, workflow [{workflow.name}]"
 
             if workflow.enable_open_issues_check:
                 cls.evaluate_check(

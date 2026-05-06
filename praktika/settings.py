@@ -90,8 +90,7 @@ class _Settings:
     # Compress if text file size exceeds this threshold (in MB, 0 - disable compression)
     COMPRESS_THRESHOLD_MB: int = 0
 
-    DOCKERHUB_USERNAME: str = ""
-    DOCKERHUB_SECRET: str = ""
+    SECRET_DOCKER_REGISTRY: str = ""
 
     ######################################
     #        CI DB Settings              #
@@ -169,8 +168,7 @@ _USER_DEFINED_SETTINGS = [
     "MAX_RETRIES_S3",
     "MAX_RETRIES_GH",
     "VALIDATE_FILE_PATHS",
-    "DOCKERHUB_USERNAME",
-    "DOCKERHUB_SECRET",
+    "SECRET_DOCKER_REGISTRY",
     "READY_FOR_MERGE_CUSTOM_STATUS_NAME",
     "SECRET_CI_DB_CONNECTION",
     "CI_DB_DB_NAME",

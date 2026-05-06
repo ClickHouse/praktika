@@ -127,14 +127,14 @@ def _build_dockers(workflow, job_name):
     if job_status == Result.Status.OK:
         if not Info().is_local_run:
             try:
-                dockerhub_password = workflow.get_secret(
-                    Settings.DOCKERHUB_SECRET
-                ).get_value()
+                creds = json.loads(
+                    workflow.get_secret(Settings.SECRET_DOCKER_REGISTRY).get_value()
+                )
             except Exception as e:
                 job_status = Result.Status.FAIL
-                job_info = f"Failed to get DockerHub secret [{Settings.DOCKERHUB_SECRET}]: {e}"
+                job_info = f"Failed to get DockerHub secret [{Settings.SECRET_DOCKER_REGISTRY}]: {e}"
             if job_status == Result.Status.OK and not Docker.login(
-                Settings.DOCKERHUB_USERNAME, user_password=dockerhub_password
+                creds["username"], user_password=creds["password"]
             ):
                 job_status = Result.Status.FAIL
                 job_info = "Failed to login to dockerhub"

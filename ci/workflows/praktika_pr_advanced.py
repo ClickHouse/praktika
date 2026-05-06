@@ -82,8 +82,8 @@ workflow = Workflow.Config(
         ),
     ],
     secrets=[
-        Secret.Config(name="praktika-cidb-connection", type=Secret.Type.AWS_SSM_PARAMETER),
-        Secret.Config(name="dockerhub_robot_password", type=Secret.Type.AWS_SSM_PARAMETER),
+        Secret.Config(name=Settings.SECRET_CI_DB_CONNECTION, type=Secret.Type.AWS_SSM_PARAMETER),
+        Secret.Config(name=Settings.SECRET_DOCKER_REGISTRY, type=Secret.Type.AWS_SSM_PARAMETER),
     ],
     enable_report=True,
     enable_cache=True,
