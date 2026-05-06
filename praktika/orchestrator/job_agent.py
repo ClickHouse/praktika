@@ -75,6 +75,45 @@ def _get_github_token():
     return resp.json()["token"]
 
 
+class CancelWatchdog:
+    """Kill a subprocess if the per-run S3 cancel flag appears."""
+
+    def __init__(self, s3_client, bucket, key, proc, interval=10):
+        self._s3 = s3_client
+        self._bucket = bucket
+        self._key = key
+        self._proc = proc
+        self._interval = interval
+        self._stop = threading.Event()
+        self._thread = None
+
+    def start(self):
+        self._thread = threading.Thread(target=self._run, daemon=True, name="cancel-watchdog")
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self._interval + 5)
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, *_):
+        self.stop()
+
+    def _run(self):
+        while not self._stop.wait(self._interval):
+            try:
+                self._s3.head_object(Bucket=self._bucket, Key=self._key)
+                log.info(f"Cancel flag found at s3://{self._bucket}/{self._key} — killing job")
+                self._proc.kill()
+                return
+            except Exception:
+                pass  # flag not present yet, or transient S3 error
+
+
 class VisibilityHeartbeat:
     """Extend SQS message visibility while we process it."""
 
@@ -242,24 +281,32 @@ def handle_task(task):
     with open(task_file, "w") as f:
         json.dump(task, f, indent=2)
 
+    cancel_s3_bucket = task.get("cancel_s3_bucket", "")
+    cancel_s3_key = task.get("cancel_s3_key", "")
+
     log.info(f"Running job {job_name!r} for PR#{pr_number}")
-    result = subprocess.run(
+    import boto3
+    s3 = boto3.client("s3", region_name=REGION)
+    proc = subprocess.Popen(
         ["praktika", "orchestrate", "job", task_file, "--ci"],
         cwd=clone_dir,
         stderr=subprocess.PIPE,
         text=True,
     )
+    with CancelWatchdog(s3, cancel_s3_bucket, cancel_s3_key, proc):
+        _, stderr_output = proc.communicate()
+    rc = proc.returncode
 
-    if result.returncode != 0 and result.stderr:
-        log.error(result.stderr.rstrip())
+    if rc != 0 and stderr_output:
+        log.error(stderr_output.rstrip())
 
     return {
-        "status": "ok" if result.returncode == 0 else "error",
+        "status": "ok" if rc == 0 else "error",
         "pr": pr_number,
         "sha": actual_sha,
         "job": job_name,
-        "rc": result.returncode,
-        "stderr": result.stderr.strip()[:500] if result.stderr else "",
+        "rc": rc,
+        "stderr": stderr_output.strip()[:500] if stderr_output else "",
     }
 
 

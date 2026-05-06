@@ -271,20 +271,25 @@ class JobState:
         print(f"[SKIP ] {self.name:70s}{suffix}")
 
     def cancel(self, reason="run cancelled"):
-        """Transition PENDING -> CANCELLED.
+        """Transition PENDING or RUNNING -> CANCELLED.
 
         Used for two cases that both produce a Checks API ``cancelled``
         conclusion:
-          - the run itself was cancelled (``WorkflowState.cancel_pending_jobs``
+          - the run itself was cancelled (``WorkflowState.cancel_unfinished_jobs``
             on a new-push or UI Cancel signal);
           - an upstream dep ended in FAILURE or CANCELLED, so this job
             can't run either (``get_ready`` cascade).
-        Same no-check-posted rule as ``skip`` — a PENDING job has no
-        check yet and we don't create one here.
+        PENDING jobs have no check-run yet so nothing to patch.
+        RUNNING jobs have an in-progress check-run; the orchestrator
+        completes it here because the runner will never post back.
         """
-        if self.status != JobStatus.PENDING:
+        if self.status not in (JobStatus.PENDING, JobStatus.RUNNING):
             return
+        was_running = self.status == JobStatus.RUNNING
         self.status = JobStatus.CANCELLED
+        if was_running:
+            self.finished_at = time.time()
+            self._update_check(lambda c: c.complete("cancelled"))
         print(f"[CANCL] {self.name:70s} ({reason})")
 
 
@@ -342,6 +347,7 @@ class WorkflowState:
             import boto3
             region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
             self._sqs = boto3.client("sqs", region_name=region)
+            self._s3 = boto3.client("s3", region_name=region)
             resp = self._sqs.create_queue(
                 QueueName=self._completions_queue_name,
                 Attributes={"MessageRetentionPeriod": "3600"},  # 1 h
@@ -351,6 +357,11 @@ class WorkflowState:
             print(f"Using completions queue: {self._completions_queue_name}")
         else:
             self._completions_queue_name = None
+            self._s3 = None
+
+        from ..settings import Settings
+        self._cancel_s3_bucket = Settings.S3_ARTIFACT_PATH.split("/")[0]
+        self._cancel_s3_key = f"ci-cancel/{self._run_id}"
 
         self.jobs = {
             job.name: JobState(job, workflow_state=self) for job in workflow.jobs
@@ -467,6 +478,8 @@ class WorkflowState:
             "job_name": job_state.name,
             "runs_on": list(job_state.job.runs_on) if job_state.job.runs_on else [],
             "completions_queue_url": self._completions_queue_url,
+            "cancel_s3_bucket": self._cancel_s3_bucket,
+            "cancel_s3_key": self._cancel_s3_key,
             "check_run_id": job_state.check.id if job_state.check else None,
             "environment": self._environment,
         }
@@ -546,7 +559,7 @@ class WorkflowState:
             outputs still exist in S3 from a prior run — SUCCESS-equivalent
             for dep resolution).
 
-        ``run_unless_cancelled`` jobs (Finish Workflow is the only one
+        ``always_run`` jobs (Finish Workflow is the only one
         today) promote to READY once every dep reaches *any* terminal
         state, regardless of success/failure/skip/cancel. That's how the
         post-run jobs (CIDB writeback, merge-ready check, Slack notify)
@@ -557,7 +570,7 @@ class WorkflowState:
             if js.status != JobStatus.PENDING:
                 continue
             dep_states = [self.jobs[d].status for d in self._deps.get(name, ())]
-            if js.job.run_unless_cancelled:
+            if js.job.always_run:
                 if all(s in _TERMINAL for s in dep_states):
                     js.status = JobStatus.READY
                     ready.append(js)
@@ -573,15 +586,34 @@ class WorkflowState:
                 ready.append(js)
         return ready
 
-    def cancel_pending_jobs(self):
-        """When a cancel signal arrives mid-run, mark every PENDING job
-        that isn't flagged ``run_unless_cancelled`` as CANCELLED. Leaves
-        the unconditional post-run jobs (Finish Workflow) alone so they
-        still fire after their deps settle.
+    def cancel_unfinished_jobs(self):
+        """When a cancel signal arrives mid-run, mark every PENDING or
+        RUNNING job that isn't flagged ``always_run`` as
+        CANCELLED. Leaves unconditional post-run jobs (Finish Workflow)
+        alone so they still fire after their deps settle.
+
+        RUNNING jobs that are cancelled here had their task already
+        dispatched to a runner. The cancel flag written to S3 signals
+        those runners to tear down; the eventual completion message (if
+        it still arrives) will be ignored as an unknown job.
         """
+        has_running = any(
+            js.status == JobStatus.RUNNING and not js.job.always_run
+            for js in self.jobs.values()
+        )
         for js in self.jobs.values():
-            if js.status == JobStatus.PENDING and not js.job.run_unless_cancelled:
+            if js.status in (JobStatus.PENDING, JobStatus.RUNNING) and not js.job.always_run:
                 js.cancel(reason="run cancelled")
+        if has_running and self._s3 is not None:
+            try:
+                self._s3.put_object(
+                    Bucket=self._cancel_s3_bucket,
+                    Key=self._cancel_s3_key,
+                    Body=b"cancelled",
+                )
+                print(f"  [cancel] wrote s3://{self._cancel_s3_bucket}/{self._cancel_s3_key}")
+            except Exception as e:
+                print(f"  [warn] could not write cancel flag: {type(e).__name__}: {e}")
 
     def wait(self):
         """Block until at least one RUNNING job transitions to a terminal state.

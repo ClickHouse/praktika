@@ -303,7 +303,7 @@ class PullRequestPushYamlGen:
                     WORKFLOW_CONFIG_JOB_NAME=config_job_name_normalized,
                     JOB_NAME_BASE64=Utils.to_base64(job_name),
                 )
-            if job.run_unless_cancelled:
+            if job.always_run:
                 if_expression = (
                     YamlGenerator.Templates.TEMPLATE_IF_EXPRESSION_NOT_CANCELLED
                 )

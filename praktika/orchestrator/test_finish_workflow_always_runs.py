@@ -2,13 +2,13 @@
 
 The behaviour is baked into two DAG rules instead of a special helper:
 
-1. ``get_ready`` promotes any ``run_unless_cancelled=True`` job to READY
+1. ``get_ready`` promotes any ``always_run=True`` job to READY
    as soon as every dep reaches *any* terminal state — SUCCESS, FAILURE,
    SKIPPED, or CANCELLED. Normal jobs still require deps to succeed
    (SUCCESS or SKIPPED).
-2. ``cancel_pending_jobs`` marks PENDING jobs as CANCELLED on a cancel
-   signal, but leaves ``run_unless_cancelled`` jobs alone so they can
-   still fire via rule 1 once their deps settle.
+2. ``cancel_unfinished_jobs`` marks PENDING and RUNNING jobs as
+   CANCELLED on a cancel signal, but leaves ``always_run``
+   jobs alone so they can still fire via rule 1 once their deps settle.
 
 Run with:
     pytest ci/praktika/orchestrator/test_finish_workflow_always_runs.py
@@ -20,14 +20,15 @@ from praktika.orchestrator.state import JobState, JobStatus, WorkflowState
 
 def _make_state(*job_specs):
     """Build a WorkflowState with hand-rolled JobStates — enough surface
-    for get_ready / cancel_pending_jobs without touching the SQS / DAG
+    for get_ready / cancel_unfinished_jobs without touching the SQS / DAG
     machinery in WorkflowState.__init__.
 
-    Each entry is ``(name, status, deps=[], run_unless_cancelled=False)``.
+    Each entry is ``(name, status, deps=[], always_run=False)``.
     """
     state = WorkflowState.__new__(WorkflowState)
     state.jobs = {}
     state._deps = {}
+    state._s3 = None
     for spec in job_specs:
         name, status = spec[0], spec[1]
         deps = spec[2] if len(spec) > 2 else []
@@ -39,7 +40,7 @@ def _make_state(*job_specs):
             requires=[],
             run_after=[],
             provides=[],
-            run_unless_cancelled=ruc,
+            always_run=ruc,
         )
         js.check = None
         js.status = status
@@ -53,8 +54,8 @@ def _make_state(*job_specs):
     return state
 
 
-def test_run_unless_cancelled_promoted_when_upstream_failed():
-    """Finish Workflow (run_unless_cancelled=True) must reach READY even
+def test_always_run_promoted_when_upstream_failed():
+    """Finish Workflow (always_run=True) must reach READY even
     when every upstream ended in FAILURE — its post-hooks (CIDB, Slack,
     merge-ready) are exactly what's useful on a bad run."""
     state = _make_state(
@@ -66,7 +67,7 @@ def test_run_unless_cancelled_promoted_when_upstream_failed():
     assert state.jobs["Finish"].status == JobStatus.READY
 
 
-def test_run_unless_cancelled_promoted_when_deps_mixed_terminal():
+def test_always_run_promoted_when_deps_mixed_terminal():
     """Finish Workflow promotes once every dep is *any* terminal state —
     SUCCESS, SKIPPED, FAILURE, or CANCELLED. Here one succeeded, one
     failed, one was cancelled."""
@@ -80,7 +81,7 @@ def test_run_unless_cancelled_promoted_when_deps_mixed_terminal():
     assert [j.name for j in ready] == ["Finish"]
 
 
-def test_run_unless_cancelled_waits_for_non_terminal_dep():
+def test_always_run_waits_for_non_terminal_dep():
     """Don't fire Finish Workflow while any dep is still running."""
     state = _make_state(
         ("Build", JobStatus.RUNNING),
@@ -115,16 +116,17 @@ def test_normal_job_cancelled_when_upstream_cancelled():
     assert state.jobs["Tests"].status == JobStatus.CANCELLED
 
 
-def test_cancel_pending_jobs_leaves_run_unless_cancelled_alone():
-    """A cancel signal mid-run cancels the regular PENDING jobs but
-    leaves ``run_unless_cancelled`` ones so Finish Workflow still runs
-    once its deps settle (via the subsequent get_ready call)."""
+def test_cancel_unfinished_jobs_leaves_always_run_alone():
+    """A cancel signal mid-run cancels PENDING and RUNNING regular jobs
+    but leaves ``always_run`` ones so Finish Workflow still
+    runs once its deps settle (via the subsequent get_ready call)."""
     state = _make_state(
         ("Build", JobStatus.RUNNING),
         ("Tests", JobStatus.PENDING, ["Build"]),
         ("Finish", JobStatus.PENDING, ["Tests"], True),
     )
-    state.cancel_pending_jobs()
+    state.cancel_unfinished_jobs()
+    assert state.jobs["Build"].status == JobStatus.CANCELLED
     assert state.jobs["Tests"].status == JobStatus.CANCELLED
     assert state.jobs["Finish"].status == JobStatus.PENDING
 

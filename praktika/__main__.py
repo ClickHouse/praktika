@@ -1,7 +1,6 @@
 import argparse
 import sys
 
-from .html_prepare import Html
 from .utils import Utils
 from .validator import Validator
 from .yaml_generator import YamlGenerator

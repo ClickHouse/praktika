@@ -69,7 +69,7 @@ _final_job = Job.Config(
     name=Settings.FINISH_WORKFLOW_JOB_NAME,
     runs_on=Settings.CI_CONFIG_RUNS_ON,
     command=f"{Settings.PYTHON_INTERPRETER} -m praktika.native_jobs '{Settings.FINISH_WORKFLOW_JOB_NAME}'",
-    run_unless_cancelled=True,
+    always_run=True,
 )
 
 

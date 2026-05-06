@@ -281,7 +281,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
         cancel_handled = False
         while state.not_finished():
             if state.cancelled and not cancel_handled:
-                state.cancel_pending_jobs()
+                state.cancel_unfinished_jobs()
                 cancel_handled = True
             for job in state.get_ready():
                 job.kick()

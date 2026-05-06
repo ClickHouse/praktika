@@ -19,7 +19,7 @@ class WorkflowYaml:
         artifacts_gh_requires: List["WorkflowYaml.ArtifactYaml"]
         artifacts_gh_provides: List["WorkflowYaml.ArtifactYaml"]
         gh_app_auth: bool
-        run_unless_cancelled: bool
+        always_run: bool
         parameter: Any
         secret_names_gh: List[str] = dataclasses.field(default_factory=list)
         variable_names_gh: List[str] = dataclasses.field(default_factory=list)
@@ -128,7 +128,7 @@ class WorkflowConfigParser:
                 needs=[],
                 runs_on=[],
                 gh_app_auth=False,
-                run_unless_cancelled=job.run_unless_cancelled,
+                always_run=job.always_run,
                 parameter=None,
             )
             self.workflow_yaml_config.jobs.append(job_yaml_config)

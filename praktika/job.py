@@ -61,7 +61,7 @@ class Job:
 
         run_in_docker: str = ""
 
-        run_unless_cancelled: bool = False
+        always_run: bool = False
 
         allow_merge_on_failure: bool = False
 
