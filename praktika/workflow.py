@@ -29,7 +29,7 @@ class Workflow:
         name: str
         event: str
         jobs: List[Job.Config]
-        engine: str = Engine.PRAKTIKA
+        engine: str = "praktika"
         branches: List[str] = field(default_factory=list)
         base_branches: List[str] = field(default_factory=list)
         artifacts: List[Artifact.Config] = field(default_factory=list)
