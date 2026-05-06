@@ -1083,6 +1083,8 @@ class Runner:
         self._load_local_env()
 
         res = True
+        post_res = True
+        result = None
         setup_env_code = -10
         prerun_code = -10
         run_code = -10
@@ -1208,8 +1210,7 @@ class Runner:
             post_res = self._post_run(
                 result, workflow, job, run_code
             )
-            res = res and post_res
             print(f"=== Post run script finished ===")
 
-        if not res:
+        if not post_res or result is None or not result.is_ok():
             sys.exit(1)
