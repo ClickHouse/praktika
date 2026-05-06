@@ -260,7 +260,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
     check = None
     if gh_token:
         try:
-            check = CheckRun.start(gh_token, repo, head_sha, workflow.name)
+            check = CheckRun.start(gh_token, repo, head_sha, workflow.name, details_url=report_url)
         except Exception as e:
             print(f"  [warn] failed to open check run for [{workflow.name}]: {e}")
 

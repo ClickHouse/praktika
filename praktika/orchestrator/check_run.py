@@ -21,23 +21,26 @@ class CheckRun:
         return resp.json() if resp.content else {}
 
     @classmethod
-    def start(cls, token, repo, head_sha, name):
+    def start(cls, token, repo, head_sha, name, details_url=None):
+        body = {
+            "name": name,
+            "head_sha": head_sha,
+            "status": "in_progress",
+            "actions": [
+                {
+                    "label": "Cancel",
+                    "description": "Cancel this CI run",
+                    "identifier": "cancel",
+                }
+            ],
+        }
+        if details_url is not None:
+            body["details_url"] = details_url
         data = cls._api(
             "POST",
             f"https://api.github.com/repos/{repo}/check-runs",
             token,
-            {
-                "name": name,
-                "head_sha": head_sha,
-                "status": "in_progress",
-                "actions": [
-                    {
-                        "label": "Cancel",
-                        "description": "Cancel this CI run",
-                        "identifier": "cancel",
-                    }
-                ],
-            },
+            body,
         )
         return cls(token, repo, data["id"], name)
 

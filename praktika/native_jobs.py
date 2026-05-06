@@ -400,8 +400,8 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
                     url=report_url_current_sha,
                 )
             else:
-                # standalone engine use its own checks, extra status is redundant.
-                pass
+                # standalone engine uses its own checks; extra commit status is redundant.
+                res1 = True
             if not (res1 or res2):
                 Utils.raise_with_error(
                     "Failed to set both GH commit status and PR comment with Workflow Status, cannot proceed"
