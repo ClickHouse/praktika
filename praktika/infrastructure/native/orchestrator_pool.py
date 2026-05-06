@@ -197,7 +197,7 @@ class OrchestratorPool:
                             "Action": ["sqs:SendMessage", "sqs:GetQueueUrl"],
                             "Resource": [
                                 "arn:aws:sqs:*:*:praktika-workflows",
-                                "arn:aws:sqs:*:*:wf-*",
+                                "arn:aws:sqs:*:*:praktika-wf-*",
                             ],
                         },
                         {
