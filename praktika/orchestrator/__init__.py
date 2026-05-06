@@ -141,7 +141,7 @@ def print_execution_plan(workflow, levels, job_deps):
     print(f"\n{'='*80}\n")
 
 
-def _check_output(workflow, state, error=None):
+def _check_output(workflow, state, error=None, report_url=None):
     """Assemble a Check API `output` dict (title, summary, text) from the
     live ``WorkflowState``. Called on every PATCH so the top-level check's
     Markdown body tracks the current per-job table."""
@@ -160,6 +160,8 @@ def _check_output(workflow, state, error=None):
         summary = f"Cancelled — {state.md_status_summary()}"
     else:
         summary = state.md_status_summary()
+    if report_url:
+        summary += f" — [CI Report]({report_url})"
     text = state.md_status() if state is not None else ""
     if error is not None:
         text += f"\n\n### Error\n\n```\n{error}\n```"
@@ -179,7 +181,7 @@ def _patch_top_check(check, workflow, state, error=None, details_url=None):
     if check is None:
         return
     try:
-        check.update(output=_check_output(workflow, state, error=error), details_url=details_url)
+        check.update(output=_check_output(workflow, state, error=error, report_url=details_url), details_url=details_url)
     except Exception as e:
         print(f"  [warn] top-level check PATCH failed: {type(e).__name__}: {e}")
 
@@ -315,7 +317,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
         else:
             conclusion = "neutral"
         try:
-            check.complete(conclusion, output=_check_output(workflow, state, error=error), details_url=report_url)
+            check.complete(conclusion, output=_check_output(workflow, state, error=error, report_url=report_url), details_url=report_url)
         except Exception:
             print(f"Failed to complete check run: {check}", file=sys.stderr)
 
