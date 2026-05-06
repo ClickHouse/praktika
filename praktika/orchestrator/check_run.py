@@ -1,6 +1,13 @@
 import requests
 
 
+def _resolve_token(token_or_fn):
+    """Accept either a string token or a callable returning one; return the
+    current string. Lets long-running callers pass a ``GHTokenProvider`` and
+    one-shot callers (tests, ``orchestrate job``) pass a plain token."""
+    return token_or_fn() if callable(token_or_fn) else token_or_fn
+
+
 class CheckRun:
     """Top-level workflow GitHub check run."""
 
@@ -10,7 +17,7 @@ class CheckRun:
             method,
             url,
             headers={
-                "Authorization": f"Bearer {token}",
+                "Authorization": f"Bearer {_resolve_token(token)}",
                 "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28",
             },

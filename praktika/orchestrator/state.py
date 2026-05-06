@@ -59,11 +59,13 @@ class JobCheckRun:
     def _api(method, url, token, json_body=None):
         import requests
 
+        from .check_run import _resolve_token
+
         resp = requests.request(
             method,
             url,
             headers={
-                "Authorization": f"Bearer {token}",
+                "Authorization": f"Bearer {_resolve_token(token)}",
                 "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28",
             },

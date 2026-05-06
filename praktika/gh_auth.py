@@ -1,4 +1,6 @@
+import threading
 import time
+from datetime import datetime
 
 import requests
 
@@ -20,7 +22,12 @@ from praktika.utils import Shell
 class GHAuth:
 
     @classmethod
-    def _get_access_token_by_jwt(cls, jwt_token: str, installation_id: int) -> str:
+    def _post_installation_token(cls, jwt_token: str, installation_id: int):
+        """POST the JWT for an installation access token; return (token, expires_at_epoch).
+
+        GitHub returns the token plus an ISO 8601 ``expires_at`` (~1h ahead).
+        We surface both so ``GHTokenProvider`` can refresh ahead of expiry.
+        """
         headers = {
             "Authorization": f"Bearer {jwt_token}",
             "Accept": "application/vnd.github.v3+json",
@@ -31,7 +38,20 @@ class GHAuth:
             timeout=10,
         )
         response.raise_for_status()
-        token = response.json()["token"]  # type: str
+        data = response.json()
+        token = data["token"]
+        expires_at_iso = data.get("expires_at")
+        if expires_at_iso:
+            expires_at = datetime.fromisoformat(
+                expires_at_iso.replace("Z", "+00:00")
+            ).timestamp()
+        else:
+            expires_at = time.time() + 3600
+        return token, expires_at
+
+    @classmethod
+    def _get_access_token_by_jwt(cls, jwt_token: str, installation_id: int) -> str:
+        token, _ = cls._post_installation_token(jwt_token, installation_id)
         return token
 
     @classmethod
@@ -73,8 +93,10 @@ class GHAuth:
         Shell.check(f"echo {access_token} | gh auth login --with-token", strict=True)
 
     @classmethod
-    def get_installation_token(cls) -> str:
-        """Return a raw GitHub App installation access token."""
+    def _read_app_credentials(cls):
+        """Read (app_id, pem, installation_id) from Secrets Manager via the
+        Settings.SECRET_GH_APP entry. Shared by ``get_installation_token`` and
+        ``GHTokenProvider`` so both go through the same secret."""
         from praktika.secret import Secret
         from praktika.settings import Settings
 
@@ -87,11 +109,61 @@ class GHAuth:
             type=Secret.Type.AWS_SSM_SECRET,
             region=Settings.AWS_REGION,
         ).get_value()
-        return cls._get_access_token(pem, app_id, int(installation_id))
+        return app_id, pem, int(installation_id)
+
+    @classmethod
+    def get_installation_token(cls) -> str:
+        """Return a raw GitHub App installation access token."""
+        app_id, pem, installation_id = cls._read_app_credentials()
+        return cls._get_access_token(pem, app_id, installation_id)
+
+    @classmethod
+    def get_installation_token_with_expiry(cls):
+        """Like ``get_installation_token`` but returns ``(token, expires_at_epoch)``."""
+        app_id, pem, installation_id = cls._read_app_credentials()
+        payload = {
+            "iat": int(time.time()) - 60,
+            "exp": int(time.time()) + (10 * 60),
+            "iss": app_id,
+        }
+        encoded_jwt = jwt.PyJWT().encode(payload, pem, algorithm="RS256")
+        return cls._post_installation_token(encoded_jwt, installation_id)
 
     @classmethod
     def auth_from_settings(cls) -> None:
         Shell.check(f"echo {cls.get_installation_token()} | gh auth login --with-token", strict=True)
+
+
+class GHTokenProvider:
+    """Auto-refreshing GitHub App installation token cache.
+
+    Installation tokens have a fixed ~1h lifetime (GitHub-side, not
+    configurable), so any process that outlives a single token must
+    re-mint. This provider caches the most recent token and re-mints
+    transparently on the next ``get()`` once the cached token is within
+    ``refresh_margin`` seconds of expiry. Thread-safe.
+
+    Pass instances where a token *callable* is expected (``CheckRun``,
+    ``JobCheckRun``); call sites resolve via ``__call__`` on every API hit
+    and never see a stale token. Callers that want a one-shot string can
+    use ``GHAuth.get_installation_token()`` directly.
+    """
+
+    def __init__(self, refresh_margin: int = 300):
+        self._refresh_margin = refresh_margin
+        self._token = None
+        self._expires_at = 0.0
+        self._lock = threading.Lock()
+
+    def get(self) -> str:
+        with self._lock:
+            if self._token and time.time() < self._expires_at - self._refresh_margin:
+                return self._token
+            self._token, self._expires_at = GHAuth.get_installation_token_with_expiry()
+            return self._token
+
+    def __call__(self) -> str:
+        return self.get()
 
 
 # if __name__ == "__main__":
