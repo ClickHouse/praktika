@@ -34,6 +34,25 @@ from . import build_job_dag
 # ``praktika-arm-2xsmall``.
 _QUEUE_PREFIX = "praktika-"
 
+# Job liveness — S3-based heartbeat (see roadmap). The job agent posts
+# ``heartbeat.json`` under ``runs/<run_id>/<job>/`` every
+# ``HEARTBEAT_INTERVAL_S``. The orchestrator sweeps RUNNING jobs once per
+# wait() cycle and marks them dead under two rules:
+#   - never seen heartbeat AND age since kick > PICKUP_GRACE_S → never
+#     started (empty pool, agent crash before first heartbeat);
+#   - heartbeat seen AND age since last heartbeat > DEAD_THRESHOLD_S →
+#     runner died mid-job.
+# Pickup grace is generous (5 min) so cold-start clone + pip install does
+# not get flagged. Dead threshold is 3× heartbeat to absorb a single miss.
+HEARTBEAT_INTERVAL_S = 30
+HEARTBEAT_DEAD_THRESHOLD_S = 90
+HEARTBEAT_PICKUP_GRACE_S = 300
+
+
+def _normalize_job_name_for_s3(name):
+    """Turn a job name into an S3-safe path segment (mirrors job log path)."""
+    return name.replace(" ", "_").replace("/", "_")
+
 
 def _queue_for_runs_on(runs_on):
     """First non-empty ``runs_on`` label → ``praktika-<label>`` queue name."""
@@ -150,6 +169,10 @@ class JobState:
         self.started_at = None
         self.finished_at = None
         self.filter_reason = None  # set by .skip() when Config Workflow skips it
+        # S3-heartbeat liveness. ``last_heartbeat_ts`` stays None until the
+        # orchestrator's sweep first sees a heartbeat file in S3; staying
+        # None past PICKUP_GRACE_S means the runner never started the job.
+        self.last_heartbeat_ts = None
 
     @property
     def name(self):
@@ -272,6 +295,26 @@ class JobState:
         suffix = f" ({reason})" if reason else ""
         print(f"[SKIP ] {self.name:70s}{suffix}")
 
+    def fail_dead(self, reason):
+        """Transition RUNNING -> FAILURE because the runner stopped responding.
+
+        Triggered by the orchestrator's heartbeat sweep when the job either
+        never started (no heartbeat by ``PICKUP_GRACE_S``) or stopped
+        emitting heartbeats (last heartbeat older than
+        ``DEAD_THRESHOLD_S``). The runner is presumed gone, so the
+        orchestrator completes the check itself with ``failure`` —
+        nothing else will ever drive the check forward.
+        """
+        if self.status != JobStatus.RUNNING:
+            return
+        self.status = JobStatus.FAILURE
+        self.finished_at = time.time()
+        self.rc = 1
+        output = {"title": reason, "summary": reason}
+        self._update_check(lambda c: c.complete("failure", output=output))
+        duration = self.finished_at - (self.started_at or self.finished_at)
+        print(f"[DEAD ] {self.name:70s} ({duration:.1f}s) {reason}")
+
     def cancel(self, reason="run cancelled"):
         """Transition PENDING or RUNNING -> CANCELLED.
 
@@ -361,9 +404,14 @@ class WorkflowState:
             self._completions_queue_name = None
             self._s3 = None
 
+        # Per-run S3 prefix shared by the cancel flag and per-job heartbeats.
+        # Lambda-driven cancel still flows lambda → SQS cancel msg → wait()
+        # → cancel_unfinished_jobs() → S3 flag → runner-side CancelWatchdog;
+        # only the S3 path moves under runs/<run_id>/.
         from ..settings import Settings
         self._cancel_s3_bucket = Settings.S3_ARTIFACT_PATH.split("/")[0]
-        self._cancel_s3_key = f"ci-cancel/{self._run_id}"
+        self._runs_s3_prefix = f"runs/{self._run_id}"
+        self._cancel_s3_key = f"{self._runs_s3_prefix}/cancel"
 
         self.jobs = {
             job.name: JobState(job, workflow_state=self) for job in workflow.jobs
@@ -457,6 +505,57 @@ class WorkflowState:
                 f"{type(e).__name__}: {e}"
             )
 
+    # ---------------------------------------------------------- liveness
+
+    def _heartbeat_s3_key(self, job_name):
+        return f"{self._runs_s3_prefix}/{_normalize_job_name_for_s3(job_name)}/heartbeat.json"
+
+    def sweep_liveness(self, now=None):
+        """Mark RUNNING jobs whose runner stopped responding as FAILURE.
+
+        Reads each RUNNING job's ``heartbeat.json`` from S3 and applies the
+        two liveness rules (pickup grace + dead threshold). Called from
+        ``wait()`` once per loop iteration. No-op in local mode (no S3
+        client) and when nothing is running.
+        """
+        if self._s3 is None or self.local_mode:
+            return
+        running = [js for js in self.jobs.values() if js.status == JobStatus.RUNNING]
+        if not running:
+            return
+        now = now if now is not None else time.time()
+        for js in running:
+            key = self._heartbeat_s3_key(js.name)
+            try:
+                obj = self._s3.get_object(Bucket=self._cancel_s3_bucket, Key=key)
+                body = obj["Body"].read()
+                hb = json.loads(body)
+                ts = float(hb.get("ts", 0))
+                if ts > 0:
+                    js.last_heartbeat_ts = ts
+            except Exception:
+                # Heartbeat file may not exist yet (job still cloning) or S3
+                # may have a transient error — both are handled by the age
+                # checks below: if pickup grace expires without ever seeing
+                # one, we declare the job dead.
+                pass
+
+            kicked = js.started_at or now
+            age_since_kick = now - kicked
+            if js.last_heartbeat_ts is None:
+                if age_since_kick > HEARTBEAT_PICKUP_GRACE_S:
+                    js.fail_dead(
+                        f"runner never started job (no heartbeat in "
+                        f"{int(age_since_kick)}s, grace={HEARTBEAT_PICKUP_GRACE_S}s)"
+                    )
+            else:
+                age_since_hb = now - js.last_heartbeat_ts
+                if age_since_hb > HEARTBEAT_DEAD_THRESHOLD_S:
+                    js.fail_dead(
+                        f"runner died (no heartbeat in {int(age_since_hb)}s, "
+                        f"threshold={HEARTBEAT_DEAD_THRESHOLD_S}s)"
+                    )
+
     # ---------------------------------------------------------- dispatch
 
     def _dispatch(self, job_state, queue_name):
@@ -482,6 +581,9 @@ class WorkflowState:
             "completions_queue_url": self._completions_queue_url,
             "cancel_s3_bucket": self._cancel_s3_bucket,
             "cancel_s3_key": self._cancel_s3_key,
+            "heartbeat_s3_bucket": self._cancel_s3_bucket,
+            "heartbeat_s3_key": self._heartbeat_s3_key(job_state.name),
+            "heartbeat_interval_s": HEARTBEAT_INTERVAL_S,
             "check_run_id": job_state.check.id if job_state.check else None,
             "environment": self._environment,
         }
@@ -638,6 +740,13 @@ class WorkflowState:
             MaxNumberOfMessages=10,
             WaitTimeSeconds=20,
         )
+
+        # After long-polling completion/cancel messages, check S3 heartbeats
+        # so a runner that died without delivering a job_completion still
+        # gets the DAG advanced (without this, a dead-mid-job runner would
+        # spin wait() forever). Sweep runs even when the SQS receive
+        # returned messages, since each long-poll is at most ~20s.
+        self.sweep_liveness()
         for msg in resp.get("Messages", []):
             try:
                 body = json.loads(msg["Body"])

@@ -96,6 +96,11 @@ Job runner
   "job_name": "Style check",
   "runs_on": ["praktika-arm-2xsmall"],
   "completions_queue_url": "https://sqs.us-east-1.amazonaws.com/.../praktika-wf-55743-72611853552",
+  "cancel_s3_bucket": "praktika-artifacts-eu-north-1",
+  "cancel_s3_key": "runs/72611853552/cancel",
+  "heartbeat_s3_bucket": "praktika-artifacts-eu-north-1",
+  "heartbeat_s3_key": "runs/72611853552/Style_check/heartbeat.json",
+  "heartbeat_interval_s": 30,
   "check_run_id": 72611853552,
   "environment": { "WORKFLOW_CONFIG": {}, "..." : "..." }
 }
@@ -107,6 +112,9 @@ propagating `WORKFLOW_CONFIG`, `COMMIT_AUTHORS`, `JOB_KV_DATA`, etc.
 
 `completions_queue_url` is the per-run queue: the runner sends its `job_completion`
 only there, so no other run ever sees it.
+
+`cancel_s3_*` and `heartbeat_s3_*` define the per-job liveness channel — see
+[Liveness signals](#liveness-signals).
 
 ### `job_completion` (runner → `praktika-wf-{pr}-{run_id}`) {#job-completion}
 
@@ -132,6 +140,34 @@ only there, so no other run ever sees it.
 Addressing is by queue name (`praktika-wf-{pr}-{run_id}`). The body needs no
 discriminator — there is exactly one consumer of this queue and the message can
 only mean "stop".
+
+## Liveness signals {#liveness-signals}
+
+Two S3 channels colocated under `s3://<artifacts-bucket>/runs/<run_id>/`:
+
+| Channel | Direction | Path | Purpose |
+|---|---|---|---|
+| Cancel flag | Orchestrator → job | `runs/<run_id>/cancel` | When written, every running job in this run kills its subprocess |
+| Heartbeat | Job → orchestrator | `runs/<run_id>/<normalized-job-name>/heartbeat.json` | Periodic `{ts, status}` proves the runner is alive |
+
+**Cancel flag** — written by `WorkflowState.cancel_unfinished_jobs` after a
+`cancel` SQS message arrives (see [Cancel semantics](#cancel-semantics)). Each
+runner has a `CancelWatchdog` thread that polls the key every 10 s and kills
+the job subprocess on first hit.
+
+**Heartbeat** — written by the runner-side `Heartbeat` thread every
+`heartbeat_interval_s` (default 30 s). The orchestrator runs
+`WorkflowState.sweep_liveness` once per `wait()` cycle and marks RUNNING jobs
+dead under two rules:
+
+- **Pickup grace expired** (default 300 s): no heartbeat ever observed and
+  `now - kicked_at > PICKUP_GRACE_S` → covers empty runner pools and agent
+  crashes before the first heartbeat.
+- **Dead threshold** (default 90 s = 3× interval): heartbeat seen but
+  `now - last_heartbeat_ts > DEAD_THRESHOLD_S` → runner died mid-job.
+
+Either path completes the per-job check as `failure` and advances the DAG so
+downstream jobs cascade-cancel and `Finish Workflow` (always_run) still fires.
 
 ## Cancel semantics {#cancel-semantics}
 

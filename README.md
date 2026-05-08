@@ -60,16 +60,12 @@ in one command, and wiring up the GitHub webhook.
 ## Roadmap
 
 **Execution engine**
-- **S3-based job liveness** — colocate cancel flag, heartbeat, and final
-  state under a single per-job S3 prefix (`runs/<run_id>/<job>/`):
-  job agent posts a 30 s heartbeat (`{ts, status, step}`); orchestrator
-  sweeps RUNNING jobs and marks any without a heartbeat in 90 s as
-  `failure ("runner died")`, with a longer pickup grace covering
-  never-started jobs (empty pool, agent crash before first heartbeat).
-  Job writes its final state (RC + env snapshot) to the same prefix on
-  exit, which lets the per-run completions SQS queue be retired in a
-  follow-up. Restart-safe orchestrator (state is durable in S3),
-  symmetric with the existing cancel flag
+- **S3-based final-state hand-off** — follow-up to the heartbeat work
+  already shipped: move per-job final state (RC + environment snapshot)
+  from the per-run completions SQS queue to the same `runs/<run_id>/`
+  S3 prefix that already holds the cancel flag and heartbeats, then
+  retire the SQS queue. End state: orchestrator is restart-safe (all
+  live state durable in S3) and the per-run-queue lifecycle disappears
 - **Runner pool autoscaling** — Lambda watching SQS queue depth to scale
   runner pools up/down on demand
 - **Job cancel / job rerun** — cancel an in-flight job from the GitHub UI;
@@ -83,6 +79,12 @@ in one command, and wiring up the GitHub webhook.
   table the webhook lambda consumes, so the lambda knows which branches to
   accept, which schedules to fire, and which events to drop without each
   workflow encoding that in the lambda by hand
+- **Cloud resource namespacing** — support sharing one cloud account across
+  multiple projects and one infra repo across multiple target projects by
+  prefixing all provisioned resource names with a project namespace taken
+  from `Cloud.Config.name`, so resources from different projects don't
+  collide and a single infra setup can serve many target repos
+
 
 ---DONE. VERIFY --- 
 - **Workflow cancellation** — orchestrator must handle cancel signals while

@@ -114,6 +114,59 @@ class CancelWatchdog:
                 pass  # flag not present yet, or transient S3 error
 
 
+class Heartbeat:
+    """Periodically write {ts, status, step} to the per-job S3 heartbeat key.
+
+    The orchestrator reads this key in ``WorkflowState.sweep_liveness`` to
+    decide whether the runner is still alive. A missed write (transient
+    S3 error) is benign as long as one lands within
+    ``HEARTBEAT_DEAD_THRESHOLD_S`` on the orchestrator side.
+    """
+
+    def __init__(self, s3_client, bucket, key, interval, status="running"):
+        self._s3 = s3_client
+        self._bucket = bucket
+        self._key = key
+        self._interval = max(1, int(interval or 30))
+        self._status = status
+        self._stop = threading.Event()
+        self._thread = None
+
+    def start(self):
+        # Post immediately on start so the orchestrator sees a fresh ts
+        # well before the dead threshold elapses on slow first-cycle paths.
+        self._beat()
+        self._thread = threading.Thread(target=self._run, daemon=True, name="heartbeat")
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self._interval + 5)
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, *_):
+        self.stop()
+
+    def _beat(self):
+        try:
+            self._s3.put_object(
+                Bucket=self._bucket,
+                Key=self._key,
+                Body=json.dumps({"ts": time.time(), "status": self._status}).encode(),
+                ContentType="application/json",
+            )
+        except Exception as e:
+            log.warning(f"heartbeat put failed: {type(e).__name__}: {e}")
+
+    def _run(self):
+        while not self._stop.wait(self._interval):
+            self._beat()
+
+
 class VisibilityHeartbeat:
     """Extend SQS message visibility while we process it."""
 
@@ -283,6 +336,9 @@ def handle_task(task):
 
     cancel_s3_bucket = task.get("cancel_s3_bucket", "")
     cancel_s3_key = task.get("cancel_s3_key", "")
+    heartbeat_s3_bucket = task.get("heartbeat_s3_bucket", "")
+    heartbeat_s3_key = task.get("heartbeat_s3_key", "")
+    heartbeat_interval_s = task.get("heartbeat_interval_s", 30)
 
     log.info(f"Running job {job_name!r} for PR#{pr_number}")
     import boto3
@@ -293,8 +349,24 @@ def handle_task(task):
         stderr=subprocess.PIPE,
         text=True,
     )
-    with CancelWatchdog(s3, cancel_s3_bucket, cancel_s3_key, proc):
-        _, stderr_output = proc.communicate()
+    # Cancel watchdog and heartbeat run side-by-side: one signals
+    # orchestrator → job (kill), the other signals job → orchestrator
+    # (still alive). A missing heartbeat key in the task (older orchestrator
+    # talking to a newer agent) skips the heartbeat thread silently.
+    cm_cancel = CancelWatchdog(s3, cancel_s3_bucket, cancel_s3_key, proc)
+    cm_heartbeat = (
+        Heartbeat(s3, heartbeat_s3_bucket, heartbeat_s3_key, heartbeat_interval_s)
+        if heartbeat_s3_bucket and heartbeat_s3_key
+        else None
+    )
+    with cm_cancel:
+        if cm_heartbeat is not None:
+            cm_heartbeat.start()
+        try:
+            _, stderr_output = proc.communicate()
+        finally:
+            if cm_heartbeat is not None:
+                cm_heartbeat.stop()
     rc = proc.returncode
 
     if rc != 0 and stderr_output:
