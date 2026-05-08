@@ -580,9 +580,9 @@ class Runner:
                         result.add_error(ResultInfo.TIMEOUT)
                         result.set_status(Result.Status.ERROR)
                         result.set_info(process.get_latest_log(max_lines=20))
-                    elif workflow.enable_implicit_result:
-                        # Workflow opted into implicit Result: a clean
-                        # non-zero exit from the script is a job-level
+                    elif workflow.enable_exit_code_result:
+                        # Simple mode: workflow opted out of an explicit
+                        # Result, so a clean non-zero exit is a job-level
                         # FAIL, not an infra-level ERROR/KILLED.
                         info = f"Job exited with code [{exit_code}]"
                         print(f"NOTE: {info}")
@@ -618,7 +618,7 @@ class Runner:
 
     def _get_result_object(
         self, job, setup_env_exit_code, prerun_exit_code, run_exit_code,
-        enable_implicit_result=False,
+        enable_exit_code_result=False,
     ) -> Result:
         result_exist = Result.exist(job.name)
 
@@ -639,7 +639,7 @@ class Runner:
                 duration=0.0,
             ).add_error(ResultInfo.PRE_JOB_FAILED).dump()
         elif not result_exist:
-            if enable_implicit_result:
+            if enable_exit_code_result:
                 status = Result.Status.OK if run_exit_code == 0 else Result.Status.FAIL
                 print(
                     f"NOTE: no Result on disk; synthesizing [{status}] from exit code [{run_exit_code}]"
@@ -673,7 +673,7 @@ class Runner:
             ).dump()
 
         if not result.is_completed():
-            if enable_implicit_result:
+            if enable_exit_code_result:
                 status = Result.Status.OK if run_exit_code == 0 else Result.Status.FAIL
                 print(
                     f"NOTE: Result not finalized by job; synthesizing [{status}] from exit code [{run_exit_code}]"
@@ -1219,7 +1219,7 @@ class Runner:
         if not local_job_run:
             result = self._get_result_object(
                 job, setup_env_code, prerun_code, run_code,
-                enable_implicit_result=workflow.enable_implicit_result,
+                enable_exit_code_result=workflow.enable_exit_code_result,
             )
 
             if prehook_result:

@@ -60,7 +60,16 @@ in one command, and wiring up the GitHub webhook.
 ## Roadmap
 
 **Execution engine**
-
+- **S3-based job liveness** — colocate cancel flag, heartbeat, and final
+  state under a single per-job S3 prefix (`runs/<run_id>/<job>/`):
+  job agent posts a 30 s heartbeat (`{ts, status, step}`); orchestrator
+  sweeps RUNNING jobs and marks any without a heartbeat in 90 s as
+  `failure ("runner died")`, with a longer pickup grace covering
+  never-started jobs (empty pool, agent crash before first heartbeat).
+  Job writes its final state (RC + env snapshot) to the same prefix on
+  exit, which lets the per-run completions SQS queue be retired in a
+  follow-up. Restart-safe orchestrator (state is durable in S3),
+  symmetric with the existing cancel flag
 - **Runner pool autoscaling** — Lambda watching SQS queue depth to scale
   runner pools up/down on demand
 - **Job cancel / job rerun** — cancel an in-flight job from the GitHub UI;
@@ -74,23 +83,6 @@ in one command, and wiring up the GitHub webhook.
   table the webhook lambda consumes, so the lambda knows which branches to
   accept, which schedules to fire, and which events to drop without each
   workflow encoding that in the lambda by hand
-- **Optional Result object** — let a job finish without dumping a `Result`
-  and have praktika synthesize one from the script's exit code (0 → OK,
-  non-zero → FAILURE) instead of stamping `KILLED`. Gated by a new flag on
-  the workflow config so the strict default is preserved for jobs that
-  *should* always produce a Result. Today, jobs like *Yaml Lint* that don't
-  write a Result fail with `ERROR: Job killed or terminated, no Result
-  provided`
-- **S3-based job liveness** — colocate cancel flag, heartbeat, and final
-  state under a single per-job S3 prefix (`runs/<run_id>/<job>/`):
-  job agent posts a 30 s heartbeat (`{ts, status, step}`); orchestrator
-  sweeps RUNNING jobs and marks any without a heartbeat in 90 s as
-  `failure ("runner died")`, with a longer pickup grace covering
-  never-started jobs (empty pool, agent crash before first heartbeat).
-  Job writes its final state (RC + env snapshot) to the same prefix on
-  exit, which lets the per-run completions SQS queue be retired in a
-  follow-up. Restart-safe orchestrator (state is durable in S3),
-  symmetric with the existing cancel flag
 
 ---DONE. VERIFY --- 
 - **Workflow cancellation** — orchestrator must handle cancel signals while

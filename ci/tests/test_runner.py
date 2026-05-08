@@ -133,15 +133,15 @@ class TestRunner(unittest.TestCase):
             f"Expected job.log under <workflow>/<job>/, got: {result.links}",
         )
 
-    def test_implicit_result_synthesizes_ok_on_zero_exit(self):
-        """enable_implicit_result=True + script that exits 0 without
+    def test_exit_code_result_synthesizes_ok_on_zero_exit(self):
+        """enable_exit_code_result=True + script that exits 0 without
         dumping a Result -> synthesized OK Result, run_job rc=0."""
         from praktika.orchestrator.job_runner import run_job
         from praktika.result import Result
 
         task = {
-            "workflow_name": "DummyImplicitResultTest",
-            "job_name": "implicit_ok",
+            "workflow_name": "DummyExitCodeResultTest",
+            "job_name": "exit_ok",
             "pr_number": 1,
             "base_ref": "main",
             "head_ref": "test-branch",
@@ -152,23 +152,23 @@ class TestRunner(unittest.TestCase):
         rc = run_job(task, gh_token=None, local=True)
         self.assertEqual(rc, 0, f"run_job returned non-zero rc [{rc}]")
 
-        result = Result.from_fs("implicit_ok")
+        result = Result.from_fs("exit_ok")
         self.assertEqual(result.status, Result.Status.OK)
         # Duration should reflect actual job runtime, not zero — pre_run
         # set start_time and update_duration computes now - start_time.
         self.assertIsNotNone(result.duration)
         self.assertGreater(result.duration, 0)
 
-    def test_implicit_result_synthesizes_fail_on_nonzero_exit(self):
-        """enable_implicit_result=True + script that exits non-zero
+    def test_exit_code_result_synthesizes_fail_on_nonzero_exit(self):
+        """enable_exit_code_result=True + script that exits non-zero
         without dumping a Result -> synthesized FAIL Result with the
         exit code embedded in info, run_job rc!=0."""
         from praktika.orchestrator.job_runner import run_job
         from praktika.result import Result
 
         task = {
-            "workflow_name": "DummyImplicitResultTest",
-            "job_name": "implicit_fail",
+            "workflow_name": "DummyExitCodeResultTest",
+            "job_name": "exit_fail",
             "pr_number": 1,
             "base_ref": "main",
             "head_ref": "test-branch",
@@ -179,7 +179,7 @@ class TestRunner(unittest.TestCase):
         rc = run_job(task, gh_token=None, local=True)
         self.assertNotEqual(rc, 0, "non-zero exit must propagate to run_job rc")
 
-        result = Result.from_fs("implicit_fail")
+        result = Result.from_fs("exit_fail")
         self.assertEqual(result.status, Result.Status.FAIL)
         self.assertIn("exited with code [7]", result.info)
         self.assertIsNotNone(result.duration)
