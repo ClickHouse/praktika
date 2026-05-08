@@ -26,5 +26,6 @@ WORKFLOWS = [
                 runs_on=["ubuntu-latest"],
             ),
         ],
+        enable_exit_code_result=True,
     )
 ]

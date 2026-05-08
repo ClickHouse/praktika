@@ -33,6 +33,7 @@ workflow = Workflow.Config(
             description="User Age",
         ),
     ],
+    enable_exit_code_result=True,
 )
 
 WORKFLOWS = [workflow]

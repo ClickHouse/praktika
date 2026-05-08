@@ -65,6 +65,7 @@ workflow = Workflow.Config(
     ],
     artifacts=[artifact],
     enable_report=True,
+    enable_exit_code_result=True,
 )
 
 WORKFLOWS = [workflow]

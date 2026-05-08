@@ -90,6 +90,7 @@ workflow = Workflow.Config(
     enable_merge_ready_status=True,
     enable_cidb=True,
     enable_gh_summary_comment=True,
+    enable_exit_code_result=True,
 )
 
 WORKFLOWS = [workflow]

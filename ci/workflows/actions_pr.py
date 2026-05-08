@@ -76,5 +76,6 @@ WORKFLOWS = [
         artifacts=[
             Artifact.Config(name="hello", type=Artifact.Type.GH, path="./hello.txt"),
         ],
+        enable_exit_code_result=True,
     )
 ]
