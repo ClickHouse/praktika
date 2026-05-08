@@ -578,18 +578,24 @@ class Runner:
                             f"WARNING: Job timed out: [{job.name}], timeout [{job.timeout}], exit code [{exit_code}]"
                         )
                         result.add_error(ResultInfo.TIMEOUT)
-                    elif result.is_running():
-                        info = f"Job killed, exit code [{exit_code}]"
-                        print(f"ERROR: {info}")
-                        result.add_error(info)
+                        result.set_status(Result.Status.ERROR)
+                        result.set_info(process.get_latest_log(max_lines=20))
+                    elif workflow.enable_implicit_result:
+                        # Workflow opted into implicit Result: a clean
+                        # non-zero exit from the script is a job-level
+                        # FAIL, not an infra-level ERROR/KILLED.
+                        info = f"Job exited with code [{exit_code}]"
+                        print(f"NOTE: {info}")
+                        result.set_status(Result.Status.FAIL).set_info(info)
                     else:
-                        info = f"Invalid status [{result.status}] for exit code [{exit_code}]"
+                        if result.is_running():
+                            info = f"Job killed, exit code [{exit_code}]"
+                        else:
+                            info = f"Invalid status [{result.status}] for exit code [{exit_code}]"
                         print(f"ERROR: {info}")
                         result.add_error(info)
-                    result.set_status(Result.Status.ERROR)
-                    result.set_info(
-                        process.get_latest_log(max_lines=20)
-                    )
+                        result.set_status(Result.Status.ERROR)
+                        result.set_info(process.get_latest_log(max_lines=20))
             result.dump()
 
         print("INFO: disk status after running a job:")
@@ -612,6 +618,7 @@ class Runner:
 
     def _get_result_object(
         self, job, setup_env_exit_code, prerun_exit_code, run_exit_code,
+        enable_implicit_result=False,
     ) -> Result:
         result_exist = Result.exist(job.name)
 
@@ -632,13 +639,28 @@ class Runner:
                 duration=0.0,
             ).add_error(ResultInfo.PRE_JOB_FAILED).dump()
         elif not result_exist:
-            print(f"ERROR: {ResultInfo.NOT_FOUND_IMPOSSIBLE}")
-            Result(
-                name=job.name,
-                start_time=Utils.timestamp(),
-                duration=None,
-                status=Result.Status.ERROR,
-            ).add_error(ResultInfo.NOT_FOUND_IMPOSSIBLE).dump()
+            if enable_implicit_result:
+                status = Result.Status.OK if run_exit_code == 0 else Result.Status.FAIL
+                print(
+                    f"NOTE: no Result on disk; synthesizing [{status}] from exit code [{run_exit_code}]"
+                )
+                synthesized = Result(
+                    name=job.name,
+                    start_time=Utils.timestamp(),
+                    duration=None,
+                    status=status,
+                )
+                if run_exit_code != 0:
+                    synthesized.set_info(f"Job exited with code [{run_exit_code}]")
+                synthesized.dump()
+            else:
+                print(f"ERROR: {ResultInfo.NOT_FOUND_IMPOSSIBLE}")
+                Result(
+                    name=job.name,
+                    start_time=Utils.timestamp(),
+                    duration=None,
+                    status=Result.Status.ERROR,
+                ).add_error(ResultInfo.NOT_FOUND_IMPOSSIBLE).dump()
 
         try:
             result = Result.from_fs(job.name)
@@ -651,8 +673,18 @@ class Runner:
             ).dump()
 
         if not result.is_completed():
-            print(f"ERROR: {ResultInfo.KILLED}")
-            result.add_error(ResultInfo.KILLED).set_status(Result.Status.ERROR).dump()
+            if enable_implicit_result:
+                status = Result.Status.OK if run_exit_code == 0 else Result.Status.FAIL
+                print(
+                    f"NOTE: Result not finalized by job; synthesizing [{status}] from exit code [{run_exit_code}]"
+                )
+                result.set_status(status)
+                if run_exit_code != 0:
+                    result.set_info(f"Job exited with code [{run_exit_code}]")
+                result.dump()
+            else:
+                print(f"ERROR: {ResultInfo.KILLED}")
+                result.add_error(ResultInfo.KILLED).set_status(Result.Status.ERROR).dump()
 
         if result.is_error() and result.get_on_error_hook():
             print(f"--- Run on_error_hook [{result.get_on_error_hook()}]")
@@ -1186,7 +1218,8 @@ class Runner:
         # the full hand-off.
         if not local_job_run:
             result = self._get_result_object(
-                job, setup_env_code, prerun_code, run_code
+                job, setup_env_code, prerun_code, run_code,
+                enable_implicit_result=workflow.enable_implicit_result,
             )
 
             if prehook_result:

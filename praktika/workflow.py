@@ -61,6 +61,11 @@ class Workflow:
         enable_open_issues_check: bool = False
         # If enabled, CI events will be accumulated and stored, allowing users to subscribe to notifications via the Slack Praktika app
         enable_slack_feed: bool = False
+        # If enabled, jobs may finish without dumping a Result and praktika
+        # synthesizes one from the script's exit code (0 -> OK, non-zero -> FAIL)
+        # instead of stamping ERROR/KILLED. Setup-env / pre-run failures still
+        # produce ERROR — those are infra failures, not job outcomes.
+        enable_implicit_result: bool = False
         # Job aliases for easy job reference with `praktika run job_alias --test TEST_NAME` in local environment
         job_aliases: Dict[str, str] = field(default_factory=dict)
 

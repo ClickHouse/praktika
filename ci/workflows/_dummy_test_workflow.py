@@ -43,4 +43,24 @@ if os.environ.get("PRAKTIKA_TEST_ACTIVE") == "1":
             enable_merge_ready_status=True,
             enable_gh_summary_comment=True,
         ),
+        Workflow.Config(
+            name="DummyImplicitResultTest",
+            event=Workflow.Event.PULL_REQUEST,
+            base_branches=["main"],
+            jobs=[
+                Job.Config(
+                    name="implicit_ok",
+                    runs_on=["test-runner"],
+                    # Script exits 0 without writing a Result.
+                    command="python3 -c 'pass'",
+                ),
+                Job.Config(
+                    name="implicit_fail",
+                    runs_on=["test-runner"],
+                    # Script exits non-zero without writing a Result.
+                    command="python3 -c 'import sys; sys.exit(7)'",
+                ),
+            ],
+            enable_implicit_result=True,
+        ),
     ]
