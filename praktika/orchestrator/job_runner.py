@@ -340,17 +340,23 @@ def run_job(task, gh_token=None, local=False):
     # GHA would have assembled from step outputs.
     env_snapshot = _read_env_file()
 
-    # Report the real result back to the orchestrator so wait() can flip the
-    # job to SUCCESS or FAILURE and advance the DAG.
-    completions_url = task.get("completions_queue_url")
-    if completions_url and not local:
+    # Report the final state to the orchestrator via S3 (phase 2 of the
+    # liveness work): the orchestrator's wait() polls runs/<run_id>/<job>/
+    # final.json and advances the DAG from there. S3 is durable, so a
+    # restart of the orchestrator after this write still picks the result
+    # up. The per-run SQS queue is retained only for the lambda → cancel
+    # path until it moves to S3 in a follow-up.
+    final_bucket = task.get("final_state_s3_bucket", "")
+    final_key = task.get("final_state_s3_key", "")
+    if final_bucket and final_key and not local:
         try:
             import boto3
-            sqs = boto3.client("sqs", region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
+            s3 = boto3.client("s3", region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
             body = {
                 "type": "job_completion",
                 "job_name": task.get("job_name"),
                 "rc": rc,
+                "ts": time.time(),
                 "repo": task.get("repo"),
                 "pr_number": task.get("pr_number"),
                 "head_sha": task.get("head_sha"),
@@ -358,12 +364,17 @@ def run_job(task, gh_token=None, local=False):
             }
             if env_snapshot is not None:
                 body["environment"] = env_snapshot
-            sqs.send_message(QueueUrl=completions_url, MessageBody=json.dumps(body))
+            s3.put_object(
+                Bucket=final_bucket,
+                Key=final_key,
+                Body=json.dumps(body).encode(),
+                ContentType="application/json",
+            )
             print(
-                f"Sent completion: {task.get('job_name')!r} rc={rc}"
-                f"{' +env' if env_snapshot is not None else ''}"
+                f"Wrote final state s3://{final_bucket}/{final_key} "
+                f"rc={rc}{' +env' if env_snapshot is not None else ''}"
             )
         except Exception as e:
-            print(f"  [warn] failed to send completion: {type(e).__name__}: {e}")
+            print(f"  [warn] failed to write final state: {type(e).__name__}: {e}")
 
     return rc

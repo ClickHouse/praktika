@@ -510,6 +510,41 @@ class WorkflowState:
     def _heartbeat_s3_key(self, job_name):
         return f"{self._runs_s3_prefix}/{_normalize_job_name_for_s3(job_name)}/heartbeat.json"
 
+    def _final_state_s3_key(self, job_name):
+        return f"{self._runs_s3_prefix}/{_normalize_job_name_for_s3(job_name)}/final.json"
+
+    def sweep_completions(self):
+        """Advance RUNNING jobs whose ``final.json`` has landed in S3.
+
+        Replaces the SQS ``job_completion`` path: the runner writes
+        ``runs/<run_id>/<job>/final.json`` with ``{rc, environment, ...}``
+        on exit; we read it here and call ``js.finish``. ``finish`` is a
+        no-op for non-RUNNING jobs, so seeing the same file twice (e.g.
+        across orchestrator restart) is harmless. No-op in local mode and
+        when no job is RUNNING.
+        """
+        if self._s3 is None or self.local_mode:
+            return
+        running = [js for js in self.jobs.values() if js.status == JobStatus.RUNNING]
+        if not running:
+            return
+        for js in running:
+            key = self._final_state_s3_key(js.name)
+            try:
+                obj = self._s3.get_object(Bucket=self._cancel_s3_bucket, Key=key)
+                payload = json.loads(obj["Body"].read())
+            except Exception:
+                # Not present yet, or transient S3 error — try again next sweep.
+                continue
+            rc = int(payload.get("rc", 1))
+            env = payload.get("environment")
+            if isinstance(env, dict):
+                self._environment = env
+                wc = env.get("WORKFLOW_CONFIG")
+                if isinstance(wc, dict):
+                    self.apply_filtered_jobs(wc.get("filtered_jobs") or {})
+            js.finish(success=(rc == 0))
+
     def sweep_liveness(self, now=None):
         """Mark RUNNING jobs whose runner stopped responding as FAILURE.
 
@@ -584,6 +619,8 @@ class WorkflowState:
             "heartbeat_s3_bucket": self._cancel_s3_bucket,
             "heartbeat_s3_key": self._heartbeat_s3_key(job_state.name),
             "heartbeat_interval_s": HEARTBEAT_INTERVAL_S,
+            "final_state_s3_bucket": self._cancel_s3_bucket,
+            "final_state_s3_key": self._final_state_s3_key(job_state.name),
             "check_run_id": job_state.check.id if job_state.check else None,
             "environment": self._environment,
         }
@@ -724,9 +761,10 @@ class WorkflowState:
 
         Local mode dispatched the job synchronously inside ``kick`` and the
         job is already in a terminal state by the time we get here; nothing
-        to wait on. CI mode long-polls the per-workflow completions queue
-        for ``job_completion`` / ``cancel`` messages and drives the DAG
-        from there.
+        to wait on. CI mode long-polls the per-run completions queue for
+        the lambda's ``cancel`` signal, then sweeps S3 for heartbeats and
+        per-job ``final.json`` to drive the DAG (job_completion moved off
+        SQS in phase 2 of the liveness work).
         """
         if not self._completions_queue_url or self._sqs is None:
             return  # local mode — kick() already finished the job
@@ -741,46 +779,32 @@ class WorkflowState:
             WaitTimeSeconds=20,
         )
 
-        # After long-polling completion/cancel messages, check S3 heartbeats
-        # so a runner that died without delivering a job_completion still
-        # gets the DAG advanced (without this, a dead-mid-job runner would
-        # spin wait() forever). Sweep runs even when the SQS receive
-        # returned messages, since each long-poll is at most ~20s.
-        self.sweep_liveness()
         for msg in resp.get("Messages", []):
             try:
                 body = json.loads(msg["Body"])
                 msg_type = body.get("type", "")
 
-                # The queue is per-run, so every message on it is addressed
-                # to us: cancel means cancel, job_completion means advance
-                # the DAG. No run_id filtering.
+                # SQS now carries only the lambda → orchestrator cancel
+                # signal — job_completion moved to S3 (final.json).
                 if msg_type == "cancel":
                     print(f"[CANCEL] run {self._run_id}")
                     self.cancelled = True
-                elif msg_type == "job_completion":
-                    job_name = body.get("job_name", "")
-                    rc = body.get("rc", 1)
-                    js = self.jobs.get(job_name)
-                    if js and js.status == JobStatus.RUNNING:
-                        env = body.get("environment")
-                        if isinstance(env, dict):
-                            self._environment = env
-                            wc = env.get("WORKFLOW_CONFIG")
-                            if isinstance(wc, dict):
-                                self.apply_filtered_jobs(wc.get("filtered_jobs") or {})
-                        js.finish(success=(rc == 0))
-                    else:
-                        print(f"  [warn] completion for unknown/non-running job {job_name!r}")
                 else:
                     print(f"  [warn] unknown message type {msg_type!r}")
             except Exception as e:
-                print(f"  [warn] malformed completion message: {e}")
+                print(f"  [warn] malformed message: {e}")
             finally:
                 self._sqs.delete_message(
                     QueueUrl=self._completions_queue_url,
                     ReceiptHandle=msg["ReceiptHandle"],
                 )
+
+        # After SQS (cancel only), sweep S3 for heartbeats and final state.
+        # Both run every wait() cycle (~20 s long-poll); a runner that died
+        # mid-job is caught by sweep_liveness so wait() never spins, and a
+        # finished job is picked up by sweep_completions on the next cycle.
+        self.sweep_liveness()
+        self.sweep_completions()
 
     def cleanup(self):
         """Delete the per-run completions queue.

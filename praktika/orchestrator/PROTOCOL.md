@@ -101,6 +101,8 @@ Job runner
   "heartbeat_s3_bucket": "praktika-artifacts-eu-north-1",
   "heartbeat_s3_key": "runs/72611853552/Style_check/heartbeat.json",
   "heartbeat_interval_s": 30,
+  "final_state_s3_bucket": "praktika-artifacts-eu-north-1",
+  "final_state_s3_key": "runs/72611853552/Style_check/final.json",
   "check_run_id": 72611853552,
   "environment": { "WORKFLOW_CONFIG": {}, "..." : "..." }
 }
@@ -110,19 +112,21 @@ Job runner
 serialized `ci/tmp/environment.json` from the previous job for all subsequent jobs,
 propagating `WORKFLOW_CONFIG`, `COMMIT_AUTHORS`, `JOB_KV_DATA`, etc.
 
-`completions_queue_url` is the per-run queue: the runner sends its `job_completion`
-only there, so no other run ever sees it.
+`completions_queue_url` is the per-run queue. As of phase 2 of the liveness work, it
+carries only the lambda's `cancel` message — `job_completion` moved to S3
+(`final_state_s3_key`). The queue will be retired in a follow-up.
 
-`cancel_s3_*` and `heartbeat_s3_*` define the per-job liveness channel — see
-[Liveness signals](#liveness-signals).
+`cancel_s3_*`, `heartbeat_s3_*`, and `final_state_s3_*` colocate cancel, liveness, and
+completion under one S3 prefix per run — see [Liveness signals](#liveness-signals).
 
-### `job_completion` (runner → `praktika-wf-{pr}-{run_id}`) {#job-completion}
+### `job_completion` (runner → `s3://.../runs/<run_id>/<job>/final.json`) {#job-completion}
 
 ```json
 {
   "type": "job_completion",
   "job_name": "Style check",
   "rc": 0,
+  "ts": 1704067200.123,
   "repo": "ClickHouse/clickhouse-private",
   "pr_number": 55743,
   "head_sha": "abc123",
@@ -130,6 +134,12 @@ only there, so no other run ever sees it.
   "environment": { "WORKFLOW_CONFIG": {}, "..." : "..." }
 }
 ```
+
+Written by `orchestrator/job_runner.py` after `Runner.run` returns and the per-job
+check is PATCHed. Read by `WorkflowState.sweep_completions` once per `wait()` cycle.
+Idempotent: `JobState.finish` is a no-op once the job has already moved out of
+RUNNING, so a final.json that arrives after `sweep_liveness` already declared the
+job dead is harmless.
 
 ### `cancel` (Lambda → `praktika-wf-{pr}-{run_id}`) {#cancel}
 
@@ -143,12 +153,13 @@ only mean "stop".
 
 ## Liveness signals {#liveness-signals}
 
-Two S3 channels colocated under `s3://<artifacts-bucket>/runs/<run_id>/`:
+Three S3 channels colocated under `s3://<artifacts-bucket>/runs/<run_id>/`:
 
 | Channel | Direction | Path | Purpose |
 |---|---|---|---|
 | Cancel flag | Orchestrator → job | `runs/<run_id>/cancel` | When written, every running job in this run kills its subprocess |
-| Heartbeat | Job → orchestrator | `runs/<run_id>/<normalized-job-name>/heartbeat.json` | Periodic `{ts, status}` proves the runner is alive |
+| Heartbeat | Job → orchestrator | `runs/<run_id>/<normalized-job>/heartbeat.json` | Periodic `{ts, status}` proves the runner is alive |
+| Final state | Job → orchestrator | `runs/<run_id>/<normalized-job>/final.json` | `{rc, environment, ...}` written on job exit; replaces the SQS `job_completion` |
 
 **Cancel flag** — written by `WorkflowState.cancel_unfinished_jobs` after a
 `cancel` SQS message arrives (see [Cancel semantics](#cancel-semantics)). Each
@@ -168,6 +179,13 @@ dead under two rules:
 
 Either path completes the per-job check as `failure` and advances the DAG so
 downstream jobs cascade-cancel and `Finish Workflow` (always_run) still fires.
+
+**Final state** — written by `orchestrator/job_runner.py` after `Runner.run`
+returns and the per-job check is PATCHed. The orchestrator's
+`WorkflowState.sweep_completions` polls the key every `wait()` cycle and calls
+`JobState.finish` on hit. Because `final.json` is durable on S3, an
+orchestrator that died after dispatch picks the result up on restart — no
+in-flight messages get lost the way an SQS `job_completion` would.
 
 ## Cancel semantics {#cancel-semantics}
 

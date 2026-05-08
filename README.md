@@ -60,12 +60,12 @@ in one command, and wiring up the GitHub webhook.
 ## Roadmap
 
 **Execution engine**
-- **S3-based final-state hand-off** — follow-up to the heartbeat work
-  already shipped: move per-job final state (RC + environment snapshot)
-  from the per-run completions SQS queue to the same `runs/<run_id>/`
-  S3 prefix that already holds the cancel flag and heartbeats, then
-  retire the SQS queue. End state: orchestrator is restart-safe (all
-  live state durable in S3) and the per-run-queue lifecycle disappears
+- **Retire the per-run completions SQS queue** — heartbeat, final state,
+  and the cancel flag now all live under `runs/<run_id>/` in S3. The
+  per-run SQS queue is the last user of the queue: lambda still writes
+  `cancel` messages into it. Move that one signal to S3 (lambda puts a
+  flag at `runs/<run_id>/cancel`), drop the queue create/delete from
+  the orchestrator, and the orchestrator becomes fully restart-safe
 - **Runner pool autoscaling** — Lambda watching SQS queue depth to scale
   runner pools up/down on demand
 - **Job cancel / job rerun** — cancel an in-flight job from the GitHub UI;
@@ -85,20 +85,6 @@ in one command, and wiring up the GitHub webhook.
   from `Cloud.Config.name`, so resources from different projects don't
   collide and a single infra setup can serve many target repos
 
-
----DONE. VERIFY --- 
-- **Workflow cancellation** — orchestrator must handle cancel signals while
-  blocked in `wait()`: a runner that never picks up a job leaves the
-  orchestrator stuck indefinitely, and a cancel that arrives (e.g. from a
-  new push) is only processed after the blocked call returns; the fix
-  requires either a timeout + cancel-queue poll loop inside `wait()`, or
-  running cancel handling on a separate thread/task
-- **GitHub App token refresh** — the orchestrator acquires a GH App token
-  at startup and reuses it for the lifetime of the workflow; tokens expire
-  after ~1 hour, so long-running workflows (or workflows that stall in
-  `wait()`) start getting 401s on every check-run PATCH, leaving all
-  check statuses stuck; the token must be re-acquired before each GitHub
-  API call (or cached with an expiry check)
 
 **Observability**
 - **Log export for orchestrator and runners** — live tail and persisted
