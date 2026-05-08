@@ -3,11 +3,16 @@ import hashlib
 import hmac
 import json
 import os
+import time
 
 import boto3
 
 WEBHOOK_SECRET = os.environ.get("GH_WEBHOOK_SECRET", "")
 SQS_QUEUE_NAME = os.environ.get("SQS_QUEUE_NAME", "praktika-workflows")
+# Bucket holding the per-run S3 prefix where the orchestrator polls for
+# cancel signals. Same artifact bucket the runners use; passed via env so
+# the lambda doesn't import praktika.settings.
+S3_BUCKET = os.environ.get("S3_BUCKET", "")
 
 # Only process events from these senders (for PoC)
 ALLOWED_SENDERS = {"maxknv"}
@@ -47,7 +52,7 @@ def verify_github_signature(event) -> None:
         raise ValueError("Invalid GitHub webhook signature")
 
 
-def _build_workflow(action, payload):
+def _build_workflow(action, payload, event_ts):
     """Build a CI workflow message from a pull_request event. Returns None to skip."""
     if action not in ("opened", "synchronize", "reopened", "rerequested"):
         return None
@@ -56,6 +61,7 @@ def _build_workflow(action, payload):
     return {
         "type": "pull_request",
         "action": action,
+        "event_ts": event_ts,
         "pr_number": pr.get("number"),
         "head_sha": pr.get("head", {}).get("sha", ""),
         "head_ref": pr.get("head", {}).get("ref", ""),
@@ -68,7 +74,7 @@ def _build_workflow(action, payload):
     }
 
 
-def _build_push_workflow(payload):
+def _build_push_workflow(payload, event_ts):
     """Build a CI workflow message from a push event. Returns None to skip
     (refs that aren't branch pushes, or branches not on the allow-list)."""
     ref = payload.get("ref", "")
@@ -82,6 +88,7 @@ def _build_push_workflow(payload):
         return None
     return {
         "type": "push",
+        "event_ts": event_ts,
         # head_ref carries the branch the push happened on. Match the
         # PR-event shape so every downstream consumer (orchestrator
         # workflow matcher, _dispatch's task builder,
@@ -93,7 +100,7 @@ def _build_push_workflow(payload):
     }
 
 
-def _build_rerun_workflow(check_obj, payload):
+def _build_rerun_workflow(check_obj, payload, event_ts):
     """Build a rerun workflow message from a check_suite or check_run payload.
 
     Returns (workflow_dict, pr_number) or (None, None) if the event has no
@@ -110,6 +117,7 @@ def _build_rerun_workflow(check_obj, payload):
     workflow = {
         "type": "pull_request",
         "action": "rerequested",
+        "event_ts": event_ts,
         "pr_number": pr_number,
         "head_sha": head_sha,
         "head_ref": pr.get("head", {}).get("ref", ""),
@@ -125,6 +133,7 @@ def _build_rerun_workflow(check_obj, payload):
 
 _sqs_queue_url = None
 _sqs_client = None
+_s3_client = None
 
 
 def _sqs():
@@ -134,6 +143,13 @@ def _sqs():
     return _sqs_client
 
 
+def _s3():
+    global _s3_client
+    if _s3_client is None:
+        _s3_client = boto3.client("s3")
+    return _s3_client
+
+
 def _get_queue_url():
     global _sqs_queue_url
     if _sqs_queue_url is None:
@@ -141,59 +157,48 @@ def _get_queue_url():
     return _sqs_queue_url
 
 
-def _run_queue_prefix(pr_number):
-    return f"praktika-wf-{pr_number}-"
+def _cancel_run(run_id):
+    """Manual UI Cancel button: write per-run cancel-request to S3.
 
-
-def _cancel_run(pr_number, run_id):
-    """Send a cancel to exactly one run via its per-run queue.
-
-    Used for the UI Cancel button: the webhook payload carries the check
-    run ID, which is the run_id and the queue suffix, so we can address
-    the run directly — no filtering needed on the orchestrator side.
+    The orchestrator's ``sweep_cancel`` polls this key every wait() cycle,
+    sets ``state.cancelled``, and the main loop drives the rest (cancel
+    PENDING/RUNNING non-always_run jobs, write the runner kill flag). The
+    object is small and only its presence matters; idempotent re-write on
+    duplicate webhook deliveries is harmless.
     """
-    queue_name = f"{_run_queue_prefix(pr_number)}{run_id}"
-    try:
-        url = _sqs().get_queue_url(QueueName=queue_name)["QueueUrl"]
-    except Exception as e:
-        if "NonExistentQueue" in str(e):
-            print(f"  [skip] run queue {queue_name} does not exist; nothing to cancel")
-        else:
-            print(f"  [warn] could not find run queue {queue_name}: {e}")
+    if not S3_BUCKET:
+        print("  [warn] S3_BUCKET not set; cannot write cancel-request")
         return
+    key = f"runs/{run_id}/cancel-request"
     try:
-        _sqs().send_message(QueueUrl=url, MessageBody=json.dumps({"type": "cancel"}))
-        print(f"CANCEL sent to {queue_name}")
+        _s3().put_object(Bucket=S3_BUCKET, Key=key, Body=b"requested")
+        print(f"CANCEL request written: s3://{S3_BUCKET}/{key}")
     except Exception as e:
-        print(f"  [warn] could not send cancel to {queue_name}: {e}")
+        print(f"  [warn] could not write cancel-request: {e}")
 
 
-def _cancel_all_runs(pr_number):
-    """Fan out a cancel to every live per-run queue for this PR.
+def _cancel_runs_before(pr_number, event_ts):
+    """New push: write ``pr/<pr>/cancel-before`` with the new event ts.
 
-    Used on ``synchronize``: we don't know the old run_ids, but every live
-    orchestrator for this PR owns exactly one queue matching the per-PR
-    prefix, so listing by prefix enumerates the cancel targets. A freshly
-    pushed run hasn't created its queue yet (it's enqueued after this call),
-    so it is naturally excluded from the fan-out.
+    Every still-running orchestrator for this PR with
+    ``event_ts < cancel-before`` self-cancels via ``sweep_cancel``. The
+    freshly enqueued run carries the same ``event_ts`` so it stays alive
+    (sweep_cancel uses strict less-than).
     """
-    prefix = _run_queue_prefix(pr_number)
+    if not S3_BUCKET:
+        print("  [warn] S3_BUCKET not set; cannot write cancel-before")
+        return
+    key = f"pr/{pr_number}/cancel-before"
     try:
-        resp = _sqs().list_queues(QueueNamePrefix=prefix)
+        _s3().put_object(
+            Bucket=S3_BUCKET,
+            Key=key,
+            Body=json.dumps({"ts": event_ts}).encode(),
+            ContentType="application/json",
+        )
+        print(f"CANCEL-BEFORE written: s3://{S3_BUCKET}/{key} ts={event_ts:.0f}")
     except Exception as e:
-        print(f"  [warn] list_queues({prefix}) failed: {e}")
-        return
-    urls = resp.get("QueueUrls", [])
-    if not urls:
-        print(f"PR#{pr_number}: no live runs to cancel")
-        return
-    for url in urls:
-        queue_name = url.rsplit("/", 1)[-1]
-        try:
-            _sqs().send_message(QueueUrl=url, MessageBody=json.dumps({"type": "cancel"}))
-            print(f"CANCEL sent to {queue_name}")
-        except Exception as e:
-            print(f"  [warn] could not send cancel to {queue_name}: {e}")
+        print(f"  [warn] could not write cancel-before: {e}")
 
 
 def _enqueue(workflow, delivery_id):
@@ -223,6 +228,12 @@ def lambda_handler(event, context):
         print(f"Signature verification failed: {e}")
         return {"statusCode": 401, "body": "unauthorized"}
 
+    # One ts per webhook delivery: stamped on the workflow event AND used
+    # as cancel-before for older runs of the same PR. Sequential operations
+    # in this invocation share the same ts so the freshly enqueued run
+    # (event_ts == cancel-before-ts) does not self-cancel.
+    event_ts = time.time()
+
     headers = event.get("headers") or {}
     gh_event = headers.get("X-GitHub-Event") or headers.get("x-github-event", "unknown")
     delivery_id = headers.get("X-GitHub-Delivery") or headers.get(
@@ -248,17 +259,16 @@ def lambda_handler(event, context):
                 head_sha = check_run.get("head_sha", "")
                 prs = check_run.get("pull_requests", [])
                 pr_number = prs[0].get("number") if prs else None
-                # The check run ID is the run_id and the per-run queue
-                # suffix — address the run's queue directly.
+                # check_run.id is the orchestrator run_id (per-run S3 prefix).
                 run_id = str(check_run.get("id", "")) or None
-                if pr_number and run_id:
-                    _cancel_run(pr_number, run_id)
+                if run_id:
+                    _cancel_run(run_id)
                     print(f"MANUAL CANCEL: PR#{pr_number} run_id={run_id} sha={head_sha[:12]}")
                 else:
-                    print(f"SKIP: cancel action missing pr_number or check_run id")
+                    print(f"SKIP: cancel action missing check_run id")
         elif action == "rerequested":
             workflow, pr_number = _build_rerun_workflow(
-                payload.get("check_run", {}), payload
+                payload.get("check_run", {}), payload, event_ts
             )
             if workflow and sender in ALLOWED_SENDERS:
                 # No cancel: re-run always targets the same SHA, so a
@@ -276,12 +286,12 @@ def lambda_handler(event, context):
     if gh_event == "check_suite":
         if action == "rerequested":
             workflow, pr_number = _build_rerun_workflow(
-                payload.get("check_suite", {}), payload
+                payload.get("check_suite", {}), payload, event_ts
             )
             if workflow and sender in ALLOWED_SENDERS:
                 # No cancel: re-run targets the same SHA as before but
                 # spawns a new run_id (new check run), so the new run has
-                # its own queue and can't conflict with any prior run.
+                # its own S3 prefix and can't conflict with any prior run.
                 _enqueue(workflow, delivery_id)
                 print(f"RERUN (check_suite): PR#{pr_number} sha={workflow['head_sha'][:12]}")
             else:
@@ -294,11 +304,11 @@ def lambda_handler(event, context):
         if sender not in ALLOWED_SENDERS:
             print(f"SKIP: push sender {sender} not in allowed list")
             return {"statusCode": 200, "body": "ok"}
-        workflow = _build_push_workflow(payload)
+        workflow = _build_push_workflow(payload, event_ts)
         if workflow:
             _enqueue(workflow, delivery_id)
             print(
-                f"PUSH: branch={workflow['branch']} sha={workflow['head_sha'][:12]}"
+                f"PUSH: branch={workflow['head_ref']} sha={workflow['head_sha'][:12]}"
             )
         else:
             ref = payload.get("ref", "")
@@ -313,13 +323,14 @@ def lambda_handler(event, context):
         print(f"SKIP: sender {sender} not in allowed list")
         return {"statusCode": 200, "body": "ok"}
 
-    workflow = _build_workflow(action, payload)
+    workflow = _build_workflow(action, payload, event_ts)
     if workflow:
-        # On a new push to an existing PR fan out a cancel to every live
-        # per-run queue for the PR before enqueuing the new run. The new
-        # run hasn't created its queue yet, so it isn't hit by this fan-out.
+        # On a new push (synchronize) write pr/<pr>/cancel-before with this
+        # event_ts BEFORE enqueuing the new run, so older runs see the flag
+        # on their next sweep_cancel and self-cancel. The freshly enqueued
+        # run carries the same event_ts and stays alive.
         if action == "synchronize":
-            _cancel_all_runs(workflow["pr_number"])
+            _cancel_runs_before(workflow["pr_number"], event_ts)
         _enqueue(workflow, delivery_id)
     else:
         print(f"SKIP: action {action} does not trigger a workflow")

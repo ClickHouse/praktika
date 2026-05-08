@@ -60,12 +60,6 @@ in one command, and wiring up the GitHub webhook.
 ## Roadmap
 
 **Execution engine**
-- **Retire the per-run completions SQS queue** — heartbeat, final state,
-  and the cancel flag now all live under `runs/<run_id>/` in S3. The
-  per-run SQS queue is the last user of the queue: lambda still writes
-  `cancel` messages into it. Move that one signal to S3 (lambda puts a
-  flag at `runs/<run_id>/cancel`), drop the queue create/delete from
-  the orchestrator, and the orchestrator becomes fully restart-safe
 - **Runner pool autoscaling** — Lambda watching SQS queue depth to scale
   runner pools up/down on demand
 - **Job cancel / job rerun** — cancel an in-flight job from the GitHub UI;

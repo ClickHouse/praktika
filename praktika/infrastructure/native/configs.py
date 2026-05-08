@@ -4,6 +4,7 @@ from pathlib import Path
 
 from praktika.infrastructure.lambda_function import Lambda
 from praktika.infrastructure.report_page import ReportPage
+from praktika.settings import Settings
 
 # SSM paths AWS maintains with the latest AL2023 AMI IDs per region
 _AL2023_ARM64_SSM_PATH = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-arm64"
@@ -51,6 +52,12 @@ lambda_gh_trigger_config = Lambda.Config(
     role_name=GH_TRIGGER_ROLE_NAME,
     secrets={
         GH_TRIGGER_WEBHOOK_SECRET_NAME: "GH_WEBHOOK_SECRET",
+    },
+    # S3_BUCKET points the lambda at the per-run S3 prefix where it writes
+    # cancel-request and cancel-before flags. Same artifacts bucket the
+    # orchestrator and runners use.
+    environments={
+        "S3_BUCKET": (Settings.S3_ARTIFACT_PATH or "").split("/")[0],
     },
     timeout_ms=10 * 1000,
     memory_size_mb=128,

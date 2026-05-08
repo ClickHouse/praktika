@@ -48,6 +48,11 @@ HEARTBEAT_INTERVAL_S = 30
 HEARTBEAT_DEAD_THRESHOLD_S = 90
 HEARTBEAT_PICKUP_GRACE_S = 300
 
+# wait() blocks for this long between S3 sweeps. Kept short so the
+# orchestrator reacts quickly to cancel signals and finished jobs (no
+# SQS long-poll any more).
+WAIT_POLL_INTERVAL_S = 10
+
 
 def _normalize_job_name_for_s3(name):
     """Turn a job name into an S3-safe path segment (mirrors job log path)."""
@@ -357,61 +362,53 @@ class WorkflowState:
         self._gh_token = gh_token
         self._repo = repo
         self._head_sha = head_sha
+        # Event timestamp (lambda receive time). Older runs for the same PR
+        # are cancelled when a new event with a larger event_ts triggers
+        # `pr/<pr>/cancel-before` — see sweep_cancel.
+        self._event_ts = float(self._event.get("event_ts") or 0.0)
+        self._pr_number = self._event.get("pr_number")
         # Unique identifier for this specific orchestrator run — the GitHub
-        # check run ID (string). Used as the suffix of the per-run completions
-        # queue, so two concurrent runs for the same PR (e.g. re-runs) have
-        # disjoint queues. Falls back to a UUID when running without a check
-        # (local mode).
+        # check run ID (string), used as the suffix of the per-run S3 prefix.
+        # Falls back to a UUID when running without a check (local mode).
         import uuid
         self._run_id = str(run_id) if run_id else str(uuid.uuid4())
-        self._sqs = None                    # lazy boto3 client
-        self._queue_urls = {}               # cache: queue name -> URL
-        self._completions_queue_url = None  # per-run completions queue
         # Last environment.json snapshot published by a finished job. Seeded
         # into every subsequent dispatched task so WORKFLOW_CONFIG (and other
         # job-side additions) flow forward the same way step outputs do in
         # GHA. Later completions overwrite earlier ones — the serialized
         # environment is already cumulative.
         self._environment = None
-        self.cancelled = False              # set by wait() on cancel message
+        self.cancelled = False  # set by sweep_cancel() on cancel-request / cancel-before
 
-        # Create a per-run completions queue `praktika-wf-{pr_or_uuid}-{run_id}`.
-        # One queue per run (not per PR) means there is no cross-run traffic:
-        # every message on this queue is addressed to us, so wait() needs no
-        # run_id filtering and cancel messages can't be stolen by a
-        # concurrent run. The queue is deleted in cleanup() at end of run.
-        # Only created in CI mode (SQS dispatch); local mode runs jobs
-        # synchronously inside `kick`, so there is nothing to long-poll.
-        # Failure to create the queue is fatal — without it, dispatched
-        # jobs can never report completion and the orchestrator would
-        # spin-lock indefinitely. Better to fail fast.
+        # S3 client used by sweep_liveness, sweep_completions, sweep_cancel,
+        # and the orchestrator → runners kill flag. Only created in CI mode;
+        # local mode runs jobs synchronously inside `kick` (no S3 needed).
         if not local_mode:
-            pr = (event or {}).get("pr_number")
-            suffix = str(pr) if pr else f"u{uuid.uuid4().hex[:8]}"
-            self._completions_queue_name = f"praktika-wf-{suffix}-{self._run_id}"
             import boto3
             region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-            self._sqs = boto3.client("sqs", region_name=region)
             self._s3 = boto3.client("s3", region_name=region)
-            resp = self._sqs.create_queue(
-                QueueName=self._completions_queue_name,
-                Attributes={"MessageRetentionPeriod": "3600"},  # 1 h
-            )
-            self._completions_queue_url = resp["QueueUrl"]
-            self._queue_urls[self._completions_queue_name] = self._completions_queue_url
-            print(f"Using completions queue: {self._completions_queue_name}")
         else:
-            self._completions_queue_name = None
             self._s3 = None
 
-        # Per-run S3 prefix shared by the cancel flag and per-job heartbeats.
-        # Lambda-driven cancel still flows lambda → SQS cancel msg → wait()
-        # → cancel_unfinished_jobs() → S3 flag → runner-side CancelWatchdog;
-        # only the S3 path moves under runs/<run_id>/.
+        # SQS client is still used by ``_dispatch`` for the per-runner-pool
+        # job_task queues (`praktika-<label>`). Phase 2b only retired the
+        # per-run completions queue.
+        self._sqs = None
+        self._queue_urls = {}
+
+        # Per-run S3 prefix. Lambda → orchestrator cancel flows through S3:
+        # lambda writes either runs/<run_id>/cancel-request (manual UI button)
+        # or pr/<pr>/cancel-before (new push, fan-out to all older runs);
+        # sweep_cancel polls both. The orchestrator → runners kill flag at
+        # runs/<run_id>/cancel is written by cancel_unfinished_jobs.
         from ..settings import Settings
         self._cancel_s3_bucket = Settings.S3_ARTIFACT_PATH.split("/")[0]
         self._runs_s3_prefix = f"runs/{self._run_id}"
         self._cancel_s3_key = f"{self._runs_s3_prefix}/cancel"
+        self._cancel_request_s3_key = f"{self._runs_s3_prefix}/cancel-request"
+        self._pr_cancel_before_s3_key = (
+            f"pr/{self._pr_number}/cancel-before" if self._pr_number else None
+        )
 
         self.jobs = {
             job.name: JobState(job, workflow_state=self) for job in workflow.jobs
@@ -513,6 +510,51 @@ class WorkflowState:
     def _final_state_s3_key(self, job_name):
         return f"{self._runs_s3_prefix}/{_normalize_job_name_for_s3(job_name)}/final.json"
 
+    def sweep_cancel(self):
+        """Detect lambda-driven cancel signals on S3.
+
+        Two channels:
+          - ``runs/<run_id>/cancel-request`` (manual UI cancel button) —
+            lambda writes this on a check_run.requested_action=cancel
+            event addressed to a specific run.
+          - ``pr/<pr>/cancel-before`` carrying ``{ts}`` (new push) — lambda
+            writes this on synchronize. Every still-running orchestrator
+            for the PR with ``event_ts < ts`` self-cancels; the freshly
+            enqueued run has ``event_ts == ts`` and stays alive.
+
+        Both paths set ``state.cancelled = True``; the main loop handles
+        that flag exactly once via ``cancel_unfinished_jobs``, so seeing
+        the flag again on subsequent sweeps is a no-op.
+        """
+        if self._s3 is None or self.local_mode or self.cancelled:
+            return
+        try:
+            self._s3.head_object(
+                Bucket=self._cancel_s3_bucket, Key=self._cancel_request_s3_key
+            )
+            print(f"[CANCEL] run {self._run_id} (manual)")
+            self.cancelled = True
+            return
+        except Exception:
+            pass  # not present, or transient S3 error — try again next sweep
+
+        if not self._pr_cancel_before_s3_key:
+            return
+        try:
+            obj = self._s3.get_object(
+                Bucket=self._cancel_s3_bucket, Key=self._pr_cancel_before_s3_key
+            )
+            payload = json.loads(obj["Body"].read())
+            cancel_before = float(payload.get("ts", 0))
+        except Exception:
+            return
+        if cancel_before > self._event_ts > 0:
+            print(
+                f"[CANCEL] run {self._run_id} (newer event {cancel_before:.0f} > "
+                f"event_ts {self._event_ts:.0f})"
+            )
+            self.cancelled = True
+
     def sweep_completions(self):
         """Advance RUNNING jobs whose ``final.json`` has landed in S3.
 
@@ -613,7 +655,6 @@ class WorkflowState:
             "workflow_name": self.workflow.name,
             "job_name": job_state.name,
             "runs_on": list(job_state.job.runs_on) if job_state.job.runs_on else [],
-            "completions_queue_url": self._completions_queue_url,
             "cancel_s3_bucket": self._cancel_s3_bucket,
             "cancel_s3_key": self._cancel_s3_key,
             "heartbeat_s3_bucket": self._cancel_s3_bucket,
@@ -757,75 +798,40 @@ class WorkflowState:
                 print(f"  [warn] could not write cancel flag: {type(e).__name__}: {e}")
 
     def wait(self):
-        """Block until at least one RUNNING job transitions to a terminal state.
+        """Block briefly, then sweep S3 for heartbeats / final state / cancel.
 
         Local mode dispatched the job synchronously inside ``kick`` and the
         job is already in a terminal state by the time we get here; nothing
-        to wait on. CI mode long-polls the per-run completions queue for
-        the lambda's ``cancel`` signal, then sweeps S3 for heartbeats and
-        per-job ``final.json`` to drive the DAG (job_completion moved off
-        SQS in phase 2 of the liveness work).
+        to wait on. In CI mode there is no SQS queue any more (phase 2b
+        retired the per-run completions queue): wait() simply sleeps for
+        ``WAIT_POLL_INTERVAL_S`` and then sweeps the three S3 channels.
+        Liveness, completion, and cancel all live under
+        ``runs/<run_id>/`` (cancel-by-event-ts also reads
+        ``pr/<pr>/cancel-before``).
         """
-        if not self._completions_queue_url or self._sqs is None:
-            return  # local mode — kick() already finished the job
+        if self._s3 is None or self.local_mode:
+            return
 
-        # Only long-poll if there are still dispatched jobs in-flight.
+        # Only block if there are still dispatched jobs in-flight.
         if not any(js.status == JobStatus.RUNNING for js in self.jobs.values()):
             return
 
-        resp = self._sqs.receive_message(
-            QueueUrl=self._completions_queue_url,
-            MaxNumberOfMessages=10,
-            WaitTimeSeconds=20,
-        )
-
-        for msg in resp.get("Messages", []):
-            try:
-                body = json.loads(msg["Body"])
-                msg_type = body.get("type", "")
-
-                # SQS now carries only the lambda → orchestrator cancel
-                # signal — job_completion moved to S3 (final.json).
-                if msg_type == "cancel":
-                    print(f"[CANCEL] run {self._run_id}")
-                    self.cancelled = True
-                else:
-                    print(f"  [warn] unknown message type {msg_type!r}")
-            except Exception as e:
-                print(f"  [warn] malformed message: {e}")
-            finally:
-                self._sqs.delete_message(
-                    QueueUrl=self._completions_queue_url,
-                    ReceiptHandle=msg["ReceiptHandle"],
-                )
-
-        # After SQS (cancel only), sweep S3 for heartbeats and final state.
-        # Both run every wait() cycle (~20 s long-poll); a runner that died
-        # mid-job is caught by sweep_liveness so wait() never spins, and a
-        # finished job is picked up by sweep_completions on the next cycle.
+        time.sleep(WAIT_POLL_INTERVAL_S)
+        self.sweep_cancel()
         self.sweep_liveness()
         self.sweep_completions()
 
     def cleanup(self):
-        """Delete the per-run completions queue.
+        """End-of-run hook.
 
-        The queue is single-use: once this run finishes (normal, cancelled,
-        or errored) it has no consumers. No retention, no discovery, no
-        cross-run traffic — the only lifecycle rule is "the run that created
-        it deletes it". If the orchestrator instance dies before reaching
-        cleanup (EC2 terminate, crash) the queue is leaked — see PROTOCOL.md
-        "Limitations".
+        Phase 2b retired the per-run SQS queue, so this is now a no-op.
+        Per-run S3 objects under ``runs/<run_id>/`` (heartbeats, final
+        states, cancel flags) are intentionally left in place — they are
+        useful for debugging and small enough to be cleaned up by the
+        bucket's lifecycle policy rather than by the orchestrator at end
+        of run.
         """
-        if not self._completions_queue_url or self._sqs is None:
-            return
-        try:
-            self._sqs.delete_queue(QueueUrl=self._completions_queue_url)
-            print(f"Deleted completions queue: {self._completions_queue_name}")
-        except Exception as e:
-            print(
-                f"  [warn] could not delete completions queue "
-                f"{self._completions_queue_name}: {type(e).__name__}: {e}"
-            )
+        return
 
     # ------------------------------------------------------------ reporting
 

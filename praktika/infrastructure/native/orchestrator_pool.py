@@ -189,6 +189,9 @@ class OrchestratorPool:
             trust_service="lambda.amazonaws.com",
             policy_arns=["arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"],
             inline_policies={
+                # Lambda enqueues workflow trigger events to the main
+                # workflow queue and writes cancel signals to S3 (per-run
+                # cancel-request and per-PR cancel-before).
                 "SQSSendMessage": {
                     "Version": "2012-10-17",
                     "Statement": [
@@ -197,13 +200,20 @@ class OrchestratorPool:
                             "Action": ["sqs:SendMessage", "sqs:GetQueueUrl"],
                             "Resource": [
                                 "arn:aws:sqs:*:*:praktika-workflows",
-                                "arn:aws:sqs:*:*:praktika-wf-*",
                             ],
                         },
+                    ],
+                },
+                "S3CancelSignal": {
+                    "Version": "2012-10-17",
+                    "Statement": [
                         {
                             "Effect": "Allow",
-                            "Action": ["sqs:ListQueues"],
-                            "Resource": "*",
+                            "Action": ["s3:PutObject"],
+                            "Resource": [
+                                "arn:aws:s3:::praktika-artifacts-*/runs/*/cancel-request",
+                                "arn:aws:s3:::praktika-artifacts-*/pr/*/cancel-before",
+                            ],
                         },
                     ],
                 },

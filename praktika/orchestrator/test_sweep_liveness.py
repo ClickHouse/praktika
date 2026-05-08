@@ -59,7 +59,6 @@ def _make_running_state(job_names, started_at_offsets, fake_s3, run_id="run42"):
     state._runs_s3_prefix = f"runs/{run_id}"
     state.local_mode = False
     state.cancelled = False
-    state._completions_queue_url = "test-queue"
     now = time.time()
     for name in job_names:
         js = JobState.__new__(JobState)
