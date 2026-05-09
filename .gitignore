@@ -6,3 +6,4 @@ dist/
 *.egg-info/
 *.gz
 praktika-gh-trigger_api_gateway.txt
+*venv

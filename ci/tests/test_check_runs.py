@@ -22,7 +22,7 @@ import pytest
 import requests
 
 from praktika.orchestrator.check_run import CheckRun
-from praktika.orchestrator.workflow_agent import _get_github_token as get_github_token
+from praktika_bootstrap.run_workflow import _get_github_token as get_github_token
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("CI_ENGINE_LIVE_TESTS") != "1",
@@ -158,11 +158,11 @@ def test_neutral_with_annotations(gh_token, target, check_name):
                         "message": "Demo annotation (no real issue).",
                     },
                     {
-                        "path": "praktika/orchestrator/workflow_agent.py",
+                        "path": "praktika_bootstrap/run_workflow.py",
                         "start_line": 38,
                         "end_line": 38,
                         "annotation_level": "notice",
-                        "message": "Demo notice on GH_APP_SECRET_ID line.",
+                        "message": "Demo notice on bootstrap token minting logic.",
                     },
                 ],
             },

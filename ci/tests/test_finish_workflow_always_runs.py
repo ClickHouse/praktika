@@ -11,7 +11,7 @@ The behaviour is baked into two DAG rules instead of a special helper:
    jobs alone so they can still fire via rule 1 once their deps settle.
 
 Run with:
-    pytest ci/praktika/orchestrator/test_finish_workflow_always_runs.py
+    pytest ci/tests/test_finish_workflow_always_runs.py
 """
 import types
 

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Praktika workflow agent: polls SQS for workflow triggers and dispatches
-# each one. The agent body below is substituted at deploy time from
-# `praktika/orchestrator/workflow_agent.py` (see `user_data.py`), so the
-# same code runs both locally and on the EC2 orchestrator instances.
+# Praktika workflow agent bootstrap. Installs the standalone
+# `praktika-bootstrap` package from S3 and runs its stable console
+# entrypoint.
 set -xeuo pipefail
 
 echo "=== Workflow agent bootstrap ==="
@@ -17,9 +16,8 @@ curl -fsSL https://cli.github.com/packages/rpm/gh-cli.repo \
   -o /etc/yum.repos.d/gh-cli.repo
 dnf install -y gh
 python3.12 -m pip install boto3 pyjwt cryptography requests
-python3.12 -m pip install --force-reinstall \
-  "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1-py3-none-any.whl" \
-  --break-system-packages
+PRAKTIKA_BOOTSTRAP_WHL="https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_bootstrap-0.1.0-py3-none-any.whl"
+python3.12 -m pip install --force-reinstall "$PRAKTIKA_BOOTSTRAP_WHL" --break-system-packages
 
 # Create runner workdir
 RUNNER_HOME=/opt/praktika
@@ -29,13 +27,6 @@ mkdir -p "$RUNNER_HOME" "$RUNNER_HOME/work"
 TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
 REGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
 INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
-
-# Write the agent script. The body is gzip+base64 encoded at deploy time
-# (user_data.ci_engine_user_data) so the script fits into the 16 KB EC2
-# user_data limit; we decode it back here.
-echo '__RUN_PY_CONTENTS__' | base64 -d | gunzip > "$RUNNER_HOME/workflow_agent.py"
-
-chmod +x "$RUNNER_HOME/workflow_agent.py"
 
 # Write systemd service
 cat > /etc/systemd/system/workflow-agent.service << EOF
@@ -54,7 +45,7 @@ Environment=HOME=/root
 Environment=SQS_QUEUE_NAME=praktika-workflows
 Environment=AWS_DEFAULT_REGION=$REGION
 Environment=INSTANCE_ID=$INSTANCE_ID
-ExecStart=/usr/bin/python3.12 -u $RUNNER_HOME/workflow_agent.py
+ExecStart=/usr/local/bin/praktika_bootstrap workflow_orchestrator
 Restart=always
 RestartSec=5
 

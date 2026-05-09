@@ -58,6 +58,10 @@ in one command, and wiring up the GitHub webhook.
   existing endpoint via `Settings.SECRET_CI_DB_CONNECTION`.
 
 ## Roadmap
+**Blockers**
+- Runner pool autoscaling
+- Cloud resource namespacing
+- Versioned releases
 
 **Execution engine**
 - **Runner pool autoscaling** — Lambda watching SQS queue depth to scale

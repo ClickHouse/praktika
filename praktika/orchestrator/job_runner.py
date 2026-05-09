@@ -1,6 +1,6 @@
 """Domain entry-point for running a single praktika job on a runner EC2.
 
-``job_agent.py`` (baked into EC2 user_data) handles the stable
+``praktika_bootstrap job_runner`` (installed on EC2 via user_data) handles the stable
 infrastructure — SQS poll, clone, GH App token, S3 logs — and then invokes
 ``praktika orchestrate job task.json --ci`` which lands here. Keeping this
 module in the orchestrator package means job-execution policy ships with

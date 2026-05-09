@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Praktika job agent bootstrap. Polls a per-runner-type SQS queue and
-# invokes `praktika orchestrate job ...` for each task. Deployed per runner
-# type: one LT bakes this script with a different `RUNNER_QUEUE_NAME`. The
-# agent body is gzip+base64 encoded to stay under the 16 KB EC2 user_data
-# limit (same trick as the workflow agent's user_data).
+# invokes the standalone `praktika-bootstrap` console entrypoint for each
+# task. Deployed per runner type: one LT bakes this script with a
+# different `RUNNER_QUEUE_NAME`.
 set -xeuo pipefail
 
 echo "=== Job agent bootstrap ==="
@@ -15,14 +14,13 @@ echo "=== Job agent bootstrap ==="
 # (cloud-init, dnf-plugins, ...).
 dnf install -y python3 python3-pip python3.12 python3.12-pip git jq awscli docker
 python3.12 -m pip install boto3 pyjwt cryptography requests
-python3.12 -m pip install --force-reinstall \
-  "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1-py3-none-any.whl" \
-  --break-system-packages
+PRAKTIKA_BOOTSTRAP_WHL="https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_bootstrap-0.1.0-py3-none-any.whl"
+python3.12 -m pip install --force-reinstall "$PRAKTIKA_BOOTSTRAP_WHL" --break-system-packages
 
 # Job scripts shell out to `python3 ./ci/jobs/...` without qualifying the
-# minor version, so we need `python3` in PATH to resolve to 3.12 too —
-# otherwise the jobs pick up the system 3.9 interpreter and miss the pip
-# deps we just installed (pyjwt, requests, ...). Symlinking under
+# minor version, so we need `python3` in PATH to resolve to 3.12 too.
+# The agent prepends the selected Praktika venv to PATH at runtime, so
+# unqualified `python3` resolves inside that env first. Symlinking under
 # /usr/local/bin shadows /usr/bin/python3 via the default systemd PATH
 # (/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin) without touching
 # /usr/bin/python3 itself, so AL2023 tooling that hard-codes the absolute
@@ -69,9 +67,6 @@ TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-met
 REGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
 INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
 
-# Write job_agent.py (body injected by user_data.runner_user_data at deploy time).
-echo '__RUN_JOB_PY_CONTENTS__' | base64 -d | gunzip > "$RUNNER_HOME/job_agent.py"
-
 # Write systemd service. RUNNER_QUEUE_NAME is baked in per runner type.
 cat > /etc/systemd/system/job-agent.service << EOF
 [Unit]
@@ -89,7 +84,7 @@ Environment=HOME=/root
 Environment=RUNNER_QUEUE_NAME=__RUNNER_QUEUE_NAME__
 Environment=AWS_DEFAULT_REGION=$REGION
 Environment=INSTANCE_ID=$INSTANCE_ID
-ExecStart=/usr/bin/python3.12 -u $RUNNER_HOME/job_agent.py
+ExecStart=/usr/local/bin/praktika_bootstrap job_runner
 Restart=always
 RestartSec=5
 

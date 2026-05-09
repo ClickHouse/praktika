@@ -17,9 +17,9 @@ SQS praktika_clickhouse_workflows
     |
     v
 Orchestrator ASG (praktika-workflow-orchestrator-asg)
-    user_data -> workflow_agent.py
+    user_data -> praktika_bootstrap workflow_orchestrator
         |-- clone the PR head
-        |-- pip install --force-reinstall praktika (latest WHL)
+        |-- install/reuse Praktika venv keyed by source hash
         |-- subprocess: praktika orchestrate workflow event.json --ci
         |       |-- open per-workflow GitHub check run (`PR`, in_progress)
         |       |-- find_workflow_for_event
@@ -32,9 +32,9 @@ Orchestrator ASG (praktika-workflow-orchestrator-asg)
     |
     v  (SQS: one queue per runner pool, named praktika-<runs_on>)
 Runner ASGs (e.g. praktika-arm-2xsmall)
-    user_data -> job_agent.py
+    user_data -> praktika_bootstrap job_runner
         |-- clone the PR head
-        |-- pip install --force-reinstall praktika
+        |-- install/reuse Praktika venv keyed by source hash
         |-- subprocess: praktika orchestrate job task.json --ci
         |       |-- job_runner.run_job(task) -> Runner().run(...)
 ```
@@ -42,16 +42,17 @@ Runner ASGs (e.g. praktika-arm-2xsmall)
 ## Code split (intentional)
 
 The orchestrator and runner are each composed of two pieces — one stable
-"runner script" that's baked into the EC2 user_data, and one orchestrator
+bootstrap package that's installed by the EC2 user_data, and one orchestrator
 module that ships with each PR:
 
-|                   | Baked into user_data (needs LT+ASG redeploy to change) | Ships with each PR (plain `git push`) |
+|                   | Installed by user_data (needs LT+ASG redeploy or wheel refresh to change) | Ships with each PR (plain `git push`) |
 |-------------------|--------------------------------------------------------|---------------------------------------|
-| **Workflow side** | `workflow_agent.py` — SQS poll, clone, GH App token, S3 log | `__init__.py::orchestrate`, `state.py` (`WorkflowState`, `JobState`, `JobCheckRun`) |
-| **Job side**      | `job_agent.py` — SQS poll, clone, GH App token, S3 log | `job_runner.py::run_job` (maps task -> `praktika.Runner.run`) |
+| **Workflow side** | `praktika_bootstrap run_workflow` — SQS poll, clone, GH App token, cached venv reuse, S3 log | `__init__.py::orchestrate`, `state.py` (`WorkflowState`, `JobState`, `JobCheckRun`) |
+| **Job side**      | `praktika_bootstrap run_job` — SQS poll, clone, GH App token, cached venv reuse, S3 log | `job_runner.py::run_job` (maps task -> `praktika.Runner.run`) |
 
 When you want to tweak workflow orchestration or job-execution policy, you
-only need `git push`. Only the stable scripts require an LT/ASG redeploy.
+only need `git push`. Only the stable bootstrap layer requires an LT/ASG redeploy
+or bootstrap wheel refresh.
 
 ## Debugging runner logs
 
@@ -134,11 +135,11 @@ FAILURE.
 ## Deploy
 
 ```bash
-# Workflow agent infra (changes to workflow_agent.py / user_data_orchestrator.sh):
+# Workflow bootstrap infra (changes to praktika_bootstrap / user_data_orchestrator.sh):
 python3 -m praktika infrastructure --deploy --only LaunchTemplate AutoScalingGroup
 # Plus terminate running orchestrator instances so the ASG relaunches on the new LT.
 
-# Job agent infra (new runner types, or changes to job_agent.py / user_data_runner.sh):
+# Job bootstrap infra (new runner types, or changes to praktika_bootstrap / user_data_runner.sh):
 python3 -m praktika infrastructure --deploy --only LaunchTemplate AutoScalingGroup SQSQueue
 # Plus terminate running runners on the affected pool.
 ```

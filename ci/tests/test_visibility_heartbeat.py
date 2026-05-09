@@ -3,12 +3,12 @@ an in-flight SQS workflow-trigger message hidden from other consumers while
 `handle_workflow` is still running.
 
 Run with:
-    pytest ci/praktika/orchestrator/test_visibility_heartbeat.py
+    pytest ci/tests/test_visibility_heartbeat.py
 """
 import time
 from unittest.mock import MagicMock
 
-from praktika.orchestrator.workflow_agent import VisibilityHeartbeat
+from praktika_bootstrap.common import VisibilityHeartbeat
 
 
 def _wait_for_calls(mock, n, timeout=1.0):

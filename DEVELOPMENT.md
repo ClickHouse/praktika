@@ -26,6 +26,39 @@ pip install --force-reinstall \
   --break-system-packages
 ```
 
+## Publish the praktika_bootstrap package to S3
+
+Orchestrators and runners also install the thin bootstrap launcher from S3 at
+boot. The user-data scripts fetch this exact wheel:
+
+`s3://praktika-artifacts-eu-north-1/packages/praktika_bootstrap-0.1.0-py3-none-any.whl`
+
+Build and upload it from the repo root:
+
+```bash
+# Create an isolated build env once
+python3.12 -m venv .bootstrap-build-venv
+
+# Install build deps
+.bootstrap-build-venv/bin/python -m pip install setuptools wheel build
+
+# Build the wheel into bootstrap/dist/
+.bootstrap-build-venv/bin/python -m build \
+  --wheel \
+  --outdir bootstrap/dist \
+  bootstrap
+
+# Upload with the profile used for Praktika infra
+aws --profile Box s3 cp \
+  bootstrap/dist/praktika_bootstrap-0.1.0-py3-none-any.whl \
+  s3://praktika-artifacts-eu-north-1/packages/praktika_bootstrap-0.1.0-py3-none-any.whl
+```
+
+If you change the bootstrap package version, update the wheel name in both:
+
+- `praktika/infrastructure/native/user_data_orchestrator.sh`
+- `praktika/infrastructure/native/user_data_runner.sh`
+
 ## Check logs on orchestrator or runners
 
 Two ways. The SSM grep is convenient for live tailing; the S3 dump is the

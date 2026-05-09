@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "praktika-bootstrap"
+version = "0.1.0"
+description = "Thin bootstrap agents for launching versioned Praktika workloads"
+requires-python = ">=3.10"
+dependencies = [
+    "boto3>=1.18.0",
+    "PyJWT>=2.4.0",
+    "requests>=2.25.0",
+]
+
+[project.scripts]
+praktika_bootstrap = "praktika_bootstrap.main:main"
+
+[tool.setuptools.packages.find]
+where = [".."]
+include = ["praktika_bootstrap*"]
