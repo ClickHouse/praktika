@@ -23,7 +23,7 @@ DOCKER_BUILD_AMD_RUNS_ON = [RunnerLabels.SMALL_AMD]
 
 SECRET_DOCKER_REGISTRY = "praktika-docker-registry-connection"
 
-# Install praktika from the cloned PR tree (setup.py lives at the repo root).
+# Install praktika from the cloned PR tree (packaging metadata lives at the repo root).
 # Per-PR praktika changes take effect on the dispatch that picked the PR up.
 PRAKTIKA_INSTALL_SOURCE = "."
 
