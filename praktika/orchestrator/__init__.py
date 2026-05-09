@@ -214,7 +214,7 @@ def orchestrate(event, check=None, gh_token=None, run_id=None, ci=True):
             provider.get()  # eager mint to surface auth errors here
             gh_token = provider
         except Exception as e:
-            print(f"  [warn] could not mint GH token: {e}")
+            raise RuntimeError(f"Failed to mint GH token for CI orchestration: {e}") from e
 
     workflows = find_workflows_for_event(event)
     if not workflows:
@@ -262,7 +262,9 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
         try:
             check = CheckRun.start(gh_token, repo, head_sha, workflow.name, details_url=report_url)
         except Exception as e:
-            print(f"  [warn] failed to open check run for [{workflow.name}]: {e}")
+            raise RuntimeError(
+                f"Failed to open initial check run for [{workflow.name}]: {e}"
+            ) from e
 
     run_id = str(check.id) if check is not None else None
 
