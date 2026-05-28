@@ -10,6 +10,7 @@ setup(
     install_requires=[
         "boto3>=1.18.0",
         "PyJWT>=2.4.0",
+        "cryptography>=42.0.0",
         "requests>=2.25.0",
     ],
     entry_points={
@@ -18,4 +19,3 @@ setup(
         ],
     },
 )
-

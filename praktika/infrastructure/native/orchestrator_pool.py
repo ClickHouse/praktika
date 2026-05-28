@@ -163,6 +163,7 @@ class OrchestratorPool:
         self.launch_template = LaunchTemplate.Config(
             name="praktika-workflow-orchestrator-lt",
             image_id=self.ami_id,
+            image_builder=self.image_builder,
             instance_type=self.instance_type,
             security_group_ids=self.security_group_ids,
             security_group_names=self.security_group_names,

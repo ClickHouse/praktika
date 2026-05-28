@@ -20,6 +20,7 @@ def test_runner_pool_registers_launch_template_with_image_builder():
     )
 
     assert builder.launch_templates == [pool.launch_template]
+    assert pool.launch_template.image_builder is builder
     assert pool.autoscaling_group.launch_template_version == "$Default"
 
 
@@ -38,7 +39,32 @@ def test_orchestrator_pool_registers_launch_template_with_image_builder():
     )
 
     assert builder.launch_templates == [pool.launch_template]
+    assert pool.launch_template.image_builder is builder
     assert pool.autoscaling_group.launch_template_version == "$Default"
+
+
+def test_launch_template_resolves_latest_ami_from_image_builder(monkeypatch):
+    builder = ImageBuilder.Config(
+        name="orchestrator-arm64-image",
+        image_pipeline_name="praktika-orchestrator-arm64-imagebuilder-pipeline",
+    )
+
+    def _resolve_latest_ami_id():
+        assert builder.region == "eu-north-1"
+        return "ami-0123456789abcdef0"
+
+    monkeypatch.setattr(builder, "resolve_latest_ami_id", _resolve_latest_ami_id)
+
+    pool = OrchestratorPool(
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        size=1,
+        max_size=1,
+        image_builder=builder,
+    )
+
+    pool.launch_template.region = "eu-north-1"
+    assert pool.launch_template._resolve_image_id() == "ami-0123456789abcdef0"
 
 
 def test_image_builder_distribution_includes_launch_templates(monkeypatch):

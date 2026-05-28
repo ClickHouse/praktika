@@ -26,6 +26,7 @@ class LaunchTemplate:
 
         # High-level fields (optional). If `data` is provided, it is used as-is.
         image_id: str = ""
+        image_builder: Optional["ImageBuilder.Config"] = None
         image_builder_pipeline_name: str = ""
         instance_type: str = ""
         # If set, will be base64-encoded and applied as LaunchTemplateData.UserData
@@ -99,6 +100,12 @@ class LaunchTemplate:
 
         def _resolve_image_id(self) -> str:
             if self.image_id:
+                return self.image_id
+
+            if self.image_builder:
+                if not self.image_builder.region:
+                    self.image_builder.region = self.region
+                self.image_id = self.image_builder.resolve_latest_ami_id()
                 return self.image_id
 
             if self.image_builder_pipeline_name:
