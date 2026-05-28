@@ -15,13 +15,23 @@ dnf install -y python3 python3-pip python3.12 python3.12-pip git jq awscli
 curl -fsSL https://cli.github.com/packages/rpm/gh-cli.repo \
   -o /etc/yum.repos.d/gh-cli.repo
 dnf install -y gh
+RUNNER_HOME=/opt/praktika
+WHEELHOUSE_DIR="$RUNNER_HOME/wheelhouse"
+mkdir -p "$RUNNER_HOME" "$RUNNER_HOME/work" "$WHEELHOUSE_DIR"
+
 python3.12 -m pip install boto3 pyjwt cryptography requests
+python3.12 -m pip download \
+  --dest "$WHEELHOUSE_DIR" \
+  pip \
+  setuptools \
+  wheel \
+  boto3 \
+  pyjwt \
+  cryptography \
+  requests \
+  pytest
 PRAKTIKA_BOOTSTRAP_WHL="https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_bootstrap-0.1.0-py3-none-any.whl"
 python3.12 -m pip install --force-reinstall "$PRAKTIKA_BOOTSTRAP_WHL" --break-system-packages
-
-# Create runner workdir
-RUNNER_HOME=/opt/praktika
-mkdir -p "$RUNNER_HOME" "$RUNNER_HOME/work"
 
 # Fetch instance identity via IMDS
 TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
@@ -45,6 +55,7 @@ Environment=HOME=/root
 Environment=SQS_QUEUE_NAME=praktika-workflows
 Environment=AWS_DEFAULT_REGION=$REGION
 Environment=INSTANCE_ID=$INSTANCE_ID
+Environment=PRAKTIKA_WHEELHOUSE=$WHEELHOUSE_DIR
 ExecStart=/usr/local/bin/praktika_bootstrap workflow_orchestrator
 Restart=always
 RestartSec=5

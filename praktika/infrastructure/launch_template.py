@@ -1,7 +1,11 @@
-from ._utils import aws_client
 import base64
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+from ._utils import aws_client
+
+if TYPE_CHECKING:
+    from .image_builder import ImageBuilder
 
 
 class LaunchTemplate:
@@ -97,6 +101,60 @@ class LaunchTemplate:
             if self.image_id:
                 return self.image_id
 
+            if self.image_builder_pipeline_name:
+                client = aws_client("imagebuilder", self.region, self.name)
+
+                pipeline_arn = ""
+                paginator = client.get_paginator("list_image_pipelines")
+                for page in paginator.paginate():
+                    for item in page.get("imagePipelineList", []) or []:
+                        if item.get(
+                            "name"
+                        ) == self.image_builder_pipeline_name and item.get("arn"):
+                            pipeline_arn = item["arn"]
+                            break
+                    if pipeline_arn:
+                        break
+
+                if not pipeline_arn:
+                    raise Exception(
+                        f"Failed to resolve Image Builder pipeline ARN for '{self.image_builder_pipeline_name}'"
+                    )
+
+                resp = client.list_image_pipeline_images(
+                    imagePipelineArn=pipeline_arn,
+                    maxResults=25,
+                )
+                images = resp.get("imageSummaryList", []) or []
+                if not images:
+                    raise Exception(
+                        f"No images found for Image Builder pipeline '{self.image_builder_pipeline_name}'"
+                    )
+
+                images.sort(key=lambda s: s.get("dateCreated", "") or "", reverse=True)
+                image_arn = images[0].get("arn", "")
+                if not image_arn:
+                    raise Exception(
+                        f"Failed to resolve latest image ARN for pipeline '{self.image_builder_pipeline_name}'"
+                    )
+
+                image_resp = client.get_image(imageBuildVersionArn=image_arn)
+                image = image_resp.get("image") or {}
+
+                for output in image.get("outputResources", {}).get("amis", []) or []:
+                    if output.get("region") == self.region and output.get("image"):
+                        self.image_id = output["image"]
+                        return self.image_id
+
+                for output in image.get("outputResources", {}).get("amis", []) or []:
+                    if output.get("image"):
+                        self.image_id = output["image"]
+                        return self.image_id
+
+                raise Exception(
+                    f"Failed to resolve AMI id for pipeline '{self.image_builder_pipeline_name}'"
+                )
+
             # Detect architecture from instance type: Graviton families end in 'g'
             # (t4g, m6g, c6g, r6g, ...). Everything else is x86_64.
             family = (self.instance_type or "").split(".")[0]
@@ -108,64 +166,6 @@ class LaunchTemplate:
                 from .native.configs import resolve_al2023_x86_64_ami
                 self.image_id = resolve_al2023_x86_64_ami(self.region)
             return self.image_id
-
-            if not self.image_builder_pipeline_name:
-                return ""
-
-            import boto3
-
-            client = aws_client("imagebuilder", self.region, self.name)
-
-            pipeline_arn = ""
-            paginator = client.get_paginator("list_image_pipelines")
-            for page in paginator.paginate():
-                for item in page.get("imagePipelineList", []) or []:
-                    if item.get(
-                        "name"
-                    ) == self.image_builder_pipeline_name and item.get("arn"):
-                        pipeline_arn = item["arn"]
-                        break
-                if pipeline_arn:
-                    break
-
-            if not pipeline_arn:
-                raise Exception(
-                    f"Failed to resolve Image Builder pipeline ARN for '{self.image_builder_pipeline_name}'"
-                )
-
-            resp = client.list_image_pipeline_images(
-                imagePipelineArn=pipeline_arn,
-                maxResults=25,
-            )
-            images = resp.get("imageSummaryList", []) or []
-            if not images:
-                raise Exception(
-                    f"No images found for Image Builder pipeline '{self.image_builder_pipeline_name}'"
-                )
-
-            images.sort(key=lambda s: s.get("dateCreated", "") or "", reverse=True)
-            image_arn = images[0].get("arn", "")
-            if not image_arn:
-                raise Exception(
-                    f"Failed to resolve latest image ARN for pipeline '{self.image_builder_pipeline_name}'"
-                )
-
-            image_resp = client.get_image(imageBuildVersionArn=image_arn)
-            image = image_resp.get("image") or {}
-
-            for output in image.get("outputResources", {}).get("amis", []) or []:
-                if output.get("region") == self.region and output.get("image"):
-                    self.image_id = output["image"]
-                    return self.image_id
-
-            for output in image.get("outputResources", {}).get("amis", []) or []:
-                if output.get("image"):
-                    self.image_id = output["image"]
-                    return self.image_id
-
-            raise Exception(
-                f"Failed to resolve AMI id for pipeline '{self.image_builder_pipeline_name}'"
-            )
 
         def _build_launch_template_data(self) -> Dict[str, Any]:
             if self.data:

@@ -13,11 +13,11 @@ from praktika_bootstrap.common import (
     clone_repo,
     configure_logging,
     get_github_token,
-    resolve_praktika_install_source,
+    resolve_praktika_runtime,
     upload_log,
 )
 from praktika_bootstrap.venv_manager import (
-    ensure_praktika_venv,
+    ensure_praktika_runtime,
     praktika_command,
     venv_env,
 )
@@ -64,8 +64,8 @@ def handle_workflow(event):
         log=log,
     )
 
-    source = resolve_praktika_install_source(clone_dir, log)
-    venv_dir = ensure_praktika_venv(source, log=log)
+    base_venv, source = resolve_praktika_runtime(clone_dir, log, role="workflow")
+    venv_dir = ensure_praktika_runtime(source or None, base_venv=base_venv, log=log)
 
     event_file = os.path.join(clone_dir, "ci", "tmp", "event.json")
     os.makedirs(os.path.dirname(event_file), exist_ok=True)
@@ -90,6 +90,7 @@ def handle_workflow(event):
         "pr": pr_number,
         "branch": branch,
         "sha": actual_sha,
+        "base_venv": base_venv,
         "source": source,
         "venv": str(venv_dir),
         "rc": result.returncode,
@@ -182,4 +183,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

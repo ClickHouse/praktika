@@ -37,6 +37,10 @@ python3 -m praktika infrastructure --shutdown --only DedicatedHost
   via the `runs_on` label.
 - **`NativeComponents.report_page_config`** — the static HTML page +
   bucket policy that renders a workflow's `result_*.json` files.
+- **`ImageBuilder.Config`** — AMI build pipelines. Supports ordinary
+  Image Builder components plus `prebuilt_venvs`, which bake named Python
+  virtualenvs under `/opt/praktika/base-venvs/<name>` for later selection
+  via `Settings.PRAKTIKA_BASE_VENV`.
 
 ## TODO
 

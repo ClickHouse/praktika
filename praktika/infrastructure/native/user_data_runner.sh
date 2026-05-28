@@ -13,7 +13,21 @@ echo "=== Job agent bootstrap ==="
 # system python3 around for the AL2023 tooling that depends on it
 # (cloud-init, dnf-plugins, ...).
 dnf install -y python3 python3-pip python3.12 python3.12-pip git jq awscli docker
+RUNNER_HOME=/opt/praktika
+WHEELHOUSE_DIR="$RUNNER_HOME/wheelhouse"
+mkdir -p "$RUNNER_HOME" "$RUNNER_HOME/work" "$WHEELHOUSE_DIR"
+
 python3.12 -m pip install boto3 pyjwt cryptography requests
+python3.12 -m pip download \
+  --dest "$WHEELHOUSE_DIR" \
+  pip \
+  setuptools \
+  wheel \
+  boto3 \
+  pyjwt \
+  cryptography \
+  requests \
+  pytest
 PRAKTIKA_BOOTSTRAP_WHL="https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_bootstrap-0.1.0-py3-none-any.whl"
 python3.12 -m pip install --force-reinstall "$PRAKTIKA_BOOTSTRAP_WHL" --break-system-packages
 
@@ -58,10 +72,6 @@ EOT
 usermod -aG docker ec2-user || true
 systemctl enable --now docker
 
-# Runner workdir
-RUNNER_HOME=/opt/praktika
-mkdir -p "$RUNNER_HOME" "$RUNNER_HOME/work"
-
 # Instance identity via IMDS
 TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
 REGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region)
@@ -84,6 +94,7 @@ Environment=HOME=/root
 Environment=RUNNER_QUEUE_NAME=__RUNNER_QUEUE_NAME__
 Environment=AWS_DEFAULT_REGION=$REGION
 Environment=INSTANCE_ID=$INSTANCE_ID
+Environment=PRAKTIKA_WHEELHOUSE=$WHEELHOUSE_DIR
 ExecStart=/usr/local/bin/praktika_bootstrap job_runner
 Restart=always
 RestartSec=5

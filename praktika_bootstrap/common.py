@@ -20,6 +20,56 @@ DEFAULT_PRAKTIKA_SOURCE = os.environ.get(
 )
 
 
+def resolve_praktika_runtime(
+    clone_dir: str | os.PathLike[str], log, role: str = ""
+) -> tuple[str, str]:
+    """Read Praktika base-venv/source settings from the repo settings.
+
+    Resolution order:
+      1. side-specific base venv from settings.py (`workflow` / `job`)
+      2. generic PRAKTIKA_BASE_VENV from settings.py
+      3. PRAKTIKA_INSTALL_SOURCE from settings.py
+      2. if neither is set, fall back to the default Praktika wheel URL
+    """
+    settings_file = Path(clone_dir) / "ci" / "settings" / "settings.py"
+    base_venv = ""
+    src = ""
+    if settings_file.exists():
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "repo_settings", str(settings_file)
+            )
+            mod = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(mod)
+            if role == "workflow":
+                base_venv = getattr(mod, "PRAKTIKA_WORKFLOW_BASE_VENV", "") or ""
+            elif role == "job":
+                base_venv = getattr(mod, "PRAKTIKA_JOB_BASE_VENV", "") or ""
+            if not base_venv:
+                base_venv = getattr(mod, "PRAKTIKA_BASE_VENV", "") or ""
+            src = getattr(mod, "PRAKTIKA_INSTALL_SOURCE", "") or ""
+        except Exception as e:
+            log.warning(
+                "Could not read Praktika runtime config from %s: %s",
+                settings_file,
+                e,
+            )
+
+    if not src and not base_venv:
+        src = DEFAULT_PRAKTIKA_SOURCE
+
+    if src:
+        if src.startswith(("http://", "https://")):
+            return base_venv, src
+        src_path = Path(src)
+        if not src_path.is_absolute():
+            src_path = Path(clone_dir) / src_path
+        src = str(src_path.resolve())
+
+    return base_venv, src
+
+
 def configure_logging(name: str, instance_id: str) -> logging.Logger:
     logging.basicConfig(
         level=logging.INFO,
@@ -205,34 +255,9 @@ class Heartbeat:
 
 
 def resolve_praktika_install_source(clone_dir: str | os.PathLike[str], log) -> str:
-    """Read PRAKTIKA_INSTALL_SOURCE from the checked out repo or fall back."""
-    settings_file = Path(clone_dir) / "ci" / "settings" / "settings.py"
-    src = ""
-    if settings_file.exists():
-        try:
-            spec = importlib.util.spec_from_file_location(
-                "repo_settings", str(settings_file)
-            )
-            mod = importlib.util.module_from_spec(spec)
-            assert spec.loader is not None
-            spec.loader.exec_module(mod)
-            src = getattr(mod, "PRAKTIKA_INSTALL_SOURCE", "") or ""
-        except Exception as e:
-            log.warning(
-                "Could not read PRAKTIKA_INSTALL_SOURCE from %s: %s",
-                settings_file,
-                e,
-            )
-
-    if not src:
-        src = DEFAULT_PRAKTIKA_SOURCE
-
-    if src.startswith(("http://", "https://")):
-        return src
-    src_path = Path(src)
-    if not src_path.is_absolute():
-        src_path = Path(clone_dir) / src_path
-    return str(src_path.resolve())
+    """Backward-compatible helper for callers that only care about source."""
+    _, source = resolve_praktika_runtime(clone_dir, log)
+    return source
 
 
 def git(args, cwd=None) -> str:
@@ -303,4 +328,3 @@ def upload_log(s3, bucket, prefix, instance_id, message, log):
         ContentType="application/json",
     )
     log.info("Log uploaded to s3://%s/%s", bucket, key)
-

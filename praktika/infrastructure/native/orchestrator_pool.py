@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from typing import List
 
+from praktika.infrastructure.image_builder import ImageBuilder
 from praktika.infrastructure.autoscaling_group import AutoScalingGroup
 from praktika.infrastructure.iam_instance_profile import IAMInstanceProfile
 from praktika.infrastructure.iam_role import IAMRole
@@ -53,6 +54,8 @@ class OrchestratorPool:
     size: int
     max_size: int
     ami_id: str = ""  # resolved at deploy time via SSM if empty
+    image_builder: ImageBuilder.Config | None = None
+    user_data: str = ""
     iam_instance_profile_name: str = ORCHESTRATOR_INSTANCE_PROFILE_NAME
     ec2_role_name: str = ORCHESTRATOR_ROLE_NAME
     security_group_ids: List[str] = field(default_factory=list)
@@ -82,6 +85,7 @@ class OrchestratorPool:
             policy_arns=[
                 "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
                 "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy",
+                "arn:aws:iam::aws:policy/EC2InstanceProfileForImageBuilder",
             ],
             inline_policies={
                 "WorkflowOrchestratorAccess": {
@@ -165,7 +169,7 @@ class OrchestratorPool:
             vpc_name=self.vpc_name,
             iam_instance_profile_name=self.iam_instance_profile_name,
             set_default_version_to_latest=True,
-            user_data=ci_engine_user_data(),
+            user_data=self.user_data or ci_engine_user_data(),
             block_device_mappings=[
                 {
                     "DeviceName": "/dev/xvda",
@@ -178,6 +182,8 @@ class OrchestratorPool:
             ],
             praktika_resource_tag="workflow_orchestrator",
         )
+        if self.image_builder:
+            self.image_builder.launch_templates.append(self.launch_template)
         self.lambda_config = lambda_gh_trigger_config
         self.webhook_secret = SecretParameter.Config(
             name=GH_TRIGGER_WEBHOOK_SECRET_NAME,
@@ -232,6 +238,6 @@ class OrchestratorPool:
             max_size=self.max_size,
             desired_capacity=self.size,
             launch_template_name="praktika-workflow-orchestrator-lt",
-            launch_template_version="$Latest",
+            launch_template_version="$Default" if self.image_builder else "$Latest",
             praktika_resource_tag="workflow_orchestrator",
         )

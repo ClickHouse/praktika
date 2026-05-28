@@ -59,6 +59,20 @@ If you change the bootstrap package version, update the wheel name in both:
 - `praktika/infrastructure/native/user_data_orchestrator.sh`
 - `praktika/infrastructure/native/user_data_runner.sh`
 
+## Prebaked wheelhouse on runner images
+
+Both user-data scripts now populate a local wheelhouse at
+`/opt/praktika/wheelhouse` and export `PRAKTIKA_WHEELHOUSE` into the agent
+systemd unit. `praktika_bootstrap` will install the per-source Praktika venv
+from that wheelhouse with `pip --no-index --find-links=...` when the directory
+is present; otherwise it falls back to normal network installs.
+
+If you add a new core Praktika dependency that should be available in prebaked
+images, update the download list in both:
+
+- `praktika/infrastructure/native/user_data_orchestrator.sh`
+- `praktika/infrastructure/native/user_data_runner.sh`
+
 ## Check logs on orchestrator or runners
 
 Two ways. The SSM grep is convenient for live tailing; the S3 dump is the

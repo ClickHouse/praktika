@@ -257,16 +257,6 @@ class CloudInfrastructure:
                     print("=" * 60)
                     instance_config.deploy()
 
-            # Deploy Image Builder pipelines
-            if _wants("ImageBuilder", "ImageBuilders"):
-                for ib_config in self.image_builders:
-                    ib_config.region = self._settings.AWS_REGION
-
-                    print("\n" + "=" * 60)
-                    print(f"Deploying Image Builder: {ib_config.name}")
-                    print("=" * 60)
-                    ib_config.deploy()
-
             # Deploy VPCs (before ASGs that reference them by name)
             if _wants("VPC", "VPCs"):
                 for vpc_config in self.vpcs:
@@ -285,6 +275,18 @@ class CloudInfrastructure:
                     print(f"Deploying Launch Template: {lt_config.name}")
                     print("=" * 60)
                     lt_config.deploy()
+
+            # Deploy Image Builder pipelines after LaunchTemplates so
+            # distribution settings can reference LT ids for automatic
+            # Image Builder-managed AMI propagation.
+            if _wants("ImageBuilder", "ImageBuilders"):
+                for ib_config in self.image_builders:
+                    ib_config.region = self._settings.AWS_REGION
+
+                    print("\n" + "=" * 60)
+                    print(f"Deploying Image Builder: {ib_config.name}")
+                    print("=" * 60)
+                    ib_config.deploy()
 
             # Deploy all ASGs
             if _wants("AutoScalingGroup", "AutoScalingGroups", "ASG", "ASGs"):

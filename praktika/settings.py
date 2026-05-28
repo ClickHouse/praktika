@@ -130,16 +130,26 @@ class _Settings:
     EVENT_FEED_S3_PATH: str = ""
     # Where the workflow/job agents should install praktika from on every
     # dispatch. Three forms:
-    #   ""             — skip the per-dispatch install; reuse whatever
-    #                    praktika the agent was bootstrapped with. Default;
-    #                    fine for stable consumer projects.
+    #   ""             — no source override; if a side-specific base venv
+    #                    is set, run whatever praktika is already installed
+    #                    there. If all base/source settings are empty, the
+    #                    bootstrapper falls back to its default praktika
+    #                    wheel URL.
     #   "https://..."  — pip install <url>; pulls a wheel from that URL.
     #   "<rel/path>"   — pip install <clone_dir>/<rel/path>; resolves
     #                    relative to the cloned PR tree, so a PR's praktika
     #                    changes take effect on the very dispatch that
-    #                    picked the PR up. Use "." for the praktika repo
-    #                    itself.
+    #                    picked the PR up. If PRAKTIKA_BASE_VENV is also
+    #                    set, the bootstrapper creates/reuses a derived env
+    #                    from that prebaked base and installs praktika on top.
     PRAKTIKA_INSTALL_SOURCE: str = ""
+    # Optional fallback base venv name used by both workflow and job sides
+    # unless a side-specific value below is set.
+    PRAKTIKA_BASE_VENV: str = ""
+    # Optional prebaked base venv name for the workflow/orchestrator side.
+    PRAKTIKA_WORKFLOW_BASE_VENV: str = ""
+    # Optional prebaked base venv name for the job/runner side.
+    PRAKTIKA_JOB_BASE_VENV: str = ""
 
 
 _USER_DEFINED_SETTINGS = [
@@ -187,6 +197,9 @@ _USER_DEFINED_SETTINGS = [
     "CI_DB_READ_URL",
     "TEST_FAILURE_PATTERNS",
     "PRAKTIKA_INSTALL_SOURCE",
+    "PRAKTIKA_BASE_VENV",
+    "PRAKTIKA_WORKFLOW_BASE_VENV",
+    "PRAKTIKA_JOB_BASE_VENV",
 ]
 
 

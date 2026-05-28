@@ -25,7 +25,10 @@ SECRET_DOCKER_REGISTRY = "praktika-docker-registry-connection"
 
 # Install praktika from the cloned PR tree (packaging metadata lives at the repo root).
 # Per-PR praktika changes take effect on the dispatch that picked the PR up.
+# The base venv differs by side: workflow gets a minimal env, jobs get pytest too.
 PRAKTIKA_INSTALL_SOURCE = "."
+PRAKTIKA_WORKFLOW_BASE_VENV = "praktika-orchestrator"
+PRAKTIKA_JOB_BASE_VENV = "praktika-runner-pytest"
 
 CI_DB_DB_NAME = "default"
 CI_DB_TABLE_NAME = "checks"

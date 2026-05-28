@@ -101,30 +101,7 @@ class AutoScalingGroup:
             return self
 
         def _build_launch_template_spec(self) -> Dict[str, str]:
-            version = self.launch_template_version
-            if version in ("$Latest", "$Default"):
-                import boto3
-
-                ec2 = aws_client("ec2", self.region, self.name)
-                if self.launch_template_id:
-                    lt_resp = ec2.describe_launch_templates(
-                        LaunchTemplateIds=[self.launch_template_id]
-                    )
-                else:
-                    lt_resp = ec2.describe_launch_templates(
-                        LaunchTemplateNames=[self.launch_template_name]
-                    )
-
-                lts = lt_resp.get("LaunchTemplates", []) or []
-                lt = lts[0] if lts else {}
-                num = (
-                    lt.get("LatestVersionNumber")
-                    if version == "$Latest"
-                    else lt.get("DefaultVersionNumber")
-                )
-                if num is not None:
-                    version = str(num)
-
+            version = self.launch_template_version or "$Default"
             if self.launch_template_id:
                 return {
                     "LaunchTemplateId": self.launch_template_id,

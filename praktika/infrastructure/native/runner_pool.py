@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from typing import List
 
+from praktika.infrastructure.image_builder import ImageBuilder
 from praktika.infrastructure.autoscaling_group import AutoScalingGroup
 from praktika.infrastructure.iam_instance_profile import IAMInstanceProfile
 from praktika.infrastructure.iam_role import IAMRole
@@ -54,6 +55,8 @@ class RunnerPool:
     size: int
     max_size: int
     ami_id: str = ""  # resolved at deploy time via SSM if empty
+    image_builder: ImageBuilder.Config | None = None
+    user_data: str = ""
     iam_instance_profile_name: str = RUNNER_INSTANCE_PROFILE_NAME
     ec2_role_name: str = RUNNER_ROLE_NAME
     security_group_ids: List[str] = field(default_factory=list)
@@ -88,6 +91,7 @@ class RunnerPool:
                 "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
                 "arn:aws:iam::aws:policy/AmazonSSMReadOnlyAccess",
                 "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy",
+                "arn:aws:iam::aws:policy/EC2InstanceProfileForImageBuilder",
             ],
             inline_policies={
                 "RunnerAccess": {
@@ -165,7 +169,7 @@ class RunnerPool:
             vpc_name=self.vpc_name,
             iam_instance_profile_name=self.iam_instance_profile_name,
             set_default_version_to_latest=True,
-            user_data=runner_user_data(queue_name),
+            user_data=self.user_data or runner_user_data(queue_name),
             block_device_mappings=[
                 {
                     "DeviceName": "/dev/xvda",
@@ -178,6 +182,8 @@ class RunnerPool:
             ],
             praktika_resource_tag="runner",
         )
+        if self.image_builder:
+            self.image_builder.launch_templates.append(self.launch_template)
         self.autoscaling_group = AutoScalingGroup.Config(
             name=f"praktika-{self.name}",
             vpc_name=self.vpc_name,
@@ -186,7 +192,7 @@ class RunnerPool:
             max_size=self.max_size,
             desired_capacity=self.size,
             launch_template_name=f"praktika-{self.name}-lt",
-            launch_template_version="$Latest",
+            launch_template_version="$Default" if self.image_builder else "$Latest",
             praktika_resource_tag="runner",
         )
         self.queue = SQSQueue.Config(
