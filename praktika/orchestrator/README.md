@@ -39,6 +39,53 @@ Runner ASGs (e.g. praktika-arm-2xsmall)
         |       |-- job_runner.run_job(task) -> Runner().run(...)
 ```
 
+### Interaction diagram
+
+```mermaid
+flowchart TD
+    GH[GitHub PR event] --> L[Lambda webhook handler]
+    L --> WQ[SQS: praktika-workflows]
+
+    WQ --> WB[workflow-agent on orchestrator ASG]
+    WB --> WC[Clone PR head]
+    WC --> WV[Resolve Praktika runtime]
+    WV --> WO[praktika orchestrate workflow event.json --ci]
+
+    WO --> C0[Open workflow check run]
+    WO --> DAG[Build workflow DAG]
+
+    DAG --> J1Q[SQS: praktika-arm-2xsmall]
+    DAG --> J2Q[SQS: praktika-amd-2xsmall]
+
+    J1Q --> R1[job-agent on arm runner ASG]
+    J2Q --> R2[job-agent on amd runner ASG]
+
+    R1 --> RC1[Clone PR head]
+    R2 --> RC2[Clone PR head]
+
+    RC1 --> RV1[Resolve Praktika runtime]
+    RC2 --> RV2[Resolve Praktika runtime]
+
+    RV1 --> JO1[praktika orchestrate job task.json --ci]
+    RV2 --> JO2[praktika orchestrate job task.json --ci]
+
+    JO1 --> JR1[Job result + artifacts]
+    JO2 --> JR2[Job result + artifacts]
+
+    JR1 --> S3[S3 artifacts / logs / workflow state]
+    JR2 --> S3
+    WO --> S3
+
+    JR1 --> C1[Update per-job check]
+    JR2 --> C2[Update per-job check]
+    WO --> C3[Close workflow check]
+
+    C0 --> GHCS[GitHub checks / statuses]
+    C1 --> GHCS
+    C2 --> GHCS
+    C3 --> GHCS
+```
+
 ## Code split (intentional)
 
 The orchestrator and runner are each composed of two pieces — one stable
