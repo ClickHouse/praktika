@@ -18,5 +18,5 @@ dependencies = [
 praktika_bootstrap = "praktika_bootstrap.main:main"
 
 [tool.setuptools.packages.find]
-where = [".."]
+where = ["src"]
 include = ["praktika_bootstrap*"]

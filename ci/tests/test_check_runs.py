@@ -158,7 +158,7 @@ def test_neutral_with_annotations(gh_token, target, check_name):
                         "message": "Demo annotation (no real issue).",
                     },
                     {
-                        "path": "praktika_bootstrap/run_workflow.py",
+                        "path": "bootstrap/src/praktika_bootstrap/run_workflow.py",
                         "start_line": 38,
                         "end_line": 38,
                         "annotation_level": "notice",

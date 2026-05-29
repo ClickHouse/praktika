@@ -135,7 +135,7 @@ flowchart TD
 - Change `ci/infra/cloud.py` when you want a different prebaked base venv or different image-level tooling.
 - Change `ci/settings/settings.py` when you want to select a different base venv for workflow/job dispatches.
 - Change `PRAKTIKA_INSTALL_SOURCE` when you want Praktika code to come from the checked-out repo instead of the default bootstrap wheel.
-- Change `praktika_bootstrap/venv_manager.py` only when the runtime composition algorithm itself needs to change.
+- Change `bootstrap/src/praktika_bootstrap/venv_manager.py` only when the runtime composition algorithm itself needs to change.
 
 ## Debugging runner logs
 
