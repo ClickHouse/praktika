@@ -1,23 +1,17 @@
-import base64
 import json
 import os
-import subprocess
-import tempfile
 import time
 import urllib.error
 import urllib.request
 
 import boto3
+import jwt
 
 
 JWT_TICK = 60
 CACHE_TTL = 10 * 60
 GITHUB_API_BASE = "https://api.github.com"
 _CACHED = {"token": "", "expires_at": "", "permissions": {}, "fetched_at": 0.0}
-
-
-def _base64url(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
 def _json_env(name: str, expected_type):
@@ -54,37 +48,12 @@ def _mint_jwt(private_key: str, app_id: str) -> str:
         "exp": int(time.time()) + (10 * JWT_TICK),
         "iss": str(app_id),
     }
-    signing_input = (
-        f"{_base64url(json.dumps(header, separators=(',', ':')).encode())}."
-        f"{_base64url(json.dumps(payload, separators=(',', ':')).encode())}"
+    return jwt.PyJWT().encode(
+        payload,
+        private_key,
+        algorithm="RS256",
+        headers=header,
     )
-    with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as fh:
-        fh.write(private_key)
-        key_path = fh.name
-    try:
-        proc = subprocess.run(
-            [
-                "openssl",
-                "dgst",
-                "-binary",
-                "-sha256",
-                "-sign",
-                key_path,
-            ],
-            input=signing_input.encode("utf-8"),
-            capture_output=True,
-            check=False,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"openssl signing failed: {proc.stderr.decode('utf-8', errors='replace')}"
-            )
-        return f"{signing_input}.{_base64url(proc.stdout)}"
-    finally:
-        try:
-            os.unlink(key_path)
-        except OSError:
-            pass
 
 
 def _mint_installation_token(jwt_token: str, installation_id: int):

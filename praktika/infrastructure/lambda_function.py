@@ -4,7 +4,10 @@ import hashlib
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import zipfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -27,6 +30,8 @@ class Lambda:
         secrets: Dict[str, str] = field(default_factory=dict)
         # Non-secret environment variables (plain key-value pairs)
         environments: Dict[str, str] = field(default_factory=dict)
+        # Python packages to vendor into the Lambda zip via pip install -t.
+        python_dependencies: List[str] = field(default_factory=list)
         timeout_ms: int = 3 * 1000
         memory_size_mb: int = 128
         # Create an HTTP API Gateway for this Lambda (public HTTPS endpoint)
@@ -333,7 +338,11 @@ class Lambda:
                 print(f"Lambda {self.name} does not exist yet, will create new")
 
             # Package the Lambda code
-            zip_buffer = self._package_lambda_code(self.path, self.include_files)
+            zip_buffer = self._package_lambda_code(
+                self.path,
+                self.include_files,
+                self.python_dependencies,
+            )
 
             # Get Lambda function configuration from self.ext with defaults
             function_name = self.name
@@ -634,7 +643,10 @@ class Lambda:
             print(f"API Gateway URL written to {out_file}")
 
         def _package_lambda_code(
-            self, code_path: str, include_files: List[str] = None
+            self,
+            code_path: str,
+            include_files: List[str] = None,
+            python_dependencies: List[str] = None,
         ) -> io.BytesIO:
             """
             Package Lambda code into a zip file.
@@ -642,6 +654,7 @@ class Lambda:
             Args:
                 code_path: Path to the Lambda code (file or directory)
                 include_files: Additional files to include in the package
+                python_dependencies: Python packages to vendor into the zip
 
             Returns:
                 BytesIO buffer containing the zipped code
@@ -649,29 +662,68 @@ class Lambda:
             zip_buffer = io.BytesIO()
             path = Path(code_path)
             include_files = include_files or []
+            python_dependencies = python_dependencies or []
 
-            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            with tempfile.TemporaryDirectory(prefix=f"{self.name}-lambda-") as staging_dir:
+                staging = Path(staging_dir)
                 if path.is_file():
-                    # Single file
-                    zip_file.write(path, arcname=path.name)
+                    shutil.copy2(path, staging / path.name)
                 elif path.is_dir():
-                    # Directory - recursively add all files
                     for root, dirs, files in os.walk(path):
+                        root_path = Path(root)
+                        rel_root = root_path.relative_to(path)
+                        target_root = staging / rel_root
+                        target_root.mkdir(parents=True, exist_ok=True)
                         for file in files:
-                            file_path = Path(root) / file
-                            arcname = file_path.relative_to(path)
-                            zip_file.write(file_path, arcname=str(arcname))
+                            file_path = root_path / file
+                            shutil.copy2(file_path, target_root / file)
                 else:
                     raise ValueError(f"Invalid path: {code_path}")
 
-                # Add additional files
                 for include_path in include_files:
                     include_file = Path(include_path)
                     if include_file.is_file():
-                        zip_file.write(include_file, arcname=include_file.name)
+                        shutil.copy2(include_file, staging / include_file.name)
                         print(f"Including additional file: {include_file.name}")
                     else:
                         print(f"Warning: Include file not found: {include_path}")
+
+                if python_dependencies:
+                    runtime = self.ext.get("runtime", "python3.11")
+                    if not runtime.startswith("python3."):
+                        raise ValueError(
+                            f"Unsupported Lambda runtime for dependency vendoring: {runtime}"
+                        )
+                    py_version = runtime.removeprefix("python")
+                    cmd = [
+                        sys.executable,
+                        "-m",
+                        "pip",
+                        "install",
+                        "--only-binary=:all:",
+                        "--platform",
+                        "manylinux2014_x86_64",
+                        "--implementation",
+                        "cp",
+                        "--python-version",
+                        py_version,
+                        "--target",
+                        str(staging),
+                        *python_dependencies,
+                    ]
+                    print(
+                        f"Vendoring {len(python_dependencies)} Lambda Python dependenc"
+                        f"{'y' if len(python_dependencies) == 1 else 'ies'} for {self.name}"
+                    )
+                    subprocess.run(cmd, check=True)
+
+                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                    for root, dirs, files in os.walk(staging):
+                        root_path = Path(root)
+                        for file in files:
+                            file_path = root_path / file
+                            arcname = file_path.relative_to(staging)
+                            zip_file.write(file_path, arcname=str(arcname))
 
             zip_buffer.seek(0)
             return zip_buffer

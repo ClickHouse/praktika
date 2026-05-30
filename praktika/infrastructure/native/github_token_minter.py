@@ -62,6 +62,9 @@ class GitHubTokenMinter:
                     self.repositories
                 ),
             },
+            python_dependencies=[
+                "PyJWT[crypto]>=2.10.0",
+            ],
             timeout_ms=10 * 1000,
             memory_size_mb=128,
         )
