@@ -56,7 +56,7 @@ class CloudInfrastructure:
         vpcs: List["VPC.Config"] = field(default_factory=list)
         runner_pools: List["RunnerPool"] = field(default_factory=list)
         pool_autoscalers: List["PoolAutoscaler"] = field(default_factory=list)
-        runner_pool_autoscaler_interval_seconds: int = 60
+        pool_autoscaler_interval_seconds: int = 60
         orchestrator_pool: Optional["OrchestratorPool"] = None
         cidb_cluster: Optional["CIDBCluster"] = None
         _settings: Optional[_Settings] = None
@@ -75,6 +75,7 @@ class CloudInfrastructure:
                     self.iam_instance_profiles.append(profile)
                     seen_profile_names.add(profile.name)
 
+            implicit_autoscaler_sources = []
             if self.orchestrator_pool:
                 self.secret_parameters.append(self.orchestrator_pool.webhook_secret)
                 _add_role(self.orchestrator_pool.ec2_role)
@@ -84,16 +85,18 @@ class CloudInfrastructure:
                 self.sqs_queues.append(self.orchestrator_pool.queue)
                 self.launch_templates.append(self.orchestrator_pool.launch_template)
                 self.autoscaling_groups.append(self.orchestrator_pool.autoscaling_group)
+                implicit_autoscaler_sources.append(self.orchestrator_pool)
             for pool in self.runner_pools:
                 _add_role(pool.ec2_role)
                 _add_profile(pool.instance_profile)
                 self.launch_templates.append(pool.launch_template)
                 self.autoscaling_groups.append(pool.autoscaling_group)
                 self.sqs_queues.append(pool.queue)
+                implicit_autoscaler_sources.append(pool)
             from .native.pool_autoscaler import PoolAutoscaler as _PoolAutoscaler
-            implicit_runner_autoscaler = _PoolAutoscaler.from_runner_pools(
-                self.runner_pools,
-                interval_seconds=self.runner_pool_autoscaler_interval_seconds,
+            implicit_runner_autoscaler = _PoolAutoscaler.from_pools(
+                implicit_autoscaler_sources,
+                interval_seconds=self.pool_autoscaler_interval_seconds,
             )
             if implicit_runner_autoscaler and not any(
                 autoscaler.name == implicit_runner_autoscaler.name

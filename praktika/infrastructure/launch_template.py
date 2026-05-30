@@ -46,6 +46,7 @@ class LaunchTemplate:
         #            "Ebs": {"VolumeSize": 30, "VolumeType": "gp3",
         #                    "DeleteOnTermination": True}}]
         block_device_mappings: List[Dict[str, Any]] = field(default_factory=list)
+        tags: Dict[str, str] = field(default_factory=dict)
 
         # Raw launch template data (passed directly to EC2 API as LaunchTemplateData)
         data: Dict[str, Any] = field(default_factory=dict)
@@ -199,6 +200,7 @@ class LaunchTemplate:
                 instance_tags["github:runner-type"] = self.runner_type
 
             if instance_tags:
+                instance_tags.update(self.tags or {})
                 tag_specs.append(
                     {
                         "ResourceType": "instance",
@@ -208,6 +210,10 @@ class LaunchTemplate:
                     }
                 )
                 lt_data["TagSpecifications"] = tag_specs
+            lt_data["MetadataOptions"] = {
+                "HttpTokens": "required",
+                "InstanceMetadataTags": "enabled",
+            }
 
             sg_ids = list(self.security_group_ids)
             if self.security_group_names:
@@ -289,6 +295,28 @@ class LaunchTemplate:
                 if dp:
                     out["IamProfileName"] = dp.get("Name", "")
                     out["_current_IamProfileName"] = cp.get("Arn", "").split("/")[-1] if cp.get("Arn") else cp.get("Name", "")
+                if "MetadataOptions" in desired:
+                    # We force IMDS tags on so bootstrap agents can read their
+                    # own pool/asg/scaling metadata without extra config files.
+                    out["MetadataOptions"] = desired.get("MetadataOptions", {})
+                    out["_current_MetadataOptions"] = current.get("MetadataOptions", {})
+                desired_tags = []
+                for spec in desired.get("TagSpecifications", []) or []:
+                    if spec.get("ResourceType") != "instance":
+                        continue
+                    desired_tags.extend(spec.get("Tags", []) or [])
+                if desired_tags:
+                    current_tags = []
+                    for spec in current.get("TagSpecifications", []) or []:
+                        if spec.get("ResourceType") != "instance":
+                            continue
+                        current_tags.extend(spec.get("Tags", []) or [])
+                    out["InstanceTags"] = sorted(
+                        desired_tags, key=lambda t: (t.get("Key", ""), t.get("Value", ""))
+                    )
+                    out["_current_InstanceTags"] = sorted(
+                        current_tags, key=lambda t: (t.get("Key", ""), t.get("Value", ""))
+                    )
                 return out
 
             d = _norm(desired)

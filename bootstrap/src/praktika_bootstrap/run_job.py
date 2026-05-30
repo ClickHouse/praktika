@@ -17,6 +17,7 @@ from praktika_bootstrap.common import (
     configure_logging,
     get_github_token,
     resolve_praktika_runtime,
+    try_scale_in_if_idle,
     upload_log,
 )
 from praktika_bootstrap.venv_manager import (
@@ -169,6 +170,15 @@ def poll():
         )
         messages = resp.get("Messages", [])
         if not messages:
+            if try_scale_in_if_idle(
+                sqs=sqs,
+                queue_url=queue_url,
+                queue_name=QUEUE_NAME,
+                region=REGION,
+                instance_id=INSTANCE_ID,
+                log=log,
+            ):
+                return
             continue
 
         msg = messages[0]

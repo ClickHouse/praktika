@@ -109,6 +109,83 @@ def get_github_token(region: str) -> str:
     return resp.json()["token"]
 
 
+def imds_token() -> str:
+    import requests
+
+    resp = requests.put(
+        "http://169.254.169.254/latest/api/token",
+        headers={"X-aws-ec2-metadata-token-ttl-seconds": "21600"},
+        timeout=2,
+    )
+    resp.raise_for_status()
+    return resp.text
+
+
+def instance_tag(tag_name: str, token: str | None = None) -> str:
+    import requests
+
+    token = token or imds_token()
+    resp = requests.get(
+        f"http://169.254.169.254/latest/meta-data/tags/instance/{tag_name}",
+        headers={"X-aws-ec2-metadata-token": token},
+        timeout=2,
+    )
+    if resp.status_code == 404:
+        return ""
+    resp.raise_for_status()
+    return resp.text.strip()
+
+
+def try_scale_in_if_idle(
+    *,
+    sqs,
+    queue_url: str,
+    queue_name: str,
+    region: str,
+    instance_id: str,
+    log,
+) -> bool:
+    if not region or not instance_id:
+        return False
+    try:
+        token = imds_token()
+        if instance_tag("praktika_scaling", token=token) != "auto":
+            return False
+        asg_name = instance_tag("praktika_asg", token=token)
+        if not asg_name:
+            return False
+        attrs = sqs.get_queue_attributes(
+            QueueUrl=queue_url,
+            AttributeNames=[
+                "ApproximateNumberOfMessages",
+                "ApproximateNumberOfMessagesNotVisible",
+            ],
+        )["Attributes"]
+        visible = int(attrs.get("ApproximateNumberOfMessages", "0"))
+        in_flight = int(attrs.get("ApproximateNumberOfMessagesNotVisible", "0"))
+        if visible != 0 or in_flight != 0:
+            return False
+
+        import boto3
+
+        autoscaling = boto3.client("autoscaling", region_name=region)
+        log.info(
+            "Queue %s is idle, terminating %s and decrementing ASG %s",
+            queue_name,
+            instance_id,
+            asg_name,
+        )
+        autoscaling.terminate_instance_in_auto_scaling_group(
+            InstanceId=instance_id,
+            ShouldDecrementDesiredCapacity=True,
+        )
+        subprocess.Popen(["/sbin/shutdown", "-h", "now"])
+        return True
+    except Exception:
+        log.exception("Idle scale-in check failed")
+        return False
+
+
 class VisibilityHeartbeat:
     """Extend SQS message visibility while we process it."""
 

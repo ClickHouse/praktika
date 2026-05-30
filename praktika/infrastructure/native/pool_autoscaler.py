@@ -19,6 +19,8 @@ class PoolAutoscaler:
     @dataclass
     class Pool:
         name: str
+        queue_name: str = ""
+        asg_name: str = ""
 
     name: str = "praktika-pool-autoscaler"
     interval_seconds: int = 60
@@ -41,9 +43,9 @@ class PoolAutoscaler:
         )
         queue_arns = sorted(
             {
-                f"arn:aws:sqs:*:*:praktika-{pool.name}"
+                f"arn:aws:sqs:*:*:{pool.queue_name or f'praktika-{pool.name}'}"
                 for pool in self.pools
-                if pool.name
+                if (pool.queue_name or pool.name)
             }
         )
 
@@ -92,7 +94,7 @@ class PoolAutoscaler:
         )
 
     @classmethod
-    def from_runner_pools(
+    def from_pools(
         cls,
         pools,
         *,
@@ -104,10 +106,12 @@ class PoolAutoscaler:
     ):
         autoscaled_pools = [
             cls.Pool(
-                name=pool.name,
+                name=getattr(pool, "name", ""),
+                queue_name=getattr(getattr(pool, "queue", None), "name", ""),
+                asg_name=getattr(getattr(pool, "autoscaling_group", None), "name", ""),
             )
             for pool in pools
-            if getattr(pool, "scaling", "") == getattr(pool.Scaling, "Auto", "auto")
+            if getattr(pool, "scaling", "") == "auto"
         ]
         if not autoscaled_pools:
             return None

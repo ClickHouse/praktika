@@ -31,10 +31,16 @@ python3 -m praktika infrastructure --shutdown --only DedicatedHost
 - **`Storage.Config`** — an S3 bucket for artifacts and the HTML report,
   with retention policy and public/private access.
 - **`NativeComponents.OrchestratorPool`** — ASG of EC2 VMs that polls SQS,
-  resolves workflow DAGs, and dispatches jobs to runner pools.
+  resolves workflow DAGs, and dispatches jobs to runner pools. Supports
+  `Scaling.Disabled` and `Scaling.Auto`.
 - **`NativeComponents.RunnerPool`** — ASG of EC2 VMs that pull job tasks
   from per-pool SQS queues and execute them. Pools are referenced by jobs
-  via the `runs_on` label.
+  via the `runs_on` label and support `Scaling.Disabled` / `Scaling.Auto`.
+- **Implicit pool autoscaler** — when any pool uses `Scaling.Auto`,
+  `CloudInfrastructure.Config` synthesizes a scheduled Lambda that watches
+  the corresponding SQS queues and scales ASG desired capacity up. Idle
+  runner/orchestrator instances then scale themselves back in by
+  decrementing ASG desired capacity and terminating the instance.
 - **`NativeComponents.report_page_config`** — the static HTML page +
   bucket policy that renders a workflow's `result_*.json` files.
 - **`ImageBuilder.Config`** — AMI build pipelines. Supports ordinary

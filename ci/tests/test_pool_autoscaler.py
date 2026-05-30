@@ -3,6 +3,7 @@ from praktika.infrastructure.native.pool_autoscaler import (
     PoolAutoscaler,
     _rate_expression_for_seconds,
 )
+from praktika.infrastructure.native.orchestrator_pool import OrchestratorPool
 from praktika.infrastructure.native.runner_pool import RunnerPool
 from praktika.infrastructure.native.lambda_pool_autoscaler import (
     _calculate_desired_capacity,
@@ -91,7 +92,7 @@ def test_cloud_infrastructure_creates_implicit_runner_autoscaler():
     cloud = CloudInfrastructure.Config(
         name="test-cloud",
         runner_pools=[auto_pool, disabled_pool],
-        runner_pool_autoscaler_interval_seconds=120,
+        pool_autoscaler_interval_seconds=120,
     )
 
     autoscalers = [l for l in cloud.lambda_functions if l.name == "praktika-pool-autoscaler"]
@@ -100,3 +101,27 @@ def test_cloud_infrastructure_creates_implicit_runner_autoscaler():
     assert autoscaler.schedule_expression == "rate(2 minutes)"
     assert f'"name":"{auto_pool.name}"' in autoscaler.environments["POOLS_CONFIG_JSON"]
     assert f'"name":"{disabled_pool.name}"' not in autoscaler.environments["POOLS_CONFIG_JSON"]
+
+
+def test_cloud_infrastructure_creates_implicit_orchestrator_autoscaler():
+    orchestrator_pool = OrchestratorPool(
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        scaling=OrchestratorPool.Scaling.Auto,
+        size=0,
+        max_size=1,
+    )
+
+    cloud = CloudInfrastructure.Config(
+        name="test-cloud",
+        orchestrator_pool=orchestrator_pool,
+        pool_autoscaler_interval_seconds=60,
+    )
+
+    autoscalers = [l for l in cloud.lambda_functions if l.name == "praktika-pool-autoscaler"]
+    assert len(autoscalers) == 1
+    autoscaler = autoscalers[0]
+    env = autoscaler.environments["POOLS_CONFIG_JSON"]
+    assert '"name":"workflow-orchestrator"' in env
+    assert '"queue_name":"praktika-workflows"' in env
+    assert '"asg_name":"praktika-workflow-orchestrator-asg"' in env

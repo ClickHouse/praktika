@@ -48,6 +48,10 @@ in one command, and wiring up the GitHub webhook.
 **Cloud side (AWS)**
 - Runner pools (Auto Scaling Group + Launch Template + EC2 Linux VMs)
 - Orchestrator pool (also ASG-managed)
+- Queue-driven autoscaling for runner and orchestrator pools. A scheduled
+  Lambda scales pools up from SQS backlog; auto-scaled instances also
+  scale themselves back in when their queue is idle by decrementing ASG
+  capacity and terminating themselves.
 - Versioned runtimes via Image Builder + named base venvs, with
   `praktika_bootstrap` selecting the workflow/job runtime and optionally
   overlaying Praktika from the checked-out source
@@ -62,14 +66,11 @@ in one command, and wiring up the GitHub webhook.
 
 ## Roadmap
 **Blockers**
-- Runner pool autoscaling
 - Cloud resource namespacing
 - Approve and Run alternative for forks in OSS
 - Sync from upstream. GH app auth via lambda broker and more.
 
 **Execution engine**
-- **Runner pool autoscaling** — Lambda watching SQS queue depth to scale
-  runner pools up/down on demand
 - **Job cancel / job rerun** — cancel an in-flight job from the GitHub UI;
   re-run a single failed job without rerunning the whole workflow
 - **`schedule` and `workflow_dispatch` workflows** — cron-driven and

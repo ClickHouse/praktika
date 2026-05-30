@@ -42,8 +42,8 @@ def lambda_handler(event, context):
     results = []
     for pool in _load_pool_configs():
         pool_name = str(pool["name"])
-        queue_name = f"praktika-{pool_name}"
-        asg_name = f"praktika-{pool_name}"
+        queue_name = str(pool.get("queue_name") or f"praktika-{pool_name}")
+        asg_name = str(pool.get("asg_name") or f"praktika-{pool_name}")
 
         queue_url = sqs.get_queue_url(QueueName=queue_name)["QueueUrl"]
         queue_attrs = sqs.get_queue_attributes(

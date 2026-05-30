@@ -161,6 +161,13 @@ class RunnerPool:
             role_name=self.ec2_role_name,
         )
         queue_name = f"praktika-{self.name}"
+        asg_name = f"praktika-{self.name}"
+        runtime_tags = {
+            "praktika_pool": self.name,
+            "praktika_queue": queue_name,
+            "praktika_asg": asg_name,
+            "praktika_scaling": self.scaling,
+        }
         self.launch_template = LaunchTemplate.Config(
             name=f"praktika-{self.name}-lt",
             image_id=self.ami_id,
@@ -182,12 +189,13 @@ class RunnerPool:
                     },
                 },
             ],
+            tags=runtime_tags,
             praktika_resource_tag="runner",
         )
         if self.image_builder:
             self.image_builder.launch_templates.append(self.launch_template)
         self.autoscaling_group = AutoScalingGroup.Config(
-            name=f"praktika-{self.name}",
+            name=asg_name,
             vpc_name=self.vpc_name,
             availability_zones=[],
             min_size=0,
@@ -195,6 +203,7 @@ class RunnerPool:
             desired_capacity=self.size,
             launch_template_name=f"praktika-{self.name}-lt",
             launch_template_version="$Default" if self.image_builder else "$Latest",
+            tags=runtime_tags,
             praktika_resource_tag="runner",
         )
         self.queue = SQSQueue.Config(

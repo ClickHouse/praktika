@@ -45,6 +45,10 @@ class OrchestratorPool:
         )
     """
 
+    class Scaling:
+        Disabled = "disabled"
+        Auto = "auto"
+
     # TODO: ami_id, security_group_ids, vpc_name, iam_instance_profile_name are
     #  infrastructure-level constants shared across all pools — find a way to
     #  propagate them automatically (e.g. from CloudInfrastructure.Config) so
@@ -53,6 +57,8 @@ class OrchestratorPool:
     instance_type: str
     size: int
     max_size: int
+    name: str = "workflow-orchestrator"
+    scaling: str = Scaling.Disabled
     ami_id: str = ""  # resolved at deploy time via SSM if empty
     image_builder: ImageBuilder.Config | None = None
     user_data: str = ""
@@ -74,7 +80,15 @@ class OrchestratorPool:
     def __post_init__(self):
         if not self.security_group_ids and not self.security_group_names:
             self.security_group_names = [f"{self.vpc_name}-sg"]
-        assert self.size >= 1, f"size={self.size} must be >= 1"
+        assert self.scaling in (self.Scaling.Disabled, self.Scaling.Auto), (
+            f"OrchestratorPool scaling={self.scaling!r} is not supported; "
+            f"use Scaling.Disabled or Scaling.Auto"
+        )
+        min_size = 0 if self.scaling == self.Scaling.Auto else 1
+        assert self.size >= min_size, (
+            f"size={self.size} is invalid for scaling={self.scaling!r}; "
+            f"must be >= {min_size}"
+        )
         assert self.max_size >= self.size, (
             f"max_size={self.max_size} must be >= size={self.size}"
         )
@@ -126,6 +140,8 @@ class OrchestratorPool:
                             "Sid": "EC2CreateTerminate",
                             "Effect": "Allow",
                             "Action": [
+                                "autoscaling:Describe*",
+                                "autoscaling:TerminateInstanceInAutoScalingGroup",
                                 "ec2:Describe*",
                                 "ec2:RunInstances",
                                 "ec2:TerminateInstances",
@@ -160,6 +176,14 @@ class OrchestratorPool:
             name=self.iam_instance_profile_name,
             role_name=self.ec2_role_name,
         )
+        queue_name = "praktika-workflows"
+        asg_name = "praktika-workflow-orchestrator-asg"
+        runtime_tags = {
+            "praktika_pool": self.name,
+            "praktika_queue": queue_name,
+            "praktika_asg": asg_name,
+            "praktika_scaling": self.scaling,
+        }
         self.launch_template = LaunchTemplate.Config(
             name="praktika-workflow-orchestrator-lt",
             image_id=self.ami_id,
@@ -181,6 +205,7 @@ class OrchestratorPool:
                     },
                 },
             ],
+            tags=runtime_tags,
             praktika_resource_tag="workflow_orchestrator",
         )
         if self.image_builder:
@@ -227,12 +252,12 @@ class OrchestratorPool:
             },
         )
         self.queue = SQSQueue.Config(
-            name="praktika-workflows",
+            name=queue_name,
             visibility_timeout=600,
             message_retention=86400,
         )
         self.autoscaling_group = AutoScalingGroup.Config(
-            name="praktika-workflow-orchestrator-asg",
+            name=asg_name,
             vpc_name=self.vpc_name,
             availability_zones=[],
             min_size=0,
@@ -240,5 +265,6 @@ class OrchestratorPool:
             desired_capacity=self.size,
             launch_template_name="praktika-workflow-orchestrator-lt",
             launch_template_version="$Default" if self.image_builder else "$Latest",
+            tags=runtime_tags,
             praktika_resource_tag="workflow_orchestrator",
         )
