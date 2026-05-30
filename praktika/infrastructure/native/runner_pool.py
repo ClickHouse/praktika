@@ -33,16 +33,16 @@ class RunnerPool:
             security_group_ids=["sg-..."],
             vpc_name="ci-cd",
             iam_instance_profile_name="praktika-workflow-orchestrator-profile",
-            scaling_type=RunnerPool.ScalingType.Fixed,
+            scaling=RunnerPool.Scaling.Disabled,
             size=1,
             max_size=2,
             volume_size_gb=100,
         )
     """
 
-    class ScalingType:
+    class Scaling:
+        Disabled = "disabled"
         Auto = "auto"
-        Fixed = "fixed"
 
     name: str
     instance_type: str
@@ -51,7 +51,7 @@ class RunnerPool:
     #  propagate them automatically (e.g. from CloudInfrastructure.Config) so
     #  callers don't have to repeat them per pool.
     vpc_name: str
-    scaling_type: str
+    scaling: str
     size: int
     max_size: int
     ami_id: str = ""  # resolved at deploy time via SSM if empty
@@ -72,13 +72,14 @@ class RunnerPool:
     def __post_init__(self):
         if not self.security_group_ids and not self.security_group_names:
             self.security_group_names = [f"{self.vpc_name}-sg"]
-        assert self.scaling_type == self.ScalingType.Fixed, (
-            f"RunnerPool scaling_type={self.scaling_type!r} is not yet supported; "
-            f"use ScalingType.Fixed"
+        assert self.scaling in (self.Scaling.Disabled, self.Scaling.Auto), (
+            f"RunnerPool scaling={self.scaling!r} is not supported; "
+            f"use Scaling.Disabled or Scaling.Auto"
         )
-        assert self.size >= 1, (
-            f"size={self.size} is invalid for Fixed scaling; "
-            f"must be >= 1 (0 is only valid for Auto scaling)"
+        min_size = 0 if self.scaling == self.Scaling.Auto else 1
+        assert self.size >= min_size, (
+            f"size={self.size} is invalid for scaling={self.scaling!r}; "
+            f"must be >= {min_size}"
         )
         assert self.max_size >= self.size, (
             f"max_size={self.max_size} must be >= size={self.size}"

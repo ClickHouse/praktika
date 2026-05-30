@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from .launch_template import LaunchTemplate
     from .native.cidb_cluster import CIDBCluster
     from .native.orchestrator_pool import OrchestratorPool
+    from .native.pool_autoscaler import PoolAutoscaler
     from .native.runner_pool import RunnerPool
     from .secret_parameter import SecretParameter
     from .sqs_queue import SQSQueue
@@ -54,6 +55,8 @@ class CloudInfrastructure:
         report_pages: List["ReportPage.Config"] = field(default_factory=list)
         vpcs: List["VPC.Config"] = field(default_factory=list)
         runner_pools: List["RunnerPool"] = field(default_factory=list)
+        pool_autoscalers: List["PoolAutoscaler"] = field(default_factory=list)
+        runner_pool_autoscaler_interval_seconds: int = 60
         orchestrator_pool: Optional["OrchestratorPool"] = None
         cidb_cluster: Optional["CIDBCluster"] = None
         _settings: Optional[_Settings] = None
@@ -87,6 +90,19 @@ class CloudInfrastructure:
                 self.launch_templates.append(pool.launch_template)
                 self.autoscaling_groups.append(pool.autoscaling_group)
                 self.sqs_queues.append(pool.queue)
+            from .native.pool_autoscaler import PoolAutoscaler as _PoolAutoscaler
+            implicit_runner_autoscaler = _PoolAutoscaler.from_runner_pools(
+                self.runner_pools,
+                interval_seconds=self.runner_pool_autoscaler_interval_seconds,
+            )
+            if implicit_runner_autoscaler and not any(
+                autoscaler.name == implicit_runner_autoscaler.name
+                for autoscaler in self.pool_autoscalers
+            ):
+                self.pool_autoscalers.append(implicit_runner_autoscaler)
+            for autoscaler in self.pool_autoscalers:
+                _add_role(autoscaler.lambda_role)
+                self.lambda_functions.append(autoscaler.lambda_config)
 
             if self.cidb_cluster:
                 # CIDB instance launches happen via CIDBCluster.deploy() (it

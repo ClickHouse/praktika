@@ -31,6 +31,8 @@ class Lambda:
         memory_size_mb: int = 128
         # Create an HTTP API Gateway for this Lambda (public HTTPS endpoint)
         api_gateway: bool = False
+        # Optional EventBridge schedule expression, e.g. "rate(1 minute)"
+        schedule_expression: str = ""
         # Inline IAM policies to attach to the Lambda execution role (name -> policy document)
         inline_policies: Dict[str, Any] = field(default_factory=dict)
         # IAM role name for the Lambda execution role; resolved to ARN before deploy
@@ -458,6 +460,8 @@ class Lambda:
             # Set up API Gateway if requested
             if self.api_gateway:
                 self._ensure_api_gateway(function_name)
+            if self.schedule_expression:
+                self._ensure_eventbridge_schedule(function_name)
 
             # Attach inline IAM policies to the execution role
             if self.inline_policies:
@@ -469,6 +473,9 @@ class Lambda:
 
         def delete(self):
             import boto3
+
+            if self.schedule_expression:
+                self._delete_eventbridge_schedule()
             client = aws_client("lambda", self.region, self.name)
             try:
                 client.delete_function(FunctionName=self.name)
@@ -545,6 +552,78 @@ class Lambda:
                 print("API Gateway invoke permission already exists")
 
             self.ext["api_endpoint"] = endpoint
+
+        def _schedule_rule_name(self) -> str:
+            return f"{self.name}-schedule"
+
+        def _schedule_target_id(self) -> str:
+            return f"{self.name}-target"
+
+        def _ensure_eventbridge_schedule(self, function_name: str):
+            """Create or update an EventBridge schedule that invokes this Lambda."""
+            import boto3
+
+            events = aws_client("events", self.region, self.name)
+            lambda_client = aws_client("lambda", self.region, self.name)
+
+            func = lambda_client.get_function(FunctionName=function_name)
+            lambda_arn = func["Configuration"]["FunctionArn"]
+            rule_name = self._schedule_rule_name()
+
+            rule = events.put_rule(
+                Name=rule_name,
+                ScheduleExpression=self.schedule_expression,
+                State="ENABLED",
+                Description=f"Scheduled trigger for Lambda {function_name}",
+            )
+            rule_arn = rule["RuleArn"]
+            print(
+                f"Configured EventBridge schedule '{rule_name}' with expression {self.schedule_expression}"
+            )
+
+            events.put_targets(
+                Rule=rule_name,
+                Targets=[
+                    {
+                        "Id": self._schedule_target_id(),
+                        "Arn": lambda_arn,
+                    }
+                ],
+            )
+            print(f"Configured EventBridge target for Lambda '{function_name}'")
+
+            try:
+                lambda_client.add_permission(
+                    FunctionName=function_name,
+                    StatementId="AllowEventBridgeInvoke",
+                    Action="lambda:InvokeFunction",
+                    Principal="events.amazonaws.com",
+                    SourceArn=rule_arn,
+                )
+                print("Added EventBridge invoke permission")
+            except lambda_client.exceptions.ResourceConflictException:
+                print("EventBridge invoke permission already exists")
+
+            self.ext["schedule_rule_arn"] = rule_arn
+
+        def _delete_eventbridge_schedule(self):
+            import boto3
+
+            events = aws_client("events", self.region, self.name)
+            rule_name = self._schedule_rule_name()
+            try:
+                events.remove_targets(
+                    Rule=rule_name,
+                    Ids=[self._schedule_target_id()],
+                    Force=True,
+                )
+            except Exception as e:
+                print(f"Warning: Failed to remove EventBridge targets for {rule_name}: {e}")
+            try:
+                events.delete_rule(Name=rule_name, Force=True)
+                print(f"Deleted EventBridge schedule '{rule_name}'")
+            except Exception as e:
+                print(f"Warning: Failed to delete EventBridge schedule {rule_name}: {e}")
 
         def _dump_api_endpoint(self, function_name: str, endpoint: str):
             from ..settings import Settings

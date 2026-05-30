@@ -13,7 +13,7 @@ def test_runner_pool_registers_launch_template_with_image_builder():
         name="arm-2xsmall",
         instance_type="t4g.small",
         vpc_name="praktika-ci",
-        scaling_type=RunnerPool.ScalingType.Fixed,
+        scaling=RunnerPool.Scaling.Disabled,
         size=1,
         max_size=1,
         image_builder=builder,
@@ -114,3 +114,52 @@ def test_image_builder_distribution_includes_launch_templates(monkeypatch):
             "setDefaultVersion": True,
         }
     ]
+
+
+def test_image_builder_pipeline_update_is_skipped_when_unchanged(monkeypatch):
+    builder = ImageBuilder.Config(
+        name="orchestrator-arm64-image",
+        region="eu-north-1",
+        image_pipeline_name="praktika-orchestrator-arm64-imagebuilder-pipeline",
+        enabled=True,
+        schedule_expression="rate(1 minute)",
+    )
+
+    update_called = {"value": False}
+
+    class _Client:
+        def create_image_pipeline(self, **req):
+            class ResourceAlreadyExistsException(Exception):
+                pass
+
+            raise ResourceAlreadyExistsException()
+
+        def get_image_pipeline(self, imagePipelineArn):
+            return {
+                "imagePipeline": {
+                    "imageRecipeArn": "arn:recipe",
+                    "infrastructureConfigurationArn": "arn:infra",
+                    "distributionConfigurationArn": "arn:dist",
+                    "status": "ENABLED",
+                    "schedule": {
+                        "scheduleExpression": "rate(1 minute)",
+                        "pipelineExecutionStartCondition": "EXPRESSION_MATCH_ONLY",
+                    },
+                }
+            }
+
+        def update_image_pipeline(self, **req):
+            update_called["value"] = True
+            return {}
+
+    monkeypatch.setattr(builder, "_client", lambda: _Client())
+    monkeypatch.setattr(
+        builder,
+        "_imagebuilder_arn",
+        lambda resource_type, name: f"arn:{resource_type}:{name}",
+    )
+
+    arn = builder._get_or_create_pipeline_arn("arn:recipe", "arn:infra", "arn:dist")
+
+    assert arn == "arn:image-pipeline:praktika-orchestrator-arm64-imagebuilder-pipeline"
+    assert update_called["value"] is False

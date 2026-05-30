@@ -48,6 +48,9 @@ in one command, and wiring up the GitHub webhook.
 **Cloud side (AWS)**
 - Runner pools (Auto Scaling Group + Launch Template + EC2 Linux VMs)
 - Orchestrator pool (also ASG-managed)
+- Versioned runtimes via Image Builder + named base venvs, with
+  `praktika_bootstrap` selecting the workflow/job runtime and optionally
+  overlaying Praktika from the checked-out source
 - SQS queues for workflow trigger, job dispatch, and per-job completions
 - S3 buckets for artifacts and the HTML report
 - SSM Parameter Store and Secrets Manager bindings for workflow secrets
@@ -61,7 +64,8 @@ in one command, and wiring up the GitHub webhook.
 **Blockers**
 - Runner pool autoscaling
 - Cloud resource namespacing
-- Versioned releases
+- Approve and Run alternative for forks in OSS
+- Sync from upstream. GH app auth via lambda broker and more.
 
 **Execution engine**
 - **Runner pool autoscaling** — Lambda watching SQS queue depth to scale
@@ -100,5 +104,3 @@ in one command, and wiring up the GitHub webhook.
 - **`praktika init`** — scaffold a new project with a starter
   `ci/workflows/` and `ci/infra/cloud.py` so adopters do not have to copy
   them by hand
-- **Versioned releases** — pinned, semver-tagged praktika packages with a
-  documented upgrade path between versions

@@ -167,6 +167,73 @@ class AutoScalingGroup:
             self.ext["resolved_subnet_ids"] = subnet_ids
             return subnet_ids
 
+        def _desired_tags(self) -> Dict[str, str]:
+            merged_tags = {"praktika_rn": self.name}
+            if self.praktika_resource_tag:
+                merged_tags["praktika_resource_tag"] = self.praktika_resource_tag
+            if self.runner_type:
+                merged_tags["github:runner-type"] = self.runner_type
+            merged_tags.update(self.tags or {})
+            return merged_tags
+
+        def _launch_template_matches(
+            self,
+            current: Dict[str, Any],
+            desired: Dict[str, Any],
+        ) -> bool:
+            current_id = current.get("id") or current.get("LaunchTemplateId") or ""
+            current_name = current.get("name") or current.get("LaunchTemplateName") or ""
+            current_version = str(
+                current.get("version") or current.get("Version") or ""
+            )
+            desired_id = desired.get("LaunchTemplateId", "")
+            desired_name = desired.get("LaunchTemplateName", "")
+            desired_version = str(desired.get("Version", ""))
+
+            if desired_id and current_id and desired_id != current_id:
+                return False
+            if desired_name and current_name and desired_name != current_name:
+                return False
+            if desired_id and not current_id and current_name:
+                return False
+            if desired_name and not current_name and current_id:
+                return False
+
+            if desired_version in {"$Default", "$Latest"}:
+                return True
+            return current_version == desired_version
+
+        def _is_up_to_date(
+            self,
+            *,
+            vpc_zone_identifier: str,
+            launch_template: Dict[str, str],
+            desired_capacity: int,
+            desired_tags: Dict[str, str],
+        ) -> bool:
+            current_launch_template = self.ext.get("launch_template", {})
+            current_target_groups = sorted(self.ext.get("target_group_arns", []) or [])
+            desired_target_groups = sorted(self.target_group_arns or [])
+            current_subnets = sorted(
+                [s for s in (self.ext.get("vpc_zone_identifier", "") or "").split(",") if s]
+            )
+            desired_subnets = sorted(
+                [s for s in (vpc_zone_identifier or "").split(",") if s]
+            )
+
+            return (
+                self.ext.get("min_size") == self.min_size
+                and self.ext.get("max_size") == self.max_size
+                and self.ext.get("desired_capacity") == desired_capacity
+                and self.ext.get("health_check_type") == self.health_check_type
+                and self.ext.get("health_check_grace_period")
+                == self.health_check_grace_period_sec
+                and current_subnets == desired_subnets
+                and self._launch_template_matches(current_launch_template, launch_template)
+                and current_target_groups == desired_target_groups
+                and (self.ext.get("tags") or {}) == desired_tags
+            )
+
         def deploy(self):
             """
             Create or update an Auto Scaling Group.
@@ -195,6 +262,7 @@ class AutoScalingGroup:
                 if self.desired_capacity is not None
                 else self.min_size
             )
+            desired_tags = self._desired_tags()
 
             # Try to fetch existing ASG first
             exists = False
@@ -206,6 +274,14 @@ class AutoScalingGroup:
                 print(f"ASG {self.name} does not exist yet, will create new")
 
             if exists:
+                if self._is_up_to_date(
+                    vpc_zone_identifier=vpc_zone_identifier,
+                    launch_template=launch_template,
+                    desired_capacity=desired_capacity,
+                    desired_tags=desired_tags,
+                ):
+                    print(f"ASG '{self.name}' is already up to date, skipping")
+                    return self
                 print(f"Updating ASG: {self.name}")
                 req: Dict[str, Any] = {
                     "AutoScalingGroupName": self.name,
@@ -245,18 +321,9 @@ class AutoScalingGroup:
                 asg_client.create_auto_scaling_group(**req)
                 print(f"Successfully created ASG: {self.name}")
 
-            # Merge mandatory runner identification tags with user-defined tags
-            merged_tags = {"praktika_rn": self.name}
-            # Add resource tag if specified
-            if self.praktika_resource_tag:
-                merged_tags["praktika_resource_tag"] = self.praktika_resource_tag
-            if self.runner_type:
-                merged_tags["github:runner-type"] = self.runner_type
-            merged_tags.update(self.tags or {})
-
-            if merged_tags:
+            if desired_tags:
                 tag_specs = []
-                for k, v in merged_tags.items():
+                for k, v in desired_tags.items():
                     tag_specs.append(
                         {
                             "ResourceId": self.name,
@@ -269,7 +336,7 @@ class AutoScalingGroup:
 
                 asg_client.create_or_update_tags(Tags=tag_specs)
                 print(
-                    f"Updated {len(merged_tags)} tag(s) (PropagateAtLaunch=True) for ASG: {self.name}"
+                    f"Updated {len(desired_tags)} tag(s) (PropagateAtLaunch=True) for ASG: {self.name}"
                 )
 
             return self

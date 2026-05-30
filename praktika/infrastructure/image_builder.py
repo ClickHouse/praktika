@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import json
 import shlex
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -259,6 +260,23 @@ class ImageBuilder:
                     break
             return ""
 
+        def _canonicalize(self, value: Any) -> Any:
+            if isinstance(value, dict):
+                return {
+                    str(k): self._canonicalize(v)
+                    for k, v in sorted(value.items(), key=lambda item: str(item[0]))
+                }
+            if isinstance(value, list):
+                normalized_items = [self._canonicalize(v) for v in value]
+                return sorted(
+                    normalized_items,
+                    key=lambda item: json.dumps(item, sort_keys=True),
+                )
+            return value
+
+        def _same_config(self, current: Dict[str, Any], desired: Dict[str, Any]) -> bool:
+            return self._canonicalize(current) == self._canonicalize(desired)
+
         def _get_or_create_recipe_arn(self) -> str:
             client = self._client()
 
@@ -434,6 +452,44 @@ class ImageBuilder:
                             "infrastructure-configuration",
                             self.infrastructure_configuration_name,
                         )
+                        current = client.get_infrastructure_configuration(
+                            infrastructureConfigurationArn=arn
+                        ).get("infrastructureConfiguration", {})
+                        current_req: Dict[str, Any] = {
+                            "instanceProfileName": current.get("instanceProfileName"),
+                            "terminateInstanceOnFailure": current.get(
+                                "terminateInstanceOnFailure"
+                            ),
+                        }
+                        if current.get("instanceTypes"):
+                            current_req["instanceTypes"] = current.get("instanceTypes")
+                        if current.get("subnetId"):
+                            current_req["subnetId"] = current.get("subnetId")
+                        if current.get("securityGroupIds"):
+                            current_req["securityGroupIds"] = current.get(
+                                "securityGroupIds"
+                            )
+                        if current.get("keyPair"):
+                            current_req["keyPair"] = current.get("keyPair")
+                        if current.get("snsTopicArn"):
+                            current_req["snsTopicArn"] = current.get("snsTopicArn")
+                        desired_req: Dict[str, Any] = {
+                            "instanceProfileName": req["instanceProfileName"],
+                            "terminateInstanceOnFailure": req[
+                                "terminateInstanceOnFailure"
+                            ],
+                        }
+                        for key in (
+                            "instanceTypes",
+                            "subnetId",
+                            "securityGroupIds",
+                            "keyPair",
+                            "snsTopicArn",
+                        ):
+                            if key in req:
+                                desired_req[key] = req[key]
+                        if self._same_config(current_req, desired_req):
+                            return arn
                         client.update_infrastructure_configuration(
                             infrastructureConfigurationArn=arn,
                             **{k: v for k, v in req.items() if k != "name"},
@@ -542,6 +598,17 @@ class ImageBuilder:
                 arn = self._imagebuilder_arn(
                     "distribution-configuration", self.distribution_configuration_name
                 )
+                current = client.get_distribution_configuration(
+                    distributionConfigurationArn=arn
+                ).get("distributionConfiguration", {})
+                current_req = {
+                    "distributions": current.get("distributions", []),
+                }
+                desired_req = {
+                    "distributions": distributions,
+                }
+                if self._same_config(current_req, desired_req):
+                    return arn
                 client.update_distribution_configuration(
                     distributionConfigurationArn=arn,
                     distributions=distributions,
@@ -616,6 +683,31 @@ class ImageBuilder:
                 }
                 if "schedule" in req:
                     update_req["schedule"] = req["schedule"]
+                current = client.get_image_pipeline(imagePipelineArn=arn).get(
+                    "imagePipeline", {}
+                )
+                current_req: Dict[str, Any] = {
+                    "imageRecipeArn": current.get("imageRecipeArn"),
+                    "infrastructureConfigurationArn": current.get(
+                        "infrastructureConfigurationArn"
+                    ),
+                    "distributionConfigurationArn": current.get(
+                        "distributionConfigurationArn"
+                    ),
+                    "status": current.get("status"),
+                }
+                if current.get("schedule"):
+                    current_req["schedule"] = current.get("schedule")
+                desired_req = {
+                    "imageRecipeArn": recipe_arn,
+                    "infrastructureConfigurationArn": infra_arn,
+                    "distributionConfigurationArn": dist_arn,
+                    "status": req["status"],
+                }
+                if "schedule" in req:
+                    desired_req["schedule"] = req["schedule"]
+                if self._same_config(current_req, desired_req):
+                    return arn
                 client.update_image_pipeline(**update_req)
                 return arn
 
@@ -700,17 +792,37 @@ class ImageBuilder:
             )
 
         def deploy(self):
+            try:
+                self.fetch()
+            except Exception:
+                pass
+
             recipe_arn = self._get_or_create_recipe_arn()
             infra_arn = self._get_or_create_infrastructure_configuration_arn()
             dist_arn = self._get_or_create_distribution_configuration_arn()
+            changed = False
+            if (
+                self.ext.get("image_recipe_arn") != recipe_arn
+                or self.ext.get("infrastructure_configuration_arn") != infra_arn
+                or self.ext.get("distribution_configuration_arn") != dist_arn
+            ):
+                changed = True
             pipeline_arn = self._get_or_create_pipeline_arn(
                 recipe_arn, infra_arn, dist_arn
             )
+            if self.ext.get("image_pipeline_arn") != pipeline_arn:
+                changed = True
 
             self.ext["image_recipe_arn"] = recipe_arn
             self.ext["infrastructure_configuration_arn"] = infra_arn
             self.ext["distribution_configuration_arn"] = dist_arn
             self.ext["image_pipeline_arn"] = pipeline_arn
+
+            if not changed:
+                print(
+                    f"Image Builder '{self.image_pipeline_name}' is already up to date, skipping"
+                )
+                return self
 
             print(
                 f"Successfully deployed Image Builder pipeline: {self.image_pipeline_name}"
