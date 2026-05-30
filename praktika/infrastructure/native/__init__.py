@@ -1,5 +1,6 @@
 from .cidb_cluster import CIDBCluster
 from .configs import lambda_gh_trigger_config, report_page_config
+from .github_token_minter import GitHubTokenMinter
 from .orchestrator_pool import OrchestratorPool
 from .pool_autoscaler import PoolAutoscaler
 from .runner_pool import RunnerPool
@@ -8,6 +9,7 @@ from .user_data import ci_engine_user_data, cidb_user_data, runner_user_data
 
 class NativeComponents:
     CIDBCluster = CIDBCluster
+    GitHubTokenMinter = GitHubTokenMinter
     OrchestratorPool = OrchestratorPool
     PoolAutoscaler = PoolAutoscaler
     RunnerPool = RunnerPool

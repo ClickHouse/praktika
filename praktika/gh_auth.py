@@ -1,5 +1,6 @@
 import threading
 import time
+import json
 from datetime import datetime
 
 import requests
@@ -20,6 +21,44 @@ from praktika.utils import Shell
 
 
 class GHAuth:
+    @classmethod
+    def _get_lambda_token_with_expiry(cls):
+        import boto3
+        from .settings import Settings
+
+        region = Settings.GH_AUTH_LAMBDA_REGION or Settings.AWS_REGION
+        if not region:
+            raise RuntimeError("GH_AUTH_LAMBDA_REGION or AWS_REGION must be set")
+        if not Settings.GH_AUTH_LAMBDA_NAME:
+            raise RuntimeError("GH_AUTH_LAMBDA_NAME is not configured")
+
+        client = boto3.client("lambda", region_name=region)
+        response = client.invoke(
+            FunctionName=Settings.GH_AUTH_LAMBDA_NAME,
+            InvocationType="RequestResponse",
+            Payload=b"{}",
+        )
+        payload = response["Payload"].read().decode("utf-8")
+        data = json.loads(payload)
+        if "FunctionError" in response:
+            raise RuntimeError(f"GH auth lambda failed: {payload}")
+        if isinstance(data, dict) and "statusCode" in data:
+            if int(data.get("statusCode", 500)) >= 400:
+                raise RuntimeError(f"GH auth lambda returned error: {payload}")
+            body = data.get("body", "{}")
+            data = json.loads(body) if isinstance(body, str) else body
+        token = data.get("token")
+        expires_at_iso = data.get("expires_at")
+        if not token:
+            raise RuntimeError(f"GH auth lambda returned no token: {payload}")
+        if expires_at_iso:
+            expires_at = datetime.fromisoformat(
+                expires_at_iso.replace("Z", "+00:00")
+            ).timestamp()
+        else:
+            expires_at = time.time() + 3600
+        return token, expires_at
+
 
     @classmethod
     def _post_installation_token(cls, jwt_token: str, installation_id: int):
@@ -114,12 +153,21 @@ class GHAuth:
     @classmethod
     def get_installation_token(cls) -> str:
         """Return a raw GitHub App installation access token."""
+        from .settings import Settings
+
+        if Settings.GH_AUTH_LAMBDA_NAME:
+            token, _ = cls._get_lambda_token_with_expiry()
+            return token
         app_id, pem, installation_id = cls._read_app_credentials()
         return cls._get_access_token(pem, app_id, installation_id)
 
     @classmethod
     def get_installation_token_with_expiry(cls):
         """Like ``get_installation_token`` but returns ``(token, expires_at_epoch)``."""
+        from .settings import Settings
+
+        if Settings.GH_AUTH_LAMBDA_NAME:
+            return cls._get_lambda_token_with_expiry()
         app_id, pem, installation_id = cls._read_app_credentials()
         payload = {
             "iat": int(time.time()) - 60,

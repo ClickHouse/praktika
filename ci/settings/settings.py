@@ -22,6 +22,7 @@ DOCKER_BUILD_ARM_RUNS_ON = [RunnerLabels.SMALL_ARM]
 DOCKER_BUILD_AMD_RUNS_ON = [RunnerLabels.SMALL_AMD]
 
 SECRET_DOCKER_REGISTRY = "praktika-docker-registry-connection"
+USE_CUSTOM_GH_AUTH = True
 
 # Install praktika from the cloned PR tree (packaging metadata lives at the repo root).
 # Per-PR praktika changes take effect on the dispatch that picked the PR up.
@@ -29,6 +30,8 @@ SECRET_DOCKER_REGISTRY = "praktika-docker-registry-connection"
 PRAKTIKA_INSTALL_SOURCE = "."
 PRAKTIKA_WORKFLOW_BASE_VENV = "praktika-orchestrator"
 PRAKTIKA_JOB_BASE_VENV = "praktika-runner-pytest"
+GH_AUTH_LAMBDA_NAME = "praktika-gh-token"
+GH_AUTH_LAMBDA_REGION = AWS_REGION
 
 CI_DB_DB_NAME = "default"
 CI_DB_TABLE_NAME = "checks"

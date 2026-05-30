@@ -182,6 +182,21 @@ def _image_builders():
 
 _IMAGE_BUILDERS = _image_builders()
 _IMAGE_BUILDERS_BY_NAME = {builder.name: builder for builder in _IMAGE_BUILDERS}
+_gh_token_minter = NativeComponents.GitHubTokenMinter(
+    name="praktika-gh-token",
+    role_name="praktika-gh-token-role",
+    secret_name="praktika-gh-app",
+    region=CI_REGION,
+    repositories=["praktika"],
+    permissions={
+        "checks": "write",
+        "contents": "read",
+        "issues": "write",
+        "metadata": "read",
+        "pull_requests": "write",
+        "statuses": "write",
+    },
+)
 
 _runner_pools = [
     NativeComponents.RunnerPool(
@@ -242,6 +257,7 @@ CLOUD = CloudInfrastructure.Config(
     # still use the stock AL2023 AMIs until those LaunchTemplates are
     # explicitly pointed at the built AMI ids.
     image_builders=_IMAGE_BUILDERS,
+    github_token_minters=[_gh_token_minter],
     orchestrator_pool=_orchestrator_pool,
     runner_pools=_runner_pools,
     cidb_cluster=_cidb_cluster,

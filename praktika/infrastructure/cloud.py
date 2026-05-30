@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from .launch_template import LaunchTemplate
     from .native.cidb_cluster import CIDBCluster
     from .native.orchestrator_pool import OrchestratorPool
+    from .native.github_token_minter import GitHubTokenMinter
     from .native.pool_autoscaler import PoolAutoscaler
     from .native.runner_pool import RunnerPool
     from .secret_parameter import SecretParameter
@@ -55,6 +56,7 @@ class CloudInfrastructure:
         report_pages: List["ReportPage.Config"] = field(default_factory=list)
         vpcs: List["VPC.Config"] = field(default_factory=list)
         runner_pools: List["RunnerPool"] = field(default_factory=list)
+        github_token_minters: List["GitHubTokenMinter"] = field(default_factory=list)
         pool_autoscalers: List["PoolAutoscaler"] = field(default_factory=list)
         pool_autoscaler_interval_seconds: int = 60
         orchestrator_pool: Optional["OrchestratorPool"] = None
@@ -103,6 +105,13 @@ class CloudInfrastructure:
                 for autoscaler in self.pool_autoscalers
             ):
                 self.pool_autoscalers.append(implicit_runner_autoscaler)
+            for token_minter in self.github_token_minters:
+                _add_role(token_minter.lambda_role)
+                self.lambda_functions.append(token_minter.lambda_config)
+                if self.orchestrator_pool:
+                    token_minter.grant_invoke(self.orchestrator_pool.ec2_role)
+                for pool in self.runner_pools:
+                    token_minter.grant_invoke(pool.ec2_role)
             for autoscaler in self.pool_autoscalers:
                 _add_role(autoscaler.lambda_role)
                 self.lambda_functions.append(autoscaler.lambda_config)

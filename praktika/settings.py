@@ -59,6 +59,8 @@ class _Settings:
 
     USE_CUSTOM_GH_AUTH: bool = False
     SECRET_GH_APP: str = "praktika-gh-app"
+    GH_AUTH_LAMBDA_NAME: str = ""
+    GH_AUTH_LAMBDA_REGION: str = ""
 
     ENV_SETUP_SCRIPT: str = f"{TEMP_DIR}/praktika_setup_env.sh"
     WORKFLOW_JOB_FILE: str = f"{TEMP_DIR}/workflow_job.json"
@@ -187,6 +189,8 @@ _USER_DEFINED_SETTINGS = [
     "KEEPER_STRESS_METRICS_TABLE_NAME",
     "CI_DB_INSERT_TIMEOUT_SEC",
     "USE_CUSTOM_GH_AUTH",
+    "GH_AUTH_LAMBDA_NAME",
+    "GH_AUTH_LAMBDA_REGION",
     "MAIN_BRANCH",
     "DISABLED_WORKFLOWS",
     "ENABLED_WORKFLOWS",

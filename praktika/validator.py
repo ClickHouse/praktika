@@ -33,8 +33,8 @@ class Validator:
 
         if Settings.USE_CUSTOM_GH_AUTH:
             cls.evaluate_check_simple(
-                bool(Settings.SECRET_GH_APP),
-                "Setting SECRET_GH_APP must be provided with USE_CUSTOM_GH_AUTH == True",
+                bool(Settings.SECRET_GH_APP or Settings.GH_AUTH_LAMBDA_NAME),
+                "Setting SECRET_GH_APP or GH_AUTH_LAMBDA_NAME must be provided with USE_CUSTOM_GH_AUTH == True",
             )
 
         _VALID_ENGINES = (Workflow.Engine.PRAKTIKA, Workflow.Engine.GH_ACTIONS)
@@ -55,12 +55,13 @@ class Validator:
                 workflow.name,
             )
             if Settings.USE_CUSTOM_GH_AUTH and workflow.enable_report:
-                secret = workflow.get_secret(Settings.SECRET_GH_APP)
-                cls.evaluate_check(
-                    bool(secret),
-                    f"Secret [{Settings.SECRET_GH_APP}] must be configured for workflow",
-                    workflow.name,
-                )
+                if not Settings.GH_AUTH_LAMBDA_NAME:
+                    secret = workflow.get_secret(Settings.SECRET_GH_APP)
+                    cls.evaluate_check(
+                        bool(secret),
+                        f"Secret [{Settings.SECRET_GH_APP}] must be configured for workflow",
+                        workflow.name,
+                    )
 
             for job in workflow.jobs:
                 cls.evaluate_check(
