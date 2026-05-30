@@ -167,12 +167,7 @@ class Runner:
         repo_url = Shell.get_output("git config --get remote.origin.url")
         repo_name = ""
         if repo_url:
-            # Handle both HTTPS and SSH formats
-            # HTTPS: https://github.com/owner/repo.git
-            # SSH: git@github.com:owner/repo.git
-            match = re.search(r"[:/]([^/]+/[^/]+?)(\.git)?$", repo_url)
-            if match:
-                repo_name = match.group(1)
+            repo_name = GH._repo_name_from_git_remote_url(repo_url)
 
         _Environment(
             WORKFLOW_NAME=workflow.name,
@@ -201,6 +196,14 @@ class Runner:
             EVENT_TIME="",
             WORKFLOW_CONFIG=workflow_config,
         ).dump()
+
+        if pr and pr > 0:
+            changed_files = GH.get_changed_files()
+            if changed_files is not None:
+                print(f"Storing {len(changed_files)} changed files in JOB_KV_DATA")
+                Info().store_kv_data("changed_files", changed_files)
+            else:
+                print("WARNING: Failed to fetch changed files for PR")
 
         Result.create_from(name=job.name, status=Result.Status.PENDING).dump()
 

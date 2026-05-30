@@ -70,10 +70,12 @@ class GH:
             repo_name = info.repo_name
             sha = info.sha
         else:
-            repo_name = Shell.get_output(
-                rf"git config --get remote.origin.url | sed -E 's#(git@|https://)[^/:]+[:/](.*)\.git#\\2#'",
-                strict=True,
-            )
+            repo_url = Shell.get_output("git config --get remote.origin.url", strict=True)
+            repo_name = cls._repo_name_from_git_remote_url(repo_url)
+            if not repo_name:
+                raise RuntimeError(
+                    f"Failed to extract repository name from remote URL [{repo_url}]"
+                )
             sha = Shell.get_output(f"git rev-parse HEAD", strict=True)
 
         assert repo_name
@@ -110,6 +112,14 @@ class GH:
 
         return res
 
+    @staticmethod
+    def _repo_name_from_git_remote_url(repo_url: str) -> str:
+        match = re.match(
+            r"^(?:https?://[^/]+/|git@[^:]+:|ssh://git@[^/]+/)([^/\s]+/[^/\s]+?)(?:\.git)?/?$",
+            repo_url,
+        )
+        return match.group(1) if match else ""
+
     @classmethod
     def do_command_with_retries(cls, command, verbose=False):
         res = False
@@ -138,6 +148,124 @@ class GH:
                 f"ERROR: Failed to execute gh command [{command}] out:[{out}] err:[{err}] after [{retry_count}] attempts"
             )
         return res
+
+    @classmethod
+    def get_output_with_retries(cls, command, verbose=False):
+        """Run a read-style ``gh`` command and return its stdout.
+
+        Mirrors :meth:`do_command_with_retries` but returns the captured
+        stdout instead of a boolean.
+        """
+        retry_count = 0
+        out, err = "", ""
+
+        while retry_count < Settings.MAX_RETRIES_GH:
+            ret_code, out, err = Shell.get_res_stdout_stderr(command, verbose=verbose)
+            if ret_code == 0:
+                return out
+            if "Validation Failed" in err:
+                print(f"ERROR: GH command validation error {[err]}")
+                break
+            if "Bad credentials" in err:
+                print("ERROR: GH credentials/auth failure")
+                break
+            if "Resource not accessible" in err:
+                print("ERROR: GH permissions failure")
+                break
+            retry_count += 1
+            delay = min(2 ** (retry_count + 1), 60)
+            time.sleep(delay)
+
+        print(
+            f"ERROR: Failed to execute gh command [{command}] out:[{out}] err:[{err}] after [{retry_count}] attempts"
+        )
+        return ""
+
+    @classmethod
+    def _gh_graphql_json(cls, query, variables, verbose=False):
+        """Run a GraphQL query via ``gh api graphql`` and return parsed JSON."""
+        parts = [f"gh api graphql -f query={shlex.quote(query)}"]
+        for k, v in variables.items():
+            if isinstance(v, bool):
+                parts.append(f"-F {k}={'true' if v else 'false'}")
+            elif isinstance(v, int):
+                parts.append(f"-F {k}={int(v)}")
+            else:
+                parts.append(f"-f {k}={shlex.quote(str(v))}")
+        cmd = " ".join(parts)
+        out = cls.get_output_with_retries(cmd, verbose=verbose)
+        if not out:
+            raise RuntimeError(f"gh api graphql failed (no output) for cmd [{cmd}]")
+        try:
+            data = json.loads(out)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                f"gh api graphql returned non-JSON output [{out[:200]}]: {e}"
+            )
+        if "errors" in data and data["errors"]:
+            raise RuntimeError(f"gh api graphql returned errors: {data['errors']}")
+        return data
+
+    @classmethod
+    def list_pr_review_threads(cls, pr=None, repo=None, verbose=False):
+        """Return all review threads on a PR via GraphQL.
+
+        Each thread carries its node ``id``, ``isResolved``, ``isOutdated``,
+        ``resolvedBy`` (``{login}`` or ``null``), ``path``, ``line``, and the
+        full list of comments under it. Both the thread list and each thread's
+        comments are paginated.
+        """
+        if not repo:
+            repo = _Environment.get().REPOSITORY
+        if not pr:
+            pr = _Environment.get().PR_NUMBER
+        owner, name = repo.split("/", 1)
+
+        thread_query = (
+            "query($owner:String!,$name:String!,$pr:Int!,$after:String){"
+            "repository(owner:$owner,name:$name){"
+            "pullRequest(number:$pr){"
+            "reviewThreads(first:100,after:$after){"
+            "pageInfo{hasNextPage endCursor}"
+            "nodes{id isResolved isOutdated resolvedBy{login} path line "
+            "comments(first:50){"
+            "pageInfo{hasNextPage endCursor}"
+            "nodes{databaseId createdAt author{login} body path line originalLine}"
+            "}}}}}}"
+        )
+        comments_query = (
+            "query($id:ID!,$after:String!){"
+            "node(id:$id){... on PullRequestReviewThread{"
+            "comments(first:50,after:$after){"
+            "pageInfo{hasNextPage endCursor}"
+            "nodes{databaseId createdAt author{login} body path line originalLine}"
+            "}}}}"
+        )
+
+        threads = []
+        thread_cursor = None
+        while True:
+            variables = {"owner": owner, "name": name, "pr": int(pr)}
+            if thread_cursor is not None:
+                variables["after"] = thread_cursor
+            data = cls._gh_graphql_json(thread_query, variables, verbose=verbose)
+            page = data["data"]["repository"]["pullRequest"]["reviewThreads"]
+            for thread in page["nodes"]:
+                comments = thread["comments"]
+                while comments["pageInfo"]["hasNextPage"]:
+                    sub = cls._gh_graphql_json(
+                        comments_query,
+                        {"id": thread["id"], "after": comments["pageInfo"]["endCursor"]},
+                        verbose=verbose,
+                    )
+                    next_page = sub["data"]["node"]["comments"]
+                    comments["nodes"].extend(next_page["nodes"])
+                    comments["pageInfo"] = next_page["pageInfo"]
+                threads.append(thread)
+            if not page["pageInfo"]["hasNextPage"]:
+                break
+            thread_cursor = page["pageInfo"]["endCursor"]
+        return threads
 
     @classmethod
     def post_pr_comment(
@@ -802,13 +930,46 @@ class GH:
                 remaining = len(summary.failed_results) - MAX_JOBS_PER_SUMMARY
                 summary.failed_results = summary.failed_results[:MAX_JOBS_PER_SUMMARY]
                 print(f"NOTE: {remaining} more jobs not shown in PR comment")
-            # Collect links from jobs that have labels with links (e.g. keeper-stress Grafana links).
-            # Include regardless of success/failure so Grafana links always appear when keeper-stress runs.
+            def _shared_job_label(names):
+                if len(names) == 1:
+                    return names[0]
+                common = os.path.commonprefix(names)
+                for sep in (" (", ", ", "("):
+                    idx = common.rfind(sep)
+                    if idx > 0:
+                        common = common[:idx]
+                        break
+                common = common.rstrip(" ,(-")
+                return common or f"{names[0]} (+{len(names) - 1} more)"
+
+            def _url_key(res):
+                urls = []
+                for item in (getattr(res, "ext", {}) or {}).get("labels", []) or []:
+                    if isinstance(item, dict) and item.get("link"):
+                        urls.append(item["link"])
+                for item in (getattr(res, "ext", {}) or {}).get("hlabels", []) or []:
+                    if isinstance(item, (list, tuple)) and len(item) >= 2 and item[1]:
+                        urls.append(item[1])
+                return tuple(sorted(urls))
+
+            groups = {}
+            group_order = []
             for job_result in getattr(result, "results", []) or []:
-                if has_label_links(job_result):
-                    links_md = extract_label_links_md(job_result)
-                    if links_md:
-                        summary.extra_links.append((job_result.name, links_md))
+                if not has_label_links(job_result):
+                    continue
+                links_md = extract_label_links_md(job_result)
+                if not links_md:
+                    continue
+                key = _url_key(job_result)
+                if key not in groups:
+                    groups[key] = {"names": [], "links_md": links_md}
+                    group_order.append(key)
+                groups[key]["names"].append(job_result.name)
+            for key in group_order:
+                group = groups[key]
+                summary.extra_links.append(
+                    (_shared_job_label(group["names"]), group["links_md"])
+                )
             return summary
 
         def to_markdown(self, pr_number=0, sha="", workflow_name="", branch=""):
@@ -826,7 +987,8 @@ class GH:
             body = f"**Summary:** {symbol}\n"
             if self.extra_links:
                 for job_name, links_md in self.extra_links:
-                    body += f"**{job_name}:** {links_md}\n"
+                    body += f"- {job_name}: {links_md}\n"
+                body += "\n"
             if self.failed_results:
                 if len(self.failed_results) > 15:
                     body += (

@@ -805,6 +805,42 @@
         element.style.verticalAlign = 'middle';
     }
 
+    function addLabelsWidget(ext) {
+        const labels = normalizeLabels(ext?.labels, ext?.hlabels);
+        if (!Array.isArray(labels) || labels.length === 0) return;
+
+        const statusContainer = document.getElementById('status-container');
+        const widget = document.createElement('div');
+        widget.className = 'status-widget';
+        widget.style.textAlign = 'left';
+
+        labels.forEach(label => {
+            const name = label?.name;
+            if (!name) return;
+            const link = label?.link;
+            const hint = label?.hint;
+            const element = link ? document.createElement('a') : document.createElement('span');
+            if (link) {
+                element.href = link;
+                element.target = '_blank';
+                element.rel = 'noopener noreferrer';
+                element.style.textDecoration = 'none';
+            }
+            applyLabelStyles(element, name);
+            element.style.marginLeft = '0';
+            if (hint) {
+                element.title = hint;
+                element.style.cursor = link ? 'pointer' : 'help';
+            }
+            const line = document.createElement('div');
+            line.style.margin = '4px 0';
+            line.appendChild(element);
+            widget.appendChild(line);
+        });
+
+        statusContainer.appendChild(widget);
+    }
+
     function addFileLinksWidget(links) {
         if (!Array.isArray(links) || links.length === 0) return;
 
@@ -2004,6 +2040,7 @@
             duration: result.duration
         };
         let statusWidget = addStatusWidget(result.name, result.status, result.start_time, result.duration);
+        addLabelsWidget(result.ext);
         if (nameParams.length > 1) {
             addFileLinksWidget(result.links);
             if (nameParams.length === 2) {

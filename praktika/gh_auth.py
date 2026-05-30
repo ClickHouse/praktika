@@ -41,16 +41,19 @@ class GHAuth:
         payload = response["Payload"].read().decode("utf-8")
         data = json.loads(payload)
         if "FunctionError" in response:
-            raise RuntimeError(f"GH auth lambda failed: {payload}")
+            raise RuntimeError("GH auth lambda failed (payload redacted)")
         if isinstance(data, dict) and "statusCode" in data:
             if int(data.get("statusCode", 500)) >= 400:
-                raise RuntimeError(f"GH auth lambda returned error: {payload}")
+                raise RuntimeError(
+                    f"GH auth lambda returned statusCode={data.get('statusCode')} "
+                    "(body redacted)"
+                )
             body = data.get("body", "{}")
             data = json.loads(body) if isinstance(body, str) else body
         token = data.get("token")
         expires_at_iso = data.get("expires_at")
         if not token:
-            raise RuntimeError(f"GH auth lambda returned no token: {payload}")
+            raise RuntimeError("GH auth lambda returned no token (payload redacted)")
         if expires_at_iso:
             expires_at = datetime.fromisoformat(
                 expires_at_iso.replace("Z", "+00:00")
@@ -129,7 +132,11 @@ class GHAuth:
             access_token = cls._get_access_token(app_key, app_id, installation_id)
         else:
             access_token = cls._get_access_token_deprecated(app_key, app_id, installation_id)
-        Shell.check(f"echo {access_token} | gh auth login --with-token", strict=True)
+        Shell.check(
+            "gh auth login --with-token",
+            stdin_str=f"{access_token}\n",
+            strict=True,
+        )
 
     @classmethod
     def _read_app_credentials(cls):
@@ -179,7 +186,11 @@ class GHAuth:
 
     @classmethod
     def auth_from_settings(cls) -> None:
-        Shell.check(f"echo {cls.get_installation_token()} | gh auth login --with-token", strict=True)
+        Shell.check(
+            "gh auth login --with-token",
+            stdin_str=f"{cls.get_installation_token()}\n",
+            strict=True,
+        )
 
 
 class GHTokenProvider:

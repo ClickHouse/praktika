@@ -9,10 +9,14 @@ class _DummyLambdaClient:
     def __init__(self, payload):
         self._payload = payload
         self.invocations = []
+        self.function_error = None
 
     def invoke(self, **kwargs):
         self.invocations.append(kwargs)
-        return {"Payload": io.BytesIO(self._payload.encode("utf-8"))}
+        response = {"Payload": io.BytesIO(self._payload.encode("utf-8"))}
+        if self.function_error:
+            response["FunctionError"] = self.function_error
+        return response
 
 
 def test_gh_auth_uses_lambda_response(monkeypatch):
@@ -56,3 +60,19 @@ def test_gh_auth_prefers_lambda_for_raw_token(monkeypatch):
     )
 
     assert GHAuth.get_installation_token() == "ghs_lambda_token"
+
+
+def test_gh_auth_redacts_lambda_error_payload(monkeypatch):
+    client = _DummyLambdaClient('{"token":"should-not-leak"}')
+    client.function_error = "Unhandled"
+    monkeypatch.setattr("boto3.client", lambda service, region_name=None: client)
+    monkeypatch.setattr(Settings, "GH_AUTH_LAMBDA_NAME", "praktika-gh-token")
+    monkeypatch.setattr(Settings, "GH_AUTH_LAMBDA_REGION", "eu-north-1")
+
+    try:
+        GHAuth.get_installation_token_with_expiry()
+        assert False, "expected lambda auth failure"
+    except RuntimeError as e:
+        message = str(e)
+        assert "payload redacted" in message
+        assert "should-not-leak" not in message
