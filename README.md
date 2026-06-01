@@ -1,8 +1,8 @@
 # praktika
 
-Build production-grade CI infrastructure on top of **GitHub** and a public cloud
-provider (**AWS**) — pipelines and infrastructure both declared in plain Python
-and deployed with one command.
+praktika is a self-contained CI system that you configure and deploy on top of
+a cloud provider. Pipelines and infrastructure are both declared in plain
+Python and deployed with one command.
 
 praktika gives you:
 
@@ -14,16 +14,20 @@ praktika gives you:
   for artifacts/reports, SQS queues for sync, SSM/Secrets Manager bindings —
   all defined in a single `ci/infra/cloud.py` and brought up with
   `python -m praktika infrastructure --deploy`.
-- **Two execution engines, same pipeline.** Run pipelines on GitHub Actions
-  (praktika emits the `.github/workflows/*.yml` for you) or on the standalone
-  engine on EC2 (the orchestrator polls SQS, dispatches jobs to runner pools,
-  and patches GitHub Check runs over the Checks API).
+- **Standalone-first execution model.** Praktika is designed to run its own CI
+  control plane on cloud infrastructure: the orchestrator polls workflow
+  queues, dispatches jobs to runner pools, and reports status back to the Git
+  hosting system. GitHub Actions YAML generation is available as a compatibility
+  option, but it is not the primary model.
+
+Today, Praktika is developed around GitHub and AWS. The overall model is not
+conceptually limited to them, but those are the integrations implemented today.
 
 ## How to start
 
-See [GETTING_STARTED.md](./GETTING_STARTED.md) — it walks through creating the
-GitHub App, publishing the praktika package, deploying the AWS infrastructure
-in one command, and wiring up the GitHub webhook.
+See [GETTING_STARTED.md](./GETTING_STARTED.md) — it walks you through
+infrastructure configuration and deployment, and writing your first Praktika
+pipeline.
 
 ## Module references
 
@@ -39,36 +43,36 @@ in one command, and wiring up the GitHub webhook.
 
 ## What's supported today
 
+**Native Praktika features**
+- Declarative jobs and pipelines in plain Python
+- Declarative CI infrastructure configuration and deployment
+- Built-in CI cache with awareness of successful jobs and reusable artifacts
+- Versioned runtimes via named base virtual environments, with `praktika_bootstrap` selecting the workflow or job runtime and optionally overlaying Praktika from checked-out source
+- HTML CI report page with per-workflow, per-job, and per-test drill-down
+- Consistent test Docker image versioning: images rebuild automatically when inputs change, and versions stay pinned to code state across branches
+- CI DB integration: job results, test results, timings, and related metadata are written automatically
+
 **GitHub side**
-- `pull_request` and `push` workflows
-- Status reporting via the GitHub Checks API
-- HTML CI report page (per-workflow, per-job, per-test breakdown)
-- GitHub App auth (App ID + installation ID + private key in AWS Secrets Manager)
+- Webhook ingestion via AWS Lambda
+- `pull_request` and `push` pipeline triggers
+- Status reporting through the GitHub Checks API
+- GitHub App authentication through a token-broker Lambda
 
 **Cloud side (AWS)**
-- Runner pools (Auto Scaling Group + Launch Template + EC2 Linux VMs)
-- Orchestrator pool (also ASG-managed)
-- Queue-driven autoscaling for runner and orchestrator pools. A scheduled
-  Lambda scales pools up from SQS backlog; auto-scaled instances also
-  scale themselves back in when their queue is idle by decrementing ASG
-  capacity and terminating themselves.
-- Versioned runtimes via Image Builder + named base venvs, with
-  `praktika_bootstrap` selecting the workflow/job runtime and optionally
-  overlaying Praktika from the checked-out source
-- SQS queues for workflow trigger, job dispatch, and per-job completions
+- Runner pools based on Auto Scaling Groups, Launch Templates, and EC2 Linux VMs
+- An orchestrator pool managed the same way
+- Queue-driven autoscaling for runner and orchestrator pools: a scheduled Lambda scales pools up from SQS backlog, and auto-scaled instances scale themselves back in when their queue is idle
+- Image Builder pipelines for baking named base runtime environments into AMIs
+- SQS queues for workflow triggers and job dispatch
 - S3 buckets for artifacts and the HTML report
 - SSM Parameter Store and Secrets Manager bindings for workflow secrets
-- API Gateway + Lambda webhook receiver to ingest GitHub events
-- CI DB integration — every job/test result streamed for analytics. The CI DB
-  itself (single-node OSS ClickHouse + embedded Keeper) is now a native
-  component (`NativeComponents.CIDBCluster`), or you can point praktika at an
-  existing endpoint via `Settings.SECRET_CI_DB_CONNECTION`.
+- API Gateway plus Lambda webhook receiver for inbound Git events
+- CI DB integration for analytics: every job and test result can be streamed to a CI DB, and Praktika can also provision its own native CI DB component (`NativeComponents.CIDBCluster`) or use an existing endpoint via `Settings.SECRET_CI_DB_CONNECTION`
 
 ## Roadmap
 **Blockers**
 - Cloud resource namespacing
 - Approve and Run alternative for forks in OSS
-- Sync from upstream. GH app auth via lambda broker and more.
 
 **Execution engine**
 - **Job cancel / job rerun** — cancel an in-flight job from the GitHub UI;
