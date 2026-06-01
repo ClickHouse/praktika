@@ -1,4 +1,5 @@
 import glob
+import re
 import sys
 from itertools import chain
 from pathlib import Path
@@ -6,7 +7,7 @@ from pathlib import Path
 from praktika import Artifact, Job
 
 from . import Workflow
-from .mangle import _get_workflows
+from .mangle import _get_infra_projects, _get_workflows
 from .settings import GHRunners, Settings
 
 
@@ -36,6 +37,25 @@ class Validator:
                 bool(Settings.SECRET_GH_APP or Settings.GH_AUTH_LAMBDA_NAME),
                 "Setting SECRET_GH_APP or GH_AUTH_LAMBDA_NAME must be provided with USE_CUSTOM_GH_AUTH == True",
             )
+
+        if Settings.CLOUD_INFRASTRUCTURE_CONFIG_PATH:
+            projects = _get_infra_projects()
+            normalized = {}
+            for project in projects:
+                normalized_name = re.sub(
+                    r"-{2,}",
+                    "-",
+                    re.sub(r"[^a-z0-9]+", "-", project.name.lower()),
+                ).strip("-")
+                cls.evaluate_check_simple(
+                    normalized_name,
+                    f"Infrastructure project name [{project.name}] must normalize to a non-empty AWS-safe prefix",
+                )
+                cls.evaluate_check_simple(
+                    normalized_name not in normalized,
+                    f"Infrastructure project names [{normalized.get(normalized_name)}] and [{project.name}] normalize to the same prefix [{normalized_name}]",
+                )
+                normalized[normalized_name] = project.name
 
         _VALID_ENGINES = (Workflow.Engine.PRAKTIKA, Workflow.Engine.GH_ACTIONS)
         files = []

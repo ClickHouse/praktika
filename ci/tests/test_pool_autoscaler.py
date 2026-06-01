@@ -67,8 +67,14 @@ def test_cloud_infrastructure_registers_pool_autoscaler():
         pool_autoscalers=[autoscaler],
     )
 
-    assert autoscaler.lambda_config in cloud.lambda_functions
-    assert autoscaler.lambda_role in cloud.iam_roles
+    assert any(
+        config.name == "test-cloud-praktika-pool-autoscaler"
+        for config in cloud.lambda_functions
+    )
+    assert any(
+        role.name == "test-cloud-praktika-pool-autoscaler-role"
+        for role in cloud.iam_roles
+    )
 
 
 def test_cloud_infrastructure_creates_implicit_runner_autoscaler():
@@ -95,7 +101,9 @@ def test_cloud_infrastructure_creates_implicit_runner_autoscaler():
         pool_autoscaler_interval_seconds=120,
     )
 
-    autoscalers = [l for l in cloud.lambda_functions if l.name == "praktika-pool-autoscaler"]
+    autoscalers = [
+        l for l in cloud.lambda_functions if l.name == "test-cloud-praktika-pool-autoscaler"
+    ]
     assert len(autoscalers) == 1
     autoscaler = autoscalers[0]
     assert autoscaler.schedule_expression == "rate(2 minutes)"
@@ -118,10 +126,12 @@ def test_cloud_infrastructure_creates_implicit_orchestrator_autoscaler():
         pool_autoscaler_interval_seconds=60,
     )
 
-    autoscalers = [l for l in cloud.lambda_functions if l.name == "praktika-pool-autoscaler"]
+    autoscalers = [
+        l for l in cloud.lambda_functions if l.name == "test-cloud-praktika-pool-autoscaler"
+    ]
     assert len(autoscalers) == 1
     autoscaler = autoscalers[0]
     env = autoscaler.environments["POOLS_CONFIG_JSON"]
     assert '"name":"workflow-orchestrator"' in env
-    assert '"queue_name":"praktika-workflows"' in env
-    assert '"asg_name":"praktika-workflow-orchestrator-asg"' in env
+    assert '"queue_name":"test-cloud-praktika-workflows"' in env
+    assert '"asg_name":"test-cloud-praktika-workflow-orchestrator-asg"' in env

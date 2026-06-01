@@ -17,9 +17,9 @@ python3 -m praktika infrastructure --deploy --only AutoScalingGroup
 # Roll EC2 instances on every ASG (replace with the latest launch template version)
 python3 -m praktika infrastructure --restart-instances
 
-# Tear down EC2 instances / Dedicated Hosts (does not touch ASGs/LTs themselves)
-python3 -m praktika infrastructure --shutdown --only EC2Instance
-python3 -m praktika infrastructure --shutdown --only DedicatedHost
+# Destroy the execution plane while keeping S3, VPC, CIDB, Dedicated Hosts,
+# and the GitHub webhook wiring intact
+python3 -m praktika infrastructure --destroy-runtime
 ```
 
 ## Config components (used in `ci/infra/cloud.py`)

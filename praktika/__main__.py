@@ -185,8 +185,8 @@ def create_parser():
         default=False,
     )
     _infra_parser.add_argument(
-        "--shutdown",
-        help="Terminate EC2 instances and/or release Dedicated Hosts",
+        "--destroy-runtime",
+        help="Delete the execution-plane metadata and recreatable compute while keeping S3, VPC, CIDB, Dedicated Hosts, and GitHub webhook wiring",
         action="store_true",
         default=False,
     )
@@ -201,7 +201,7 @@ def create_parser():
         help=(
             "Process only specified components (e.g. html ImageBuilder LaunchTemplate AutoScalingGroup Lambda DedicatedHost EC2Instance). "
             "With --deploy: deploys only these components or uploads html report. "
-            "With --shutdown: releases DedicatedHost or terminates EC2Instance."
+            "With --destroy-runtime: deletes only the selected execution-plane components."
         ),
         nargs="+",
         type=str,
@@ -212,6 +212,12 @@ def create_parser():
         help="Trigger an instance refresh on all ASGs, replacing all EC2 instances with the current launch template version",
         action="store_true",
         default=False,
+    )
+    _infra_parser.add_argument(
+        "--project",
+        help="Infrastructure project name from ci/infra/cloud.py PROJECTS",
+        type=str,
+        default="",
     )
     _infra_parser.add_argument(
         "--test",
@@ -231,24 +237,25 @@ def main():
         Validator().validate()
         YamlGenerator().generate()
     elif args.command == "infrastructure":
-        if not args.deploy and not args.shutdown and not args.restart_instances:
+        project = getattr(args, "project", None) or None
+        if not args.deploy and not args.destroy_runtime and not args.restart_instances:
             Utils.raise_with_error(
-                "infrastructure command requires --deploy, --shutdown, or --restart-instances"
+                "infrastructure command requires --deploy, --destroy-runtime, or --restart-instances"
             )
 
         if args.deploy:
             from .mangle import _get_infra_config
 
-            _get_infra_config().deploy(
+            _get_infra_config(project).deploy(
                 all=args.all,
                 only=args.only,
                 is_test=args.test,
             )
 
-        if args.shutdown:
+        if args.destroy_runtime:
             from .mangle import _get_infra_config
 
-            _get_infra_config().shutdown(
+            _get_infra_config(project).destroy_runtime(
                 force=True,
                 only=args.only,
             )
@@ -256,7 +263,7 @@ def main():
         if args.restart_instances:
             from .mangle import _get_infra_config
 
-            _get_infra_config().restart_instances()
+            _get_infra_config(project).restart_instances()
     elif args.command == "orchestrate":
         if args.orch_command == "workflow":
             from .orchestrator import run as orchestrate_run

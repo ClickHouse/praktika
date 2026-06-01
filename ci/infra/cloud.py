@@ -237,28 +237,27 @@ _cidb_cluster = NativeComponents.CIDBCluster(
     size=1,
 )
 
-CLOUD = CloudInfrastructure.Config(
-    name="cloud_ci_infra",
-    vpcs=[
-        VPC.Config(
-            name=CI_VPC_NAME,
-            subnets=[
-                VPC.Subnet(availability_zone="eu-north-1a"),
-            ],
-        )
-    ],
-    storages=[
-        Storage.Config(name="praktika-artifacts-eu-north-1", retention_days=90, public=True),
-    ],
-    report_pages=[
-        NativeComponents.report_page_config,
-    ],
-    # Prebuild named Praktika runtimes into AMIs. Runner/orchestrator pools
-    # still use the stock AL2023 AMIs until those LaunchTemplates are
-    # explicitly pointed at the built AMI ids.
-    image_builders=_IMAGE_BUILDERS,
-    github_token_minters=[_gh_token_minter],
-    orchestrator_pool=_orchestrator_pool,
-    runner_pools=_runner_pools,
-    cidb_cluster=_cidb_cluster,
-)
+PROJECTS = [
+    CloudInfrastructure.Config(
+        name="praktika",
+        vpcs=[
+            VPC.Config(
+                name=CI_VPC_NAME,
+                subnets=[
+                    VPC.Subnet(availability_zone="eu-north-1a"),
+                ],
+            )
+        ],
+        storages=[
+            Storage.Config(name="praktika-artifacts-eu-north-1", retention_days=90, public=True),
+        ],
+        report_pages=[
+            NativeComponents.report_page_config,
+        ],
+        image_builders=_IMAGE_BUILDERS,
+        github_token_minters=[_gh_token_minter],
+        orchestrator_pool=_orchestrator_pool,
+        runner_pools=_runner_pools,
+        cidb_cluster=_cidb_cluster,
+    ),
+]

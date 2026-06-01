@@ -104,9 +104,10 @@ def _get_workflows(
     return res
 
 
-def _get_infra_config():
+def _get_infra_projects():
     """
-    Returns the infra config which is imported as: Settings.CLOUD_INFRASTRUCTURE_CONFIG_PATH import CLOUD
+    Returns the infra configs imported as:
+    Settings.CLOUD_INFRASTRUCTURE_CONFIG_PATH import PROJECTS
     """
     from pathlib import Path
 
@@ -136,18 +137,59 @@ def _get_infra_config():
     spec.loader.exec_module(module)
 
     try:
-        cloud_config = getattr(module, "CLOUD")
-        cloud_config._settings = Settings
+        projects = list(getattr(module, "PROJECTS"))
+        if not projects:
+            Utils.raise_with_error(
+                f"PROJECTS in [{Settings.CLOUD_INFRASTRUCTURE_CONFIG_PATH}] must contain at least one config"
+            )
+        seen_names = set()
+        for project in projects:
+            if not getattr(project, "name", ""):
+                Utils.raise_with_error(
+                    f"All PROJECTS in [{Settings.CLOUD_INFRASTRUCTURE_CONFIG_PATH}] must have non-empty names"
+                )
+            if project.name in seen_names:
+                Utils.raise_with_error(
+                    f"Duplicate infrastructure project name [{project.name}] in [{Settings.CLOUD_INFRASTRUCTURE_CONFIG_PATH}]"
+                )
+            seen_names.add(project.name)
+            project._settings = Settings
         print(
-            f"Loaded infrastructure config from [{Settings.CLOUD_INFRASTRUCTURE_CONFIG_PATH}]"
+            f"Loaded {len(projects)} infrastructure project(s) from [{Settings.CLOUD_INFRASTRUCTURE_CONFIG_PATH}]"
         )
-        return cloud_config
+        return projects
     except AttributeError:
         Utils.raise_with_error(
-            f"CLOUD variable not found in [{Settings.CLOUD_INFRASTRUCTURE_CONFIG_PATH}]"
+            f"PROJECTS variable not found in [{Settings.CLOUD_INFRASTRUCTURE_CONFIG_PATH}]"
         )
 
     return None
+
+
+def _get_infra_config(project_name=None):
+    projects = _get_infra_projects()
+    if len(projects) == 1:
+        only = projects[0]
+        if project_name and project_name != only.name:
+            Utils.raise_with_error(
+                f"Unknown infrastructure project [{project_name}]. Only configured project is [{only.name}]"
+            )
+        return only
+
+    if not project_name:
+        names = ", ".join(sorted(project.name for project in projects))
+        Utils.raise_with_error(
+            f"Multiple infrastructure projects configured [{names}]. Use --project NAME."
+        )
+
+    for project in projects:
+        if project.name == project_name:
+            return project
+
+    Utils.raise_with_error(
+        f"Unknown infrastructure project [{project_name}]. "
+        f"Available projects: {', '.join(sorted(project.name for project in projects))}"
+    )
 
 
 def _get_artifact_to_providing_job_map(workflow):
@@ -246,4 +288,3 @@ def _update_workflow_with_native_jobs(workflow):
         for job in workflow.jobs:
             aux_job.run_after.append(job.name)
         workflow.jobs.append(aux_job)
-
