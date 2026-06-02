@@ -40,14 +40,6 @@ def _GH_Auth(force=False):
 _workflow_config_job = Job.Config(
     name=Settings.CI_CONFIG_JOB_NAME,
     runs_on=Settings.CI_CONFIG_RUNS_ON,
-    job_requirements=(
-        Job.Requirements(
-            python=Settings.INSTALL_PYTHON_FOR_NATIVE_JOBS,
-            python_requirements_txt=Settings.INSTALL_PYTHON_REQS_FOR_NATIVE_JOBS,
-        )
-        if Settings.INSTALL_PYTHON_REQS_FOR_NATIVE_JOBS
-        else None
-    ),
     command=f"{Settings.PYTHON_INTERPRETER} -m praktika.native_jobs '{Settings.CI_CONFIG_JOB_NAME}'",
     timeout=600,
 )
@@ -55,10 +47,6 @@ _workflow_config_job = Job.Config(
 _docker_build_manifest_job = Job.Config(
     name=Settings.DOCKER_BUILD_MANIFEST_JOB_NAME,
     runs_on=Settings.DOCKER_MERGE_RUNS_ON,
-    job_requirements=Job.Requirements(
-        python=Settings.INSTALL_PYTHON_FOR_NATIVE_JOBS,
-        python_requirements_txt="",
-    ),
     timeout=int(5.5 * 3600),
     command=f"{Settings.PYTHON_INTERPRETER} -m praktika.native_jobs '{Settings.DOCKER_BUILD_MANIFEST_JOB_NAME}'",
 )
@@ -66,10 +54,6 @@ _docker_build_manifest_job = Job.Config(
 _docker_build_amd_linux_job = Job.Config(
     name=Settings.DOCKER_BUILD_AMD_LINUX_JOB_NAME,
     runs_on=Settings.DOCKER_BUILD_AMD_RUNS_ON,
-    job_requirements=Job.Requirements(
-        python=Settings.INSTALL_PYTHON_FOR_NATIVE_JOBS,
-        python_requirements_txt="",
-    ),
     timeout=int(5.5 * 3600),
     command=f"{Settings.PYTHON_INTERPRETER} -m praktika.native_jobs '{Settings.DOCKER_BUILD_AMD_LINUX_JOB_NAME}'",
 )
@@ -77,10 +61,6 @@ _docker_build_amd_linux_job = Job.Config(
 _docker_build_arm_linux_job = Job.Config(
     name=Settings.DOCKER_BUILD_ARM_LINUX_JOB_NAME,
     runs_on=Settings.DOCKER_BUILD_ARM_RUNS_ON,
-    job_requirements=Job.Requirements(
-        python=Settings.INSTALL_PYTHON_FOR_NATIVE_JOBS,
-        python_requirements_txt="",
-    ),
     timeout=int(5.5 * 3600),
     command=f"{Settings.PYTHON_INTERPRETER} -m praktika.native_jobs '{Settings.DOCKER_BUILD_ARM_LINUX_JOB_NAME}'",
 )
@@ -88,12 +68,8 @@ _docker_build_arm_linux_job = Job.Config(
 _final_job = Job.Config(
     name=Settings.FINISH_WORKFLOW_JOB_NAME,
     runs_on=Settings.CI_CONFIG_RUNS_ON,
-    job_requirements=Job.Requirements(
-        python=Settings.INSTALL_PYTHON_FOR_NATIVE_JOBS,
-        python_requirements_txt="",
-    ),
     command=f"{Settings.PYTHON_INTERPRETER} -m praktika.native_jobs '{Settings.FINISH_WORKFLOW_JOB_NAME}'",
-    run_unless_cancelled=True,
+    always_run=True,
 )
 
 
@@ -149,12 +125,19 @@ def _build_dockers(workflow, job_name):
             job_info = "Failed to install docker buildx driver"
 
     if job_status == Result.Status.OK:
-        if not Info().is_local_run and not Docker.login(
-            Settings.DOCKERHUB_USERNAME,
-            user_password=workflow.get_secret(Settings.DOCKERHUB_SECRET).get_value(),
-        ):
-            job_status = Result.Status.FAIL
-            job_info = "Failed to login to dockerhub"
+        if not Info().is_local_run:
+            try:
+                creds = json.loads(
+                    workflow.get_secret(Settings.SECRET_DOCKER_REGISTRY).get_value()
+                )
+            except Exception as e:
+                job_status = Result.Status.FAIL
+                job_info = f"Failed to get DockerHub secret [{Settings.SECRET_DOCKER_REGISTRY}]: {e}"
+            if job_status == Result.Status.OK and not Docker.login(
+                creds["username"], user_password=creds["password"]
+            ):
+                job_status = Result.Status.FAIL
+                job_info = "Failed to login to dockerhub"
 
     if (
         job_status == Result.Status.OK
@@ -324,14 +307,19 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
 
     def _check_db(workflow):
         stop_watch = Utils.Stopwatch()
-        res, info = CIDB(
-            workflow.get_secret(Settings.SECRET_CI_DB_URL).get_value(),
-            workflow.get_secret(Settings.SECRET_CI_DB_USER).get_value(),
-            workflow.get_secret(Settings.SECRET_CI_DB_PASSWORD).get_value(),
-        ).check()
+        try:
+            res, info = CIDB.from_connection_secret(
+                workflow.get_secret(Settings.SECRET_CI_DB_CONNECTION).get_value()
+            ).check()
+            status = Result.Status.OK if res else Result.Status.FAIL
+        except Exception:
+            tb = traceback.format_exc()
+            print(tb)
+            status = Result.Status.ERROR
+            info = f"Failed to check CI DB:\n{tb}"
         return Result(
             name="Check CI DB",
-            status=(Result.Status.FAIL if not res else Result.Status.OK),
+            status=status,
             start_time=stop_watch.start_time,
             duration=stop_watch.duration,
             info=info,
@@ -395,7 +383,7 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
         report_url_latest_sha = info.get_report_url(latest=True)
         report_url_current_sha = info.get_report_url(latest=False)
         body = f"Workflow [[{workflow.name}]({report_url_latest_sha})], commit [{env.SHA[:8]}]"
-        if os.getenv("GITHUB_ACTIONS"):
+        if os.environ.get("PRAKTIKA_LOCAL_RUN") != "1":
             res2 = not bool(env.PR_NUMBER) or GH.post_updateable_comment(
                 comment_tags_and_bodies={
                     "report": body,
@@ -404,18 +392,22 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
                     "review": "",
                 },
             )
-            res1 = GH.post_commit_status(
-                name=workflow.name,
-                status=Result.Status.PENDING,
-                description="",
-                url=report_url_current_sha,
-            )
+            if workflow.engine == Workflow.Engine.GH_ACTIONS:
+                res1 = GH.post_commit_status(
+                    name=workflow.name,
+                    status=Result.Status.PENDING,
+                    description="",
+                    url=report_url_current_sha,
+                )
+            else:
+                # standalone engine uses its own checks; extra commit status is redundant.
+                res1 = True
             if not (res1 or res2):
                 Utils.raise_with_error(
                     "Failed to set both GH commit status and PR comment with Workflow Status, cannot proceed"
                 )
         else:
-            print("NOTE: Skipping GH status/comment posting (CI engine, not GitHub Actions)")
+            print("NOTE: Skipping GH status/comment posting (PRAKTIKA_LOCAL_RUN=1)")
 
     _ = RunConfig(
         name=workflow.name,
@@ -449,13 +441,13 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
 
     # checks:
     if not results or results[-1].is_ok():
-        if os.getenv("GITHUB_ACTIONS"):
+        if os.environ.get("PRAKTIKA_TEST_ACTIVE") != "1":
             result_ = _check_yaml_up_to_date()
             if result_.status != Result.Status.OK:
                 print("ERROR: yaml files are outdated - regenerate, commit and push")
             results.append(result_)
         else:
-            print("NOTE: Skipping yaml-up-to-date check (CI engine, not GitHub Actions)")
+            print("NOTE: Skipping yaml-up-to-date check (PRAKTIKA_TEST_ACTIVE=1)")
 
     # TODO: commented out to decrease risk of throttling:
     #       An error occurred (ThrottlingException) when calling the GetParameter operation (reached max retries: 2): Rate exceeded
@@ -465,7 +457,7 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
     #         print(f"ERROR: Invalid secrets in workflow [{workflow.name}]")
     #     results.append(result_)
 
-    if results[-1].is_ok() and workflow.enable_cidb:
+    if results[-1].is_ok() and workflow.enable_cidb and not Info().is_local_run:
         result_ = _check_db(workflow)
         results.append(result_)
 

@@ -16,39 +16,173 @@ Lambda (ci/praktika/infrastructure/native/lambda_ci_engine.py)
 SQS praktika_clickhouse_workflows
     |
     v
-Orchestrator ASG (praktika-workflow-orchestrator-asg)
-    user_data -> run.py -> orchestrate()
-        |-- open per-workflow GitHub check run (`PR`, in_progress)
-        |-- find_workflow_for_event  -- match event + branch to Workflow.Config
-        |-- build_job_dag            -- resolve requires/run_after into topo levels
-        |-- WorkflowState + execution loop
-        |       for each JobState kicked:
-        |         open per-job GitHub check run (queued -> in_progress)
-        |         if runs_on contains a "praktika-*" label:
-        |           send {type: "job_task", ...} to SQS queue <label>
-        |         else (stub): wait() completes as success immediately
-        |-- close per-workflow check (neutral, plan text in output.text)
+Orchestrator ASG (praktika-workflow-orchestrator)
+    user_data -> praktika_bootstrap workflow_orchestrator
+        |-- clone the PR head
+        |-- install/reuse Praktika venv keyed by source hash
+        |-- subprocess: praktika orchestrate workflow event.json --ci
+        |       |-- open per-workflow GitHub check run (`PR`, in_progress)
+        |       |-- find_workflow_for_event
+        |       |-- build_job_dag
+        |       |-- WorkflowState execution loop:
+        |       |     for each JobState kicked:
+        |       |       open per-job GitHub check run (queued -> in_progress)
+        |       |       send {type: "job_task", ...} to SQS queue praktika-<runs_on>
+        |       |-- close per-workflow check
     |
-    v  (SQS: one queue per runner type, named after runs_on label)
+    v  (SQS: one queue per runner pool, named praktika-<runs_on>)
 Runner ASGs (e.g. praktika-arm-2xsmall)
-    user_data -> run_job.py -> job_runner.run_job()
-        |-- look up praktika Workflow + Job from the task
-        |-- Runner().run(workflow=wf, job=job, local_run=False, run_hooks=True, ...)
+    user_data -> praktika_bootstrap job_runner
+        |-- clone the PR head
+        |-- install/reuse Praktika venv keyed by source hash
+        |-- subprocess: praktika orchestrate job task.json --ci
+        |       |-- job_runner.run_job(task) -> Runner().run(...)
+```
+
+### Interaction diagram
+
+```mermaid
+flowchart TD
+    GH[GitHub PR event] --> L[Lambda webhook handler]
+    L --> WQ[SQS: praktika-workflows]
+
+    WQ --> WB[workflow-agent on orchestrator ASG]
+    WB --> WC[Clone PR head]
+    WC --> WV[Resolve Praktika runtime]
+    WV --> WO[praktika orchestrate workflow event.json --ci]
+
+    WO --> C0[Open workflow check run]
+    WO --> DAG[Build workflow DAG]
+
+    DAG --> J1Q[SQS: praktika-arm-2xsmall]
+    DAG --> J2Q[SQS: praktika-amd-2xsmall]
+
+    J1Q --> R1[job-agent on arm runner ASG]
+    J2Q --> R2[job-agent on amd runner ASG]
+
+    R1 --> RC1[Clone PR head]
+    R2 --> RC2[Clone PR head]
+
+    RC1 --> RV1[Resolve Praktika runtime]
+    RC2 --> RV2[Resolve Praktika runtime]
+
+    RV1 --> JO1[praktika orchestrate job task.json --ci]
+    RV2 --> JO2[praktika orchestrate job task.json --ci]
+
+    JO1 --> JR1[Job result + artifacts]
+    JO2 --> JR2[Job result + artifacts]
+
+    JR1 --> S3[S3 artifacts / logs / workflow state]
+    JR2 --> S3
+    WO --> S3
+
+    JR1 --> C1[Update per-job check]
+    JR2 --> C2[Update per-job check]
+    WO --> C3[Close workflow check]
+
+    C0 --> GHCS[GitHub checks / statuses]
+    C1 --> GHCS
+    C2 --> GHCS
+    C3 --> GHCS
 ```
 
 ## Code split (intentional)
 
 The orchestrator and runner are each composed of two pieces — one stable
-"runner script" that's baked into the EC2 user_data, and one orchestrator
+bootstrap package that's installed by the EC2 user_data, and one orchestrator
 module that ships with each PR:
 
-|                   | Baked into user_data (needs LT+ASG redeploy to change) | Ships with each PR (plain `git push`) |
+|                   | Installed by user_data (needs LT+ASG redeploy or wheel refresh to change) | Ships with each PR (plain `git push`) |
 |-------------------|--------------------------------------------------------|---------------------------------------|
-| **Orchestrator**  | `run.py` — SQS poll, clone, GH App token, `CheckRun` HTTP, S3 log | `__init__.py::orchestrate`, `state.py` (`WorkflowState`, `JobState`, `JobCheckRun`) |
-| **Job runner**    | `run_job.py` — SQS poll, clone, GH App token, S3 log   | `job_runner.py::run_job` (maps task -> `praktika.Runner.run`) |
+| **Workflow side** | `praktika_bootstrap run_workflow` — SQS poll, clone, GH App token, cached venv reuse, S3 log | `__init__.py::orchestrate`, `state.py` (`WorkflowState`, `JobState`, `JobCheckRun`) |
+| **Job side**      | `praktika_bootstrap run_job` — SQS poll, clone, GH App token, cached venv reuse, S3 log | `job_runner.py::run_job` (maps task -> `praktika.Runner.run`) |
 
 When you want to tweak workflow orchestration or job-execution policy, you
-only need `git push`. Only the stable scripts require an LT/ASG redeploy.
+only need `git push`. Only the stable bootstrap layer requires an LT/ASG redeploy
+or bootstrap wheel refresh.
+
+## Runtime resolution
+
+Praktika runtime selection is split between three layers:
+
+| Layer | Component | What it owns |
+|---|---|---|
+| **Image bake** | `ImageBuilder.Config.prebuilt_venvs` in `ci/infra/cloud.py` | Creates named base venvs under `/opt/praktika/base-venvs/<name>` |
+| **Repo settings** | `ci/settings/settings.py` | Selects which base venv the workflow side and job side should use, and whether Praktika should also be installed from source |
+| **Bootstrap** | `praktika_bootstrap` | Resolves the settings, picks the base venv, and optionally creates a source-overlay venv under `/opt/praktika/venvs/` |
+
+Current side-specific settings:
+
+| Setting | Used by | Meaning |
+|---|---|---|
+| `PRAKTIKA_WORKFLOW_BASE_VENV` | `praktika_bootstrap run_workflow` | Base venv name for the orchestrator side |
+| `PRAKTIKA_JOB_BASE_VENV` | `praktika_bootstrap run_job` | Base venv name for the runner side |
+| `PRAKTIKA_BASE_VENV` | both sides | Fallback if the side-specific setting is empty |
+| `PRAKTIKA_INSTALL_SOURCE` | both sides | If set, install Praktika from this source on top of the selected base venv |
+
+Current repo policy in `ci/settings/settings.py`:
+
+- Workflow side uses base venv `praktika-orchestrator`
+- Job side uses base venv `praktika-runner-pytest`
+- Both sides install Praktika from source via `PRAKTIKA_INSTALL_SOURCE="."`
+
+This means:
+
+- the image provides stable Python/tooling dependencies
+- the checked-out PR provides the Praktika code itself
+- bootstrap combines them into the final runtime used for that dispatch
+
+### Resolution flow
+
+```mermaid
+flowchart TD
+    A[GitHub event / SQS message] --> B[praktika_bootstrap role entrypoint]
+    B --> C[Clone repo at PR head]
+    C --> D[Read ci/settings/settings.py]
+
+    D --> E{Role?}
+    E -->|workflow| F[Read PRAKTIKA_WORKFLOW_BASE_VENV]
+    E -->|job| G[Read PRAKTIKA_JOB_BASE_VENV]
+
+    F --> H[Fallback to PRAKTIKA_BASE_VENV if empty]
+    G --> H
+    D --> I[Read PRAKTIKA_INSTALL_SOURCE]
+
+    H --> J{Base venv selected?}
+    J -->|no| K{Install source set?}
+    J -->|yes| L[Use /opt/praktika/base-venvs/<name>]
+
+    K -->|yes| M[Create/reuse source-hash env in /opt/praktika/venvs]
+    K -->|no| N[Fallback to bootstrap default Praktika wheel]
+
+    L --> O{Install source set?}
+    O -->|no| P[Run directly from base venv]
+    O -->|yes| Q[Create/reuse overlay env in /opt/praktika/venvs]
+
+    I --> O
+    I --> K
+
+    M --> R[python -m praktika ...]
+    N --> R
+    P --> R
+    Q --> R
+```
+
+### Venv layout
+
+| Path | Created by | Purpose |
+|---|---|---|
+| `/opt/praktika/base-venvs/praktika-orchestrator` | Image Builder | Minimal workflow/orchestrator Python base |
+| `/opt/praktika/base-venvs/praktika-runner-pytest` | Image Builder | Runner Python base with `pytest` |
+| `/opt/praktika/venvs/praktika-<py>-<hash>` | bootstrap | Source-only env when no base venv is selected |
+| `/opt/praktika/venvs/praktika-<base>-<py>-<hash>` | bootstrap | Overlay env built from a named base venv plus Praktika source |
+
+### Which component changes what
+
+- Change `ci/infra/cloud.py` when you want a different prebaked base venv or different image-level tooling.
+- Change `ci/settings/settings.py` when you want to select a different base venv for workflow/job dispatches.
+- Change `PRAKTIKA_INSTALL_SOURCE` when you want Praktika code to come from the checked-out repo instead of the default bootstrap wheel.
+- Change `bootstrap/src/praktika_bootstrap/venv_manager.py` only when the runtime composition algorithm itself needs to change.
 
 ## Debugging runner logs
 
@@ -78,25 +212,25 @@ Requires AWS SSM access and S3 write permission to `clickhouse-test-reports-priv
 
 ## Local testing
 
-### Orchestrator (no AWS required)
+### Workflow side (no AWS required)
 
 ```bash
-python3 ci/praktika/orchestrator/run.py --local tmp/sandbox/test_message.json
+praktika orchestrate workflow            # auto-builds the event from git state
+praktika orchestrate workflow event.json # or load a pre-built event
 ```
 
-Loads workflow configs, matches the event to a workflow, builds the DAG, walks
-the execution loop (currently stubs job kick + wait), prints the plan + START
-/ DONE / summary. Posts real GitHub check runs only if `CI_ENGINE_POST_CHECKS=1`
-and AWS creds are available.
+Without `--ci` this runs in local-orchestrator mode: every job is dispatched as a
+synchronous subprocess (`praktika orchestrate job task.json`) against the
+local-fs S3 backend. Useful for end-to-end smoke tests on your machine.
 
-### Job runner (single-job sandbox)
+### Job side (single-job sandbox)
 
 ```bash
-python3 ci/praktika/orchestrator/run_job.py --local tmp/sandbox/style_check_task.json
+praktika orchestrate job task.json
 ```
 
-Invokes `praktika.Runner.run` with `local_run=True` for the job named in the
-task. The real EC2 runner uses `local_run=False` + `run_hooks=True`.
+Invokes `praktika.Runner.run` with `local_orchestrator_run=True` for the job
+named in the task.
 
 Task JSON shape (what the orchestrator sends over SQS):
 
@@ -122,22 +256,21 @@ in `ci/infra/cloud.py`. Names derive from a single base:
 |----------|------|
 | ASG      | `praktika-{name}` |
 | LT       | `praktika-{name}-lt` |
-| SQS queue | `praktika-{name}` (matches the `runs_on` label 1:1) |
+| SQS queue | `praktika-{name}` |
 
-A job's `runs_on` list is checked for any label starting with `praktika-`; the
-first match is treated as the SQS queue name. Labels that don't match
-(e.g. `self-hosted`, legacy `private-*`) fall through to the no-op stub so
-partially-migrated workflows keep flowing.
+A job's `runs_on=[X]` routes to queue `praktika-X`. There's no fallback —
+if the queue doesn't exist, the dispatch fails and the job is marked
+FAILURE.
 
 ## Deploy
 
 ```bash
-# Orchestrator infra (changes to run.py / user_data_ci_engine.sh):
-python3 -m ci.praktika infrastructure --deploy --only LaunchTemplate AutoScalingGroup
-# Plus terminate running orchestrator runners so the ASG relaunches on the new LT.
+# Workflow bootstrap infra (changes to praktika_bootstrap / user_data_orchestrator.sh):
+python3 -m praktika infrastructure --deploy --only LaunchTemplate AutoScalingGroup
+# Plus terminate running orchestrator instances so the ASG relaunches on the new LT.
 
-# Runner infra (new runner types, or changes to run_job.py / user_data_ci_runner.sh):
-python3 -m ci.praktika infrastructure --deploy --only LaunchTemplate AutoScalingGroup SQSQueue
+# Job bootstrap infra (new runner types, or changes to praktika_bootstrap / user_data_runner.sh):
+python3 -m praktika infrastructure --deploy --only LaunchTemplate AutoScalingGroup SQSQueue
 # Plus terminate running runners on the affected pool.
 ```
 
@@ -154,8 +287,8 @@ redeploy. `$Latest` is not honored at runtime.
 - DAG-aware execution loop (`WorkflowState.get_ready` / `kick` / `wait`)
 - SQS dispatch from `JobState.kick()` to per-type runner queues
 - Job runner infra helper (`_runner_infra`), one deployed pool: `praktika-arm-2xsmall`
-- Local sandbox: `run_job.py --local <task.json>` runs a real job end-to-end
-  through `praktika.Runner.run`
+- Local sandbox: `praktika orchestrate job <task.json>` runs a real job
+  end-to-end through `praktika.Runner.run` against the local-fs S3 backend
 
 ## TODO
 

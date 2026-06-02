@@ -1,8 +1,23 @@
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+import json
+import shlex
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+from ._utils import aws_client
+
+if TYPE_CHECKING:
+    from .launch_template import LaunchTemplate
 
 
 class ImageBuilder:
+    @dataclass
+    class PrebuiltVenv:
+        name: str
+        packages: List[str] = field(default_factory=list)
+        python: str = "python3.12"
+        path: str = ""
+        version: str = "1.0.0"
+        description: str = ""
 
     @dataclass
     class Config:
@@ -14,6 +29,7 @@ class ImageBuilder:
         parent_image: str = ""  # AMI id or Image Builder managed image ARN
         components: List[str] = field(default_factory=list)  # list of component ARNs
         inline_components: List[Dict[str, Any]] = field(default_factory=list)
+        prebuilt_venvs: List["ImageBuilder.PrebuiltVenv"] = field(default_factory=list)
         working_directory: str = ""
         block_device_mappings: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -22,6 +38,8 @@ class ImageBuilder:
         instance_types: List[str] = field(default_factory=list)
         subnet_id: str = ""
         security_group_ids: List[str] = field(default_factory=list)
+        security_group_names: List[str] = field(default_factory=list)
+        vpc_name: str = ""
         key_pair: str = ""
         terminate_instance_on_failure: bool = True
         sns_topic_arn: str = ""
@@ -30,6 +48,8 @@ class ImageBuilder:
         ami_name: str = ""
         ami_tags: Dict[str, str] = field(default_factory=dict)
         regions: List[str] = field(default_factory=list)
+        launch_templates: List["LaunchTemplate.Config"] = field(default_factory=list)
+        set_launch_template_default_version: bool = True
 
         image_pipeline_name: str = ""
         enabled: bool = True
@@ -45,7 +65,7 @@ class ImageBuilder:
         def _client(self):
             import boto3
 
-            return boto3.client("imagebuilder", region_name=self.region)
+            return aws_client("imagebuilder", self.region, self.name)
 
         def _split_commands(self, script: str) -> List[str]:
             return [
@@ -73,7 +93,7 @@ class ImageBuilder:
 
             import boto3
 
-            sts = boto3.client("sts", region_name=self.region)
+            sts = aws_client("sts", self.region, self.name)
             account_id = sts.get_caller_identity().get("Account", "")
             if not account_id:
                 raise Exception("Failed to resolve AWS account id via STS")
@@ -85,7 +105,10 @@ class ImageBuilder:
                 raise ValueError(
                     f"name must be set to build ARN for ImageBuilder '{self.name}'"
                 )
-            return f"arn:aws:imagebuilder:{self.region}:{self._account_id()}:{resource_type}/{name}"
+            # AWS keeps the configured display name but normalizes underscores
+            # to dashes in the ARN resource path for Image Builder resources.
+            arn_name = name.replace("_", "-")
+            return f"arn:aws:imagebuilder:{self.region}:{self._account_id()}:{resource_type}/{arn_name}"
 
         def _inline_component_document(self, commands: List[str]) -> str:
             escaped = [c.replace('"', '\\"') for c in (commands or [])]
@@ -105,14 +128,46 @@ class ImageBuilder:
                 lines.append(f'            - "{cmd}"')
             return "\n".join(lines) + "\n"
 
+        def _prebuilt_venv_component_specs(self) -> List[Dict[str, Any]]:
+            specs: List[Dict[str, Any]] = []
+            for venv in self.prebuilt_venvs:
+                if not venv.name:
+                    raise ValueError(
+                        f"prebuilt_venvs entries must have name for ImageBuilder '{self.name}'"
+                    )
+                path = venv.path or f"/opt/praktika/base-venvs/{venv.name}"
+                python = venv.python or "python3.12"
+                commands = [
+                    f"mkdir -p {shlex.quote(path.rsplit('/', 1)[0] if '/' in path else '.')}",
+                    f"if [ ! -x {shlex.quote(path)}/bin/python ]; then {shlex.quote(python)} -m venv {shlex.quote(path)}; fi",
+                    f"{shlex.quote(path)}/bin/python -m pip install --upgrade pip setuptools wheel",
+                ]
+                if venv.packages:
+                    pkg_list = " ".join(shlex.quote(pkg) for pkg in venv.packages)
+                    commands.append(
+                        f"{shlex.quote(path)}/bin/python -m pip install {pkg_list}"
+                    )
+                specs.append(
+                    {
+                        "name": f"{self.name}-{venv.name}-venv",
+                        "version": venv.version,
+                        "platform": "Linux",
+                        "description": venv.description
+                        or f"Create prebaked Python venv '{venv.name}'",
+                        "commands": commands,
+                    }
+                )
+            return specs
+
         def _ensure_inline_components(self) -> List[str]:
-            if not self.inline_components:
+            specs_to_create = [*self.inline_components, *self._prebuilt_venv_component_specs()]
+            if not specs_to_create:
                 return []
 
             client = self._client()
             created_arns: List[str] = []
 
-            for spec in self.inline_components:
+            for spec in specs_to_create:
                 name = str(spec.get("name", "")).strip()
                 version = str(spec.get("version", "")).strip()
                 platform = self._normalize_component_platform(
@@ -191,7 +246,7 @@ class ImageBuilder:
             client = self._client()
             token: str = ""
             while True:
-                req: Dict[str, Any] = {"maxResults": 100}
+                req: Dict[str, Any] = {"maxResults": 25}
                 if token:
                     req["nextToken"] = token
 
@@ -204,6 +259,23 @@ class ImageBuilder:
                 if not token:
                     break
             return ""
+
+        def _canonicalize(self, value: Any) -> Any:
+            if isinstance(value, dict):
+                return {
+                    str(k): self._canonicalize(v)
+                    for k, v in sorted(value.items(), key=lambda item: str(item[0]))
+                }
+            if isinstance(value, list):
+                normalized_items = [self._canonicalize(v) for v in value]
+                return sorted(
+                    normalized_items,
+                    key=lambda item: json.dumps(item, sort_keys=True),
+                )
+            return value
+
+        def _same_config(self, current: Dict[str, Any], desired: Dict[str, Any]) -> bool:
+            return self._canonicalize(current) == self._canonicalize(desired)
 
         def _get_or_create_recipe_arn(self) -> str:
             client = self._client()
@@ -223,9 +295,20 @@ class ImageBuilder:
                     f"image_recipe_name must be set for ImageBuilder '{self.name}'"
                 )
             if not self.parent_image:
-                raise ValueError(
-                    f"parent_image must be set for ImageBuilder '{self.name}'"
-                )
+                if not self.instance_types:
+                    raise ValueError(
+                        f"parent_image or instance_types must be set for ImageBuilder '{self.name}'"
+                    )
+                family = (self.instance_types[0] or "").split(".")[0]
+                is_arm = family.endswith("g")
+                if is_arm:
+                    from .native.configs import resolve_al2023_arm64_ami
+
+                    self.parent_image = resolve_al2023_arm64_ami(self.region)
+                else:
+                    from .native.configs import resolve_al2023_x86_64_ami
+
+                    self.parent_image = resolve_al2023_x86_64_ami(self.region)
 
             token: str = ""
             while True:
@@ -284,7 +367,7 @@ class ImageBuilder:
                 if not name or not version:
                     raise
 
-                return f"arn:aws:imagebuilder:{self.region}:{self._account_id()}:image-recipe/{name}/{version}"
+                return self._imagebuilder_arn("image-recipe", name) + f"/{version}"
 
         def _get_or_create_infrastructure_configuration_arn(self) -> str:
             client = self._client()
@@ -328,10 +411,25 @@ class ImageBuilder:
 
             if self.instance_types:
                 req["instanceTypes"] = list(self.instance_types)
-            if self.subnet_id:
-                req["subnetId"] = self.subnet_id
-            if self.security_group_ids:
-                req["securityGroupIds"] = list(self.security_group_ids)
+            subnet_id = self.subnet_id
+            security_group_ids = list(self.security_group_ids)
+            if self.security_group_names:
+                if not self.vpc_name:
+                    raise ValueError(
+                        f"ImageBuilder '{self.name}' has security_group_names but no vpc_name"
+                    )
+                from .vpc import VPC
+
+                lookup = VPC.Lookup(name=self.vpc_name, region=self.region)
+                if not subnet_id:
+                    subnet_id = lookup.first_subnet_id()
+                security_group_ids.extend(
+                    lookup.resolve_security_group_ids(self.security_group_names)
+                )
+            if subnet_id:
+                req["subnetId"] = subnet_id
+            if security_group_ids:
+                req["securityGroupIds"] = security_group_ids
             if self.key_pair:
                 req["keyPair"] = self.key_pair
             if self.sns_topic_arn:
@@ -354,6 +452,44 @@ class ImageBuilder:
                             "infrastructure-configuration",
                             self.infrastructure_configuration_name,
                         )
+                        current = client.get_infrastructure_configuration(
+                            infrastructureConfigurationArn=arn
+                        ).get("infrastructureConfiguration", {})
+                        current_req: Dict[str, Any] = {
+                            "instanceProfileName": current.get("instanceProfileName"),
+                            "terminateInstanceOnFailure": current.get(
+                                "terminateInstanceOnFailure"
+                            ),
+                        }
+                        if current.get("instanceTypes"):
+                            current_req["instanceTypes"] = current.get("instanceTypes")
+                        if current.get("subnetId"):
+                            current_req["subnetId"] = current.get("subnetId")
+                        if current.get("securityGroupIds"):
+                            current_req["securityGroupIds"] = current.get(
+                                "securityGroupIds"
+                            )
+                        if current.get("keyPair"):
+                            current_req["keyPair"] = current.get("keyPair")
+                        if current.get("snsTopicArn"):
+                            current_req["snsTopicArn"] = current.get("snsTopicArn")
+                        desired_req: Dict[str, Any] = {
+                            "instanceProfileName": req["instanceProfileName"],
+                            "terminateInstanceOnFailure": req[
+                                "terminateInstanceOnFailure"
+                            ],
+                        }
+                        for key in (
+                            "instanceTypes",
+                            "subnetId",
+                            "securityGroupIds",
+                            "keyPair",
+                            "snsTopicArn",
+                        ):
+                            if key in req:
+                                desired_req[key] = req[key]
+                        if self._same_config(current_req, desired_req):
+                            return arn
                         client.update_infrastructure_configuration(
                             infrastructureConfigurationArn=arn,
                             **{k: v for k, v in req.items() if k != "name"},
@@ -414,16 +550,36 @@ class ImageBuilder:
                 raise ValueError(f"ami_name must be set for ImageBuilder '{self.name}'")
 
             distributions = []
-            for r in target_regions:
-                distributions.append(
+            launch_template_configurations = []
+            for launch_template in self.launch_templates:
+                if not launch_template.region:
+                    launch_template.region = self.region
+                launch_template.fetch()
+                launch_template_id = launch_template.ext.get("launch_template_id", "")
+                if not launch_template_id:
+                    raise Exception(
+                        f"Failed to resolve launch template id for ImageBuilder '{self.name}' from '{launch_template.name}'"
+                    )
+                launch_template_configurations.append(
                     {
-                        "region": r,
-                        "amiDistributionConfiguration": {
-                            "name": self.ami_name,
-                            "amiTags": dict(self.ami_tags or {}),
-                        },
+                        "launchTemplateId": launch_template_id,
+                        "setDefaultVersion": self.set_launch_template_default_version,
                     }
                 )
+
+            for r in target_regions:
+                distribution = {
+                    "region": r,
+                    "amiDistributionConfiguration": {
+                        "name": self.ami_name,
+                        "amiTags": dict(self.ami_tags or {}),
+                    },
+                }
+                if launch_template_configurations:
+                    distribution["launchTemplateConfigurations"] = list(
+                        launch_template_configurations
+                    )
+                distributions.append(distribution)
 
             req = {
                 "name": self.distribution_configuration_name,
@@ -442,6 +598,17 @@ class ImageBuilder:
                 arn = self._imagebuilder_arn(
                     "distribution-configuration", self.distribution_configuration_name
                 )
+                current = client.get_distribution_configuration(
+                    distributionConfigurationArn=arn
+                ).get("distributionConfiguration", {})
+                current_req = {
+                    "distributions": current.get("distributions", []),
+                }
+                desired_req = {
+                    "distributions": distributions,
+                }
+                if self._same_config(current_req, desired_req):
+                    return arn
                 client.update_distribution_configuration(
                     distributionConfigurationArn=arn,
                     distributions=distributions,
@@ -507,14 +674,41 @@ class ImageBuilder:
                 if e.__class__.__name__ != "ResourceAlreadyExistsException":
                     raise
                 arn = self._imagebuilder_arn("image-pipeline", self.image_pipeline_name)
-                client.update_image_pipeline(
-                    imagePipelineArn=arn,
-                    imageRecipeArn=recipe_arn,
-                    infrastructureConfigurationArn=infra_arn,
-                    distributionConfigurationArn=dist_arn,
-                    status=req["status"],
-                    schedule=req.get("schedule"),
+                update_req: Dict[str, Any] = {
+                    "imagePipelineArn": arn,
+                    "imageRecipeArn": recipe_arn,
+                    "infrastructureConfigurationArn": infra_arn,
+                    "distributionConfigurationArn": dist_arn,
+                    "status": req["status"],
+                }
+                if "schedule" in req:
+                    update_req["schedule"] = req["schedule"]
+                current = client.get_image_pipeline(imagePipelineArn=arn).get(
+                    "imagePipeline", {}
                 )
+                current_req: Dict[str, Any] = {
+                    "imageRecipeArn": current.get("imageRecipeArn"),
+                    "infrastructureConfigurationArn": current.get(
+                        "infrastructureConfigurationArn"
+                    ),
+                    "distributionConfigurationArn": current.get(
+                        "distributionConfigurationArn"
+                    ),
+                    "status": current.get("status"),
+                }
+                if current.get("schedule"):
+                    current_req["schedule"] = current.get("schedule")
+                desired_req = {
+                    "imageRecipeArn": recipe_arn,
+                    "infrastructureConfigurationArn": infra_arn,
+                    "distributionConfigurationArn": dist_arn,
+                    "status": req["status"],
+                }
+                if "schedule" in req:
+                    desired_req["schedule"] = req["schedule"]
+                if self._same_config(current_req, desired_req):
+                    return arn
+                client.update_image_pipeline(**update_req)
                 return arn
 
         def fetch(self):
@@ -598,17 +792,37 @@ class ImageBuilder:
             )
 
         def deploy(self):
+            try:
+                self.fetch()
+            except Exception:
+                pass
+
             recipe_arn = self._get_or_create_recipe_arn()
             infra_arn = self._get_or_create_infrastructure_configuration_arn()
             dist_arn = self._get_or_create_distribution_configuration_arn()
+            changed = False
+            if (
+                self.ext.get("image_recipe_arn") != recipe_arn
+                or self.ext.get("infrastructure_configuration_arn") != infra_arn
+                or self.ext.get("distribution_configuration_arn") != dist_arn
+            ):
+                changed = True
             pipeline_arn = self._get_or_create_pipeline_arn(
                 recipe_arn, infra_arn, dist_arn
             )
+            if self.ext.get("image_pipeline_arn") != pipeline_arn:
+                changed = True
 
             self.ext["image_recipe_arn"] = recipe_arn
             self.ext["infrastructure_configuration_arn"] = infra_arn
             self.ext["distribution_configuration_arn"] = dist_arn
             self.ext["image_pipeline_arn"] = pipeline_arn
+
+            if not changed:
+                print(
+                    f"Image Builder '{self.image_pipeline_name}' is already up to date, skipping"
+                )
+                return self
 
             print(
                 f"Successfully deployed Image Builder pipeline: {self.image_pipeline_name}"

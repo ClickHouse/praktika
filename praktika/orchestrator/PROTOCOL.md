@@ -14,7 +14,7 @@ doc_type: reference
 | Component | Runs on | SQS queues |
 |---|---|---|
 | **Lambda** | AWS Lambda | produces → `praktika_clickhouse_workflows`, `praktika-wf-{pr}-{run_id}` |
-| **Orchestrator** | EC2 ASG `praktika-workflow-orchestrator-asg` (×2) | consumes `praktika_clickhouse_workflows`, produces → `praktika-{runner-type}`, owns ↔ `praktika-wf-{pr}-{run_id}` |
+| **Orchestrator** | EC2 ASG `praktika-workflow-orchestrator` (×2) | consumes `praktika_clickhouse_workflows`, produces → `praktika-{runner-type}`, owns ↔ `praktika-wf-{pr}-{run_id}` |
 | **Job runner** | EC2 ASG `praktika-{runner-type}` (e.g. `praktika-arm-2xsmall`) | consumes `praktika-{runner-type}`, produces → `praktika-wf-{pr}-{run_id}` |
 
 ## Queue design {#queue-design}
@@ -95,7 +95,13 @@ Job runner
   "workflow_name": "PR",
   "job_name": "Style check",
   "runs_on": ["praktika-arm-2xsmall"],
-  "completions_queue_url": "https://sqs.us-east-1.amazonaws.com/.../praktika-wf-55743-72611853552",
+  "cancel_s3_bucket": "praktika-artifacts-eu-north-1",
+  "cancel_s3_key": "runs/72611853552/cancel",
+  "heartbeat_s3_bucket": "praktika-artifacts-eu-north-1",
+  "heartbeat_s3_key": "runs/72611853552/Style_check/heartbeat.json",
+  "heartbeat_interval_s": 30,
+  "final_state_s3_bucket": "praktika-artifacts-eu-north-1",
+  "final_state_s3_key": "runs/72611853552/Style_check/final.json",
   "check_run_id": 72611853552,
   "environment": { "WORKFLOW_CONFIG": {}, "..." : "..." }
 }
@@ -105,16 +111,20 @@ Job runner
 serialized `ci/tmp/environment.json` from the previous job for all subsequent jobs,
 propagating `WORKFLOW_CONFIG`, `COMMIT_AUTHORS`, `JOB_KV_DATA`, etc.
 
-`completions_queue_url` is the per-run queue: the runner sends its `job_completion`
-only there, so no other run ever sees it.
+`cancel_s3_*`, `heartbeat_s3_*`, and `final_state_s3_*` colocate cancel, liveness, and
+completion under one S3 prefix per run — see [Liveness signals](#liveness-signals).
+Phase 2b retired the per-run completions SQS queue: cancel signals now flow lambda
+→ S3 (`runs/<run_id>/cancel-request` for manual cancel, `pr/<pr>/cancel-before` for
+new-push fan-out) and the orchestrator polls them in `sweep_cancel`.
 
-### `job_completion` (runner → `praktika-wf-{pr}-{run_id}`) {#job-completion}
+### `job_completion` (runner → `s3://.../runs/<run_id>/<job>/final.json`) {#job-completion}
 
 ```json
 {
   "type": "job_completion",
   "job_name": "Style check",
   "rc": 0,
+  "ts": 1704067200.123,
   "repo": "ClickHouse/clickhouse-private",
   "pr_number": 55743,
   "head_sha": "abc123",
@@ -123,26 +133,80 @@ only there, so no other run ever sees it.
 }
 ```
 
-### `cancel` (Lambda → `praktika-wf-{pr}-{run_id}`) {#cancel}
+Written by `orchestrator/job_runner.py` after `Runner.run` returns and the per-job
+check is PATCHed. Read by `WorkflowState.sweep_completions` once per `wait()` cycle.
+Idempotent: `JobState.finish` is a no-op once the job has already moved out of
+RUNNING, so a final.json that arrives after `sweep_liveness` already declared the
+job dead is harmless.
 
-```json
-{"type": "cancel"}
-```
+### Cancel signals (Lambda → S3) {#cancel}
 
-Addressing is by queue name (`praktika-wf-{pr}-{run_id}`). The body needs no
-discriminator — there is exactly one consumer of this queue and the message can
-only mean "stop".
+Lambda writes one of two S3 keys depending on what triggered the cancel; the
+orchestrator polls both in `sweep_cancel` once per `wait()` cycle.
+
+| Trigger | S3 key | Body |
+|---|---|---|
+| Manual UI Cancel button (`check_run.requested_action`) | `runs/<run_id>/cancel-request` | `requested` (presence-only) |
+| New push to PR (`pull_request.synchronize`) | `pr/<pr>/cancel-before` | `{"ts": <event_ts>}` |
+
+The new-push channel uses event timestamp validation: each workflow trigger event
+the lambda enqueues carries `event_ts` (the lambda's receive time). On
+`synchronize`, the lambda writes `cancel-before` with the same `event_ts` it
+stamps on the new run. Older orchestrators see `cancel-before > event_ts` and
+self-cancel; the freshly enqueued run sees `cancel-before == event_ts` and stays
+alive (strict less-than comparison).
+
+## Liveness signals {#liveness-signals}
+
+S3 channels under `s3://<artifacts-bucket>/`:
+
+| Channel | Direction | Path | Purpose |
+|---|---|---|---|
+| Cancel request | Lambda → orchestrator | `runs/<run_id>/cancel-request` | Manual UI Cancel button — orchestrator's `sweep_cancel` sets `state.cancelled` |
+| Cancel-before | Lambda → orchestrators | `pr/<pr>/cancel-before` (`{ts}`) | New-push fan-out — every run with `event_ts < ts` self-cancels |
+| Kill flag | Orchestrator → runners | `runs/<run_id>/cancel` | Once written, every running job in the run kills its subprocess |
+| Heartbeat | Runner → orchestrator | `runs/<run_id>/<normalized-job>/heartbeat.json` | Periodic `{ts, status}` proves the runner is alive |
+| Final state | Runner → orchestrator | `runs/<run_id>/<normalized-job>/final.json` | `{rc, environment, ...}` on job exit |
+
+**Cancel request / cancel-before** — see [Cancel semantics](#cancel-semantics).
+
+**Kill flag** — written by `WorkflowState.cancel_unfinished_jobs` once
+`state.cancelled` is set (and only when there are RUNNING non-always_run jobs,
+so a cancel that arrives while only `Finish Workflow` is RUNNING does not kill
+it). Each runner has a `CancelWatchdog` thread polling the key every 10 s and
+killing the job subprocess on first hit.
+
+**Heartbeat** — written by the runner-side `Heartbeat` thread every
+`heartbeat_interval_s` (default 30 s). The orchestrator runs
+`WorkflowState.sweep_liveness` once per `wait()` cycle and marks RUNNING jobs
+dead under two rules:
+
+- **Pickup grace expired** (default 300 s): no heartbeat ever observed and
+  `now - kicked_at > PICKUP_GRACE_S` → covers empty runner pools and agent
+  crashes before the first heartbeat.
+- **Dead threshold** (default 90 s = 3× interval): heartbeat seen but
+  `now - last_heartbeat_ts > DEAD_THRESHOLD_S` → runner died mid-job.
+
+Either path completes the per-job check as `failure` and advances the DAG so
+downstream jobs cascade-cancel and `Finish Workflow` (always_run) still fires.
+
+**Final state** — written by `orchestrator/job_runner.py` after `Runner.run`
+returns and the per-job check is PATCHed. The orchestrator's
+`WorkflowState.sweep_completions` polls the key every `wait()` cycle and calls
+`JobState.finish` on hit. Because `final.json` is durable on S3, an
+orchestrator that died after dispatch picks the result up on restart — no
+in-flight messages get lost the way an SQS `job_completion` would.
 
 ## Cancel semantics {#cancel-semantics}
 
 | Trigger | Target | How it reaches the orchestrator |
 |---|---|---|
-| New push (`synchronize`) | Every in-flight run for the PR | Lambda lists `praktika-wf-{pr}-*` and sends `{"type":"cancel"}` to each |
-| Manual Cancel button | Exactly one run | Lambda sends `{"type":"cancel"}` to `praktika-wf-{pr}-{check_run.id}` |
-| Re-run (`rerequested`) | — | No cancel sent (new run has a new queue) |
+| New push (`synchronize`) | Every in-flight run for the PR with `event_ts < new event_ts` | Lambda writes `pr/<pr>/cancel-before` with `{ts}`; older orchestrators self-cancel via `sweep_cancel` |
+| Manual Cancel button | Exactly one run | Lambda writes `runs/<run_id>/cancel-request`; that orchestrator's `sweep_cancel` picks it up |
+| Re-run (`rerequested`) | — | No cancel written (new run has a new run_id and a new S3 prefix) |
 
-Stale messages can't happen: a queue is created and destroyed with its owning
-run, so any message on it by construction belongs to the current run.
+S3 is durable, so cancel signals survive an orchestrator restart — a previously
+running orchestrator that comes back picks the flag up on its next sweep.
 
 ## Use cases to test {#use-cases}
 

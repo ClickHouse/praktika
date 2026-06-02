@@ -1,7 +1,6 @@
 import argparse
 import sys
 
-from .html_prepare import Html
 from .utils import Utils
 from .validator import Validator
 from .yaml_generator import YamlGenerator
@@ -55,14 +54,6 @@ def create_parser():
         ),
         type=str,
         default=None,
-    )
-    run_parser.add_argument(
-        "--run-hooks-locally",
-        help=(
-            "Run hooks for a local run (they are skipped by default for local runs)"
-        ),
-        action="store_true",
-        default=False,
     )
     run_parser.add_argument(
         "--test",
@@ -145,17 +136,44 @@ def create_parser():
         action="store_true",
         default="",
     )
+    run_parser.add_argument(
+        "--timestamp",
+        help="Prefix each output line with a [YYYY-MM-DD HH:MM:SS] timestamp",
+        action="store_true",
+        default=False,
+    )
 
     _yaml_parser = subparsers.add_parser("yaml", help="Generate YAML workflows")
 
     orch_parser = subparsers.add_parser(
-        "orchestrate", help="Process a CI trigger event and run the matching workflow"
+        "orchestrate", help="Run a workflow or a single job"
     )
-    orch_parser.add_argument(
-        "event_file",
-        help="Path to JSON file with the trigger event",
-        type=str,
+    orch_sub = orch_parser.add_subparsers(dest="orch_command")
+
+    wf_parser = orch_sub.add_parser(
+        "workflow", help="Orchestrate all matching workflows for a trigger event"
     )
+    wf_parser.add_argument(
+        "event_file", nargs="?", default=None,
+        help="Path to trigger event JSON (auto-generated from git if omitted)",
+    )
+    wf_parser.add_argument("--event-type", default="pull_request",
+        choices=["pull_request", "push"])
+    wf_parser.add_argument("--repo", default=None)
+    wf_parser.add_argument("--head-sha", default=None)
+    wf_parser.add_argument("--head-ref", default=None)
+    wf_parser.add_argument("--base-ref", default="main")
+    wf_parser.add_argument("--pr-number", default=None, type=int)
+    wf_parser.add_argument("--sender", default=None)
+    wf_parser.add_argument("--ci", action="store_true", default=False,
+        help="CI mode: authenticate to GitHub and post check runs")
+
+    job_parser = orch_sub.add_parser(
+        "job", help="Run a single job from a task JSON"
+    )
+    job_parser.add_argument("task_file", help="Path to task JSON file")
+    job_parser.add_argument("--ci", action="store_true", default=False,
+        help="CI mode: authenticate to GitHub and post check run updates")
 
     _infra_parser = subparsers.add_parser(
         "infrastructure", help="Manage cloud infrastructure and HTML reports"
@@ -167,8 +185,8 @@ def create_parser():
         default=False,
     )
     _infra_parser.add_argument(
-        "--shutdown",
-        help="Terminate EC2 instances and/or release Dedicated Hosts",
+        "--destroy-runtime",
+        help="Delete the execution-plane metadata and recreatable compute while keeping S3, VPC, CIDB, Dedicated Hosts, and GitHub webhook wiring",
         action="store_true",
         default=False,
     )
@@ -183,11 +201,23 @@ def create_parser():
         help=(
             "Process only specified components (e.g. html ImageBuilder LaunchTemplate AutoScalingGroup Lambda DedicatedHost EC2Instance). "
             "With --deploy: deploys only these components or uploads html report. "
-            "With --shutdown: releases DedicatedHost or terminates EC2Instance."
+            "With --destroy-runtime: deletes only the selected execution-plane components."
         ),
         nargs="+",
         type=str,
         default=None,
+    )
+    _infra_parser.add_argument(
+        "--restart-instances",
+        help="Trigger an instance refresh on all ASGs, replacing all EC2 instances with the current launch template version",
+        action="store_true",
+        default=False,
+    )
+    _infra_parser.add_argument(
+        "--project",
+        help="Infrastructure project name from ci/infra/cloud.py PROJECTS",
+        type=str,
+        default="",
     )
     _infra_parser.add_argument(
         "--test",
@@ -207,50 +237,53 @@ def main():
         Validator().validate()
         YamlGenerator().generate()
     elif args.command == "infrastructure":
-        if not args.deploy and not args.shutdown:
+        project = getattr(args, "project", None) or None
+        if not args.deploy and not args.destroy_runtime and not args.restart_instances:
             Utils.raise_with_error(
-                "infrastructure command requires either --deploy or --shutdown flag"
+                "infrastructure command requires --deploy, --destroy-runtime, or --restart-instances"
             )
 
         if args.deploy:
-            # Check if html is in the only list (case-insensitive)
-            normalized_only = (
-                [c.strip().lower() for c in args.only] if args.only else []
-            )
-            if normalized_only and "html" in normalized_only:
-                Html.prepare(args.test)
-                # Remove html from the list for subsequent infrastructure deployment
-                remaining_components = [
-                    c
-                    for c, normalized in zip(args.only, normalized_only)
-                    if normalized != "html"
-                ]
-                if remaining_components:
-                    from .mangle import _get_infra_config
-
-                    _get_infra_config().deploy(
-                        all=args.all,
-                        only=remaining_components,
-                    )
-            else:
-                from .mangle import _get_infra_config
-
-                _get_infra_config().deploy(
-                    all=args.all,
-                    only=args.only,
-                )
-
-        if args.shutdown:
             from .mangle import _get_infra_config
 
-            _get_infra_config().shutdown(
+            _get_infra_config(project).deploy(
+                all=args.all,
+                only=args.only,
+                is_test=args.test,
+            )
+
+        if args.destroy_runtime:
+            from .mangle import _get_infra_config
+
+            _get_infra_config(project).destroy_runtime(
                 force=True,
                 only=args.only,
             )
-    elif args.command == "orchestrate":
-        from .orchestrator import run as orchestrate_run
 
-        orchestrate_run(args.event_file)
+        if args.restart_instances:
+            from .mangle import _get_infra_config
+
+            _get_infra_config(project).restart_instances()
+    elif args.command == "orchestrate":
+        if args.orch_command == "workflow":
+            from .orchestrator import run as orchestrate_run
+            orchestrate_run(args.event_file, args)
+        elif args.orch_command == "job":
+            import json as _json
+            from .orchestrator.job_runner import run_job
+            from .utils import Shell
+            with open(args.task_file) as f:
+                task = _json.load(f)
+            # `gh` CLI is already authenticated by the bootstrap runner
+            # (`praktika_bootstrap job_runner`); pull the token out of `gh auth token`
+            # for `_patch_check_run`, which uses requests directly.
+            gh_token = None
+            if args.ci:
+                gh_token = Shell.get_output("gh auth token") or None
+            sys.exit(run_job(task, gh_token=gh_token, local=not args.ci))
+        else:
+            orch_parser.print_help()
+            sys.exit(1)
     elif args.command == "run":
         from .mangle import _get_workflows
         from .runner import Runner
@@ -289,8 +322,7 @@ def main():
                 workflow=workflow,
                 job=job,
                 docker=args.docker,
-                local_run=not args.ci,
-                run_hooks=args.ci or args.run_hooks_locally,
+                local_job_run=not args.ci,
                 no_docker=args.no_docker,
                 param=args.param,
                 test=" ".join(args.test),
@@ -302,6 +334,7 @@ def main():
                 path=args.path,
                 path_1=args.path_1,
                 workers=args.workers,
+                timestamp=args.timestamp,
             )
     else:
         parser.print_help()

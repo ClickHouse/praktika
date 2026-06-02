@@ -13,7 +13,7 @@ class _Settings:
     CI_PATH = "./ci"
     WORKFLOW_PATH_PREFIX: str = "./.github/workflows"
     WORKFLOWS_DIRECTORY: str = f"{CI_PATH}/workflows"
-    SETTINGS_DIRECTORY: str = f"{CI_PATH}/settings"
+    SETTINGS_DIRECTORY: str = "./ci/settings"
     CI_CONFIG_JOB_NAME = "Config Workflow"
 
     # Enables a single job (DOCKER_BUILD_MANIFEST_JOB_NAME) for building all platforms and merge
@@ -54,18 +54,13 @@ class _Settings:
     INPUT_DIR: str = f"{TEMP_DIR}"
     PYTHON_INTERPRETER: str = "python3"
     PYTHON_PACKET_MANAGER: str = "pip3"
-    PYTHON_VERSION: str = "3.9"
-    PYTHONPATHS: str = ""
-    INSTALL_PYTHON_FOR_NATIVE_JOBS: bool = False
-    INSTALL_PYTHON_REQS_FOR_NATIVE_JOBS: str = "./ci/requirements.txt"
     ENVIRONMENT_VAR_FILE: str = f"{TEMP_DIR}/environment.json"
     RUN_LOG: str = f"{TEMP_DIR}/job.log"
 
     USE_CUSTOM_GH_AUTH: bool = False
-    SECRET_GH_APP_ID: str = ""
-    SECRET_GH_APP_PEM_KEY: str = ""
-    SECRET_GH_APP_INSTALLATION_ID: str = ""
-    SECRET_GH_APP_REGION: str = ""
+    SECRET_GH_APP: str = "praktika-gh-app"
+    GH_AUTH_LAMBDA_NAME: str = ""
+    GH_AUTH_LAMBDA_REGION: str = ""
 
     ENV_SETUP_SCRIPT: str = f"{TEMP_DIR}/praktika_setup_env.sh"
     WORKFLOW_JOB_FILE: str = f"{TEMP_DIR}/workflow_job.json"
@@ -97,15 +92,18 @@ class _Settings:
     # Compress if text file size exceeds this threshold (in MB, 0 - disable compression)
     COMPRESS_THRESHOLD_MB: int = 0
 
-    DOCKERHUB_USERNAME: str = ""
-    DOCKERHUB_SECRET: str = ""
+    SECRET_DOCKER_REGISTRY: str = ""
 
     ######################################
     #        CI DB Settings              #
     ######################################
-    SECRET_CI_DB_URL: str = ""
-    SECRET_CI_DB_USER: str = ""
-    SECRET_CI_DB_PASSWORD: str = ""
+    # SSM/secret name holding a JSON connection blob:
+    #   {"url": "http://host:8123", "user": null, "password": null}
+    # Auto-published by NativeComponents.CIDBCluster.deploy() for CIDB
+    # instances praktika manages. Null/empty user+password means "send no
+    # auth header" — runners rely on the server-side <no_password/> ACL
+    # gated by VPC CIDR.
+    SECRET_CI_DB_CONNECTION: str = ""
     CI_DB_DB_NAME = ""
     CI_DB_TABLE_NAME = ""
     KEEPER_STRESS_METRICS_DB_NAME = "keeper_stress_tests"
@@ -127,9 +125,33 @@ class _Settings:
     ######################################
     CLOUD_INFRASTRUCTURE_CONFIG_PATH: str = ""
     AWS_REGION: str = ""
+    AWS_ACCOUNT_ID: str = ""
+    AWS_PROFILE: str = ""
     # S3 path for Slack feed events storage (format: bucket/prefix)
     # Used by EventFeed and FeedSubscription for PR notification subscriptions
     EVENT_FEED_S3_PATH: str = ""
+    # Where the workflow/job agents should install praktika from on every
+    # dispatch. Three forms:
+    #   ""             — no source override; if a side-specific base venv
+    #                    is set, run whatever praktika is already installed
+    #                    there. If all base/source settings are empty, the
+    #                    bootstrapper falls back to its default praktika
+    #                    wheel URL.
+    #   "https://..."  — pip install <url>; pulls a wheel from that URL.
+    #   "<rel/path>"   — pip install <clone_dir>/<rel/path>; resolves
+    #                    relative to the cloned PR tree, so a PR's praktika
+    #                    changes take effect on the very dispatch that
+    #                    picked the PR up. If PRAKTIKA_BASE_VENV is also
+    #                    set, the bootstrapper creates/reuses a derived env
+    #                    from that prebaked base and installs praktika on top.
+    PRAKTIKA_INSTALL_SOURCE: str = ""
+    # Optional fallback base venv name used by both workflow and job sides
+    # unless a side-specific value below is set.
+    PRAKTIKA_BASE_VENV: str = ""
+    # Optional prebaked base venv name for the workflow/orchestrator side.
+    PRAKTIKA_WORKFLOW_BASE_VENV: str = ""
+    # Optional prebaked base venv name for the job/runner side.
+    PRAKTIKA_JOB_BASE_VENV: str = ""
 
 
 _USER_DEFINED_SETTINGS = [
@@ -140,6 +162,8 @@ _USER_DEFINED_SETTINGS = [
     "CLOUD_INFRASTRUCTURE_CONFIG_PATH",
     "EVENT_FEED_S3_PATH",
     "AWS_REGION",
+    "AWS_ACCOUNT_ID",
+    "AWS_PROFILE",
     "S3_BUCKET_TO_HTTP_ENDPOINT",
     "TEXT_CONTENT_EXTENSIONS",
     "TEMP_DIR",
@@ -152,69 +176,61 @@ _USER_DEFINED_SETTINGS = [
     "ENABLE_MULTIPLATFORM_DOCKER_IN_ONE_JOB",
     "CI_CONFIG_JOB_NAME",
     "PYTHON_INTERPRETER",
-    "PYTHON_VERSION",
     "PYTHON_PACKET_MANAGER",
-    "INSTALL_PYTHON_FOR_NATIVE_JOBS",
-    "INSTALL_PYTHON_REQS_FOR_NATIVE_JOBS",
     "MAX_RETRIES_S3",
     "MAX_RETRIES_GH",
     "VALIDATE_FILE_PATHS",
-    "DOCKERHUB_USERNAME",
-    "DOCKERHUB_SECRET",
+    "SECRET_DOCKER_REGISTRY",
     "READY_FOR_MERGE_CUSTOM_STATUS_NAME",
-    "SECRET_CI_DB_URL",
-    "SECRET_CI_DB_USER",
-    "SECRET_CI_DB_PASSWORD",
+    "SECRET_CI_DB_CONNECTION",
     "CI_DB_DB_NAME",
     "CI_DB_TABLE_NAME",
     "KEEPER_STRESS_METRICS_DB_NAME",
     "KEEPER_STRESS_METRICS_TABLE_NAME",
     "CI_DB_INSERT_TIMEOUT_SEC",
     "USE_CUSTOM_GH_AUTH",
-    "SECRET_GH_APP_ID",
-    "SECRET_GH_APP_PEM_KEY",
-    "SECRET_GH_APP_INSTALLATION_ID",
-    "SECRET_GH_APP_REGION",
+    "GH_AUTH_LAMBDA_NAME",
+    "GH_AUTH_LAMBDA_REGION",
     "MAIN_BRANCH",
     "DISABLED_WORKFLOWS",
     "ENABLED_WORKFLOWS",
-    "PYTHONPATHS",
     "DEFAULT_LOCAL_TEST_WORKFLOW",
     "COMPRESS_THRESHOLD_MB",
     "ENABLE_SUBMODULE_CACHE",
     "CI_DB_READ_USER",
     "CI_DB_READ_URL",
     "TEST_FAILURE_PATTERNS",
+    "PRAKTIKA_INSTALL_SOURCE",
+    "PRAKTIKA_BASE_VENV",
+    "PRAKTIKA_WORKFLOW_BASE_VENV",
+    "PRAKTIKA_JOB_BASE_VENV",
 ]
+
+
+def _load_settings_module(path: Path, res: "_Settings") -> None:
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    assert spec and spec.loader
+    foo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(foo)
+    for setting in _USER_DEFINED_SETTINGS:
+        try:
+            res.__setattr__(setting, getattr(foo, setting))
+        except AttributeError:
+            pass
 
 
 def _get_settings() -> _Settings:
     res = _Settings()
+    settings_dir = Path(_Settings.SETTINGS_DIRECTORY)
 
-    directory = Path(_Settings.SETTINGS_DIRECTORY)
+    # Primary settings file
+    primary = settings_dir / "settings.py"
+    if primary.is_file():
+        _load_settings_module(primary, res)
 
-    py_files = list(directory.glob("*.py"))
-    # Support for overriding settings (if for whatever reason you need to override setting(s) in your fork)
-    # Sort: First files without "overrides", then files with "overrides"
-    sorted_files = sorted(py_files, key=lambda f: "_overrides" in f.name)
-
-    for py_file in sorted_files:
-        module_name = py_file.name.removeprefix(".py")
-        spec = importlib.util.spec_from_file_location(
-            module_name, f"{_Settings.SETTINGS_DIRECTORY}/{module_name}"
-        )
-        assert spec
-        foo = importlib.util.module_from_spec(spec)
-        assert spec.loader
-        spec.loader.exec_module(foo)
-        for setting in _USER_DEFINED_SETTINGS:
-            try:
-                value = getattr(foo, setting)
-                res.__setattr__(setting, value)
-                # print(f"- read user defined setting [{setting} = {value}]")
-            except Exception as e:
-                # print(f"Exception while read user settings: {e}")
-                pass
+    # Optional override files, applied in sorted order
+    for override in sorted(settings_dir.glob("*_overrides.py")):
+        _load_settings_module(override, res)
 
     return res
 

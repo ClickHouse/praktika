@@ -1,100 +1,110 @@
 # praktika
 
-Resilient, feature-reach CI infrastructure on top of Git Management Platform (GH Actions) and Public Cloud Provider (AWS WebServices).
-It's easier with praktika.
+praktika is a self-contained CI system that you configure and deploy on top of
+a cloud provider. Pipelines and infrastructure are both declared in plain
+Python and deployed with one command.
 
-### concepts:
-* 100% Tolerance to GitHub API Failures:
-  * Make only the essential GitHub API calls, and limit them to the initial pipeline stage.
-  * Ensure that all API calls are retryable in case of failure.
-  * Provide GitHub data to CI jobs at runtime, eliminating the need for API calls during pipeline execution.
-* Early configuration fault detection:
-  * Make pipeline configuration errors visible at pipeline generation step rather than runtime
-* Minimal Dependencies:
-  * Opt for Python standard libraries over external packages.
-  * Only import non-standard modules if the user has enabled a feature that specifically requires them.
-* Minimal Overhead:
-  * Do not do more than explicitly requested by user.
-* Design Simplicity:
-  * Favor a generic design, minimize custom handling.
+praktika gives you:
 
-### dependencies:
-* python
-* non-standard python modules:
-  * jwt module if GH App auth is needed. If Report and/or Mergeable check is enabled
-* non-python dependencies:
-  * aws cli. Not required for GH-only setup (without cloud provider)
-  * gh cli. Not required for setup without Report and/or Mergeable check
+- **Declarative pipelines.** Jobs, dependencies, artifacts, parametrized runs,
+  caching, secrets, and reports are all expressed as plain Python objects in
+  `ci/workflows/*.py`. Errors in the pipeline config surface at generation
+  time, not in a half-finished CI run.
+- **Declarative infrastructure.** RunnerPools, an Orchestrator pool, S3 buckets
+  for artifacts/reports, SQS queues for sync, SSM/Secrets Manager bindings —
+  all defined in a single `ci/infra/cloud.py` and brought up with
+  `python -m praktika infrastructure --deploy`.
+- **Standalone-first execution model.** Praktika is designed to run its own CI
+  control plane on cloud infrastructure: the orchestrator polls workflow
+  queues, dispatches jobs to runner pools, and reports status back to the Git
+  hosting system. GitHub Actions YAML generation is available as a compatibility
+  option, but it is not the primary model.
 
-## How to:
+Today, Praktika is developed around GitHub and AWS. The overall model is not
+conceptually limited to them, but those are the integrations implemented today.
 
-```sh
-# 1. install praktika (temporary module path until officially published)
-pip install  https://clickhouse-builds.s3.amazonaws.com/packages/praktika-0.1-py3-none-any.whl --force-reinstall
+## How to start
 
-# 2. checkout new branch
-git checkout -b my_praktika
+See [GETTING_STARTED.md](./GETTING_STARTED.md) — it walks you through
+infrastructure configuration and deployment, and writing your first Praktika
+pipeline.
 
-# 3. create your workflow config in python or take any as an example from ./ci/config/*
+## Module references
 
-# 4. generate pipeline files
-praktika yaml
+- [`praktika/infrastructure/`](./praktika/infrastructure/README.md) — config
+  components for declaring AWS infrastructure (`VPC`, `Storage`,
+  `RunnerPool`, `OrchestratorPool`, `report_page_config`, ...) and the
+  `praktika infrastructure --deploy / --shutdown / --restart-instances`
+  commands.
+- [`praktika/orchestrator/`](./praktika/orchestrator/README.md) — the
+  standalone CI engine: webhook receiver, workflow agent, job agent, the
+  task-shape contract over SQS, and how to run a workflow or a single job
+  locally without AWS.
 
-# 5. Check pipeline files generated: ./.github/workflows/*.yaml
+## What's supported today
 
-# 6. Commit and Push updates to remote:
-git commit -m "Hello World"
-git push --set-upstream origin my_praktika
+**Native Praktika features**
+- Declarative jobs and pipelines in plain Python
+- Declarative CI infrastructure configuration and deployment
+- Built-in CI cache with awareness of successful jobs and reusable artifacts
+- Versioned runtimes via named base virtual environments, with `praktika_bootstrap` selecting the workflow or job runtime and optionally overlaying Praktika from checked-out source
+- HTML CI report page with per-workflow, per-job, and per-test drill-down
+- Consistent test Docker image versioning: images rebuild automatically when inputs change, and versions stay pinned to code state across branches
+- CI DB integration: job results, test results, timings, and related metadata are written automatically
 
-# 7. Create PR for the pushed branch
+**GitHub side**
+- Webhook ingestion via AWS Lambda
+- `pull_request` and `push` pipeline triggers
+- Status reporting through the GitHub Checks API
+- GitHub App authentication through a token-broker Lambda
 
-# 8. Enjoy Your Hello World CI
-```
+**Cloud side (AWS)**
+- Runner pools based on Auto Scaling Groups, Launch Templates, and EC2 Linux VMs
+- An orchestrator pool managed the same way
+- Queue-driven autoscaling for runner and orchestrator pools: a scheduled Lambda scales pools up from SQS backlog, and auto-scaled instances scale themselves back in when their queue is idle
+- Image Builder pipelines for baking named base runtime environments into AMIs
+- SQS queues for workflow triggers and job dispatch
+- S3 buckets for artifacts and the HTML report
+- SSM Parameter Store and Secrets Manager bindings for workflow secrets
+- API Gateway plus Lambda webhook receiver for inbound Git events
+- CI DB integration for analytics: every job and test result can be streamed to a CI DB, and Praktika can also provision its own native CI DB component (`NativeComponents.CIDBCluster`) or use an existing endpoint via `Settings.SECRET_CI_DB_CONNECTION`
 
-#### praktika features
-|                                 |   | comment                                                                           |
-|---------------------------------|---|-----------------------------------------------------------------------------------|
-| Pythonic CI pipelines           | Y | 100% python interface for creating CI pipelines                                   |
-| Artifacts                       | Y | Download/upload artifacts (GH, S3)                                                |
-| Reports                         | Y | HTML report for CI workflow/jobs/tests                                            |
-| CI Cache                        | Y | Skip not-affected job, reuse artifacts                                            |
-| Docker as execution env         | Y | Support running jobs in docker natively                                           |
-| ClickHouse CI DB                | Y | Export results to CI DB for analytics and observability                           |
-| Custom CI DB                    | N | Provide support for Bring Your Own CI DB                                          |
-| Ready For Merge condition       | Y | Allow specific job(s) to fail without blocking merge                              |
-| CI Customization                | N | Support for manual CI customization within a CI run                               |
-| Observability                   | N | Integration with observability platform, Grafana                                  |
-| Collecting logs from runners    | N | system, logs, machine init logs, etc                                              |
-| Slack app                       | N | Slack app to subscribe to CI events, Alarms, etc                                  |
-| Main CI Dashboard               | N | Page comprising info about all running workflows/PRs/commits                      |
-| Automatic Backporting           | N | Automatic PR backports to release ranches                                         |
-| Pre-requisites: python          | Y | Install python dependencies as a pre-requisite job step                           |
-| Secret Management               | Y | Fetch secrets from AWS SSM Parameter, AWS Secrets Manager or GH secrets/variables |
-| Job Timeout config and handling | Y |                                                                                   |
-| Parametrized Jobs               | Y |                                                                                   |
+## Known limitations
 
-#### Supported GitHub features
-|                       | GitHub | GitLab | BitBucket | comment                                   |
-|-----------------------|--------|--------|-----------|-------------------------------------------|
-| pull_request workflow | Y      |        |           |                                           |
-| push workflow         | Y      |        |           |                                           |
-| merge_queue workflow  | N      |        |           |                                           |
-| scheduled workflow    | Y      |        |           |                                           |
-| dispatch workflow     | N      |        |           |                                           |
-| Auth with App         | Y      |        |           |                                           |
-| job artifacts         | Y      |        |           | Upload/download native platform artifacts |
-| platform runners      | Y      |        |           | Free ubuntu-latest GH runner              |
-| self-hosted runners   | Y      |        |           | Using your own CI runners (AWS EC2)       |
-| secrets and variables | Y      |        |           | Using secrets in workflows                |
+- Only one workflow is processed at a time per trigger type (`pull_request`,
+  `push`). If multiple workflows match the same trigger, the current
+  orchestrator processes them sequentially in the same orchestrator run rather
+  than in parallel.
 
-#### Cloud Compute features
-|                                     | AWS | Azure | GCP   | comment                                                                    |
-|-------------------------------------|-----|-------|-------|----------------------------------------------------------------------------|
-| EC2 as a CI runner                  | Y   |       |       |                                                                            |
-| ASG self-scale down                 | Y   |       |       | Self scaling down upon job completion                                      |
-| ASG self-scale up                   | Y   |       |       | Requires 1+ EC2 instance in reserve                                        |
-| ASG fixed size                      | Y   |       |       | no auto scaling                                                            |
-| S3 for artifacts                    | Y   |       |       |                                                                            |
-| ASG zero-capacity-overhead scale up | N   |       |       | for instance: GH webhook + lambda. (can be enabled, but no native support) |
-| prebuild runner image (terraform)   | N   |       |       |                                                                            |
-| SSM Parameter, Secrets Manager      | Y   |       |       | Using secrets from SSM and Secrets Manager in workflows                                   |
+## Roadmap
+**Blockers**
+- Approve and Run alternative for forks in OSS
+
+**Execution engine**
+- **Job cancel / job rerun** — cancel an in-flight job from the GitHub UI;
+  re-run a single failed job without rerunning the whole workflow
+- **`schedule` and `workflow_dispatch` workflows** — cron-driven and
+  manually-triggered pipelines on the standalone engine
+- **Config and Finish stages on the orchestrator** — run the auto-injected
+  setup/teardown jobs in-process instead of consuming a runner slot
+- **Centralized event routing** — have MainCI walk every workflow's active
+  triggers (events, branch filters, cron schedules) and publish a routing
+  table the webhook lambda consumes, so the lambda knows which branches to
+  accept, which schedules to fire, and which events to drop without each
+  workflow encoding that in the lambda by hand
+**Observability**
+- **Log export for orchestrator and runners** — live tail and persisted
+  archive, accessible without SSM
+- **CI DB provisioning** — bring the ClickHouse cluster and schema under
+  praktika-managed infrastructure (today only the writer side ships with
+  praktika; the cluster is provisioned out-of-band)
+
+**Networking**
+- **Private-access gateway (VPN)** — reach the HTML report and CI DB when
+  those run on private endpoints; optionally also SSH to runner instances
+  for debugging
+
+**Project ergonomics**
+- **`praktika init`** — scaffold a new project with a starter
+  `ci/workflows/` and `ci/infra/cloud.py` so adopters do not have to copy
+  them by hand

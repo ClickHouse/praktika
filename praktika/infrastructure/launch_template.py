@@ -1,6 +1,11 @@
 import base64
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+from ._utils import aws_client
+
+if TYPE_CHECKING:
+    from .image_builder import ImageBuilder
 
 
 class LaunchTemplate:
@@ -21,11 +26,17 @@ class LaunchTemplate:
 
         # High-level fields (optional). If `data` is provided, it is used as-is.
         image_id: str = ""
+        image_builder: Optional["ImageBuilder.Config"] = None
         image_builder_pipeline_name: str = ""
         instance_type: str = ""
         # If set, will be base64-encoded and applied as LaunchTemplateData.UserData
         user_data: str = ""
         security_group_ids: List[str] = field(default_factory=list)
+        # Resolved to IDs at deploy time by looking up SG names in the VPC.
+        # Requires `vpc_name` so the lookup is scoped (SG names are unique
+        # within a VPC, not globally).
+        security_group_names: List[str] = field(default_factory=list)
+        vpc_name: str = ""
         iam_instance_profile_name: str = ""
         tenancy: str = ""  # e.g. "host"
         host_id: str = ""
@@ -35,6 +46,7 @@ class LaunchTemplate:
         #            "Ebs": {"VolumeSize": 30, "VolumeType": "gp3",
         #                    "DeleteOnTermination": True}}]
         block_device_mappings: List[Dict[str, Any]] = field(default_factory=list)
+        tags: Dict[str, str] = field(default_factory=dict)
 
         # Raw launch template data (passed directly to EC2 API as LaunchTemplateData)
         data: Dict[str, Any] = field(default_factory=dict)
@@ -57,7 +69,7 @@ class LaunchTemplate:
             """
             import boto3
 
-            ec2 = boto3.client("ec2", region_name=self.region)
+            ec2 = aws_client("ec2", self.region, self.name)
 
             resp = ec2.describe_launch_templates(LaunchTemplateNames=[self.name])
             lts = resp.get("LaunchTemplates", [])
@@ -91,72 +103,86 @@ class LaunchTemplate:
             if self.image_id:
                 return self.image_id
 
-            if not self.image_builder_pipeline_name:
-                return ""
+            if self.image_builder:
+                if not self.image_builder.region:
+                    self.image_builder.region = self.region
+                self.image_id = self.image_builder.resolve_latest_ami_id()
+                return self.image_id
 
-            import boto3
+            if self.image_builder_pipeline_name:
+                client = aws_client("imagebuilder", self.region, self.name)
 
-            client = boto3.client("imagebuilder", region_name=self.region)
-
-            pipeline_arn = ""
-            paginator = client.get_paginator("list_image_pipelines")
-            for page in paginator.paginate():
-                for item in page.get("imagePipelineList", []) or []:
-                    if item.get(
-                        "name"
-                    ) == self.image_builder_pipeline_name and item.get("arn"):
-                        pipeline_arn = item["arn"]
+                pipeline_arn = ""
+                paginator = client.get_paginator("list_image_pipelines")
+                for page in paginator.paginate():
+                    for item in page.get("imagePipelineList", []) or []:
+                        if item.get(
+                            "name"
+                        ) == self.image_builder_pipeline_name and item.get("arn"):
+                            pipeline_arn = item["arn"]
+                            break
+                    if pipeline_arn:
                         break
-                if pipeline_arn:
-                    break
 
-            if not pipeline_arn:
+                if not pipeline_arn:
+                    raise Exception(
+                        f"Failed to resolve Image Builder pipeline ARN for '{self.image_builder_pipeline_name}'"
+                    )
+
+                resp = client.list_image_pipeline_images(
+                    imagePipelineArn=pipeline_arn,
+                    maxResults=25,
+                )
+                images = resp.get("imageSummaryList", []) or []
+                if not images:
+                    raise Exception(
+                        f"No images found for Image Builder pipeline '{self.image_builder_pipeline_name}'"
+                    )
+
+                images.sort(key=lambda s: s.get("dateCreated", "") or "", reverse=True)
+                image_arn = images[0].get("arn", "")
+                if not image_arn:
+                    raise Exception(
+                        f"Failed to resolve latest image ARN for pipeline '{self.image_builder_pipeline_name}'"
+                    )
+
+                image_resp = client.get_image(imageBuildVersionArn=image_arn)
+                image = image_resp.get("image") or {}
+
+                for output in image.get("outputResources", {}).get("amis", []) or []:
+                    if output.get("region") == self.region and output.get("image"):
+                        self.image_id = output["image"]
+                        return self.image_id
+
+                for output in image.get("outputResources", {}).get("amis", []) or []:
+                    if output.get("image"):
+                        self.image_id = output["image"]
+                        return self.image_id
+
                 raise Exception(
-                    f"Failed to resolve Image Builder pipeline ARN for '{self.image_builder_pipeline_name}'"
+                    f"Failed to resolve AMI id for pipeline '{self.image_builder_pipeline_name}'"
                 )
 
-            resp = client.list_image_pipeline_images(
-                imagePipelineArn=pipeline_arn,
-                maxResults=25,
-            )
-            images = resp.get("imageSummaryList", []) or []
-            if not images:
-                raise Exception(
-                    f"No images found for Image Builder pipeline '{self.image_builder_pipeline_name}'"
-                )
-
-            images.sort(key=lambda s: s.get("dateCreated", "") or "", reverse=True)
-            image_arn = images[0].get("arn", "")
-            if not image_arn:
-                raise Exception(
-                    f"Failed to resolve latest image ARN for pipeline '{self.image_builder_pipeline_name}'"
-                )
-
-            image_resp = client.get_image(imageBuildVersionArn=image_arn)
-            image = image_resp.get("image") or {}
-
-            for output in image.get("outputResources", {}).get("amis", []) or []:
-                if output.get("region") == self.region and output.get("image"):
-                    self.image_id = output["image"]
-                    return self.image_id
-
-            for output in image.get("outputResources", {}).get("amis", []) or []:
-                if output.get("image"):
-                    self.image_id = output["image"]
-                    return self.image_id
-
-            raise Exception(
-                f"Failed to resolve AMI id for pipeline '{self.image_builder_pipeline_name}'"
-            )
+            # Detect architecture from instance type: Graviton families end in 'g'
+            # (t4g, m6g, c6g, r6g, ...). Everything else is x86_64.
+            family = (self.instance_type or "").split(".")[0]
+            is_arm = family.endswith("g")
+            if is_arm:
+                from .native.configs import resolve_al2023_arm64_ami
+                self.image_id = resolve_al2023_arm64_ami(self.region)
+            else:
+                from .native.configs import resolve_al2023_x86_64_ami
+                self.image_id = resolve_al2023_x86_64_ami(self.region)
+            return self.image_id
 
         def _build_launch_template_data(self) -> Dict[str, Any]:
             if self.data:
                 return self.data
 
             resolved_image_id = self._resolve_image_id()
-            if not resolved_image_id or not self.instance_type:
+            if not self.instance_type:
                 raise ValueError(
-                    f"Either data must be provided, or image_id + instance_type must be set for Launch Template '{self.name}'"
+                    f"instance_type must be set for Launch Template '{self.name}'"
                 )
 
             lt_data: Dict[str, Any] = {
@@ -174,6 +200,7 @@ class LaunchTemplate:
                 instance_tags["github:runner-type"] = self.runner_type
 
             if instance_tags:
+                instance_tags.update(self.tags or {})
                 tag_specs.append(
                     {
                         "ResourceType": "instance",
@@ -183,9 +210,23 @@ class LaunchTemplate:
                     }
                 )
                 lt_data["TagSpecifications"] = tag_specs
+            lt_data["MetadataOptions"] = {
+                "HttpTokens": "required",
+                "InstanceMetadataTags": "enabled",
+            }
 
-            if self.security_group_ids:
-                lt_data["SecurityGroupIds"] = list(self.security_group_ids)
+            sg_ids = list(self.security_group_ids)
+            if self.security_group_names:
+                if not self.vpc_name:
+                    raise ValueError(
+                        f"LaunchTemplate '{self.name}' has security_group_names but no vpc_name; "
+                        f"set vpc_name to scope the SG lookup."
+                    )
+                from .vpc import VPC
+                lookup = VPC.Lookup(name=self.vpc_name, region=self.region)
+                sg_ids.extend(lookup.resolve_security_group_ids(self.security_group_names))
+            if sg_ids:
+                lt_data["SecurityGroupIds"] = sg_ids
 
             if self.iam_instance_profile_name:
                 lt_data["IamInstanceProfile"] = {
@@ -213,6 +254,83 @@ class LaunchTemplate:
 
             return lt_data
 
+        def _is_current_version_up_to_date(self, ec2, lt_id: str, desired: dict) -> bool:
+            try:
+                resp = ec2.describe_launch_template_versions(
+                    LaunchTemplateId=lt_id, Versions=["$Latest"]
+                )
+                versions = resp.get("LaunchTemplateVersions", [])
+                if not versions:
+                    return False
+                current = versions[0].get("LaunchTemplateData", {})
+            except Exception:
+                return False
+
+            def _norm(data: dict) -> dict:
+                out = {}
+                for key in ("ImageId", "InstanceType"):
+                    if key in data:
+                        out[key] = data[key]
+                # UserData: decode both sides before comparing — AWS may return
+                # different base64 padding/line breaks than what we encoded.
+                if "UserData" in desired:
+                    def _decode(s):
+                        try:
+                            return base64.b64decode(s).decode("utf-8") if s else ""
+                        except Exception:
+                            return s
+                    out["UserData"] = _decode(desired["UserData"])
+                    out["_current_UserData"] = _decode(current.get("UserData", ""))
+                # Security groups
+                if "SecurityGroupIds" in desired:
+                    out["SecurityGroupIds"] = sorted(desired["SecurityGroupIds"])
+                    out["_current_SecurityGroupIds"] = sorted(
+                        current.get("NetworkInterfaces", [{}])[0].get("Groups", [{}])
+                        if current.get("NetworkInterfaces")
+                        else current.get("SecurityGroupIds", [])
+                    )
+                # IAM profile: compare by name
+                dp = desired.get("IamInstanceProfile", {})
+                cp = current.get("IamInstanceProfile", {})
+                if dp:
+                    out["IamProfileName"] = dp.get("Name", "")
+                    out["_current_IamProfileName"] = cp.get("Arn", "").split("/")[-1] if cp.get("Arn") else cp.get("Name", "")
+                if "MetadataOptions" in desired:
+                    # We force IMDS tags on so bootstrap agents can read their
+                    # own pool/asg/scaling metadata without extra config files.
+                    out["MetadataOptions"] = desired.get("MetadataOptions", {})
+                    out["_current_MetadataOptions"] = current.get("MetadataOptions", {})
+                desired_tags = []
+                for spec in desired.get("TagSpecifications", []) or []:
+                    if spec.get("ResourceType") != "instance":
+                        continue
+                    desired_tags.extend(spec.get("Tags", []) or [])
+                if desired_tags:
+                    current_tags = []
+                    for spec in current.get("TagSpecifications", []) or []:
+                        if spec.get("ResourceType") != "instance":
+                            continue
+                        current_tags.extend(spec.get("Tags", []) or [])
+                    out["InstanceTags"] = sorted(
+                        desired_tags, key=lambda t: (t.get("Key", ""), t.get("Value", ""))
+                    )
+                    out["_current_InstanceTags"] = sorted(
+                        current_tags, key=lambda t: (t.get("Key", ""), t.get("Value", ""))
+                    )
+                return out
+
+            d = _norm(desired)
+            for key, val in d.items():
+                if key.startswith("_current_"):
+                    continue
+                current_val = d.get(f"_current_{key}", current.get(key))
+                if key == "UserData":
+                    current_val = d["_current_UserData"]
+                if val != current_val:
+                    print(f"  Launch Template field changed: {key}")
+                    return False
+            return True
+
         def deploy(self):
             """
             Create or update (create new version) an EC2 Launch Template.
@@ -225,7 +343,7 @@ class LaunchTemplate:
 
             launch_template_data = self._build_launch_template_data()
 
-            ec2 = boto3.client("ec2", region_name=self.region)
+            ec2 = aws_client("ec2", self.region, self.name)
 
             # Determine if LT exists
             exists = False
@@ -252,13 +370,18 @@ class LaunchTemplate:
                 print(f"Successfully created Launch Template: {self.name}")
                 return self
 
-            # Exists
+            # Exists — check if current version matches desired config
             if not self.create_new_version:
                 raise ValueError(
                     f"Launch Template '{self.name}' already exists and create_new_version=False"
                 )
 
             lt_id = self._resolve_launch_template_id()
+
+            if self._is_current_version_up_to_date(ec2, lt_id, launch_template_data):
+                print(f"Launch Template '{self.name}' is already up to date, skipping")
+                self.ext["version_updated"] = False
+                return self
 
             resp = ec2.create_launch_template_version(
                 LaunchTemplateId=lt_id,
@@ -277,7 +400,20 @@ class LaunchTemplate:
                 )
                 self.ext["default_version_number"] = new_version_number
 
+            self.ext["version_updated"] = True
             print(
                 f"Successfully created new version for Launch Template: {self.name} (version={new_version_number})"
             )
             return self
+
+        def delete(self):
+            import boto3
+            client = aws_client("ec2", self.region, self.name)
+            try:
+                client.delete_launch_template(LaunchTemplateName=self.name)
+                print(f"Deleted Launch Template '{self.name}'")
+            except client.exceptions.ClientError as e:
+                if "does not exist" in str(e).lower() or "InvalidLaunchTemplateName" in str(e):
+                    print(f"Launch Template '{self.name}' does not exist, skipping")
+                else:
+                    raise

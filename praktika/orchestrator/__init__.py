@@ -1,9 +1,7 @@
-import io
 import json
 import re
 import sys
 from collections import defaultdict, deque
-from contextlib import redirect_stdout
 from dataclasses import dataclass
 from typing import Optional
 
@@ -28,35 +26,37 @@ def _branch_matches(branch, patterns):
     return False
 
 
-def find_workflow_for_event(event):
-    """Find the workflow matching the trigger event. Returns None if no match."""
+def find_workflows_for_event(event):
+    """Find all workflows matching the trigger event. Returns empty list if no match."""
     event_type = event.get("type", "")
     workflow_event = _EVENT_MAP.get(event_type)
     if not workflow_event:
         print(f"No workflow event mapping for trigger type [{event_type}]")
-        return None
+        return []
 
     if event_type == "pull_request":
         branch = event.get("base_ref", "")
     elif event_type == "push":
-        branch = event.get("branch", "")
+        branch = event.get("head_ref", "")
     else:
         branch = ""
 
-    workflows = _get_workflows()
-    for wf in workflows:
+    matched = []
+    for wf in _get_workflows():
+        if wf.engine == Workflow.Engine.GH_ACTIONS:
+            continue
         if wf.event != workflow_event:
             continue
-
         if event_type == "pull_request" and wf.base_branches:
             if _branch_matches(branch, wf.base_branches):
-                return wf
+                matched.append(wf)
         elif event_type == "push" and wf.branches:
             if _branch_matches(branch, wf.branches):
-                return wf
+                matched.append(wf)
 
-    print(f"No workflow found for event [{workflow_event}] branch [{branch}]")
-    return None
+    if not matched:
+        print(f"No workflow found for event [{workflow_event}] branch [{branch}]")
+    return matched
 
 
 def build_job_dag(workflow):
@@ -141,7 +141,7 @@ def print_execution_plan(workflow, levels, job_deps):
     print(f"\n{'='*80}\n")
 
 
-def _check_output(workflow, state, error=None):
+def _check_output(workflow, state, error=None, report_url=None):
     """Assemble a Check API `output` dict (title, summary, text) from the
     live ``WorkflowState``. Called on every PATCH so the top-level check's
     Markdown body tracks the current per-job table."""
@@ -160,6 +160,8 @@ def _check_output(workflow, state, error=None):
         summary = f"Cancelled — {state.md_status_summary()}"
     else:
         summary = state.md_status_summary()
+    if report_url:
+        summary += f" — [CI Report]({report_url})"
     text = state.md_status() if state is not None else ""
     if error is not None:
         text += f"\n\n### Error\n\n```\n{error}\n```"
@@ -170,7 +172,7 @@ def _check_output(workflow, state, error=None):
     return {"title": title, "summary": summary, "text": text}
 
 
-def _patch_top_check(check, workflow, state, error=None):
+def _patch_top_check(check, workflow, state, error=None, details_url=None):
     """PATCH the top-level workflow check with the current Markdown snapshot.
 
     Wrapped in try/except: a stuck GitHub API call must not kill the
@@ -179,36 +181,44 @@ def _patch_top_check(check, workflow, state, error=None):
     if check is None:
         return
     try:
-        check.update(output=_check_output(workflow, state, error=error))
+        check.update(output=_check_output(workflow, state, error=error, report_url=details_url), details_url=details_url)
     except Exception as e:
         print(f"  [warn] top-level check PATCH failed: {type(e).__name__}: {e}")
 
 
-def orchestrate(event, check=None, gh_token=None, run_id=None):
+def orchestrate(event, check=None, gh_token=None, run_id=None, ci=True):
     """Single orchestrator entry-point used by both the SQS runner and the CLI.
 
-    Resolves the workflow for ``event``, builds the execution DAG, and prints the
-    plan. If ``check`` is an already-opened ``CheckRun`` (from ``run.py``), it is
-    completed here with the plan captured into ``output.text`` and an appropriate
-    conclusion (``neutral`` for normal planning / no-match, ``failure`` on crash).
+    Finds all workflows matching ``event`` and runs them sequentially. Each
+    matched workflow gets its own GitHub check run (named after the workflow).
 
-    If ``gh_token`` is provided, one ``JobCheckRun`` per job is opened as
-    ``queued`` (and flipped to in_progress / completed through the execution
-    loop) so every job is visible on the PR as its own check.
+    ``ci=False``: local/dry-run mode — no GH auth, no check runs, no buffering.
 
-    The goal of this indirection is to keep ``run.py`` stable — all orchestration
-    policy lives here and ships with each PR, no user_data redeploy needed.
-
-    Returns the process exit code (0 on success, 1 if orchestration crashed).
+    Returns the process exit code (0 on success, 1 if any orchestration crashed).
     """
     print(
         f"Trigger event: {event.get('type')}.{event.get('action', '')} "
         f"repo={event.get('repo', '')} sender={event.get('sender', '')}"
     )
 
-    workflow = find_workflow_for_event(event)
-    if workflow is None:
-        print("No matching workflow, exiting")
+    if ci and gh_token is None:
+        # The orchestrator loop outlives a single installation token (~1h),
+        # so we hand the check-run code a self-refreshing provider rather
+        # than a string snapshot. Mint eagerly here so a misconfigured
+        # secret fails fast (before we open any check runs); subsequent
+        # API calls go through the provider and pick up fresh tokens
+        # transparently as the cached one nears expiry.
+        from ..gh_auth import GHTokenProvider
+        try:
+            provider = GHTokenProvider()
+            provider.get()  # eager mint to surface auth errors here
+            gh_token = provider
+        except Exception as e:
+            raise RuntimeError(f"Failed to mint GH token for CI orchestration: {e}") from e
+
+    workflows = find_workflows_for_event(event)
+    if not workflows:
+        print("No matching workflows, exiting")
         if check is not None:
             try:
                 check.complete("neutral", output=_check_output(None, None))
@@ -216,65 +226,88 @@ def orchestrate(event, check=None, gh_token=None, run_id=None):
                 print(f"Failed to complete check run: {check}", file=sys.stderr)
         return 0
 
+    print(f"Matched {len(workflows)} workflow(s): {[wf.name for wf in workflows]}")
+
+    overall_rc = 0
+    for workflow in workflows:
+        rc = _orchestrate_single(workflow, event, gh_token=gh_token, local_mode=not ci)
+        if rc != 0:
+            overall_rc = rc
+    return overall_rc
+
+
+def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
+    """Run one workflow: open a check run, execute the DAG, close the check.
+
+    Returns 0 on success, 1 on crash.
+    """
+    from .check_run import CheckRun
+
+    repo = event.get("repo", "")
+    head_sha = event.get("head_sha", "")
+
+    report_url = None
+    if workflow.enable_report:
+        from ..info import Info
+        report_url = Info.get_specific_report_url_static(
+            pr_number=event.get("pr_number") or 0,
+            branch=event.get("head_ref", ""),
+            sha=head_sha,
+            job_name="",
+            workflow_name=workflow.name,
+        )
+
+    check = None
+    if gh_token:
+        try:
+            check = CheckRun.start(gh_token, repo, head_sha, workflow.name, details_url=report_url)
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to open initial check run for [{workflow.name}]: {e}"
+            ) from e
+
+    run_id = str(check.id) if check is not None else None
+
     print(f"Matched workflow [{workflow.name}] with {len(workflow.jobs)} jobs")
 
-    # Capture the plan + live execution output so we can attach it to the
-    # check run body. The "Trigger event" / "Matched workflow" lines stay
-    # outside the redirect so they land in the systemd journal for live SSM
-    # debugging.
-    buf = io.StringIO()
+    from .state import WorkflowState
+
+    # The top-level check body is rendered from `state.md_status()` (a live
+    # per-job table) by `_check_output`, not from this stream — so we print
+    # straight to stdout. Lets the user (or `journalctl -fu workflow-agent`)
+    # see progress in real time, especially important when the loop hangs.
     error = None
     state = None
     try:
-        with redirect_stdout(buf):
-            # Local import avoids a circular dependency (state.py imports
-            # build_job_dag from this module).
-            from .state import WorkflowState
+        state = WorkflowState(
+            workflow,
+            event=event,
+            gh_token=gh_token,
+            repo=event.get("repo", ""),
+            head_sha=event.get("head_sha", ""),
+            run_id=run_id,
+            local_mode=local_mode,
+        )
+        state.print_plan()
+        _patch_top_check(check, workflow, state, details_url=report_url)
 
-            state = WorkflowState(
-                workflow,
-                event=event,
-                gh_token=gh_token,
-                repo=event.get("repo", ""),
-                head_sha=event.get("head_sha", ""),
-                run_id=run_id,
-            )
-            state.print_plan()
-            # Initial snapshot once the DAG exists — drops the "Planning..."
-            # placeholder the top-level check started with.
-            _patch_top_check(check, workflow, state)
+        cancel_handled = False
+        while state.not_finished():
+            if state.cancelled and not cancel_handled:
+                state.cancel_unfinished_jobs()
+                cancel_handled = True
+            for job in state.get_ready():
+                job.kick()
+            state.wait()
+            _patch_top_check(check, workflow, state, details_url=report_url)
 
-            cancel_handled = False
-            while state.not_finished():
-                # A cancel signal arrived mid-run: mark every PENDING job
-                # that isn't `run_unless_cancelled` as CANCELLED, then keep
-                # going so the unconditional post-run jobs (Finish Workflow)
-                # still get dispatched and completed through the normal
-                # queue path.
-                if state.cancelled and not cancel_handled:
-                    state.cancel_pending_jobs()
-                    cancel_handled = True
-                for job in state.get_ready():
-                    job.kick()
-                state.wait()
-                # Refresh the top-level check on every iteration — each
-                # wait() return is a batch of state transitions
-                # (completions + skips + filters). See PROTOCOL.md.
-                _patch_top_check(check, workflow, state)
-
-            state.print_summary()
+        state.print_summary()
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
-        buf.write(f"\n\nError: {error}\n")
+        print(f"\n\nError: {error}")
     finally:
-        # Always delete the per-run queue, even on cancel or exception —
-        # nothing else will consume it once this run exits.
         if state is not None:
             state.cleanup()
-
-    plan_text = buf.getvalue()
-    sys.stdout.write(plan_text)
-    sys.stdout.flush()
 
     if check is not None:
         if error is not None:
@@ -284,15 +317,72 @@ def orchestrate(event, check=None, gh_token=None, run_id=None):
         else:
             conclusion = "neutral"
         try:
-            check.complete(conclusion, output=_check_output(workflow, state, error=error))
+            check.complete(conclusion, output=_check_output(workflow, state, error=error, report_url=report_url), details_url=report_url)
         except Exception:
             print(f"Failed to complete check run: {check}", file=sys.stderr)
 
     return 0 if error is None else 1
 
 
-def run(event_file):
-    """CLI entry-point (``python -m ci.praktika orchestrate <event.json>``)."""
-    with open(event_file) as f:
-        event = json.load(f)
-    sys.exit(orchestrate(event))
+def _git_output(*args):
+    import subprocess
+    r = subprocess.run(["git"] + list(args), capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def _build_event(args):
+    """Build a trigger event dict from CLI args + current git state."""
+    import re
+    import subprocess
+
+    repo = args.repo
+    if not repo:
+        remote = _git_output("remote", "get-url", "origin")
+        m = re.search(r"github\.com[:/](.+?)(?:\.git)?$", remote)
+        repo = m.group(1) if m else ""
+
+    head_sha = args.head_sha or _git_output("rev-parse", "HEAD")
+    head_ref = args.head_ref or _git_output("branch", "--show-current")
+    sender = args.sender or _git_output("config", "user.name")
+
+    pr_number = args.pr_number
+    if pr_number is None:
+        r = subprocess.run(
+            ["gh", "pr", "view", "--json", "number", "-q", ".number"],
+            capture_output=True, text=True,
+        )
+        try:
+            pr_number = int(r.stdout.strip()) if r.returncode == 0 else 0
+        except ValueError:
+            pr_number = 0
+
+    event = {
+        "type": args.event_type,
+        "action": "synchronize",
+        "repo": repo,
+        "head_sha": head_sha,
+        "head_ref": head_ref,
+        "base_ref": args.base_ref,
+        "pr_number": pr_number,
+        "sender": sender,
+        "title": "",
+        "draft": False,
+        "labels": [],
+    }
+    print(
+        f"Event: {event['type']}.{event['action']} "
+        f"PR#{event['pr_number']} [{event['head_ref']} -> {event['base_ref']}] "
+        f"sha={event['head_sha'][:12] if event['head_sha'] else ''}"
+    )
+    return event
+
+
+def run(event_file=None, args=None):
+    """CLI entry-point (``praktika orchestrate workflow [event.json]``)."""
+    if event_file:
+        with open(event_file) as f:
+            event = json.load(f)
+    else:
+        event = _build_event(args)
+    ci = getattr(args, "ci", False)
+    sys.exit(orchestrate(event, ci=ci))

@@ -16,7 +16,7 @@ if __name__ == "__main__":
         results=[
             Result(
                 name="Test 1",
-                status=Result.Status.SUCCESS,
+                status=Result.Status.OK,
                 start_time=Utils.timestamp(),
                 duration=1.0,
                 info="all good",

@@ -372,10 +372,14 @@ class _Environment(MetaClasses.Serializable):
             raise RuntimeError()
 
     def get_s3_prefix(self, latest=False):
-        return self.get_s3_prefix_static(self.PR_NUMBER, self.BRANCH, self.SHA, latest)
+        return self.get_s3_prefix_static(
+            self.PR_NUMBER, self.BRANCH, self.SHA, self.WORKFLOW_NAME, latest
+        )
 
     @classmethod
-    def get_s3_prefix_static(cls, pr_number, branch, sha, latest=False):
+    def get_s3_prefix_static(cls, pr_number, branch, sha, workflow_name="", latest=False):
+        from .utils import Utils
+
         assert pr_number > 0 or branch
         if pr_number:
             prefix = f"PRs/{pr_number}"
@@ -386,6 +390,8 @@ class _Environment(MetaClasses.Serializable):
             prefix += f"/latest"
         elif sha:
             prefix += f"/{sha}"
+        if workflow_name:
+            prefix += f"/{Utils.normalize_string(workflow_name)}"
         return prefix
 
     def is_local_run(self):

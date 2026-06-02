@@ -13,11 +13,6 @@ from .utils import Shell, Utils
 
 class Job:
     @dataclass
-    class Requirements:
-        python: bool = False
-        python_requirements_txt: str = ""
-
-    @dataclass
     class CacheDigestConfig:
         include_paths: List[str] = field(default_factory=list)
         exclude_paths: List[str] = field(default_factory=list)
@@ -58,8 +53,6 @@ class Job:
         #   May be only `Artifact.Config.name`
         provides: List[str] = field(default_factory=list)
 
-        job_requirements: Optional["Job.Requirements"] = None
-
         timeout: int = 5 * 3600
 
         timeout_shell_cleanup: Optional[str] = None
@@ -68,7 +61,7 @@ class Job:
 
         run_in_docker: str = ""
 
-        run_unless_cancelled: bool = False
+        always_run: bool = False
 
         allow_merge_on_failure: bool = False
 

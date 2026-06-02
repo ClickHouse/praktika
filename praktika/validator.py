@@ -1,4 +1,5 @@
 import glob
+import re
 import sys
 from itertools import chain
 from pathlib import Path
@@ -6,7 +7,7 @@ from pathlib import Path
 from praktika import Artifact, Job
 
 from . import Workflow
-from .mangle import _get_workflows
+from .mangle import _get_infra_projects, _get_workflows
 from .settings import GHRunners, Settings
 
 
@@ -33,32 +34,54 @@ class Validator:
 
         if Settings.USE_CUSTOM_GH_AUTH:
             cls.evaluate_check_simple(
-                Settings.SECRET_GH_APP_ID and Settings.SECRET_GH_APP_PEM_KEY and Settings.SECRET_GH_APP_INSTALLATION_ID,
-                f"Setting SECRET_GH_APP_ID, SECRET_GH_APP_PEM_KEY and SECRET_GH_APP_INSTALLATION_ID must be provided with USE_CUSTOM_GH_AUTH == True",
+                bool(Settings.SECRET_GH_APP or Settings.GH_AUTH_LAMBDA_NAME),
+                "Setting SECRET_GH_APP or GH_AUTH_LAMBDA_NAME must be provided with USE_CUSTOM_GH_AUTH == True",
             )
 
-        workflows = _get_workflows(_for_validation_check=True)
+        if Settings.CLOUD_INFRASTRUCTURE_CONFIG_PATH:
+            projects = _get_infra_projects()
+            normalized = {}
+            for project in projects:
+                normalized_name = re.sub(
+                    r"-{2,}",
+                    "-",
+                    re.sub(r"[^a-z0-9]+", "-", project.name.lower()),
+                ).strip("-")
+                cls.evaluate_check_simple(
+                    normalized_name,
+                    f"Infrastructure project name [{project.name}] must normalize to a non-empty AWS-safe prefix",
+                )
+                cls.evaluate_check_simple(
+                    normalized_name not in normalized,
+                    f"Infrastructure project names [{normalized.get(normalized_name)}] and [{project.name}] normalize to the same prefix [{normalized_name}]",
+                )
+                normalized[normalized_name] = project.name
+
+        _VALID_ENGINES = (Workflow.Engine.PRAKTIKA, Workflow.Engine.GH_ACTIONS)
+        files = []
+        workflows = _get_workflows(_for_validation_check=True, _file_names_out=files)
+        from collections import Counter
+        file_counts = Counter(files)
+        for file, count in file_counts.items():
+            cls.evaluate_check_simple(
+                count == 1,
+                f"Workflow file [{file}] must define exactly one workflow in WORKFLOWS (found {count})",
+            )
         for workflow in workflows:
             print(f"Validating workflow [{workflow.name}]")
+            cls.evaluate_check(
+                workflow.engine in _VALID_ENGINES,
+                f"Invalid engine [{workflow.engine}], must be one of {_VALID_ENGINES}",
+                workflow.name,
+            )
             if Settings.USE_CUSTOM_GH_AUTH and workflow.enable_report:
-                secret = workflow.get_secret(Settings.SECRET_GH_APP_ID)
-                cls.evaluate_check(
-                    bool(secret),
-                    f"Secret [{Settings.SECRET_GH_APP_ID}] must be configured for workflow",
-                    workflow.name,
-                )
-                secret = workflow.get_secret(Settings.SECRET_GH_APP_PEM_KEY)
-                cls.evaluate_check(
-                    bool(secret),
-                    f"Secret [{Settings.SECRET_GH_APP_PEM_KEY}] must be configured for workflow",
-                    workflow.name,
-                )
-                secret = workflow.get_secret(Settings.SECRET_GH_APP_INSTALLATION_ID)
-                cls.evaluate_check(
-                    bool(secret),
-                    f"Secret [{Settings.SECRET_GH_APP_INSTALLATION_ID}] must be configured for workflow",
-                    workflow.name,
-                )
+                if not Settings.GH_AUTH_LAMBDA_NAME:
+                    secret = workflow.get_secret(Settings.SECRET_GH_APP)
+                    cls.evaluate_check(
+                        bool(secret),
+                        f"Secret [{Settings.SECRET_GH_APP}] must be configured for workflow",
+                        workflow.name,
+                    )
 
             for job in workflow.jobs:
                 cls.evaluate_check(
@@ -73,6 +96,12 @@ class Validator:
                     f"Invalid Job.Config.runs_on [{job.runs_on}] for [{job.name}]",
                     workflow.name,
                 )
+                if workflow.engine != Workflow.Engine.GH_ACTIONS:
+                    cls.evaluate_check(
+                        len(job.runs_on) == 1,
+                        f"Non-GHActions workflow jobs must have exactly one runs_on label, got [{job.runs_on}] for [{job.name}]",
+                        workflow.name,
+                    )
                 cls.evaluate_check(
                     "PARAMETER" not in job.command,
                     f"Job parametrization config issue: job name [{job.name}], job command: [{job.command}]",
@@ -81,7 +110,6 @@ class Validator:
 
             cls.validate_file_paths_in_run_command(workflow)
             cls.validate_file_paths_in_digest_configs(workflow)
-            cls.validate_requirements_txt_files(workflow)
             cls.validate_dockers(workflow)
             cls.validate_job_names(workflow)
 
@@ -217,14 +245,11 @@ class Validator:
 
             if workflow.dockers and not workflow.disable_dockers_build:
                 assert (
-                    Settings.DOCKERHUB_USERNAME
-                ), f"Settings.DOCKERHUB_USERNAME must be provided if workflow has dockers, workflow [{workflow.name}]"
-                assert (
-                    Settings.DOCKERHUB_SECRET
-                ), f"Settings.DOCKERHUB_SECRET must be provided if workflow has dockers, workflow [{workflow.name}]"
+                    Settings.SECRET_DOCKER_REGISTRY
+                ), f"Settings.SECRET_DOCKER_REGISTRY must be provided if workflow has dockers, workflow [{workflow.name}]"
                 assert workflow.get_secret(
-                    Settings.DOCKERHUB_SECRET
-                ), f"Secret [{Settings.DOCKERHUB_SECRET}] must have configuration in workflow.secrets, workflow [{workflow.name}]"
+                    Settings.SECRET_DOCKER_REGISTRY
+                ), f"Secret [{Settings.SECRET_DOCKER_REGISTRY}] must have configuration in workflow.secrets, workflow [{workflow.name}]"
 
             if workflow.enable_open_issues_check:
                 cls.evaluate_check(
@@ -245,18 +270,8 @@ class Validator:
 
             if workflow.enable_cidb:
                 cls.evaluate_check(
-                    Settings.SECRET_CI_DB_URL,
-                    "Settings.SECRET_CI_DB_URL must be provided if workflow.enable_cidb=True",
-                    workflow,
-                )
-                cls.evaluate_check(
-                    Settings.SECRET_CI_DB_USER,
-                    "Settings.SECRET_CI_DB_USER must be provided if workflow.enable_cidb=True",
-                    workflow,
-                )
-                cls.evaluate_check(
-                    Settings.SECRET_CI_DB_PASSWORD,
-                    "Settings.SECRET_CI_DB_PASSWORD must be provided if workflow.enable_cidb=True",
+                    Settings.SECRET_CI_DB_CONNECTION,
+                    "Settings.SECRET_CI_DB_CONNECTION must be provided if workflow.enable_cidb=True",
                     workflow,
                 )
                 cls.evaluate_check(
@@ -316,27 +331,6 @@ class Validator:
                     assert (
                         Path(include_path).is_file() or Path(include_path).is_dir()
                     ), f"Invalid file path [{include_path}] in job [{job.name}] digest_config, workflow [{workflow.name}]. Setting to disable check: VALIDATE_FILE_PATHS"
-
-    @classmethod
-    def validate_requirements_txt_files(cls, workflow: Workflow.Config) -> None:
-        for job in workflow.jobs:
-            if job.job_requirements:
-                if job.job_requirements.python_requirements_txt:
-                    path = Path(job.job_requirements.python_requirements_txt)
-                    message = f"File with py requirement [{path}] does not exist"
-                    if job.name in (
-                        Settings.DOCKER_BUILD_AMD_LINUX_AND_MERGE_JOB_NAME,
-                        Settings.CI_CONFIG_JOB_NAME,
-                        Settings.FINISH_WORKFLOW_JOB_NAME,
-                    ):
-                        message += '\n  If all requirements already installed on your runners - add setting INSTALL_PYTHON_REQS_FOR_NATIVE_JOBS""'
-                        message += "\n  If requirements needs to be installed - add requirements file (Settings.INSTALL_PYTHON_REQS_FOR_NATIVE_JOBS):"
-                        message += "\n      echo jwt==1.3.1 > ./ci/requirements.txt"
-                        message += (
-                            "\n      echo requests==2.32.4 >> ./ci/requirements.txt"
-                        )
-                        message += "\n      echo https://clickhouse-builds.s3.amazonaws.com/packages/praktika-0.1-py3-none-any.whl >> ./ci/requirements.txt"
-                    cls.evaluate_check(path.is_file(), message, job.name, workflow.name)
 
     @classmethod
     def validate_dockers(cls, workflow: Workflow.Config):

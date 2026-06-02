@@ -1,9 +1,13 @@
+from ._utils import aws_client
 import base64
 import hashlib
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import zipfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -26,12 +30,18 @@ class Lambda:
         secrets: Dict[str, str] = field(default_factory=dict)
         # Non-secret environment variables (plain key-value pairs)
         environments: Dict[str, str] = field(default_factory=dict)
+        # Python packages to vendor into the Lambda zip via pip install -t.
+        python_dependencies: List[str] = field(default_factory=list)
         timeout_ms: int = 3 * 1000
         memory_size_mb: int = 128
         # Create an HTTP API Gateway for this Lambda (public HTTPS endpoint)
         api_gateway: bool = False
+        # Optional EventBridge schedule expression, e.g. "rate(1 minute)"
+        schedule_expression: str = ""
         # Inline IAM policies to attach to the Lambda execution role (name -> policy document)
         inline_policies: Dict[str, Any] = field(default_factory=dict)
+        # IAM role name for the Lambda execution role; resolved to ARN before deploy
+        role_name: str = ""
         ext: Dict[str, Any] = field(default_factory=dict)
 
         def fetch(self):
@@ -46,7 +56,7 @@ class Lambda:
             """
             import boto3
 
-            lambda_client = boto3.client("lambda", region_name=self.region)
+            lambda_client = aws_client("lambda", self.region, self.name)
 
             try:
                 # Get function configuration
@@ -101,7 +111,7 @@ class Lambda:
 
             import boto3
 
-            ssm_client = boto3.client("ssm", region_name=self.region)
+            ssm_client = aws_client("ssm", self.region, self.name)
             env_vars = {}
 
             for param_name, env_var_name in self.secrets.items():
@@ -113,7 +123,6 @@ class Lambda:
                     print(f"Fetched secret: {param_name} -> {env_var_name}")
                 except Exception as e:
                     print(f"Warning: Failed to fetch secret {param_name}: {e}")
-                    raise
 
             return env_vars
 
@@ -132,11 +141,11 @@ class Lambda:
             # Extract role name from ARN (format: arn:aws:iam::account:role/role-name)
             role_name = role_arn.split("/")[-1]
 
-            iam_client = boto3.client("iam", region_name=self.region)
+            iam_client = aws_client("iam", self.region, self.name)
             policy_name = "LambdaInvokeWorker"
 
             # Get worker Lambda function ARN
-            lambda_client = boto3.client("lambda", region_name=self.region)
+            lambda_client = aws_client("lambda", self.region, self.name)
             try:
                 response = lambda_client.get_function(FunctionName=worker_function_name)
                 worker_arn = response["Configuration"]["FunctionArn"]
@@ -179,7 +188,7 @@ class Lambda:
             # Extract role name from ARN (format: arn:aws:iam::account:role/role-name)
             role_name = role_arn.split("/")[-1]
 
-            iam_client = boto3.client("iam", region_name=self.region)
+            iam_client = aws_client("iam", self.region, self.name)
             policy_name = "LambdaS3ReadAccess"
 
             policy_document = {
@@ -217,7 +226,7 @@ class Lambda:
             # Extract role name from ARN (format: arn:aws:iam::account:role/role-name)
             role_name = role_arn.split("/")[-1]
 
-            iam_client = boto3.client("iam", region_name=self.region)
+            iam_client = aws_client("iam", self.region, self.name)
             policy_name = "LambdaS3ReadWriteAccess"
 
             policy_document = {
@@ -260,7 +269,7 @@ class Lambda:
             # Extract role name from ARN (format: arn:aws:iam::account:role/role-name)
             role_name = role_arn.split("/")[-1]
 
-            iam_client = boto3.client("iam", region_name=self.region)
+            iam_client = aws_client("iam", self.region, self.name)
             policy_name = "LambdaCloudWatchLogsAccess"
 
             policy_document = {
@@ -290,6 +299,26 @@ class Lambda:
             except Exception as e:
                 print(f"Warning: Failed to attach CloudWatch Logs policy: {e}")
 
+        def _validate_secrets(self):
+            """Raise if any SSM Parameter Store secrets declared in self.secrets do not exist."""
+            if not self.secrets:
+                return
+            import boto3
+            ssm = aws_client("ssm", self.region, self.name)
+            missing = []
+            for param_name in self.secrets:
+                try:
+                    ssm.get_parameter(Name=param_name, WithDecryption=False)
+                except ssm.exceptions.ParameterNotFound:
+                    missing.append(param_name)
+                except Exception as e:
+                    print(f"Warning: Could not check secret '{param_name}': {e}")
+            if missing:
+                raise ValueError(
+                    f"Lambda '{self.name}': the following SSM secrets are not set: {missing}"
+                )
+            print(f"All {len(self.secrets)} secret(s) validated in Parameter Store")
+
         def deploy(self):
             """
             Deploy a Lambda function to AWS using self.ext configuration.
@@ -297,7 +326,9 @@ class Lambda:
             """
             import boto3
 
-            lambda_client = boto3.client("lambda", region_name=self.region)
+            self._validate_secrets()
+
+            lambda_client = aws_client("lambda", self.region, self.name)
 
             # Try to fetch existing Lambda configuration first
             try:
@@ -307,7 +338,11 @@ class Lambda:
                 print(f"Lambda {self.name} does not exist yet, will create new")
 
             # Package the Lambda code
-            zip_buffer = self._package_lambda_code(self.path, self.include_files)
+            zip_buffer = self._package_lambda_code(
+                self.path,
+                self.include_files,
+                self.python_dependencies,
+            )
 
             # Get Lambda function configuration from self.ext with defaults
             function_name = self.name
@@ -334,6 +369,15 @@ class Lambda:
                     f"Environment variables updated with {len(secrets_env)} secret(s)"
                 )
 
+            if not role_arn and self.role_name:
+                iam = aws_client("iam", self.region, self.name)
+                try:
+                    role_arn = iam.get_role(RoleName=self.role_name)["Role"]["Arn"]
+                    print(f"Resolved role_arn for '{function_name}' from role '{self.role_name}'")
+                except Exception as e:
+                    raise ValueError(
+                        f"Failed to resolve role '{self.role_name}' for Lambda '{function_name}': {e}"
+                    )
             if not role_arn:
                 raise ValueError(
                     f"role_arn must be specified for Lambda function {function_name}"
@@ -425,6 +469,8 @@ class Lambda:
             # Set up API Gateway if requested
             if self.api_gateway:
                 self._ensure_api_gateway(function_name)
+            if self.schedule_expression:
+                self._ensure_eventbridge_schedule(function_name)
 
             # Attach inline IAM policies to the execution role
             if self.inline_policies:
@@ -434,12 +480,24 @@ class Lambda:
 
             return self
 
+        def delete(self):
+            import boto3
+
+            if self.schedule_expression:
+                self._delete_eventbridge_schedule()
+            client = aws_client("lambda", self.region, self.name)
+            try:
+                client.delete_function(FunctionName=self.name)
+                print(f"Deleted Lambda function '{self.name}'")
+            except client.exceptions.ResourceNotFoundException:
+                print(f"Lambda function '{self.name}' does not exist, skipping")
+
         def _attach_inline_policies(self, role_arn: str):
             """Attach inline IAM policies to the Lambda execution role."""
             import boto3
 
             role_name = role_arn.split("/")[-1]
-            iam = boto3.client("iam", region_name=self.region)
+            iam = aws_client("iam", self.region, self.name)
 
             for policy_name, policy_doc in self.inline_policies.items():
                 try:
@@ -456,8 +514,8 @@ class Lambda:
             """Create or verify an HTTP API Gateway for this Lambda."""
             import boto3
 
-            apigw = boto3.client("apigatewayv2", region_name=self.region)
-            lambda_client = boto3.client("lambda", region_name=self.region)
+            apigw = aws_client("apigatewayv2", self.region, self.name)
+            lambda_client = aws_client("lambda", self.region, self.name)
             api_name = f"{function_name}-API"
 
             # Check if API already exists
@@ -466,8 +524,10 @@ class Lambda:
 
             if existing:
                 api = existing[0]
-                print(f"API Gateway already exists: {api['ApiEndpoint']}")
-                self.ext["api_endpoint"] = api["ApiEndpoint"]
+                endpoint = api["ApiEndpoint"]
+                print(f"API Gateway already exists: {endpoint}")
+                self.ext["api_endpoint"] = endpoint
+                self._dump_api_endpoint(function_name, endpoint)
                 return
 
             # Get Lambda ARN
@@ -483,6 +543,7 @@ class Lambda:
             api_id = api["ApiId"]
             endpoint = api["ApiEndpoint"]
             print(f"Created API Gateway: {endpoint}")
+            self._dump_api_endpoint(function_name, endpoint)
 
             # Grant API Gateway permission to invoke the Lambda
             account_id = lambda_arn.split(":")[4]
@@ -501,8 +562,91 @@ class Lambda:
 
             self.ext["api_endpoint"] = endpoint
 
+        def _schedule_rule_name(self) -> str:
+            return f"{self.name}-schedule"
+
+        def _schedule_target_id(self) -> str:
+            return f"{self.name}-target"
+
+        def _ensure_eventbridge_schedule(self, function_name: str):
+            """Create or update an EventBridge schedule that invokes this Lambda."""
+            import boto3
+
+            events = aws_client("events", self.region, self.name)
+            lambda_client = aws_client("lambda", self.region, self.name)
+
+            func = lambda_client.get_function(FunctionName=function_name)
+            lambda_arn = func["Configuration"]["FunctionArn"]
+            rule_name = self._schedule_rule_name()
+
+            rule = events.put_rule(
+                Name=rule_name,
+                ScheduleExpression=self.schedule_expression,
+                State="ENABLED",
+                Description=f"Scheduled trigger for Lambda {function_name}",
+            )
+            rule_arn = rule["RuleArn"]
+            print(
+                f"Configured EventBridge schedule '{rule_name}' with expression {self.schedule_expression}"
+            )
+
+            events.put_targets(
+                Rule=rule_name,
+                Targets=[
+                    {
+                        "Id": self._schedule_target_id(),
+                        "Arn": lambda_arn,
+                    }
+                ],
+            )
+            print(f"Configured EventBridge target for Lambda '{function_name}'")
+
+            try:
+                lambda_client.add_permission(
+                    FunctionName=function_name,
+                    StatementId="AllowEventBridgeInvoke",
+                    Action="lambda:InvokeFunction",
+                    Principal="events.amazonaws.com",
+                    SourceArn=rule_arn,
+                )
+                print("Added EventBridge invoke permission")
+            except lambda_client.exceptions.ResourceConflictException:
+                print("EventBridge invoke permission already exists")
+
+            self.ext["schedule_rule_arn"] = rule_arn
+
+        def _delete_eventbridge_schedule(self):
+            import boto3
+
+            events = aws_client("events", self.region, self.name)
+            rule_name = self._schedule_rule_name()
+            try:
+                events.remove_targets(
+                    Rule=rule_name,
+                    Ids=[self._schedule_target_id()],
+                    Force=True,
+                )
+            except Exception as e:
+                print(f"Warning: Failed to remove EventBridge targets for {rule_name}: {e}")
+            try:
+                events.delete_rule(Name=rule_name, Force=True)
+                print(f"Deleted EventBridge schedule '{rule_name}'")
+            except Exception as e:
+                print(f"Warning: Failed to delete EventBridge schedule {rule_name}: {e}")
+
+        def _dump_api_endpoint(self, function_name: str, endpoint: str):
+            from ..settings import Settings
+            out_dir = Path(Settings.CLOUD_INFRASTRUCTURE_CONFIG_PATH).parent
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_file = out_dir / f"{function_name}_api_gateway.txt"
+            out_file.write_text(f"{endpoint}\n")
+            print(f"API Gateway URL written to {out_file}")
+
         def _package_lambda_code(
-            self, code_path: str, include_files: List[str] = None
+            self,
+            code_path: str,
+            include_files: List[str] = None,
+            python_dependencies: List[str] = None,
         ) -> io.BytesIO:
             """
             Package Lambda code into a zip file.
@@ -510,6 +654,7 @@ class Lambda:
             Args:
                 code_path: Path to the Lambda code (file or directory)
                 include_files: Additional files to include in the package
+                python_dependencies: Python packages to vendor into the zip
 
             Returns:
                 BytesIO buffer containing the zipped code
@@ -517,29 +662,68 @@ class Lambda:
             zip_buffer = io.BytesIO()
             path = Path(code_path)
             include_files = include_files or []
+            python_dependencies = python_dependencies or []
 
-            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            with tempfile.TemporaryDirectory(prefix=f"{self.name}-lambda-") as staging_dir:
+                staging = Path(staging_dir)
                 if path.is_file():
-                    # Single file
-                    zip_file.write(path, arcname=path.name)
+                    shutil.copy2(path, staging / path.name)
                 elif path.is_dir():
-                    # Directory - recursively add all files
                     for root, dirs, files in os.walk(path):
+                        root_path = Path(root)
+                        rel_root = root_path.relative_to(path)
+                        target_root = staging / rel_root
+                        target_root.mkdir(parents=True, exist_ok=True)
                         for file in files:
-                            file_path = Path(root) / file
-                            arcname = file_path.relative_to(path)
-                            zip_file.write(file_path, arcname=str(arcname))
+                            file_path = root_path / file
+                            shutil.copy2(file_path, target_root / file)
                 else:
                     raise ValueError(f"Invalid path: {code_path}")
 
-                # Add additional files
                 for include_path in include_files:
                     include_file = Path(include_path)
                     if include_file.is_file():
-                        zip_file.write(include_file, arcname=include_file.name)
+                        shutil.copy2(include_file, staging / include_file.name)
                         print(f"Including additional file: {include_file.name}")
                     else:
                         print(f"Warning: Include file not found: {include_path}")
+
+                if python_dependencies:
+                    runtime = self.ext.get("runtime", "python3.11")
+                    if not runtime.startswith("python3."):
+                        raise ValueError(
+                            f"Unsupported Lambda runtime for dependency vendoring: {runtime}"
+                        )
+                    py_version = runtime.removeprefix("python")
+                    cmd = [
+                        sys.executable,
+                        "-m",
+                        "pip",
+                        "install",
+                        "--only-binary=:all:",
+                        "--platform",
+                        "manylinux2014_x86_64",
+                        "--implementation",
+                        "cp",
+                        "--python-version",
+                        py_version,
+                        "--target",
+                        str(staging),
+                        *python_dependencies,
+                    ]
+                    print(
+                        f"Vendoring {len(python_dependencies)} Lambda Python dependenc"
+                        f"{'y' if len(python_dependencies) == 1 else 'ies'} for {self.name}"
+                    )
+                    subprocess.run(cmd, check=True)
+
+                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                    for root, dirs, files in os.walk(staging):
+                        root_path = Path(root)
+                        for file in files:
+                            file_path = root_path / file
+                            arcname = file_path.relative_to(staging)
+                            zip_file.write(file_path, arcname=str(arcname))
 
             zip_buffer.seek(0)
             return zip_buffer
@@ -559,7 +743,7 @@ class Lambda:
 
             import boto3
 
-            logs_client = boto3.client("logs", region_name=self.region)
+            logs_client = aws_client("logs", self.region, self.name)
             log_group_name = f"/aws/lambda/{self.name}"
 
             # Calculate time range (in milliseconds)
@@ -639,7 +823,7 @@ class Lambda:
             """
             import boto3
 
-            lambda_client = boto3.client("lambda", region_name=self.region)
+            lambda_client = aws_client("lambda", self.region, self.name)
 
             try:
                 response = lambda_client.invoke(
@@ -683,41 +867,6 @@ lambda_worker_config = Lambda.Config(
 )
 
 # CI engine Lambda - receives GitHub webhook events to trigger pipelines
-lambda_ci_engine_config = Lambda.Config(
-    name="praktika_ci_engine",
-    path=f"{os.path.dirname(__file__)}/native/lambda_ci_engine.py",
-    handler="lambda_ci_engine.lambda_handler",
-    secrets={
-        "praktika_ci_engine_webhook_secret": "GH_WEBHOOK_SECRET",
-    },
-    timeout_ms=10 * 1000,
-    memory_size_mb=128,
-    api_gateway=True,
-    inline_policies={
-        "SQSSendMessage": {
-            "Version": "2012-10-17",
-            "Statement": [
-                {
-                    "Effect": "Allow",
-                    "Action": ["sqs:SendMessage", "sqs:GetQueueUrl"],
-                    "Resource": [
-                        "arn:aws:sqs:*:*:praktika_clickhouse_workflows",
-                        "arn:aws:sqs:*:*:praktika-wf-*",
-                    ],
-                },
-                {
-                    # list_queues is used to fan out cancels on synchronize
-                    # across all live per-run queues for a PR. SQS does not
-                    # support resource-scoped ListQueues, so it must be "*".
-                    "Effect": "Allow",
-                    "Action": ["sqs:ListQueues"],
-                    "Resource": "*",
-                },
-            ],
-        },
-    },
-)
-
 
 # local tests and development
 if __name__ == "__main__":

@@ -420,20 +420,23 @@ class Result(MetaClasses.Serializable):
             return s if len(s) <= 120 else s[:117] + "..."
 
         lines = []
-        dur = f" in {int(self.duration)}s" if self.duration else ""
-        lines.append(f"**Status:** `{self.status}`{dur}")
+        # GitHub already renders status + duration as the check summary
+        # header, so don't repeat it in the body.
         if self.info:
-            lines.append("")
             lines.append(_escape(self.info))
-        lines.append("")
+            lines.append("")
 
         refs = []
         for url in self.links or []:
-            refs.append(f"- {url}")
+            from urllib.parse import urlsplit
+
+            path = urlsplit(url).path
+            label = path.rsplit("/", 1)[-1] if path else ""
+            refs.append(f"- [{label or url}]({url})")
         for f in self.files or []:
-            refs.append(f"- `{f}`")
+            refs.append(f"- `{Path(str(f)).name}`")
         if refs:
-            lines.append("### Artifacts")
+            lines.append("**Artifacts:**")
             lines.extend(refs)
             lines.append("")
 

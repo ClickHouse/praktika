@@ -1,4 +1,5 @@
 import dataclasses
+import datetime
 import glob
 import hashlib
 import json
@@ -6,6 +7,7 @@ import os
 import re
 import shlex
 import sys
+import textwrap
 import traceback
 from pathlib import Path
 
@@ -25,6 +27,88 @@ from .s3 import S3
 from .settings import Settings
 from .usage import ComputeUsage, StorageUsage
 from .utils import Shell, TeePopen, Utils
+
+_WRAP_WIDTH = 160
+_TIMESTAMP_INDENT = len(
+    datetime.datetime(2000, 1, 1).strftime("[%Y-%m-%d %H:%M:%S] ")
+)
+
+
+class _TimestampedStream:
+    """Prepends a [YYYY-MM-DD HH:MM:SS] timestamp to each output line."""
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._at_line_start = True
+
+    def write(self, data):
+        if not data:
+            return
+        parts = data.split("\n")
+        for i, part in enumerate(parts):
+            is_last = i == len(parts) - 1
+            if self._at_line_start and part:
+                ts = datetime.datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")
+                self._stream.write(ts + part)
+            elif part:
+                self._stream.write(part)
+            if not is_last:
+                self._stream.write("\n")
+                self._at_line_start = True
+            else:
+                self._at_line_start = not part
+
+    def flush(self):
+        self._stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+class _TeeStream:
+    """Writes to a terminal stream (with line wrapping) and a log file (without wrapping)."""
+
+    def __init__(self, terminal, log, subsequent_indent=0):
+        self._terminal = terminal
+        self._log = log
+        self._subsequent_indent = " " * subsequent_indent
+        self._at_line_start = True
+
+    def write(self, data):
+        if not data:
+            return
+        self._log.write(data)
+        parts = data.split("\n")
+        for i, part in enumerate(parts):
+            is_last = i == len(parts) - 1
+            if self._at_line_start and part:
+                self._terminal.write(
+                    textwrap.fill(
+                        part,
+                        width=_WRAP_WIDTH,
+                        subsequent_indent=self._subsequent_indent,
+                        break_long_words=False,
+                        break_on_hyphens=False,
+                        expand_tabs=False,
+                        replace_whitespace=False,
+                        drop_whitespace=False,
+                    )
+                )
+            elif part:
+                self._terminal.write(part)
+            if not is_last:
+                self._terminal.write("\n")
+                self._at_line_start = True
+            else:
+                self._at_line_start = not part
+
+    def flush(self):
+        self._terminal.flush()
+        self._log.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._terminal, name)
+
 
 _GH_authenticated = False
 
@@ -83,12 +167,7 @@ class Runner:
         repo_url = Shell.get_output("git config --get remote.origin.url")
         repo_name = ""
         if repo_url:
-            # Handle both HTTPS and SSH formats
-            # HTTPS: https://github.com/owner/repo.git
-            # SSH: git@github.com:owner/repo.git
-            match = re.search(r"[:/]([^/]+/[^/]+?)(\.git)?$", repo_url)
-            if match:
-                repo_name = match.group(1)
+            repo_name = GH._repo_name_from_git_remote_url(repo_url)
 
         _Environment(
             WORKFLOW_NAME=workflow.name,
@@ -117,6 +196,14 @@ class Runner:
             EVENT_TIME="",
             WORKFLOW_CONFIG=workflow_config,
         ).dump()
+
+        if pr and pr > 0:
+            changed_files = GH.get_changed_files()
+            if changed_files is not None:
+                print(f"Storing {len(changed_files)} changed files in JOB_KV_DATA")
+                Info().store_kv_data("changed_files", changed_files)
+            else:
+                print("WARNING: Failed to fetch changed files for PR")
 
         Result.create_from(name=job.name, status=Result.Status.PENDING).dump()
 
@@ -157,7 +244,7 @@ class Runner:
 
         return 0
 
-    def _pre_run(self, workflow, job, local_run=False):
+    def _pre_run(self, workflow, job, local_job_run=False):
         if job.name == Settings.CI_CONFIG_JOB_NAME:
             GH.print_actions_debug_info()
         dirty = Shell.get_output("git status --short", verbose=False) or ""
@@ -180,7 +267,7 @@ class Runner:
             )
         result.dump()
 
-        if not local_run:
+        if not local_job_run:
             if workflow.enable_report and job.name != Settings.CI_CONFIG_JOB_NAME:
                 print("Update Job and Workflow Report")
                 HtmlRunnerHooks.pre_run(workflow, job)
@@ -252,7 +339,7 @@ class Runner:
                     if artifact.compress_zst:
                         Utils.decompress_file(Path(Settings.INPUT_DIR) / artifact_path)
 
-        if not local_run and job.needs_submodules and Settings.ENABLE_SUBMODULE_CACHE:
+        if not local_job_run and job.needs_submodules and Settings.ENABLE_SUBMODULE_CACHE:
             self._restore_submodule_cache()
 
         return 0
@@ -494,18 +581,24 @@ class Runner:
                             f"WARNING: Job timed out: [{job.name}], timeout [{job.timeout}], exit code [{exit_code}]"
                         )
                         result.add_error(ResultInfo.TIMEOUT)
-                    elif result.is_running():
-                        info = f"Job killed, exit code [{exit_code}]"
-                        print(f"ERROR: {info}")
-                        result.add_error(info)
+                        result.set_status(Result.Status.ERROR)
+                        result.set_info(process.get_latest_log(max_lines=20))
+                    elif workflow.enable_exit_code_result:
+                        # Simple mode: workflow opted out of an explicit
+                        # Result, so a clean non-zero exit is a job-level
+                        # FAIL, not an infra-level ERROR/KILLED.
+                        info = f"Job exited with code [{exit_code}]"
+                        print(f"NOTE: {info}")
+                        result.set_status(Result.Status.FAIL).set_info(info)
                     else:
-                        info = f"Invalid status [{result.status}] for exit code [{exit_code}]"
+                        if result.is_running():
+                            info = f"Job killed, exit code [{exit_code}]"
+                        else:
+                            info = f"Invalid status [{result.status}] for exit code [{exit_code}]"
                         print(f"ERROR: {info}")
                         result.add_error(info)
-                    result.set_status(Result.Status.ERROR)
-                    result.set_info(
-                        process.get_latest_log(max_lines=20)
-                    )
+                        result.set_status(Result.Status.ERROR)
+                        result.set_info(process.get_latest_log(max_lines=20))
             result.dump()
 
         print("INFO: disk status after running a job:")
@@ -528,6 +621,7 @@ class Runner:
 
     def _get_result_object(
         self, job, setup_env_exit_code, prerun_exit_code, run_exit_code,
+        enable_exit_code_result=False,
     ) -> Result:
         result_exist = Result.exist(job.name)
 
@@ -548,13 +642,28 @@ class Runner:
                 duration=0.0,
             ).add_error(ResultInfo.PRE_JOB_FAILED).dump()
         elif not result_exist:
-            print(f"ERROR: {ResultInfo.NOT_FOUND_IMPOSSIBLE}")
-            Result(
-                name=job.name,
-                start_time=Utils.timestamp(),
-                duration=None,
-                status=Result.Status.ERROR,
-            ).add_error(ResultInfo.NOT_FOUND_IMPOSSIBLE).dump()
+            if enable_exit_code_result:
+                status = Result.Status.OK if run_exit_code == 0 else Result.Status.FAIL
+                print(
+                    f"NOTE: no Result on disk; synthesizing [{status}] from exit code [{run_exit_code}]"
+                )
+                synthesized = Result(
+                    name=job.name,
+                    start_time=Utils.timestamp(),
+                    duration=None,
+                    status=status,
+                )
+                if run_exit_code != 0:
+                    synthesized.set_info(f"Job exited with code [{run_exit_code}]")
+                synthesized.dump()
+            else:
+                print(f"ERROR: {ResultInfo.NOT_FOUND_IMPOSSIBLE}")
+                Result(
+                    name=job.name,
+                    start_time=Utils.timestamp(),
+                    duration=None,
+                    status=Result.Status.ERROR,
+                ).add_error(ResultInfo.NOT_FOUND_IMPOSSIBLE).dump()
 
         try:
             result = Result.from_fs(job.name)
@@ -567,8 +676,18 @@ class Runner:
             ).dump()
 
         if not result.is_completed():
-            print(f"ERROR: {ResultInfo.KILLED}")
-            result.add_error(ResultInfo.KILLED).set_status(Result.Status.ERROR).dump()
+            if enable_exit_code_result:
+                status = Result.Status.OK if run_exit_code == 0 else Result.Status.FAIL
+                print(
+                    f"NOTE: Result not finalized by job; synthesizing [{status}] from exit code [{run_exit_code}]"
+                )
+                result.set_status(status)
+                if run_exit_code != 0:
+                    result.set_info(f"Job exited with code [{run_exit_code}]")
+                result.dump()
+            else:
+                print(f"ERROR: {ResultInfo.KILLED}")
+                result.add_error(ResultInfo.KILLED).set_status(Result.Status.ERROR).dump()
 
         if result.is_error() and result.get_on_error_hook():
             print(f"--- Run on_error_hook [{result.get_on_error_hook()}]")
@@ -669,21 +788,11 @@ class Runner:
         if workflow.enable_cidb:
             print("Insert results to CIDB")
             try:
-                url_secret = workflow.get_secret(Settings.SECRET_CI_DB_URL)
-                user_secret = workflow.get_secret(Settings.SECRET_CI_DB_USER)
-                passwd_secret = workflow.get_secret(Settings.SECRET_CI_DB_PASSWORD)
-                assert url_secret and user_secret and passwd_secret
-                # request all secret at once to avoid rate limiting
-                url, user, pwd = (
-                    url_secret.join_with(user_secret)
-                    .join_with(passwd_secret)
-                    .get_value()
+                conn_secret = workflow.get_secret(Settings.SECRET_CI_DB_CONNECTION)
+                assert conn_secret
+                ci_db = CIDB.from_connection_secret(conn_secret.get_value()).insert(
+                    result, result_name_for_cidb=job.result_name_for_cidb
                 )
-                ci_db = CIDB(
-                    url=url,
-                    user=user,
-                    passwd=pwd,
-                ).insert(result, result_name_for_cidb=job.result_name_for_cidb)
             except Exception as ex:
                 traceback.print_exc()
                 error = f"Failed to insert data into CI DB, exception [{ex}]"
@@ -909,8 +1018,69 @@ class Runner:
         workflow,
         job,
         docker="",
-        local_run=False,
-        run_hooks=True,
+        local_job_run=False,
+        local_orchestrator_run=False,
+        no_docker=False,
+        param=None,
+        test="",
+        pr=None,
+        sha=None,
+        branch=None,
+        count=None,
+        debug=False,
+        path="",
+        path_1="",
+        workers=None,
+        timestamp=False,
+    ):
+        """Execute one job — public entry. Tees stdout/stderr to
+        ``Settings.RUN_LOG`` so every engine (GHA, orchestrator) gets the
+        same job log file without having to wire up the redirect itself.
+        """
+        log_dir = os.path.dirname(Settings.RUN_LOG)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
+        log_file = open(Settings.RUN_LOG, "w", buffering=1)
+        try:
+            tee = _TeeStream(
+                original_stdout,
+                log_file,
+                subsequent_indent=_TIMESTAMP_INDENT if timestamp else 0,
+            )
+            sys.stdout = _TimestampedStream(tee) if timestamp else tee
+            sys.stderr = sys.stdout
+            return self._run_one(
+                workflow=workflow,
+                job=job,
+                docker=docker,
+                local_job_run=local_job_run,
+                local_orchestrator_run=local_orchestrator_run,
+                no_docker=no_docker,
+                param=param,
+                test=test,
+                pr=pr,
+                sha=sha,
+                branch=branch,
+                count=count,
+                debug=debug,
+                path=path,
+                path_1=path_1,
+                workers=workers,
+            )
+        finally:
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
+            log_file.close()
+
+    def _run_one(
+        self,
+        workflow,
+        job,
+        docker="",
+        local_job_run=False,
+        local_orchestrator_run=False,
         no_docker=False,
         param=None,
         test="",
@@ -923,23 +1093,45 @@ class Runner:
         path_1="",
         workers=None,
     ):
+        """Execute one job.
+
+        Three modes, controlled by the two ``local_*`` flags:
+
+          * ``local_job_run=True`` — `praktika run` dev sandbox used by
+            project (job) developers. Generates a dummy local environment
+            and runs the job command. Skips hooks, skips pre/post-run
+            scaffolding entirely. Artifact download stays available via
+            the legacy ``--pr/--branch + --sha`` escape hatch.
+          * ``local_orchestrator_run=True`` — orchestrator-dispatched local
+            run for CI developers in this project. Full pipeline against
+            the local-fs S3 backend: pre-run, post-run, hooks, artifact
+            upload/download, the lot.
+          * both False — real CI (GitHub Actions or orchestrator on EC2).
+            Full pipeline.
+
+        The two local flags are mutually exclusive.
+        """
+        assert not (
+            local_job_run and local_orchestrator_run
+        ), "local_job_run and local_orchestrator_run are mutually exclusive"
+
         self._load_local_env()
 
         res = True
+        post_res = True
+        result = None
         setup_env_code = -10
         prerun_code = -10
         run_code = -10
 
-        # When ci/tmp/environment.json already exists the CI engine has pre-populated
-        # the environment before calling Runner.run(); skip the GHA setup_env step.
-        _ci_engine_env = Path(Settings.TEMP_DIR + "/environment.json").is_file()
-
-        if local_run:
+        if local_orchestrator_run:
+            # Orchestrator (CI or local) has already dumped environment.json;
+            # nothing to do here.
+            setup_env_code = 0
+        elif local_job_run:
             self.generate_local_run_environment(
                 workflow, job, pr=pr, sha=sha, branch=branch
             )
-        elif _ci_engine_env:
-            setup_env_code = 0  # environment already ready
         else:
             print(
                 f"\n\n=== Setup env script [{job.name}], workflow [{workflow.name}] ==="
@@ -958,11 +1150,14 @@ class Runner:
                 Info().store_traceback()
             print(f"=== Setup env finished ===\n\n")
 
-        if res and (not local_run or ((pr or branch) and sha)):
+        # Pre-run dumps the running Result and pulls required artifacts from S3.
+        # The dev-sandbox path skips it unless the user passed the legacy
+        # ``--pr/--branch + --sha`` escape hatch to wire up artifact download.
+        if res and (not local_job_run or ((pr or branch) and sha)):
             res = False
             print(f"=== Pre run script [{job.name}], workflow [{workflow.name}] ===")
             try:
-                prerun_code = self._pre_run(workflow, job, local_run=local_run)
+                prerun_code = self._pre_run(workflow, job, local_job_run=local_job_run)
                 res = prerun_code == 0
                 if not res:
                     print(f"ERROR: Pre-run failed with exit code [{prerun_code}]")
@@ -973,7 +1168,7 @@ class Runner:
             print(f"=== Pre run finished ===\n\n")
 
         prehook_result = None
-        if res and run_hooks and job.pre_hooks:
+        if res and not local_job_run and job.pre_hooks:
             print(f"=== Pre-hooks [{job.name}], workflow [{workflow.name}] ===")
             sw_ = Utils.Stopwatch()
             results_ = []
@@ -1020,9 +1215,14 @@ class Runner:
 
             print(f"=== Run script finished ===\n\n")
 
-        if run_hooks:
+        # Post-run wraps up the Result, runs job post_hooks, and uploads
+        # provides=[...] artifacts so downstream jobs can consume them. Only
+        # the dev-sandbox path opts out — orchestrator-local and CI both need
+        # the full hand-off.
+        if not local_job_run:
             result = self._get_result_object(
-                job, setup_env_code, prerun_code, run_code
+                job, setup_env_code, prerun_code, run_code,
+                enable_exit_code_result=workflow.enable_exit_code_result,
             )
 
             if prehook_result:
@@ -1042,15 +1242,11 @@ class Runner:
                 )
                 print(f"=== Post hooks finished ===")
 
-            if not local_run:
-                print(f"=== Post run script [{job.name}], workflow [{workflow.name}] ===")
-                post_res = self._post_run(
-                    result, workflow, job, run_code
-                )
-                res = res and post_res
-                print(f"=== Post run script finished ===")
+            print(f"=== Post run script [{job.name}], workflow [{workflow.name}] ===")
+            post_res = self._post_run(
+                result, workflow, job, run_code
+            )
+            print(f"=== Post run script finished ===")
 
-            result.dump()
-
-        if not res:
+        if not post_res or result is None or not result.is_ok():
             sys.exit(1)

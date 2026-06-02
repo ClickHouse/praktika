@@ -1,10 +1,11 @@
 """Domain entry-point for running a single praktika job on a runner EC2.
 
-``run_job.py`` (baked into EC2 user_data) handles the stable infrastructure
-— SQS poll, clone, GH App token, S3 logs — and then delegates here after
-the PR clone is on disk. Keeping this module in the orchestrator package
-means job-execution policy ships with each PR: tweaking how a job is looked
-up or invoked requires only a plain ``git push``, no LT/ASG redeploy.
+``praktika_bootstrap job_runner`` (installed on EC2 via user_data) handles the stable
+infrastructure — SQS poll, clone, GH App token, S3 logs — and then invokes
+``praktika orchestrate job task.json --ci`` which lands here. Keeping this
+module in the orchestrator package means job-execution policy ships with
+each PR: tweaking how a job is looked up or invoked requires only a plain
+``git push``, no LT/ASG redeploy.
 
 Expected task fields (SQS message body):
 
@@ -79,14 +80,14 @@ def _build_check_output(job_name, rc):
         if len(text) > limit:
             text = text[:limit] + "\n\n_… (truncated)_\n"
         dur = f" in {int(result.duration)}s" if result.duration else ""
-        summary = f"{result.status}{dur}"
+        summary = f"**{result.status}**{dur}"
         return {"title": job_name, "summary": summary, "text": text}
     except Exception as e:
         print(f"  [warn] could not render job Result as MD: {type(e).__name__}: {e}")
         return None
 
 
-def _build_ci_environment(task, job_name=None, job=None):
+def _build_ci_environment(task, job_name=None, job=None, local_run=False):
     """Construct a `_Environment` from our SQS task and dump it to
     ``ci/tmp/environment.json`` so that ``_Environment.get()`` returns it
     instead of falling through to ``from_env()`` (which would produce a
@@ -122,7 +123,7 @@ def _build_ci_environment(task, job_name=None, job=None):
     from ..utils import Shell
 
     repo = task.get("repo", "")
-    pr_number = task.get("pr_number") or -1
+    pr_number = task.get("pr_number") or 0  # set to 0 for non-pr event (push, dispatch, cron)
     sha = task.get("head_sha", "")
 
     base_url = f"https://github.com/{repo}"
@@ -152,6 +153,7 @@ def _build_ci_environment(task, job_name=None, job=None):
     )
 
     job_output = f"{Settings.TEMP_DIR}/job_output"
+    Path(Settings.TEMP_DIR).mkdir(parents=True, exist_ok=True)
     Path(job_output).touch()
 
     jname = job_name or (job.name if job else "")
@@ -170,6 +172,7 @@ def _build_ci_environment(task, job_name=None, job=None):
         "INSTANCE_TYPE": instance_type,
         "INSTANCE_LIFE_CYCLE": instance_life_cycle,
         "TRACEBACKS": [],
+        "LOCAL_RUN": bool(local_run),
     }
 
     carried = task.get("environment")
@@ -211,6 +214,7 @@ def _build_ci_environment(task, job_name=None, job=None):
             # JOB_KV_DATA doesn't need to mirror COMMIT_AUTHORS.
             JOB_KV_DATA={"commit_authors": commit_authors},
             WORKFLOW_CONFIG=None,
+            LOCAL_RUN=bool(local_run),
         )
     env.dump()
     return env
@@ -247,8 +251,11 @@ def run_job(task, gh_token=None, local=False):
     # Pre-populate ci/tmp/environment.json BEFORE calling _get_workflows(), because
     # _get_workflows() triggers Info() -> _Environment.get() and would fall back to
     # the dummy from_env() path if the file doesn't exist yet.
-    if not local:
-        _build_ci_environment(task, job_name=job_name)
+    _build_ci_environment(task, job_name=job_name, local_run=local)
+    # Make sure modules that key off of the env var (e.g. praktika.s3) see local
+    # mode regardless of whether they look at the env var or the dumped env.
+    if local:
+        os.environ["PRAKTIKA_LOCAL_RUN"] = "1"
 
     workflows = _get_workflows(name=workflow_name)
     if not workflows:
@@ -273,11 +280,13 @@ def run_job(task, gh_token=None, local=False):
     # branch only when there's no pr_number (push-triggered workflows).
     pr = task.get("pr_number")
     branch = None if pr else task.get("head_ref")
+    # Orchestrator-dispatched jobs always go through the full pipeline
+    # (pre-run, hooks, post-run, artifact upload) — what differs between
+    # `--ci` and local mode is the S3 backend, not the runner shape.
     kwargs = {
         "workflow": workflow,
         "job": job,
-        "local_run": local,
-        "run_hooks": not local,
+        "local_orchestrator_run": True,
         "docker": task.get("docker", ""),
         "no_docker": task.get("no_docker", False),
         "param": task.get("param"),
@@ -329,19 +338,25 @@ def run_job(task, gh_token=None, local=False):
     # COMMIT_AUTHORS, etc. The orchestrator relays this payload into every
     # subsequent job's task so each runner starts from the same environment
     # GHA would have assembled from step outputs.
-    env_snapshot = _read_env_file() if not local else None
+    env_snapshot = _read_env_file()
 
-    # Report the real result back to the orchestrator so wait() can flip the
-    # job to SUCCESS or FAILURE and advance the DAG.
-    completions_url = task.get("completions_queue_url")
-    if completions_url and not local:
+    # Report the final state to the orchestrator via S3 (phase 2 of the
+    # liveness work): the orchestrator's wait() polls runs/<run_id>/<job>/
+    # final.json and advances the DAG from there. S3 is durable, so a
+    # restart of the orchestrator after this write still picks the result
+    # up. The per-run SQS queue is retained only for the lambda → cancel
+    # path until it moves to S3 in a follow-up.
+    final_bucket = task.get("final_state_s3_bucket", "")
+    final_key = task.get("final_state_s3_key", "")
+    if final_bucket and final_key and not local:
         try:
             import boto3
-            sqs = boto3.client("sqs", region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
+            s3 = boto3.client("s3", region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
             body = {
                 "type": "job_completion",
                 "job_name": task.get("job_name"),
                 "rc": rc,
+                "ts": time.time(),
                 "repo": task.get("repo"),
                 "pr_number": task.get("pr_number"),
                 "head_sha": task.get("head_sha"),
@@ -349,12 +364,17 @@ def run_job(task, gh_token=None, local=False):
             }
             if env_snapshot is not None:
                 body["environment"] = env_snapshot
-            sqs.send_message(QueueUrl=completions_url, MessageBody=json.dumps(body))
+            s3.put_object(
+                Bucket=final_bucket,
+                Key=final_key,
+                Body=json.dumps(body).encode(),
+                ContentType="application/json",
+            )
             print(
-                f"Sent completion: {task.get('job_name')!r} rc={rc}"
-                f"{' +env' if env_snapshot is not None else ''}"
+                f"Wrote final state s3://{final_bucket}/{final_key} "
+                f"rc={rc}{' +env' if env_snapshot is not None else ''}"
             )
         except Exception as e:
-            print(f"  [warn] failed to send completion: {type(e).__name__}: {e}")
+            print(f"  [warn] failed to write final state: {type(e).__name__}: {e}")
 
     return rc

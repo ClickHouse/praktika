@@ -1,8 +1,8 @@
-import dataclasses
 import math
+from pathlib import Path
 from typing import List
 
-from . import Artifact, Job, Workflow
+from . import Job, Workflow
 from .mangle import _get_workflows
 from .parser import WorkflowConfigParser
 from .settings import Settings
@@ -148,13 +148,12 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{{{ env.CHECKOUT_REF }}}}
-{JOB_ADDONS}
       - name: Prepare env script
         run: |
           rm -rf {UNIQUE_WORK_DIRS}
           mkdir -p {UNIQUE_WORK_DIRS}
           cat > {ENV_SETUP_SCRIPT} << 'ENV_SETUP_SCRIPT_EOF'
-          export PYTHONPATH=./ci:.:{PYTHONPATH_EXTRA}
+          export PYTHONPATH=.
 {SETUP_ENVS}
           cat > {WORKFLOW_JOB_FILE} << 'EOF'
           ${{{{ toJson(job) }}}}
@@ -168,10 +167,7 @@ jobs:
         id: run
         run: |
           . {ENV_SETUP_SCRIPT}
-          set -o pipefail
-          PYTHONUNBUFFERED=1 python3 -m praktika run '{JOB_NAME}' --workflow "{WORKFLOW_NAME}" --ci 2>&1 | python3 -u -c 'import sys,datetime
-          prefix=lambda: datetime.datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
-          for line in sys.stdin: sys.stdout.write(prefix() + " " + line); sys.stdout.flush()' | tee {TEMP_DIR}/job.log
+          PYTHONUNBUFFERED=1 python3 -m praktika run '{JOB_NAME}' --workflow "{WORKFLOW_NAME}" --ci --timestamp
 {UPLOADS_GITHUB}\
 """
 
@@ -195,25 +191,9 @@ jobs:
           EOF\
 """
 
-        TEMPLATE_PY_INSTALL = """
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: {PYTHON_VERSION}
-"""
-
-        TEMPLATE_PY_WITH_REQUIREMENTS = """
-      - name: Install dependencies
-        run: |
-          sudo apt-get update && sudo apt install -y python3-pip
-          # TODO: --break-system-packages? otherwise ubuntu's apt/apt-get complains
-          {PYTHON} -m pip install --upgrade pip --break-system-packages
-          {PIP} install -r {REQUIREMENT_PATH} --break-system-packages
-"""
-
         TEMPLATE_GH_UPLOAD = """
       - name: Upload artifact {NAME}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: {NAME}
           path: {PATH}
@@ -221,7 +201,7 @@ jobs:
 
         TEMPLATE_GH_DOWNLOAD = """
       - name: Download artifact {NAME}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: {NAME}
           path: {PATH}
@@ -253,11 +233,15 @@ jobs:
         self.py_workflows = _get_workflows(_file_names_out=files)
         assert self.py_workflows and files
         for workflow_config, workflow_file_name in zip(self.py_workflows, files):
+            if workflow_config.engine != Workflow.Engine.GH_ACTIONS:
+                print(f"Skip workflow [{workflow_config.name}] (engine={workflow_config.engine})")
+                continue
             print(f"Generate workflow [{workflow_config.name}]")
             parser = WorkflowConfigParser(workflow_config).parse()
             yaml_workflow_str = PullRequestPushYamlGen(parser).generate()
-            with open(self._get_workflow_file_name(workflow_file_name), "w") as f:
-                f.write(yaml_workflow_str)
+            out = Path(self._get_workflow_file_name(workflow_file_name))
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(yaml_workflow_str)
 
         Shell.check("git add ./.github/workflows/*.yml")
 
@@ -291,23 +275,6 @@ class PullRequestPushYamlGen:
                 sorted(map(Utils.normalize_string, _all_needs(job.name)))
             )
             job_name = job.name
-            job_addons = []
-            for addon in job.addons:
-                if addon.install_python:
-                    job_addons.append(
-                        YamlGenerator.Templates.TEMPLATE_PY_INSTALL.format(
-                            PYTHON_VERSION=Settings.PYTHON_VERSION
-                        )
-                    )
-                if addon.requirements_txt_path:
-                    job_addons.append(
-                        YamlGenerator.Templates.TEMPLATE_PY_WITH_REQUIREMENTS.format(
-                            PYTHON=Settings.PYTHON_INTERPRETER,
-                            PIP=Settings.PYTHON_PACKET_MANAGER,
-                            PYTHON_VERSION=Settings.PYTHON_VERSION,
-                            REQUIREMENT_PATH=addon.requirements_txt_path,
-                        )
-                    )
             uploads_github = []
             for artifact in job.artifacts_gh_provides:
                 uploads_github.append(
@@ -336,7 +303,7 @@ class PullRequestPushYamlGen:
                     WORKFLOW_CONFIG_JOB_NAME=config_job_name_normalized,
                     JOB_NAME_BASE64=Utils.to_base64(job_name),
                 )
-            if job.run_unless_cancelled:
+            if job.always_run:
                 if_expression = (
                     YamlGenerator.Templates.TEMPLATE_IF_EXPRESSION_NOT_CANCELLED
                 )
@@ -385,18 +352,13 @@ class PullRequestPushYamlGen:
                 WORKFLOW_NAME=self.workflow_config.name,
                 ENV_SETUP_SCRIPT=Settings.ENV_SETUP_SCRIPT,
                 SETUP_ENVS="\n".join(secrets_envs),
-                JOB_ADDONS="".join(job_addons),
                 DOWNLOADS_GITHUB="\n".join(downloads_github),
                 UPLOADS_GITHUB="\n".join(uploads_github),
-                RUN_LOG=Settings.RUN_LOG,
-                PYTHON=Settings.PYTHON_INTERPRETER,
                 WORKFLOW_JOB_FILE=Settings.WORKFLOW_JOB_FILE,
                 WORKFLOW_STATUS_FILE=Settings.WORKFLOW_STATUS_FILE,
-                TEMP_DIR=Settings.TEMP_DIR,
                 UNIQUE_WORK_DIRS=" ".join(
                     {Settings.TEMP_DIR, Settings.INPUT_DIR, Settings.OUTPUT_DIR}
                 ),
-                PYTHONPATH_EXTRA=Settings.PYTHONPATHS,
             )
             job_items.append(job_item)
 
@@ -503,32 +465,6 @@ class PullRequestPushYamlGen:
         return res
 
 
-@dataclasses.dataclass
-class AuxConfig:
-    # defines aux step to install dependencies
-    addon: Job.Requirements
-    # defines aux step(s) to upload GH artifacts
-    uploads_gh: List[Artifact.Config]
-    # defines aux step(s) to download GH artifacts
-    downloads_gh: List[Artifact.Config]
-
-    def get_aux_workflow_name(self):
-        suffix = ""
-        if self.addon.python_requirements_txt:
-            suffix += "_py"
-        for _ in self.uploads_gh:
-            suffix += "_uplgh"
-        for _ in self.downloads_gh:
-            suffix += "_dnlgh"
-        return f"{Settings.WORKFLOW_PATH_PREFIX}/aux_job{suffix}.yml"
-
-    def get_aux_workflow_input(self):
-        res = ""
-        if self.addon.python_requirements_txt:
-            res += f"      requirements_txt: {self.addon.python_requirements_txt}"
-        return res
-
-
 if __name__ == "__main__":
     WFS = [
         Workflow.Config(
@@ -539,9 +475,6 @@ if __name__ == "__main__":
                     name="Hello World",
                     runs_on=["foo"],
                     command="bar",
-                    job_requirements=Job.Requirements(
-                        python_requirements_txt="./requirement.txt"
-                    ),
                 )
             ],
             enable_cache=True,
