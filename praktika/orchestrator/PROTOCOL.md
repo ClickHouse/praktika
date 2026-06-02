@@ -14,7 +14,7 @@ doc_type: reference
 | Component | Runs on | SQS queues |
 |---|---|---|
 | **Lambda** | AWS Lambda | produces → `praktika_clickhouse_workflows`, `praktika-wf-{pr}-{run_id}` |
-| **Orchestrator** | EC2 ASG `praktika-workflow-orchestrator-asg` (×2) | consumes `praktika_clickhouse_workflows`, produces → `praktika-{runner-type}`, owns ↔ `praktika-wf-{pr}-{run_id}` |
+| **Orchestrator** | EC2 ASG `praktika-workflow-orchestrator` (×2) | consumes `praktika_clickhouse_workflows`, produces → `praktika-{runner-type}`, owns ↔ `praktika-wf-{pr}-{run_id}` |
 | **Job runner** | EC2 ASG `praktika-{runner-type}` (e.g. `praktika-arm-2xsmall`) | consumes `praktika-{runner-type}`, produces → `praktika-wf-{pr}-{run_id}` |
 
 ## Queue design {#queue-design}

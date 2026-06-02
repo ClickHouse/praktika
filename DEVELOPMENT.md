@@ -84,14 +84,14 @@ Pick the ASG and unit for the side you're debugging:
 
 | What | ASG | systemd unit |
 |---|---|---|
-| Workflow orchestrator | `praktika-workflow-orchestrator-asg` | `workflow-agent` |
+| Workflow orchestrator | `praktika-workflow-orchestrator` | `workflow-agent` |
 | Runner pool          | `praktika-arm-2xsmall` (or `praktika-amd-2xsmall`) | `job-agent` |
 
 ```bash
 # Pick a side
 ASG=praktika-amd-2xsmall ; UNIT=job-agent
 # or:
-# ASG=praktika-workflow-orchestrator-asg ; UNIT=workflow-agent
+# ASG=praktika-workflow-orchestrator ; UNIT=workflow-agent
 
 INST=$(aws autoscaling describe-auto-scaling-instances \
   --region eu-north-1 --profile Box \

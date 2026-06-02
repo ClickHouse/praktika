@@ -16,7 +16,7 @@ Lambda (ci/praktika/infrastructure/native/lambda_ci_engine.py)
 SQS praktika_clickhouse_workflows
     |
     v
-Orchestrator ASG (praktika-workflow-orchestrator-asg)
+Orchestrator ASG (praktika-workflow-orchestrator)
     user_data -> praktika_bootstrap workflow_orchestrator
         |-- clone the PR head
         |-- install/reuse Praktika venv keyed by source hash

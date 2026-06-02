@@ -63,6 +63,6 @@ def test_cloud_config_prefixes_embedded_pool_resources():
     assert orchestrator is not None
     assert orchestrator.queue.name == "sandbox-praktika-workflows"
     assert orchestrator.launch_template.name == "sandbox-praktika-workflow-orchestrator-lt"
-    assert orchestrator.autoscaling_group.name == "sandbox-praktika-workflow-orchestrator-asg"
+    assert orchestrator.autoscaling_group.name == "sandbox-praktika-workflow-orchestrator"
     assert orchestrator.lambda_config.name == "sandbox-praktika-gh-trigger"
     assert orchestrator.webhook_secret.name == "sandbox-praktika-gh-trigger-webhook-secret"

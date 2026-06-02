@@ -69,9 +69,15 @@ pipeline.
 - API Gateway plus Lambda webhook receiver for inbound Git events
 - CI DB integration for analytics: every job and test result can be streamed to a CI DB, and Praktika can also provision its own native CI DB component (`NativeComponents.CIDBCluster`) or use an existing endpoint via `Settings.SECRET_CI_DB_CONNECTION`
 
+## Known limitations
+
+- Only one workflow is processed at a time per trigger type (`pull_request`,
+  `push`). If multiple workflows match the same trigger, the current
+  orchestrator processes them sequentially in the same orchestrator run rather
+  than in parallel.
+
 ## Roadmap
 **Blockers**
-- Cloud resource namespacing
 - Approve and Run alternative for forks in OSS
 
 **Execution engine**
@@ -86,13 +92,6 @@ pipeline.
   table the webhook lambda consumes, so the lambda knows which branches to
   accept, which schedules to fire, and which events to drop without each
   workflow encoding that in the lambda by hand
-- **Cloud resource namespacing** — support sharing one cloud account across
-  multiple projects and one infra repo across multiple target projects by
-  prefixing all provisioned resource names with a project namespace taken
-  from `Cloud.Config.name`, so resources from different projects don't
-  collide and a single infra setup can serve many target repos
-
-
 **Observability**
 - **Log export for orchestrator and runners** — live tail and persisted
   archive, accessible without SSM

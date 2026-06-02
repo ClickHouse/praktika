@@ -177,7 +177,7 @@ class OrchestratorPool:
             role_name=self.ec2_role_name,
         )
         queue_name = "praktika-workflows"
-        asg_name = "praktika-workflow-orchestrator-asg"
+        asg_name = "praktika-workflow-orchestrator"
         runtime_tags = {
             "praktika_pool": self.name,
             "praktika_queue": queue_name,

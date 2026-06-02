@@ -3,7 +3,7 @@ from praktika.infrastructure.autoscaling_group import AutoScalingGroup
 
 def test_asg_deploy_skips_update_when_config_and_tags_match(monkeypatch):
     config = AutoScalingGroup.Config(
-        name="praktika-workflow-orchestrator-asg",
+        name="praktika-workflow-orchestrator",
         region="eu-north-1",
         vpc_name="praktika-ci",
         subnet_ids=["subnet-1"],
@@ -30,7 +30,7 @@ def test_asg_deploy_skips_update_when_config_and_tags_match(monkeypatch):
                     "version": "29",
                 },
                 "tags": {
-                    "praktika_rn": "praktika-workflow-orchestrator-asg",
+                    "praktika_rn": "praktika-workflow-orchestrator",
                     "praktika_resource_tag": "workflow_orchestrator",
                 },
             }
