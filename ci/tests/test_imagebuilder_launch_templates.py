@@ -73,6 +73,7 @@ def test_image_builder_distribution_includes_launch_templates(monkeypatch):
         region="eu-north-1",
         distribution_configuration_name="praktika-orchestrator-dist",
         ami_name="praktika-orchestrator-{{ imagebuilder:buildDate }}",
+        ami_launch_permission={"userGroups": ["all"]},
         regions=["eu-north-1"],
     )
 
@@ -114,6 +115,9 @@ def test_image_builder_distribution_includes_launch_templates(monkeypatch):
             "setDefaultVersion": True,
         }
     ]
+    assert captured["distributions"][0]["amiDistributionConfiguration"][
+        "launchPermission"
+    ] == {"userGroups": ["all"]}
 
 
 def test_image_builder_pipeline_update_is_skipped_when_unchanged(monkeypatch):
@@ -163,3 +167,41 @@ def test_image_builder_pipeline_update_is_skipped_when_unchanged(monkeypatch):
 
     assert arn == "arn:image-pipeline:praktika-orchestrator-arm64-imagebuilder-pipeline"
     assert update_called["value"] is False
+
+
+def test_image_builder_reuses_existing_inline_component_when_create_conflicts(
+    monkeypatch,
+):
+    builder = ImageBuilder.Config(
+        name="base-runner-x86_64-image",
+        region="eu-north-1",
+        inline_components=[
+            {
+                "name": "praktika-base-runner-runtime",
+                "version": "1.0.0",
+                "platform": "Linux",
+                "commands": ["echo hello"],
+            }
+        ],
+    )
+
+    class _Client:
+        def list_components(self, **req):
+            return {"componentVersionList": []}
+
+        def create_component(self, **req):
+            class ResourceAlreadyExistsException(Exception):
+                pass
+
+            raise ResourceAlreadyExistsException()
+
+    monkeypatch.setattr(builder, "_client", lambda: _Client())
+    monkeypatch.setattr(
+        builder,
+        "_imagebuilder_arn",
+        lambda resource_type, name: f"arn:{resource_type}:{name}",
+    )
+
+    arns = builder._ensure_inline_components()
+
+    assert arns == ["arn:component:praktika-base-runner-runtime/1.0.0/1"]

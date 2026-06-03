@@ -12,7 +12,7 @@ praktika gives you:
   time, not in a half-finished CI run.
 - **Declarative infrastructure.** RunnerPools, an Orchestrator pool, S3 buckets
   for artifacts/reports, SQS queues for sync, SSM/Secrets Manager bindings —
-  all defined in a single `ci/infra/cloud.py` and brought up with
+  all defined in a single `ci/infrastructure/projects.py` and brought up with
   `python -m praktika infrastructure --deploy`.
 - **Standalone-first execution model.** Praktika is designed to run its own CI
   control plane on cloud infrastructure: the orchestrator polls workflow
@@ -106,5 +106,5 @@ pipeline.
 
 **Project ergonomics**
 - **`praktika init`** — scaffold a new project with a starter
-  `ci/workflows/` and `ci/infra/cloud.py` so adopters do not have to copy
+  `ci/workflows/` and `ci/infrastructure/projects.py` so adopters do not have to copy
   them by hand

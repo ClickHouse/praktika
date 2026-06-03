@@ -1,6 +1,7 @@
 import argparse
 import sys
 
+from .project_init import run_init_interactive
 from .utils import Utils
 from .validator import Validator
 from .yaml_generator import YamlGenerator
@@ -10,13 +11,13 @@ def create_parser():
     parser = argparse.ArgumentParser(
         prog="praktika",
         description=(
-            "Praktika CLI: run CI jobs locally or in CI, generate YAML workflows"
+            "Praktika is a self-hosted CI system for defining pipelines and infrastructure in Python."
         ),
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Available subcommands")
 
-    run_parser = subparsers.add_parser("run", help="Run a CI job")
+    run_parser = subparsers.add_parser("run", help="Run a job")
     run_parser.add_argument(
         "job",
         help="Name of the job to run",
@@ -143,40 +144,13 @@ def create_parser():
         default=False,
     )
 
-    _yaml_parser = subparsers.add_parser("yaml", help="Generate YAML workflows")
-
-    orch_parser = subparsers.add_parser(
-        "orchestrate", help="Run a workflow or a single job"
+    subparsers.add_parser(
+        "init",
+        help="Initialize Praktika CI for a new project",
     )
-    orch_sub = orch_parser.add_subparsers(dest="orch_command")
-
-    wf_parser = orch_sub.add_parser(
-        "workflow", help="Orchestrate all matching workflows for a trigger event"
-    )
-    wf_parser.add_argument(
-        "event_file", nargs="?", default=None,
-        help="Path to trigger event JSON (auto-generated from git if omitted)",
-    )
-    wf_parser.add_argument("--event-type", default="pull_request",
-        choices=["pull_request", "push"])
-    wf_parser.add_argument("--repo", default=None)
-    wf_parser.add_argument("--head-sha", default=None)
-    wf_parser.add_argument("--head-ref", default=None)
-    wf_parser.add_argument("--base-ref", default="main")
-    wf_parser.add_argument("--pr-number", default=None, type=int)
-    wf_parser.add_argument("--sender", default=None)
-    wf_parser.add_argument("--ci", action="store_true", default=False,
-        help="CI mode: authenticate to GitHub and post check runs")
-
-    job_parser = orch_sub.add_parser(
-        "job", help="Run a single job from a task JSON"
-    )
-    job_parser.add_argument("task_file", help="Path to task JSON file")
-    job_parser.add_argument("--ci", action="store_true", default=False,
-        help="CI mode: authenticate to GitHub and post check run updates")
 
     _infra_parser = subparsers.add_parser(
-        "infrastructure", help="Manage cloud infrastructure and HTML reports"
+        "infrastructure", help="Manage CI infrastructure components"
     )
     _infra_parser.add_argument(
         "--deploy",
@@ -215,7 +189,7 @@ def create_parser():
     )
     _infra_parser.add_argument(
         "--project",
-        help="Infrastructure project name from ci/infra/cloud.py PROJECTS",
+        help="Infrastructure project name from ci/infrastructure/projects.py PROJECTS",
         type=str,
         default="",
     )
@@ -225,15 +199,52 @@ def create_parser():
         action="store_true",
         default=False,
     )
+
+    orch_parser = subparsers.add_parser(
+        "orchestrate", help="Run local workflow orchestration"
+    )
+    orch_sub = orch_parser.add_subparsers(dest="orch_command")
+
+    wf_parser = orch_sub.add_parser(
+        "workflow", help="Orchestrate all matching workflows for a trigger event"
+    )
+    wf_parser.add_argument(
+        "event_file", nargs="?", default=None,
+        help="Path to trigger event JSON (auto-generated from git if omitted)",
+    )
+    wf_parser.add_argument("--event-type", default="pull_request",
+        choices=["pull_request", "push"])
+    wf_parser.add_argument("--repo", default=None)
+    wf_parser.add_argument("--head-sha", default=None)
+    wf_parser.add_argument("--head-ref", default=None)
+    wf_parser.add_argument("--base-ref", default="main")
+    wf_parser.add_argument("--pr-number", default=None, type=int)
+    wf_parser.add_argument("--sender", default=None)
+    wf_parser.add_argument("--ci", action="store_true", default=False,
+        help="CI mode: authenticate to GitHub and post check runs")
+
+    job_parser = orch_sub.add_parser(
+        "job", help="Run a single job from a task JSON"
+    )
+    job_parser.add_argument("task_file", help="Path to task JSON file")
+    job_parser.add_argument("--ci", action="store_true", default=False,
+        help="CI mode: authenticate to GitHub and post check run updates")
+
+    subparsers.add_parser(
+        "yaml",
+        help="Generate YAML for GitHub Actions-based Praktika pipelines",
+    )
     return parser
 
 
-def main():
+def main(argv=None):
     sys.path.append(".")
     parser = create_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    if args.command == "yaml":
+    if args.command == "init":
+        run_init_interactive()
+    elif args.command == "yaml":
         Validator().validate()
         YamlGenerator().generate()
     elif args.command == "infrastructure":

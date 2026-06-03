@@ -67,7 +67,7 @@ class CloudInfrastructure:
 
         def _clone_owned_configs(self):
             # Cloud configs are often composed from module-level shared objects
-            # in ci/infra/cloud.py. Namespace application mutates names deeply,
+            # in ci/infrastructure/projects.py. Namespace application mutates names deeply,
             # so we must detach from those shared objects first; otherwise one
             # project would rewrite another project's config in place.
             cloned = copy.deepcopy(
@@ -149,7 +149,7 @@ class CloudInfrastructure:
                 replacements[old] = new
 
         def _apply_project_namespace(self):
-            # Centralize namespacing here instead of forcing ci/infra/cloud.py
+            # Centralize namespacing here instead of forcing ci/infrastructure/projects.py
             # to hand-prefix every queue, LT, IAM role, lambda, bucket, etc.
             #
             # This keeps project configs declarative and makes "one config vs
@@ -326,12 +326,42 @@ class CloudInfrastructure:
                 old_lt = pool.launch_template.name
                 pool.launch_template.name = self._prefixed(pool.launch_template.name)
                 self._record_rename(replacements, old_lt, pool.launch_template.name)
+                if getattr(pool.launch_template, "vpc_name", ""):
+                    old_lt_vpc = pool.launch_template.vpc_name
+                    pool.launch_template.vpc_name = self._prefixed(
+                        pool.launch_template.vpc_name
+                    )
+                    self._record_rename(
+                        replacements, old_lt_vpc, pool.launch_template.vpc_name
+                    )
+                if getattr(pool.launch_template, "iam_instance_profile_name", ""):
+                    old_lt_profile = pool.launch_template.iam_instance_profile_name
+                    pool.launch_template.iam_instance_profile_name = self._prefixed(
+                        pool.launch_template.iam_instance_profile_name
+                    )
+                    self._record_rename(
+                        replacements,
+                        old_lt_profile,
+                        pool.launch_template.iam_instance_profile_name,
+                    )
+                pool.launch_template.security_group_names = [
+                    self._prefixed(name)
+                    for name in pool.launch_template.security_group_names
+                ]
                 old_queue = pool.queue.name
                 pool.queue.name = self._prefixed(pool.queue.name)
                 self._record_rename(replacements, old_queue, pool.queue.name)
                 old_asg = pool.autoscaling_group.name
                 pool.autoscaling_group.name = self._prefixed(pool.autoscaling_group.name)
                 self._record_rename(replacements, old_asg, pool.autoscaling_group.name)
+                if getattr(pool.autoscaling_group, "vpc_name", ""):
+                    old_asg_vpc = pool.autoscaling_group.vpc_name
+                    pool.autoscaling_group.vpc_name = self._prefixed(
+                        pool.autoscaling_group.vpc_name
+                    )
+                    self._record_rename(
+                        replacements, old_asg_vpc, pool.autoscaling_group.vpc_name
+                    )
                 old_lt_ref = pool.autoscaling_group.launch_template_name
                 pool.autoscaling_group.launch_template_name = self._prefixed(pool.autoscaling_group.launch_template_name)
                 self._record_rename(replacements, old_lt_ref, pool.autoscaling_group.launch_template_name)
@@ -363,12 +393,42 @@ class CloudInfrastructure:
                 old_lt = pool.launch_template.name
                 pool.launch_template.name = self._prefixed(pool.launch_template.name)
                 self._record_rename(replacements, old_lt, pool.launch_template.name)
+                if getattr(pool.launch_template, "vpc_name", ""):
+                    old_lt_vpc = pool.launch_template.vpc_name
+                    pool.launch_template.vpc_name = self._prefixed(
+                        pool.launch_template.vpc_name
+                    )
+                    self._record_rename(
+                        replacements, old_lt_vpc, pool.launch_template.vpc_name
+                    )
+                if getattr(pool.launch_template, "iam_instance_profile_name", ""):
+                    old_lt_profile = pool.launch_template.iam_instance_profile_name
+                    pool.launch_template.iam_instance_profile_name = self._prefixed(
+                        pool.launch_template.iam_instance_profile_name
+                    )
+                    self._record_rename(
+                        replacements,
+                        old_lt_profile,
+                        pool.launch_template.iam_instance_profile_name,
+                    )
+                pool.launch_template.security_group_names = [
+                    self._prefixed(name)
+                    for name in pool.launch_template.security_group_names
+                ]
                 old_queue = pool.queue.name
                 pool.queue.name = self._prefixed(pool.queue.name)
                 self._record_rename(replacements, old_queue, pool.queue.name)
                 old_asg = pool.autoscaling_group.name
                 pool.autoscaling_group.name = self._prefixed(pool.autoscaling_group.name)
                 self._record_rename(replacements, old_asg, pool.autoscaling_group.name)
+                if getattr(pool.autoscaling_group, "vpc_name", ""):
+                    old_asg_vpc = pool.autoscaling_group.vpc_name
+                    pool.autoscaling_group.vpc_name = self._prefixed(
+                        pool.autoscaling_group.vpc_name
+                    )
+                    self._record_rename(
+                        replacements, old_asg_vpc, pool.autoscaling_group.vpc_name
+                    )
                 old_lt_ref = pool.autoscaling_group.launch_template_name
                 pool.autoscaling_group.launch_template_name = self._prefixed(pool.autoscaling_group.launch_template_name)
                 self._record_rename(replacements, old_lt_ref, pool.autoscaling_group.launch_template_name)

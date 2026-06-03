@@ -1,13 +1,13 @@
 # praktika.infrastructure
 
 Declarative AWS infrastructure for praktika CI: VPCs, S3, runner / orchestrator
-pools, and the HTML report page — all defined in `ci/infra/cloud.py` and
+pools, and the HTML report page — all defined in `ci/infrastructure/projects.py` and
 brought up with one command.
 
 ## Typical commands
 
 ```bash
-# Deploy (or update) all components defined in ci/infra/cloud.py
+# Deploy (or update) all components defined in ci/infrastructure/projects.py
 python3 -m praktika infrastructure --deploy
 
 # Deploy only specific component types
@@ -22,7 +22,7 @@ python3 -m praktika infrastructure --restart-instances
 python3 -m praktika infrastructure --destroy-runtime
 ```
 
-## Config components (used in `ci/infra/cloud.py`)
+## Config components (used in `ci/infrastructure/projects.py`)
 
 - **`CloudInfrastructure.Config`** — top-level container; aggregates all
   components below into a single deployable unit.
@@ -46,7 +46,8 @@ python3 -m praktika infrastructure --destroy-runtime
 - **`ImageBuilder.Config`** — AMI build pipelines. Supports ordinary
   Image Builder components plus `prebuilt_venvs`, which bake named Python
   virtualenvs under `/opt/praktika/base-venvs/<name>` for later selection
-  via `Settings.PRAKTIKA_BASE_VENV`.
+  via `Settings.PRAKTIKA_BASE_VENV`. Use `ami_launch_permission`, for
+  example `{"userGroups": ["all"]}`, to publish built AMIs publicly.
 
 ## TODO
 

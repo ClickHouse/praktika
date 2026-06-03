@@ -10,6 +10,8 @@ from praktika.infrastructure.native.configs import (
 CI_VPC_NAME = "praktika-ci"
 CI_REGION = "eu-north-1"
 _HERE = Path(__file__).parent
+_PRAKTIKA_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1-py3-none-any.whl"
+_PRAKTIKA_BOOTSTRAP_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_bootstrap-0.1.0-py3-none-any.whl"
 
 
 def _orchestrator_user_data() -> str:
@@ -55,16 +57,47 @@ def _runner_tools_component(name: str):
         "name": name,
         "version": "1.0.1",
         "platform": "Linux",
-        "description": "Install runner OS-level tools like Docker and Copilot CLI",
+        "description": "Install runner OS-level tools like Docker",
         "commands": [
             "dnf install -y docker",
             "mkdir -p /etc/docker",
             "printf '%s\n' '{' '  \"log-driver\": \"json-file\",' '  \"log-opts\": {' '    \"max-file\": \"5\",' '    \"max-size\": \"1000m\"' '  }' '}' > /etc/docker/daemon.json",
             "usermod -aG docker ec2-user || true",
             "systemctl enable docker || true",
-            "curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -",
-            "dnf install -y nodejs",
-            "npm install -g @github/copilot",
+        ],
+    }
+
+
+def _runner_runtime_component(name: str):
+    return {
+        "name": name,
+        "version": "1.0.0",
+        "platform": "Linux",
+        "description": "Install Praktika bootstrap and runner runtime dependencies into the image",
+        "commands": [
+            "mkdir -p /opt/praktika /opt/praktika/work /opt/praktika/wheelhouse",
+            "python3.12 -m pip install boto3 pyjwt cryptography requests",
+            "python3.12 -m pip download --dest /opt/praktika/wheelhouse pip setuptools wheel boto3 pyjwt cryptography requests pytest",
+            f"python3.12 -m pip download --dest /opt/praktika/wheelhouse {_PRAKTIKA_WHL}",
+            f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_BOOTSTRAP_WHL} --break-system-packages",
+            "ln -sf /usr/bin/python3.12 /usr/local/bin/python3",
+        ],
+    }
+
+
+def _runner_agent_component(name: str):
+    return {
+        "name": name,
+        "version": "1.0.0",
+        "platform": "Linux",
+        "description": "Bake the Praktika job-agent service into the image",
+        "commands": [
+            "mkdir -p /etc/praktika",
+            "printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' '' 'TOKEN=$(curl -fsS -X PUT \"http://169.254.169.254/latest/api/token\" -H \"X-aws-ec2-metadata-token-ttl-seconds: 60\")' 'REGION=${AWS_DEFAULT_REGION:-$(curl -fsS -H \"X-aws-ec2-metadata-token: $TOKEN\" http://169.254.169.254/latest/meta-data/placement/region)}' 'INSTANCE_ID=${INSTANCE_ID:-$(curl -fsS -H \"X-aws-ec2-metadata-token: $TOKEN\" http://169.254.169.254/latest/meta-data/instance-id)}' 'RUNNER_QUEUE_NAME=${RUNNER_QUEUE_NAME:-$(curl -fsS -H \"X-aws-ec2-metadata-token: $TOKEN\" http://169.254.169.254/latest/meta-data/tags/instance/praktika_queue || true)}' 'if [ -z \"$RUNNER_QUEUE_NAME\" ]; then' '  echo \"RUNNER_QUEUE_NAME is not set and instance tag praktika_queue is unavailable\" >&2' '  exit 1' 'fi' 'export HOME=/root' 'export AWS_DEFAULT_REGION=\"$REGION\"' 'export INSTANCE_ID=\"$INSTANCE_ID\"' 'export RUNNER_QUEUE_NAME' 'export PRAKTIKA_WHEELHOUSE=/opt/praktika/wheelhouse' 'exec /usr/local/bin/praktika_bootstrap job_runner' > /usr/local/bin/praktika-job-agent-start",
+            "chmod 0755 /usr/local/bin/praktika-job-agent-start",
+            "printf '%s\n' '[Unit]' 'Description=Praktika Job Agent' 'After=network.target docker.service' '' '[Service]' 'Type=simple' 'Environment=HOME=/root' 'Environment=PRAKTIKA_WHEELHOUSE=/opt/praktika/wheelhouse' 'EnvironmentFile=-/etc/praktika/job-agent.env' 'ExecStart=/usr/local/bin/praktika-job-agent-start' 'Restart=always' 'RestartSec=5' '' '[Install]' 'WantedBy=multi-user.target' > /etc/systemd/system/job-agent.service",
+            "systemctl daemon-reload",
+            "systemctl enable job-agent",
         ],
     }
 
@@ -110,6 +143,28 @@ def _runner_prebuilt_venvs():
     ]
 
 
+def _public_base_runner_prebuilt_venvs():
+    return [
+        ImageBuilder.PrebuiltVenv(
+            name="praktika-runner-pytest",
+            packages=[
+                "pip",
+                "setuptools",
+                "wheel",
+                "boto3",
+                "PyJWT",
+                "cryptography",
+                "requests",
+                "pytest>=7.0.0",
+                _PRAKTIKA_WHL,
+            ],
+            description=(
+                "Runner Python base venv with pytest, Praktika runtime deps, and the published Praktika wheel"
+            ),
+        ),
+    ]
+
+
 def _image_builders():
     return [
         ImageBuilder.Config(
@@ -131,6 +186,7 @@ def _image_builders():
             distribution_configuration_name="praktika-runner-arm64-imagebuilder-dist",
             ami_name="praktika-runner-arm64-{{ imagebuilder:buildDate }}",
             ami_tags={"praktika_resource_tag": "runner", "arch": "arm64"},
+            ami_launch_permission={"userGroups": ["all"]},
             regions=[CI_REGION],
             image_pipeline_name="praktika-runner-arm64-imagebuilder-pipeline",
         ),
@@ -153,6 +209,7 @@ def _image_builders():
             distribution_configuration_name="praktika-runner-x86_64-imagebuilder-dist",
             ami_name="praktika-runner-x86_64-{{ imagebuilder:buildDate }}",
             ami_tags={"praktika_resource_tag": "runner", "arch": "x86_64"},
+            ami_launch_permission={"userGroups": ["all"]},
             regions=[CI_REGION],
             image_pipeline_name="praktika-runner-x86_64-imagebuilder-pipeline",
         ),
@@ -174,8 +231,59 @@ def _image_builders():
             distribution_configuration_name="praktika-orchestrator-arm64-imagebuilder-dist",
             ami_name="praktika-orchestrator-arm64-{{ imagebuilder:buildDate }}",
             ami_tags={"praktika_resource_tag": "workflow_orchestrator", "arch": "arm64"},
+            ami_launch_permission={"userGroups": ["all"]},
             regions=[CI_REGION],
             image_pipeline_name="praktika-orchestrator-arm64-imagebuilder-pipeline",
+        ),
+        ImageBuilder.Config(
+            name="praktika-base-runner-arm64-image",
+            region=CI_REGION,
+            image_recipe_name="praktika-base-runner-arm64-image-recipe",
+            image_recipe_version="1.0.0",
+            inline_components=[
+                _common_linux_component("praktika-base-runner-common-linux"),
+                _gh_cli_component("praktika-base-runner-gh-cli"),
+                _runner_tools_component("praktika-base-runner-tools"),
+                _runner_runtime_component("praktika-base-runner-runtime"),
+                _runner_agent_component("praktika-base-runner-agent"),
+            ],
+            prebuilt_venvs=_public_base_runner_prebuilt_venvs(),
+            infrastructure_configuration_name="praktika-base-runner-arm64-imagebuilder-infra",
+            instance_profile_name=RUNNER_INSTANCE_PROFILE_NAME,
+            instance_types=["t4g.small"],
+            vpc_name=CI_VPC_NAME,
+            security_group_names=[f"{CI_VPC_NAME}-sg"],
+            distribution_configuration_name="praktika-base-runner-arm64-imagebuilder-dist",
+            ami_name="praktika-base-runner-arm64-{{ imagebuilder:buildDate }}",
+            ami_tags={"praktika_resource_tag": "base_runner", "arch": "arm64"},
+            ami_launch_permission={"userGroups": ["all"]},
+            regions=[CI_REGION],
+            image_pipeline_name="praktika-base-runner-arm64-imagebuilder-pipeline",
+        ),
+        ImageBuilder.Config(
+            name="praktika-base-runner-x86_64-image",
+            region=CI_REGION,
+            image_recipe_name="praktika-base-runner-x86_64-image-recipe",
+            image_recipe_version="1.0.0",
+            inline_components=[
+                _common_linux_component("praktika-base-runner-common-linux"),
+                _gh_cli_component("praktika-base-runner-gh-cli"),
+                _runner_tools_component("praktika-base-runner-tools"),
+                _runner_runtime_component("praktika-base-runner-runtime"),
+                _runner_agent_component("praktika-base-runner-agent"),
+            ],
+            prebuilt_venvs=_public_base_runner_prebuilt_venvs(),
+            infrastructure_configuration_name="praktika-base-runner-x86_64-imagebuilder-infra",
+            instance_profile_name=RUNNER_INSTANCE_PROFILE_NAME,
+            instance_types=["t3.small"],
+            vpc_name=CI_VPC_NAME,
+            security_group_names=[f"{CI_VPC_NAME}-sg"],
+            distribution_configuration_name="praktika-base-runner-x86_64-imagebuilder-dist",
+            ami_name="praktika-base-runner-x86_64-{{ imagebuilder:buildDate }}",
+            ami_tags={"praktika_resource_tag": "base_runner", "arch": "x86_64"},
+            ami_launch_permission={"userGroups": ["all"]},
+            regions=[CI_REGION],
+            image_pipeline_name="praktika-base-runner-x86_64-imagebuilder-pipeline",
         ),
     ]
 

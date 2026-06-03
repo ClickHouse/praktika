@@ -123,7 +123,7 @@ class _Settings:
     ######################################
     #        Infrastructure Settings     #
     ######################################
-    CLOUD_INFRASTRUCTURE_CONFIG_PATH: str = ""
+    CLOUD_INFRASTRUCTURE_CONFIG_PATH: str = "./ci/infrastructure/projects.py"
     AWS_REGION: str = ""
     AWS_ACCOUNT_ID: str = ""
     AWS_PROFILE: str = ""

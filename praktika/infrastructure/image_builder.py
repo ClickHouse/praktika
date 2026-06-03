@@ -47,6 +47,7 @@ class ImageBuilder:
         distribution_configuration_name: str = ""
         ami_name: str = ""
         ami_tags: Dict[str, str] = field(default_factory=dict)
+        ami_launch_permission: Dict[str, Any] = field(default_factory=dict)
         regions: List[str] = field(default_factory=list)
         launch_templates: List["LaunchTemplate.Config"] = field(default_factory=list)
         set_launch_template_default_version: bool = True
@@ -232,15 +233,31 @@ class ImageBuilder:
                 if description:
                     req["description"] = description
 
-                resp = client.create_component(**req)
-                arn = resp.get("componentBuildVersionArn", "")
-                if not arn:
-                    raise Exception(
-                        f"Failed to create Image Builder component '{name}:{version}'"
-                    )
+                arn = self._create_component_or_get_existing(req)
                 created_arns.append(arn)
 
             return created_arns
+
+        def _create_component_or_get_existing(self, component_req: Dict[str, Any]) -> str:
+            client = self._client()
+            try:
+                resp = client.create_component(**component_req)
+                arn = resp.get("componentBuildVersionArn", "")
+                if not arn:
+                    raise Exception("Failed to create Image Builder component")
+                return arn
+            except Exception as e:
+                if e.__class__.__name__ != "ResourceAlreadyExistsException":
+                    raise
+
+                name = component_req.get("name", "")
+                version = component_req.get("semanticVersion") or component_req.get(
+                    "version"
+                )
+                if not name or not version:
+                    raise
+
+                return self._imagebuilder_arn("component", name) + f"/{version}/1"
 
         def _find_arn_by_name(self, list_op: str, name_key: str, name: str) -> str:
             client = self._client()
@@ -575,6 +592,10 @@ class ImageBuilder:
                         "amiTags": dict(self.ami_tags or {}),
                     },
                 }
+                if self.ami_launch_permission:
+                    distribution["amiDistributionConfiguration"][
+                        "launchPermission"
+                    ] = dict(self.ami_launch_permission)
                 if launch_template_configurations:
                     distribution["launchTemplateConfigurations"] = list(
                         launch_template_configurations

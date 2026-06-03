@@ -8,7 +8,7 @@ AWS_REGION = "eu-north-1"
 AWS_ACCOUNT_ID = "420943511422"
 AWS_PROFILE = "Box"
 #TODO: make it default
-CLOUD_INFRASTRUCTURE_CONFIG_PATH = "./ci/infra/cloud.py"
+CLOUD_INFRASTRUCTURE_CONFIG_PATH = "./ci/infrastructure/projects.py"
 #TODO: rename variable to *_BUCKET
 S3_ARTIFACT_PATH = "praktika-artifacts-eu-north-1"
 S3_REPORT_BUCKET = S3_ARTIFACT_PATH

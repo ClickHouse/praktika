@@ -3,55 +3,43 @@
 Notes for working on praktika itself (the Python package), not for adopting it
 to drive your own CI.
 
-## Publish the praktika package to S3
+## Build and publish `praktika` / `praktika_bootstrap`
 
-Orchestrators and runners install praktika from S3 at boot and before each run
-— so any change to the package needs to be built and re-uploaded before
-instances pick it up. The bucket and key are fixed: instances fetch from this
-exact URL, baked into the runner / orchestrator user-data scripts.
+Runners, orchestrators, and AMI builds install both wheels from fixed S3 keys,
+so after changing either package you need to rebuild it and overwrite the
+matching object in `s3://praktika-artifacts-eu-north-1/packages/`.
+
+Create one local build env and reuse it for both packages:
 
 ```bash
-# Build
-python3 -m pip install build --quiet
-python3 -m build --wheel --outdir dist/
-
-# Upload
-aws s3 cp dist/praktika-0.1-py3-none-any.whl \
-  s3://praktika-artifacts-eu-north-1/packages/praktika-0.1-py3-none-any.whl \
-  --profile Box
-
-# Optionally, refresh the local install from the same URL
-pip install --force-reinstall \
-  "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1-py3-none-any.whl" \
-  --break-system-packages
+python3.12 -m venv .build-venv
+.build-venv/bin/python -m pip install setuptools wheel build
 ```
 
-## Publish the praktika_bootstrap package to S3
-
-Orchestrators and runners also install the thin bootstrap launcher from S3 at
-boot. The user-data scripts fetch this exact wheel:
-
-`s3://praktika-artifacts-eu-north-1/packages/praktika_bootstrap-0.1.0-py3-none-any.whl`
-
-Build and upload it from the repo root:
+Build and upload `praktika`:
 
 ```bash
-# Create an isolated build env once
-python3.12 -m venv .bootstrap-build-venv
+.build-venv/bin/python -m build --wheel --no-isolation --outdir dist/
+aws --profile Box s3 cp \
+  dist/praktika-0.1-py3-none-any.whl \
+  s3://praktika-artifacts-eu-north-1/packages/praktika-0.1-py3-none-any.whl
+```
 
-# Install build deps
-.bootstrap-build-venv/bin/python -m pip install setuptools wheel build
+Build and upload `praktika_bootstrap`:
 
-# Build the wheel into bootstrap/dist/
-.bootstrap-build-venv/bin/python -m build \
-  --wheel \
-  --outdir bootstrap/dist \
-  bootstrap
-
-# Upload with the profile used for Praktika infra
+```bash
+.build-venv/bin/python -m build --wheel --no-isolation --outdir bootstrap/dist bootstrap
 aws --profile Box s3 cp \
   bootstrap/dist/praktika_bootstrap-0.1.0-py3-none-any.whl \
   s3://praktika-artifacts-eu-north-1/packages/praktika_bootstrap-0.1.0-py3-none-any.whl
+```
+
+Optionally, refresh the local install of `praktika` from the same S3 URL:
+
+```bash
+pip install --force-reinstall \
+  "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1-py3-none-any.whl" \
+  --break-system-packages
 ```
 
 If you change the bootstrap package version, update the wheel name in both:

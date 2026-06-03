@@ -45,11 +45,11 @@ python3 -m praktika infrastructure --deploy
 ```
 
 This will:
-- Create the SSM secret `praktika_gh_trigger_webhook_secret` (auto-generated, written to `ci/infra/praktika_gh_trigger_webhook_secret.secret`)
+- Create the SSM secret `praktika_gh_trigger_webhook_secret` (auto-generated, written to `ci/infrastructure/praktika_gh_trigger_webhook_secret.secret`)
 - Create the IAM role `praktika-gh-trigger-role` with `AWSLambdaBasicExecutionRole` and SQS send permissions
 - Create the SQS queue `praktika-workflows` (workflow trigger inbox)
 - Deploy the `praktika-gh-trigger` Lambda (GitHub webhook receiver)
-- Create the API Gateway endpoint — URL is written to `ci/infra/praktika-gh-trigger_api_gateway.txt`
+- Create the API Gateway endpoint — URL is written to `ci/infrastructure/praktika-gh-trigger_api_gateway.txt`
 - Create the workflow orchestrator Launch Template and Auto Scaling Group
 - Create runner pool Launch Template, Auto Scaling Group, and SQS queue
 
@@ -59,9 +59,9 @@ In your GitHub repository or organization go to **Settings → Webhooks → Add 
 
 | Field | Value |
 |---|---|
-| Payload URL | URL from `ci/infra/praktika-gh-trigger_api_gateway.txt` |
+| Payload URL | URL from `ci/infrastructure/praktika-gh-trigger_api_gateway.txt` |
 | Content type | `application/json` |
-| Secret | Value from `ci/infra/praktika_gh_trigger_webhook_secret.secret` |
+| Secret | Value from `ci/infrastructure/praktika_gh_trigger_webhook_secret.secret` |
 | SSL verification | Enabled |
 
 **Events to enable** (select individual events):

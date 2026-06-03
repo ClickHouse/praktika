@@ -107,7 +107,7 @@ Praktika runtime selection is split between three layers:
 
 | Layer | Component | What it owns |
 |---|---|---|
-| **Image bake** | `ImageBuilder.Config.prebuilt_venvs` in `ci/infra/cloud.py` | Creates named base venvs under `/opt/praktika/base-venvs/<name>` |
+| **Image bake** | `ImageBuilder.Config.prebuilt_venvs` in `ci/infrastructure/projects.py` | Creates named base venvs under `/opt/praktika/base-venvs/<name>` |
 | **Repo settings** | `ci/settings/settings.py` | Selects which base venv the workflow side and job side should use, and whether Praktika should also be installed from source |
 | **Bootstrap** | `praktika_bootstrap` | Resolves the settings, picks the base venv, and optionally creates a source-overlay venv under `/opt/praktika/venvs/` |
 
@@ -179,7 +179,7 @@ flowchart TD
 
 ### Which component changes what
 
-- Change `ci/infra/cloud.py` when you want a different prebaked base venv or different image-level tooling.
+- Change `ci/infrastructure/projects.py` when you want a different prebaked base venv or different image-level tooling.
 - Change `ci/settings/settings.py` when you want to select a different base venv for workflow/job dispatches.
 - Change `PRAKTIKA_INSTALL_SOURCE` when you want Praktika code to come from the checked-out repo instead of the default bootstrap wheel.
 - Change `bootstrap/src/praktika_bootstrap/venv_manager.py` only when the runtime composition algorithm itself needs to change.
@@ -250,7 +250,7 @@ Task JSON shape (what the orchestrator sends over SQS):
 ## Naming conventions
 
 Adding a new runner type means one call to `_runner_infra(name, instance_type)`
-in `ci/infra/cloud.py`. Names derive from a single base:
+in `ci/infrastructure/projects.py`. Names derive from a single base:
 
 | Resource | Name |
 |----------|------|
