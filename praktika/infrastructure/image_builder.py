@@ -571,8 +571,25 @@ class ImageBuilder:
             for launch_template in self.launch_templates:
                 if not launch_template.region:
                     launch_template.region = self.region
-                launch_template.fetch()
                 launch_template_id = launch_template.ext.get("launch_template_id", "")
+                if not launch_template_id:
+                    try:
+                        launch_template.fetch()
+                    except Exception as e:
+                        message = str(e)
+                        if (
+                            e.__class__.__name__ == "ClientError"
+                            and "InvalidLaunchTemplateName.NotFoundException" in message
+                        ) or "does not exist" in message or "not found" in message:
+                            print(
+                                f"Launch Template '{launch_template.name}' is not deployed yet; "
+                                f"skipping Image Builder launch template propagation for '{self.name}'"
+                            )
+                            continue
+                        raise
+                    launch_template_id = launch_template.ext.get(
+                        "launch_template_id", ""
+                    )
                 if not launch_template_id:
                     raise Exception(
                         f"Failed to resolve launch template id for ImageBuilder '{self.name}' from '{launch_template.name}'"

@@ -62,6 +62,7 @@ class CloudInfrastructure:
         pool_autoscalers: List["PoolAutoscaler"] = field(default_factory=list)
         pool_autoscaler_interval_seconds: int = 60
         orchestrator_pool: Optional["OrchestratorPool"] = None
+        orchestrator_pools: List["OrchestratorPool"] = field(default_factory=list)
         cidb_cluster: Optional["CIDBCluster"] = None
         _settings: Optional[_Settings] = None
 
@@ -89,6 +90,7 @@ class CloudInfrastructure:
                     "github_token_minters": self.github_token_minters,
                     "pool_autoscalers": self.pool_autoscalers,
                     "orchestrator_pool": self.orchestrator_pool,
+                    "orchestrator_pools": self.orchestrator_pools,
                     "cidb_cluster": self.cidb_cluster,
                 }
             )
@@ -132,8 +134,16 @@ class CloudInfrastructure:
             # consistent with the generated AWS names.
             if isinstance(value, str):
                 result = value
-                for old, new in replacements.items():
-                    result = result.replace(old, new)
+                project_prefix = f"{self._project_prefix()}-"
+                for old, new in sorted(
+                    replacements.items(), key=lambda item: len(item[0]), reverse=True
+                ):
+                    if not old:
+                        continue
+                    # Avoid prefixing a resource reference that has already
+                    # been rewritten once during this namespace pass.
+                    pattern = rf"(?<!{re.escape(project_prefix)}){re.escape(old)}"
+                    result = re.sub(pattern, new, result)
                 return result
             if isinstance(value, list):
                 return [self._replace_recursive(item, replacements) for item in value]
@@ -366,8 +376,7 @@ class CloudInfrastructure:
                 pool.autoscaling_group.launch_template_name = self._prefixed(pool.autoscaling_group.launch_template_name)
                 self._record_rename(replacements, old_lt_ref, pool.autoscaling_group.launch_template_name)
 
-            if self.orchestrator_pool:
-                pool = self.orchestrator_pool
+            for pool in self.orchestrator_pools:
                 if pool.vpc_name:
                     old_vpc = pool.vpc_name
                     pool.vpc_name = self._prefixed(pool.vpc_name)
@@ -546,8 +555,7 @@ class CloudInfrastructure:
                 pool.launch_template.user_data = self._replace_recursive(pool.launch_template.user_data, replacements)
                 pool.autoscaling_group.tags = self._replace_recursive(pool.autoscaling_group.tags, replacements)
 
-            if self.orchestrator_pool:
-                pool = self.orchestrator_pool
+            for pool in self.orchestrator_pools:
                 pool.ec2_role.inline_policies = self._replace_recursive(pool.ec2_role.inline_policies, replacements)
                 pool.lambda_role.inline_policies = self._replace_recursive(pool.lambda_role.inline_policies, replacements)
                 pool.lambda_config.environments = self._replace_recursive(pool.lambda_config.environments, replacements)
@@ -571,6 +579,15 @@ class CloudInfrastructure:
                     instance.user_data = self._replace_recursive(getattr(instance, "user_data", ""), replacements)
 
         def __post_init__(self):
+            if self.orchestrator_pool:
+                if not self.orchestrator_pools:
+                    self.orchestrator_pools = [self.orchestrator_pool]
+                elif all(pool.name != self.orchestrator_pool.name for pool in self.orchestrator_pools):
+                    self.orchestrator_pools.insert(0, self.orchestrator_pool)
+            self.orchestrator_pool = (
+                self.orchestrator_pools[0] if self.orchestrator_pools else None
+            )
+
             # 1. Namespace all resources for this project.
             # 2. Materialize implicit child components from the high-level
             #    native components (pools, token minters, CIDB, autoscaler).
@@ -579,8 +596,12 @@ class CloudInfrastructure:
             # namespacing so their names and cross-references land in the same
             # project namespace as the rest of the config.
             self._apply_project_namespace()
+            self.orchestrator_pool = (
+                self.orchestrator_pools[0] if self.orchestrator_pools else None
+            )
             seen_role_names: set = {r.name for r in self.iam_roles}
             seen_profile_names: set = {p.name for p in self.iam_instance_profiles}
+            seen_secret_names: set = {s.name for s in self.secret_parameters}
 
             def _add_role(role):
                 if role.name not in seen_role_names:
@@ -592,17 +613,22 @@ class CloudInfrastructure:
                     self.iam_instance_profiles.append(profile)
                     seen_profile_names.add(profile.name)
 
+            def _add_secret(secret):
+                if secret.name not in seen_secret_names:
+                    self.secret_parameters.append(secret)
+                    seen_secret_names.add(secret.name)
+
             implicit_autoscaler_sources = []
-            if self.orchestrator_pool:
-                self.secret_parameters.append(self.orchestrator_pool.webhook_secret)
-                _add_role(self.orchestrator_pool.ec2_role)
-                _add_role(self.orchestrator_pool.lambda_role)
-                _add_profile(self.orchestrator_pool.instance_profile)
-                self.lambda_functions.append(self.orchestrator_pool.lambda_config)
-                self.sqs_queues.append(self.orchestrator_pool.queue)
-                self.launch_templates.append(self.orchestrator_pool.launch_template)
-                self.autoscaling_groups.append(self.orchestrator_pool.autoscaling_group)
-                implicit_autoscaler_sources.append(self.orchestrator_pool)
+            for pool in self.orchestrator_pools:
+                _add_secret(pool.webhook_secret)
+                _add_role(pool.ec2_role)
+                _add_role(pool.lambda_role)
+                _add_profile(pool.instance_profile)
+                self.lambda_functions.append(pool.lambda_config)
+                self.sqs_queues.append(pool.queue)
+                self.launch_templates.append(pool.launch_template)
+                self.autoscaling_groups.append(pool.autoscaling_group)
+                implicit_autoscaler_sources.append(pool)
             for pool in self.runner_pools:
                 _add_role(pool.ec2_role)
                 _add_profile(pool.instance_profile)
@@ -639,8 +665,8 @@ class CloudInfrastructure:
             for token_minter in self.github_token_minters:
                 _add_role(token_minter.lambda_role)
                 self.lambda_functions.append(token_minter.lambda_config)
-                if self.orchestrator_pool:
-                    token_minter.grant_invoke(self.orchestrator_pool.ec2_role)
+                for pool in self.orchestrator_pools:
+                    token_minter.grant_invoke(pool.ec2_role)
                 for pool in self.runner_pools:
                     token_minter.grant_invoke(pool.ec2_role)
             for autoscaler in self.pool_autoscalers:

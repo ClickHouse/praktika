@@ -61,6 +61,26 @@ images, update the download list in both:
 - `praktika/infrastructure/native/user_data_orchestrator.sh`
 - `praktika/infrastructure/native/user_data_runner.sh`
 
+## Base vs non-base routing
+
+Praktika can route workflows to different orchestrator queues and runner pools.
+In this repo that split is used to keep one pipeline on "base" images, where
+the Praktika version is baked into the AMI, while the normal pipelines run
+against the current Praktika code from the checkout. This routing is usually
+not required for ordinary Praktika projects; here it exists so we can keep a
+backward-compatibility pipeline running against a previous Praktika release.
+
+The workflow-side knobs are `Workflow.Config.orchestrator_filter` and
+`Workflow.Config.native_job_runs_on`. The first decides which orchestrator
+queue/pool is allowed to pick up the workflow, and the second lets Praktika's
+built-in native jobs (`Config Workflow`, `Finish Workflow`) follow the same
+runner family as the user jobs.
+
+Infrastructure-wise this project defines two orchestrator pools instead of the
+usual single one: the normal `workflow-orchestrator` pool and the
+`workflow-orchestrator-base` pool. Base-routed workflows are picked up only by
+the latter.
+
 ## Check logs on orchestrator or runners
 
 Two ways. The SSM grep is convenient for live tailing; the S3 dump is the

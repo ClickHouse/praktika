@@ -108,4 +108,4 @@ def test_destroy_runtime_keeps_webhook_lambda_and_data_plane(monkeypatch):
     assert "role:cloud-ci-infra-praktika-pool-autoscaler-role" in calls
     assert "lambda:cloud-ci-infra-praktika-gh-token" in calls
     assert "role:cloud-ci-infra-praktika-gh-token-role" in calls
-    assert "lambda:cloud-ci-infra-praktika-gh-trigger" not in calls
+    assert "lambda:cloud-ci-infra-workflow-orchestrator" not in calls

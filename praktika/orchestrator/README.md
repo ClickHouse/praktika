@@ -19,7 +19,7 @@ SQS praktika_clickhouse_workflows
 Orchestrator ASG (praktika-workflow-orchestrator)
     user_data -> praktika_bootstrap workflow_orchestrator
         |-- clone the PR head
-        |-- install/reuse Praktika venv keyed by source hash
+        |-- install Praktika into the shared runtime venv if it is not already there
         |-- subprocess: praktika orchestrate workflow event.json --ci
         |       |-- open per-workflow GitHub check run (`PR`, in_progress)
         |       |-- find_workflow_for_event
@@ -34,7 +34,7 @@ Orchestrator ASG (praktika-workflow-orchestrator)
 Runner ASGs (e.g. praktika-arm-2xsmall)
     user_data -> praktika_bootstrap job_runner
         |-- clone the PR head
-        |-- install/reuse Praktika venv keyed by source hash
+        |-- install Praktika into the shared runtime venv if it is not already there
         |-- subprocess: praktika orchestrate job task.json --ci
         |       |-- job_runner.run_job(task) -> Runner().run(...)
 ```
@@ -108,29 +108,26 @@ Praktika runtime selection is split between three layers:
 | Layer | Component | What it owns |
 |---|---|---|
 | **Image bake** | `ImageBuilder.Config.prebuilt_venvs` in `ci/infrastructure/projects.py` | Creates named base venvs under `/opt/praktika/base-venvs/<name>` |
-| **Repo settings** | `ci/settings/settings.py` | Selects which base venv the workflow side and job side should use, and whether Praktika should also be installed from source |
-| **Bootstrap** | `praktika_bootstrap` | Resolves the settings, picks the base venv, and optionally creates a source-overlay venv under `/opt/praktika/venvs/` |
+| **Repo settings** | `ci/settings/settings.py` | Selects the shared base venv and the source to install Praktika from when that base env does not already contain it |
+| **Bootstrap** | `praktika_bootstrap` | Resolves the settings, checks whether the selected base venv already has Praktika, and otherwise builds the runtime env under `/opt/praktika/venvs/` |
 
-Current side-specific settings:
+Current settings:
 
 | Setting | Used by | Meaning |
 |---|---|---|
-| `PRAKTIKA_WORKFLOW_BASE_VENV` | `praktika_bootstrap run_workflow` | Base venv name for the orchestrator side |
-| `PRAKTIKA_JOB_BASE_VENV` | `praktika_bootstrap run_job` | Base venv name for the runner side |
-| `PRAKTIKA_BASE_VENV` | both sides | Fallback if the side-specific setting is empty |
-| `PRAKTIKA_INSTALL_SOURCE` | both sides | If set, install Praktika from this source on top of the selected base venv |
+| `PRAKTIKA_BASE_VENV` | both sides | Shared base venv name for workflow and job dispatches |
+| `PRAKTIKA_INSTALL_SOURCE` | both sides | Source used only when the selected base venv does not already contain Praktika |
 
 Current repo policy in `ci/settings/settings.py`:
 
-- Workflow side uses base venv `praktika-orchestrator`
-- Job side uses base venv `praktika-runner-pytest`
-- Both sides install Praktika from source via `PRAKTIKA_INSTALL_SOURCE="."`
+- Both sides select base venv `praktika-runtime`
+- If that base env does not already contain Praktika, bootstrap installs from `PRAKTIKA_INSTALL_SOURCE="."`
 
 This means:
 
 - the image provides stable Python/tooling dependencies
-- the checked-out PR provides the Praktika code itself
-- bootstrap combines them into the final runtime used for that dispatch
+- the checked-out PR provides the Praktika code whenever the image did not bake it in already
+- bootstrap reuses the base env directly when possible and only installs Praktika when needed
 
 ### Resolution flow
 
@@ -139,49 +136,44 @@ flowchart TD
     A[GitHub event / SQS message] --> B[praktika_bootstrap role entrypoint]
     B --> C[Clone repo at PR head]
     C --> D[Read ci/settings/settings.py]
+    D --> E[Read PRAKTIKA_BASE_VENV]
+    D --> F[Read PRAKTIKA_INSTALL_SOURCE]
 
-    D --> E{Role?}
-    E -->|workflow| F[Read PRAKTIKA_WORKFLOW_BASE_VENV]
-    E -->|job| G[Read PRAKTIKA_JOB_BASE_VENV]
+    E --> G{Base venv selected?}
+    G -->|no| H{Install source set?}
+    G -->|yes| I[Resolve /opt/praktika/base-venvs/<name>]
 
-    F --> H[Fallback to PRAKTIKA_BASE_VENV if empty]
-    G --> H
-    D --> I[Read PRAKTIKA_INSTALL_SOURCE]
+    I --> J{Base imports praktika?}
+    J -->|yes| K[Run directly from base venv]
+    J -->|no| L{Install source set?}
 
-    H --> J{Base venv selected?}
-    J -->|no| K{Install source set?}
-    J -->|yes| L[Use /opt/praktika/base-venvs/<name>]
+    H -->|yes| M[Create or reuse /opt/praktika/venvs/praktika-<py>]
+    H -->|no| N[Fail: Praktika source is required]
 
-    K -->|yes| M[Create/reuse source-hash env in /opt/praktika/venvs]
-    K -->|no| N[Fallback to bootstrap default Praktika wheel]
+    L -->|yes| O[Rebuild runtime env in /opt/praktika/venvs from base venv + source]
+    L -->|no| N
 
-    L --> O{Install source set?}
-    O -->|no| P[Run directly from base venv]
-    O -->|yes| Q[Create/reuse overlay env in /opt/praktika/venvs]
-
-    I --> O
-    I --> K
-
-    M --> R[python -m praktika ...]
-    N --> R
-    P --> R
-    Q --> R
+    F --> H
+    F --> L
+    M --> P[python -m praktika ...]
+    N --> P
+    K --> P
+    O --> P
 ```
 
 ### Venv layout
 
 | Path | Created by | Purpose |
 |---|---|---|
-| `/opt/praktika/base-venvs/praktika-orchestrator` | Image Builder | Minimal workflow/orchestrator Python base |
-| `/opt/praktika/base-venvs/praktika-runner-pytest` | Image Builder | Runner Python base with `pytest` |
-| `/opt/praktika/venvs/praktika-<py>-<hash>` | bootstrap | Source-only env when no base venv is selected |
-| `/opt/praktika/venvs/praktika-<base>-<py>-<hash>` | bootstrap | Overlay env built from a named base venv plus Praktika source |
+| `/opt/praktika/base-venvs/praktika-runtime` | Image Builder | Shared workflow/job Python base with runtime deps and `pytest` |
+| `/opt/praktika/venvs/praktika-<py>` | bootstrap | Shared source-installed env when no base venv is selected |
+| `/opt/praktika/venvs/praktika-<base>-<py>` | bootstrap | Runtime env rebuilt from the named base venv when that base does not already contain Praktika |
 
 ### Which component changes what
 
-- Change `ci/infrastructure/projects.py` when you want a different prebaked base venv or different image-level tooling.
-- Change `ci/settings/settings.py` when you want to select a different base venv for workflow/job dispatches.
-- Change `PRAKTIKA_INSTALL_SOURCE` when you want Praktika code to come from the checked-out repo instead of the default bootstrap wheel.
+- Change `ci/infrastructure/projects.py` when you want a different prebaked shared base venv or different image-level tooling.
+- Change `ci/settings/settings.py` when you want to select a different shared base venv or override the Praktika install source.
+- Change `PRAKTIKA_INSTALL_SOURCE` when you want Praktika code to come from the checked-out repo instead of the default bootstrap wheel whenever bootstrap needs to install it.
 - Change `bootstrap/src/praktika_bootstrap/venv_manager.py` only when the runtime composition algorithm itself needs to change.
 
 ## Debugging runner logs

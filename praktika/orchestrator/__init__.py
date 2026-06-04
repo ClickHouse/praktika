@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import sys
 from collections import defaultdict, deque
@@ -26,6 +27,17 @@ def _branch_matches(branch, patterns):
     return False
 
 
+def _current_orchestrator_filter() -> str:
+    explicit = (os.environ.get("PRAKTIKA_ORCHESTRATOR_FILTER") or "").strip()
+    if explicit:
+        return explicit
+
+    queue_name = (os.environ.get("SQS_QUEUE_NAME") or "").strip()
+    if queue_name.endswith("-base"):
+        return "base"
+    return "default"
+
+
 def find_workflows_for_event(event):
     """Find all workflows matching the trigger event. Returns empty list if no match."""
     event_type = event.get("type", "")
@@ -42,8 +54,16 @@ def find_workflows_for_event(event):
         branch = ""
 
     matched = []
+    orchestrator_filter = _current_orchestrator_filter()
     for wf in _get_workflows():
         if wf.engine == Workflow.Engine.GH_ACTIONS:
+            continue
+        workflow_filter = (getattr(wf, "orchestrator_filter", "") or "default").strip()
+        if workflow_filter != orchestrator_filter:
+            print(
+                f"Skip workflow [{wf.name}] for orchestrator filter "
+                f"[{orchestrator_filter}] (workflow requires [{workflow_filter}])"
+            )
             continue
         if wf.event != workflow_event:
             continue

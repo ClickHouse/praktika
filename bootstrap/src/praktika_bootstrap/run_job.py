@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Job bootstrap agent with cached Praktika venv dispatch."""
+"""Job bootstrap agent with Praktika runtime dispatch."""
 
 from __future__ import annotations
 
@@ -67,8 +67,12 @@ def handle_task(task):
         log=log,
     )
 
-    base_venv, source = resolve_praktika_runtime(clone_dir, log, role="job")
-    venv_dir = ensure_praktika_runtime(source or None, base_venv=base_venv, log=log)
+    base_venv, source = resolve_praktika_runtime(clone_dir, log)
+    venv_dir = ensure_praktika_runtime(
+        source or None,
+        base_venv=base_venv,
+        log=log,
+    )
 
     task_file = os.path.join(clone_dir, "ci", "tmp", "task.json")
     os.makedirs(os.path.dirname(task_file), exist_ok=True)

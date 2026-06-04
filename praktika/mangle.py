@@ -207,6 +207,10 @@ def _update_workflow_artifacts(workflow):
             artifact._provided_by = artifact_job[artifact.name]
 
 
+def _native_job_runs_on(workflow):
+    return copy.deepcopy(workflow.native_job_runs_on or Settings.CI_CONFIG_RUNS_ON)
+
+
 def _update_workflow_with_native_jobs(workflow):
     if workflow.dockers and not workflow.disable_dockers_build:
         from .native_jobs import (
@@ -270,6 +274,7 @@ def _update_workflow_with_native_jobs(workflow):
                 f"Enable native job [{_workflow_config_job.name}] for [{workflow.name}]"
             )
         aux_job = copy.deepcopy(_workflow_config_job)
+        aux_job.runs_on = _native_job_runs_on(workflow)
         workflow.jobs.insert(0, aux_job)
         for job in workflow.jobs[1:]:
             job.run_after.append(aux_job.name)
@@ -285,6 +290,7 @@ def _update_workflow_with_native_jobs(workflow):
         if not _is_local_run():
             print(f"Enable native job [{_final_job.name}] for [{workflow.name}]")
         aux_job = copy.deepcopy(_final_job)
+        aux_job.runs_on = _native_job_runs_on(workflow)
         for job in workflow.jobs:
             aux_job.run_after.append(job.name)
         workflow.jobs.append(aux_job)

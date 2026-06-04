@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Workflow bootstrap agent with cached Praktika venv dispatch."""
+"""Workflow bootstrap agent with Praktika runtime dispatch."""
 
 from __future__ import annotations
 
@@ -65,8 +65,12 @@ def handle_workflow(event):
         log=log,
     )
 
-    base_venv, source = resolve_praktika_runtime(clone_dir, log, role="workflow")
-    venv_dir = ensure_praktika_runtime(source or None, base_venv=base_venv, log=log)
+    base_venv, source = resolve_praktika_runtime(clone_dir, log)
+    venv_dir = ensure_praktika_runtime(
+        source or None,
+        base_venv=base_venv,
+        log=log,
+    )
 
     event_file = os.path.join(clone_dir, "ci", "tmp", "event.json")
     os.makedirs(os.path.dirname(event_file), exist_ok=True)

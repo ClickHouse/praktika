@@ -1,5 +1,6 @@
 class RunnerLabels:
     SMALL_ARM = "arm-2xsmall"
+    SMALL_ARM_BASE = "arm-2xsmall-base"
     SMALL_AMD = "amd-2xsmall"
 
 CI_CONFIG_RUNS_ON = [RunnerLabels.SMALL_ARM]
@@ -25,11 +26,11 @@ SECRET_DOCKER_REGISTRY = "praktika-docker-registry-connection"
 USE_CUSTOM_GH_AUTH = True
 
 # Install praktika from the cloned PR tree (packaging metadata lives at the repo root).
-# Per-PR praktika changes take effect on the dispatch that picked the PR up.
-# The base venv differs by side: workflow gets a minimal env, jobs get pytest too.
+# If the selected base venv already has praktika installed, bootstrap uses it
+# directly and ignores PRAKTIKA_INSTALL_SOURCE. Otherwise bootstrap clones that
+# base env and installs praktika from the source below for this dispatch.
 PRAKTIKA_INSTALL_SOURCE = "."
-PRAKTIKA_WORKFLOW_BASE_VENV = "praktika-orchestrator"
-PRAKTIKA_JOB_BASE_VENV = "praktika-runner-pytest"
+PRAKTIKA_BASE_VENV = "praktika-runtime"
 GH_AUTH_LAMBDA_NAME = "praktika-gh-token"
 GH_AUTH_LAMBDA_REGION = AWS_REGION
 

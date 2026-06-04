@@ -5,9 +5,12 @@ from pathlib import Path
 _HERE = Path(__file__).parent
 
 
-def ci_engine_user_data():
+def ci_engine_user_data(queue_name):
     template = (_HERE / "user_data_orchestrator.sh").read_text()
-    return template
+    for ph in ("__WORKFLOW_QUEUE_NAME__",):
+        if ph not in template:
+            raise RuntimeError(f"user_data_orchestrator.sh is missing {ph}")
+    return template.replace("__WORKFLOW_QUEUE_NAME__", queue_name)
 
 
 def runner_user_data(queue_name):

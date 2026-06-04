@@ -8,14 +8,15 @@ import time
 import boto3
 
 WEBHOOK_SECRET = os.environ.get("GH_WEBHOOK_SECRET", "")
-SQS_QUEUE_NAME = os.environ.get("SQS_QUEUE_NAME", "praktika-workflows")
+SQS_QUEUE_NAME = os.environ.get("SQS_QUEUE_NAME", "workflow-orchestrator")
 # Bucket holding the per-run S3 prefix where the orchestrator polls for
 # cancel signals. Same artifact bucket the runners use; passed via env so
 # the lambda doesn't import praktika.settings.
 S3_BUCKET = os.environ.get("S3_BUCKET", "")
 
-# Only process events from these senders (for PoC)
-ALLOWED_SENDERS = {"maxknv"}
+# Keep the sender allow-list hook in place, but leave it empty by default so
+# webhook dispatch is unrestricted unless a deployment explicitly populates it.
+ALLOWED_SENDERS = set()
 ALLOWED_PUSH_BRANCHES = {"main"}
 
 
@@ -270,7 +271,7 @@ def lambda_handler(event, context):
             workflow, pr_number = _build_rerun_workflow(
                 payload.get("check_run", {}), payload, event_ts
             )
-            if workflow and sender in ALLOWED_SENDERS:
+            if workflow and (not ALLOWED_SENDERS or sender in ALLOWED_SENDERS):
                 # No cancel: re-run always targets the same SHA, so a
                 # target_sha cancel would be consumed by the new orchestrator
                 # and cancel itself. The previous run for that SHA has already
@@ -278,7 +279,7 @@ def lambda_handler(event, context):
                 _enqueue(workflow, delivery_id)
                 print(f"RERUN (check_run): PR#{pr_number} sha={workflow['head_sha'][:12]}")
             else:
-                print(f"SKIP: check_run.rerequested — no PR or sender not allowed")
+                print("SKIP: check_run.rerequested — no associated PR or sender not allowed")
         else:
             print(f"SKIP: check_run.{action} not handled")
         return {"statusCode": 200, "body": "ok"}
@@ -288,20 +289,20 @@ def lambda_handler(event, context):
             workflow, pr_number = _build_rerun_workflow(
                 payload.get("check_suite", {}), payload, event_ts
             )
-            if workflow and sender in ALLOWED_SENDERS:
+            if workflow and (not ALLOWED_SENDERS or sender in ALLOWED_SENDERS):
                 # No cancel: re-run targets the same SHA as before but
                 # spawns a new run_id (new check run), so the new run has
                 # its own S3 prefix and can't conflict with any prior run.
                 _enqueue(workflow, delivery_id)
                 print(f"RERUN (check_suite): PR#{pr_number} sha={workflow['head_sha'][:12]}")
             else:
-                print(f"SKIP: check_suite.rerequested — no PR or sender not allowed")
+                print("SKIP: check_suite.rerequested — no associated PR or sender not allowed")
         else:
             print(f"SKIP: check_suite.{action} not handled")
         return {"statusCode": 200, "body": "ok"}
 
     if gh_event == "push":
-        if sender not in ALLOWED_SENDERS:
+        if ALLOWED_SENDERS and sender not in ALLOWED_SENDERS:
             print(f"SKIP: push sender {sender} not in allowed list")
             return {"statusCode": 200, "body": "ok"}
         workflow = _build_push_workflow(payload, event_ts)
@@ -319,7 +320,7 @@ def lambda_handler(event, context):
         print(f"SKIP: not a pull_request event")
         return {"statusCode": 200, "body": "ok"}
 
-    if sender not in ALLOWED_SENDERS:
+    if ALLOWED_SENDERS and sender not in ALLOWED_SENDERS:
         print(f"SKIP: sender {sender} not in allowed list")
         return {"statusCode": 200, "body": "ok"}
 

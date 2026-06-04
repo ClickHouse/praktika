@@ -11,25 +11,15 @@ import threading
 import time
 from pathlib import Path
 
-DEFAULT_PRAKTIKA_SOURCE = os.environ.get(
-    "PRAKTIKA_DEFAULT_INSTALL_SOURCE",
-    (
-        "https://praktika-artifacts-eu-north-1.s3.amazonaws.com"
-        "/packages/praktika-0.1-py3-none-any.whl"
-    ),
-)
-
 
 def resolve_praktika_runtime(
-    clone_dir: str | os.PathLike[str], log, role: str = ""
+    clone_dir: str | os.PathLike[str], log
 ) -> tuple[str, str]:
     """Read Praktika base-venv/source settings from the repo settings.
 
     Resolution order:
-      1. side-specific base venv from settings.py (`workflow` / `job`)
-      2. generic PRAKTIKA_BASE_VENV from settings.py
-      3. PRAKTIKA_INSTALL_SOURCE from settings.py
-      2. if neither is set, fall back to the default Praktika wheel URL
+      1. PRAKTIKA_BASE_VENV from settings.py
+      2. PRAKTIKA_INSTALL_SOURCE from settings.py
     """
     settings_file = Path(clone_dir) / "ci" / "settings" / "settings.py"
     base_venv = ""
@@ -42,12 +32,7 @@ def resolve_praktika_runtime(
             mod = importlib.util.module_from_spec(spec)
             assert spec.loader is not None
             spec.loader.exec_module(mod)
-            if role == "workflow":
-                base_venv = getattr(mod, "PRAKTIKA_WORKFLOW_BASE_VENV", "") or ""
-            elif role == "job":
-                base_venv = getattr(mod, "PRAKTIKA_JOB_BASE_VENV", "") or ""
-            if not base_venv:
-                base_venv = getattr(mod, "PRAKTIKA_BASE_VENV", "") or ""
+            base_venv = getattr(mod, "PRAKTIKA_BASE_VENV", "") or ""
             src = getattr(mod, "PRAKTIKA_INSTALL_SOURCE", "") or ""
         except Exception as e:
             log.warning(
@@ -55,9 +40,6 @@ def resolve_praktika_runtime(
                 settings_file,
                 e,
             )
-
-    if not src and not base_venv:
-        src = DEFAULT_PRAKTIKA_SOURCE
 
     if src:
         if src.startswith(("http://", "https://")):

@@ -130,28 +130,27 @@ class _Settings:
     # S3 path for Slack feed events storage (format: bucket/prefix)
     # Used by EventFeed and FeedSubscription for PR notification subscriptions
     EVENT_FEED_S3_PATH: str = ""
-    # Where the workflow/job agents should install praktika from on every
-    # dispatch. Three forms:
-    #   ""             — no source override; if a side-specific base venv
-    #                    is set, run whatever praktika is already installed
-    #                    there. If all base/source settings are empty, the
-    #                    bootstrapper falls back to its default praktika
-    #                    wheel URL.
+    # Where the workflow/job agents should install praktika from when the
+    # selected runtime still needs it. Three forms:
+    #   ""             — no explicit source override; if PRAKTIKA_BASE_VENV
+    #                    already has praktika installed, bootstrap uses it as
+    #                    is. Otherwise bootstrap errors out.
     #   "https://..."  — pip install <url>; pulls a wheel from that URL.
     #   "<rel/path>"   — pip install <clone_dir>/<rel/path>; resolves
     #                    relative to the cloned PR tree, so a PR's praktika
     #                    changes take effect on the very dispatch that
     #                    picked the PR up. If PRAKTIKA_BASE_VENV is also
-    #                    set, the bootstrapper creates/reuses a derived env
-    #                    from that prebaked base and installs praktika on top.
+    #                    set and does not already include praktika,
+    #                    bootstrap uses it to install praktika into the
+    #                    shared runtime copy the first time that copy is
+    #                    missing praktika.
     PRAKTIKA_INSTALL_SOURCE: str = ""
-    # Optional fallback base venv name used by both workflow and job sides
-    # unless a side-specific value below is set.
+    # Optional prebaked base venv name shared by both workflow and job sides.
+    # If that env already has praktika installed, PRAKTIKA_INSTALL_SOURCE is
+    # ignored. Otherwise bootstrap installs praktika into a runtime copy of
+    # this env the first time that runtime copy is missing praktika, using
+    # PRAKTIKA_INSTALL_SOURCE.
     PRAKTIKA_BASE_VENV: str = ""
-    # Optional prebaked base venv name for the workflow/orchestrator side.
-    PRAKTIKA_WORKFLOW_BASE_VENV: str = ""
-    # Optional prebaked base venv name for the job/runner side.
-    PRAKTIKA_JOB_BASE_VENV: str = ""
 
 
 _USER_DEFINED_SETTINGS = [
@@ -202,8 +201,6 @@ _USER_DEFINED_SETTINGS = [
     "TEST_FAILURE_PATTERNS",
     "PRAKTIKA_INSTALL_SOURCE",
     "PRAKTIKA_BASE_VENV",
-    "PRAKTIKA_WORKFLOW_BASE_VENV",
-    "PRAKTIKA_JOB_BASE_VENV",
 ]
 
 

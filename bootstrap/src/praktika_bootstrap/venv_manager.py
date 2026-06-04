@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
-import hashlib
-import json
 import os
 import shutil
 import subprocess
@@ -20,20 +18,6 @@ DEFAULT_BASE_VENV_ROOT = os.environ.get(
     "/opt/praktika/base-venvs",
 )
 DEFAULT_WHEELHOUSE = os.environ.get("PRAKTIKA_WHEELHOUSE")
-MARKER_FILE = ".praktika-bootstrap.json"
-IGNORED_DIRS = {
-    ".git",
-    ".hg",
-    ".mypy_cache",
-    ".pytest_cache",
-    "__pycache__",
-    ".tox",
-    ".venv",
-    "venv",
-    "build",
-    "dist",
-}
-IGNORED_SUFFIXES = {".pyc", ".pyo"}
 
 
 def ensure_praktika_venv(
@@ -51,20 +35,19 @@ def ensure_praktika_venv(
 
     python_path = str(python_executable or sys.executable)
     py_tag = f"py{sys.version_info.major}.{sys.version_info.minor}"
-    fingerprint = praktika_source_fingerprint(source)
-    env_name = f"praktika-{py_tag}-{fingerprint}"
+    env_name = f"praktika-{py_tag}"
     venv_dir = cache_root / env_name
     lock_path = cache_root / f"{env_name}.lock"
 
     with _file_lock(lock_path):
-        if _venv_matches(venv_dir, source, fingerprint, wheelhouse_path):
+        if _venv_has_praktika(venv_dir):
             if log is not None:
-                log.info("Reusing Praktika venv %s for %s", venv_dir, source)
+                log.info("Using Praktika from venv %s", venv_dir)
             return venv_dir
 
         if log is not None:
             log.info("Building Praktika venv %s for %s", venv_dir, source)
-        _build_venv(venv_dir, source, fingerprint, python_path, wheelhouse_path)
+        _build_venv(venv_dir, source, python_path, wheelhouse_path)
         return venv_dir
 
 
@@ -79,19 +62,26 @@ def ensure_praktika_runtime(
     log=None,
 ) -> Path:
     wheelhouse_path = _resolve_wheelhouse(wheelhouse or DEFAULT_WHEELHOUSE)
+    source = _normalize_source(source) if source else ""
 
     if base_venv:
         base_dir = _resolve_base_venv(base_venv, base_venv_root)
-        if not source:
+        if _venv_has_praktika(base_dir):
             if log is not None:
-                log.info("Using prebaked Praktika base venv %s", base_dir)
+                log.info("Using Praktika from prebaked base venv %s", base_dir)
             return base_dir
-        return _ensure_overlay_venv(
+
+        if not source:
+            raise ValueError(
+                "PRAKTIKA_BASE_VENV is set but the base venv does not contain "
+                "praktika and PRAKTIKA_INSTALL_SOURCE is not set"
+            )
+
+        return _rebuild_runtime_from_base_venv(
             source,
             base_dir=base_dir,
             base_name=base_venv,
             cache_root=cache_root,
-            python_executable=python_executable,
             wheelhouse=wheelhouse_path,
             log=log,
         )
@@ -121,54 +111,15 @@ def venv_env(
     return env
 
 
-def praktika_source_fingerprint(source: str) -> str:
-    if source.startswith(("http://", "https://")):
-        return hashlib.sha256(f"url:{source}".encode("utf-8")).hexdigest()[:16]
-
-    path = Path(source)
-    if not path.exists():
-        raise FileNotFoundError(f"Praktika source does not exist: {source}")
-
-    git_fingerprint = _git_fingerprint(path)
-    if git_fingerprint:
-        return git_fingerprint[:16]
-    if path.is_dir():
-        return _hash_directory(path)
-    return _hash_file(path)
-
-
 def _normalize_source(source: str) -> str:
     if source.startswith(("http://", "https://")):
         return source
     return str(Path(source).resolve())
 
 
-def _venv_matches(
-    venv_dir: Path,
-    source: str,
-    fingerprint: str,
-    wheelhouse: Path | None,
-) -> bool:
-    marker_path = venv_dir / MARKER_FILE
-    python_path = venv_dir / "bin" / "python"
-    if not marker_path.exists() or not python_path.exists():
-        return False
-    try:
-        marker = json.loads(marker_path.read_text())
-    except Exception:
-        return False
-    return (
-        marker.get("source") == source
-        and marker.get("fingerprint") == fingerprint
-        and marker.get("wheelhouse") == (str(wheelhouse) if wheelhouse else None)
-        and marker.get("base_venv") in (None, "")
-    )
-
-
 def _build_venv(
     venv_dir: Path,
     source: str,
-    fingerprint: str,
     python_path: str,
     wheelhouse: Path | None,
 ) -> None:
@@ -190,15 +141,6 @@ def _build_venv(
             check=True,
         )
         subprocess.run(_pip_install_cmd(temp_python, wheelhouse, source), check=True)
-
-        marker = {
-            "source": source,
-            "fingerprint": fingerprint,
-            "python": python_path,
-            "wheelhouse": str(wheelhouse) if wheelhouse else None,
-            "base_venv": None,
-        }
-        (temp_path / MARKER_FILE).write_text(json.dumps(marker, indent=2))
 
         if venv_dir.exists():
             shutil.rmtree(venv_dir)
@@ -254,13 +196,24 @@ def _resolve_base_venv(
     return path
 
 
-def _ensure_overlay_venv(
+def _venv_has_praktika(venv_dir: Path) -> bool:
+    python_path = venv_dir / "bin" / "python"
+    if not python_path.exists():
+        return False
+    result = subprocess.run(
+        [str(python_path), "-c", "import praktika"],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+def _rebuild_runtime_from_base_venv(
     source: str,
     *,
     base_dir: Path,
     base_name: str,
     cache_root: str | os.PathLike[str] | None,
-    python_executable: str | os.PathLike[str] | None,
     wheelhouse: Path | None,
     log=None,
 ) -> Path:
@@ -268,71 +221,36 @@ def _ensure_overlay_venv(
     cache_root = Path(cache_root or DEFAULT_VENV_ROOT)
     cache_root.mkdir(parents=True, exist_ok=True)
 
-    python_path = str(python_executable or sys.executable)
     py_tag = f"py{sys.version_info.major}.{sys.version_info.minor}"
-    fingerprint = praktika_source_fingerprint(source)
     base_tag = _slugify(base_name)
-    env_name = f"praktika-{base_tag}-{py_tag}-{fingerprint}"
+    env_name = f"praktika-{base_tag}-{py_tag}"
     venv_dir = cache_root / env_name
     lock_path = cache_root / f"{env_name}.lock"
 
     with _file_lock(lock_path):
-        if _overlay_matches(venv_dir, source, fingerprint, wheelhouse, str(base_dir)):
+        if _venv_has_praktika(venv_dir):
             if log is not None:
-                log.info(
-                    "Reusing Praktika overlay venv %s for %s on top of %s",
-                    venv_dir,
-                    source,
-                    base_dir,
-                )
+                log.info("Using Praktika from runtime venv %s", venv_dir)
             return venv_dir
-
         if log is not None:
             log.info(
-                "Building Praktika overlay venv %s for %s on top of %s",
+                "Building Praktika runtime venv %s from %s on top of %s",
                 venv_dir,
                 source,
                 base_dir,
             )
-        _build_overlay_venv(
+        _build_runtime_from_base_venv(
             venv_dir,
             source,
-            fingerprint,
-            python_path,
             wheelhouse,
             base_dir,
         )
         return venv_dir
 
 
-def _overlay_matches(
+def _build_runtime_from_base_venv(
     venv_dir: Path,
     source: str,
-    fingerprint: str,
-    wheelhouse: Path | None,
-    base_venv: str,
-) -> bool:
-    marker_path = venv_dir / MARKER_FILE
-    python_path = venv_dir / "bin" / "python"
-    if not marker_path.exists() or not python_path.exists():
-        return False
-    try:
-        marker = json.loads(marker_path.read_text())
-    except Exception:
-        return False
-    return (
-        marker.get("source") == source
-        and marker.get("fingerprint") == fingerprint
-        and marker.get("wheelhouse") == (str(wheelhouse) if wheelhouse else None)
-        and marker.get("base_venv") == base_venv
-    )
-
-
-def _build_overlay_venv(
-    venv_dir: Path,
-    source: str,
-    fingerprint: str,
-    python_path: str,
     wheelhouse: Path | None,
     base_dir: Path,
 ) -> None:
@@ -343,15 +261,6 @@ def _build_overlay_venv(
 
         temp_python = temp_path / "bin" / "python"
         subprocess.run(_pip_install_cmd(temp_python, wheelhouse, source), check=True)
-
-        marker = {
-            "source": source,
-            "fingerprint": fingerprint,
-            "python": python_path,
-            "wheelhouse": str(wheelhouse) if wheelhouse else None,
-            "base_venv": str(base_dir),
-        }
-        (temp_path / MARKER_FILE).write_text(json.dumps(marker, indent=2))
 
         if venv_dir.exists():
             shutil.rmtree(venv_dir)
@@ -366,55 +275,3 @@ def _slugify(value: str) -> str:
         else:
             allowed.append("-")
     return "".join(allowed).strip("-") or "base"
-
-
-def _git_fingerprint(path: Path) -> str | None:
-    target = path if path.is_dir() else path.parent
-    repo_root = _git_output(["git", "-C", str(target), "rev-parse", "--show-toplevel"])
-    if not repo_root:
-        return None
-
-    repo_root_path = Path(repo_root)
-    try:
-        rel_path = path.resolve().relative_to(repo_root_path.resolve())
-    except ValueError:
-        return None
-
-    if str(rel_path) == ".":
-        return _git_output(["git", "-C", str(repo_root_path), "rev-parse", "HEAD"])
-    return _git_output(
-        ["git", "-C", str(repo_root_path), "rev-parse", f"HEAD:{rel_path.as_posix()}"]
-    )
-
-
-def _git_output(cmd: list[str]) -> str | None:
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        return None
-    return result.stdout.strip()
-
-
-def _hash_directory(path: Path) -> str:
-    digest = hashlib.sha256()
-    for file_path in sorted(_iter_files(path)):
-        rel_path = file_path.relative_to(path)
-        digest.update(rel_path.as_posix().encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(file_path.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()[:16]
-
-
-def _iter_files(path: Path):
-    for file_path in path.rglob("*"):
-        if not file_path.is_file():
-            continue
-        if any(part in IGNORED_DIRS for part in file_path.parts):
-            continue
-        if file_path.suffix in IGNORED_SUFFIXES:
-            continue
-        yield file_path
-
-
-def _hash_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()[:16]

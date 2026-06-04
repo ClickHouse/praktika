@@ -42,7 +42,6 @@ def test_orchestrator_pool_registers_launch_template_with_image_builder():
     assert pool.launch_template.image_builder is builder
     assert pool.autoscaling_group.launch_template_version == "$Default"
 
-
 def test_launch_template_resolves_latest_ami_from_image_builder(monkeypatch):
     builder = ImageBuilder.Config(
         name="orchestrator-arm64-image",
@@ -118,6 +117,98 @@ def test_image_builder_distribution_includes_launch_templates(monkeypatch):
     assert captured["distributions"][0]["amiDistributionConfiguration"][
         "launchPermission"
     ] == {"userGroups": ["all"]}
+
+
+def test_image_builder_distribution_skips_missing_launch_templates(monkeypatch):
+    builder = ImageBuilder.Config(
+        name="orchestrator-arm64-image",
+        region="eu-north-1",
+        distribution_configuration_name="praktika-orchestrator-dist",
+        ami_name="praktika-orchestrator-{{ imagebuilder:buildDate }}",
+        regions=["eu-north-1"],
+    )
+
+    pool = OrchestratorPool(
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        size=1,
+        max_size=1,
+        image_builder=builder,
+    )
+
+    def _fetch():
+        raise Exception("Launch Template 'workflow-orchestrator-lt' not found in AWS")
+
+    monkeypatch.setattr(pool.launch_template, "fetch", _fetch)
+
+    captured = {}
+
+    class _Client:
+        def create_distribution_configuration(self, **req):
+            captured.update(req)
+            return {
+                "distributionConfigurationArn": "arn:aws:imagebuilder:eu-north-1:123456789012:distribution-configuration/praktika-orchestrator-dist"
+            }
+
+        def update_distribution_configuration(self, **req):
+            captured.update(req)
+            return {}
+
+    monkeypatch.setattr(builder, "_client", lambda: _Client())
+
+    arn = builder._get_or_create_distribution_configuration_arn()
+
+    assert arn.endswith("/praktika-orchestrator-dist")
+    assert "launchTemplateConfigurations" not in captured["distributions"][0]
+
+
+def test_image_builder_distribution_reuses_cached_launch_template_id(monkeypatch):
+    builder = ImageBuilder.Config(
+        name="orchestrator-arm64-image",
+        region="eu-north-1",
+        distribution_configuration_name="praktika-orchestrator-dist",
+        ami_name="praktika-orchestrator-{{ imagebuilder:buildDate }}",
+        regions=["eu-north-1"],
+    )
+
+    pool = OrchestratorPool(
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        size=1,
+        max_size=1,
+        image_builder=builder,
+    )
+    pool.launch_template.ext["launch_template_id"] = "lt-cached0123456789"
+
+    def _fetch():
+        raise AssertionError("fetch should not be called when launch_template_id is cached")
+
+    monkeypatch.setattr(pool.launch_template, "fetch", _fetch)
+
+    captured = {}
+
+    class _Client:
+        def create_distribution_configuration(self, **req):
+            captured.update(req)
+            return {
+                "distributionConfigurationArn": "arn:aws:imagebuilder:eu-north-1:123456789012:distribution-configuration/praktika-orchestrator-dist"
+            }
+
+        def update_distribution_configuration(self, **req):
+            captured.update(req)
+            return {}
+
+    monkeypatch.setattr(builder, "_client", lambda: _Client())
+
+    arn = builder._get_or_create_distribution_configuration_arn()
+
+    assert arn.endswith("/praktika-orchestrator-dist")
+    assert captured["distributions"][0]["launchTemplateConfigurations"] == [
+        {
+            "launchTemplateId": "lt-cached0123456789",
+            "setDefaultVersion": True,
+        }
+    ]
 
 
 def test_image_builder_pipeline_update_is_skipped_when_unchanged(monkeypatch):

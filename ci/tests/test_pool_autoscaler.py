@@ -133,5 +133,5 @@ def test_cloud_infrastructure_creates_implicit_orchestrator_autoscaler():
     autoscaler = autoscalers[0]
     env = autoscaler.environments["POOLS_CONFIG_JSON"]
     assert '"name":"workflow-orchestrator"' in env
-    assert '"queue_name":"test-cloud-praktika-workflows"' in env
-    assert '"asg_name":"test-cloud-praktika-workflow-orchestrator"' in env
+    assert '"queue_name":"test-cloud-workflow-orchestrator"' in env
+    assert '"asg_name":"test-cloud-workflow-orchestrator"' in env

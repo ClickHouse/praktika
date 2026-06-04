@@ -52,7 +52,7 @@ Type=simple
 # silently no-ops (writes nowhere usable), and child processes can't post
 # commit statuses or check-run updates.
 Environment=HOME=/root
-Environment=SQS_QUEUE_NAME=praktika-workflows
+Environment=SQS_QUEUE_NAME=__WORKFLOW_QUEUE_NAME__
 Environment=AWS_DEFAULT_REGION=$REGION
 Environment=INSTANCE_ID=$INSTANCE_ID
 Environment=PRAKTIKA_WHEELHOUSE=$WHEELHOUSE_DIR

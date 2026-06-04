@@ -21,7 +21,7 @@ After=network.target
 [Service]
 Type=simple
 Environment=HOME=/root
-Environment=SQS_QUEUE_NAME=praktika-workflows
+Environment=SQS_QUEUE_NAME=__WORKFLOW_QUEUE_NAME__
 Environment=AWS_DEFAULT_REGION=$REGION
 Environment=INSTANCE_ID=$INSTANCE_ID
 ExecStart=/usr/local/bin/praktika_bootstrap workflow_orchestrator
