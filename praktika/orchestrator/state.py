@@ -363,8 +363,9 @@ class WorkflowState:
         self._repo = repo
         self._head_sha = head_sha
         # Event timestamp (lambda receive time). Older runs for the same PR
-        # are cancelled when a new event with a larger event_ts triggers
-        # `pr/<pr>/cancel-before` — see sweep_cancel.
+        # are cancelled when a new event with a larger event_ts triggers the
+        # queue-scoped `pr/<pr>/cancel-before-<scope>` marker — see
+        # sweep_cancel.
         self._event_ts = float(self._event.get("event_ts") or 0.0)
         self._pr_number = self._event.get("pr_number")
         # Unique identifier for this specific orchestrator run — the GitHub
@@ -398,7 +399,8 @@ class WorkflowState:
 
         # Per-run S3 prefix. Lambda → orchestrator cancel flows through S3:
         # lambda writes either runs/<run_id>/cancel-request (manual UI button)
-        # or pr/<pr>/cancel-before (new push, fan-out to all older runs);
+        # or a queue-scoped pr/<pr>/cancel-before-<scope> marker (new push,
+        # fan-out to older runs in the same orchestrator scope only);
         # sweep_cancel polls both. The orchestrator → runners kill flag at
         # runs/<run_id>/cancel is written by cancel_unfinished_jobs.
         from ..settings import Settings
@@ -406,8 +408,12 @@ class WorkflowState:
         self._runs_s3_prefix = f"runs/{self._run_id}"
         self._cancel_s3_key = f"{self._runs_s3_prefix}/cancel"
         self._cancel_request_s3_key = f"{self._runs_s3_prefix}/cancel-request"
+        queue_name = (os.environ.get("SQS_QUEUE_NAME") or "").strip()
+        cancel_scope = "base" if queue_name.endswith("-base") else "default"
         self._pr_cancel_before_s3_key = (
-            f"pr/{self._pr_number}/cancel-before" if self._pr_number else None
+            f"pr/{self._pr_number}/cancel-before-{cancel_scope}"
+            if self._pr_number
+            else None
         )
 
         self.jobs = {
@@ -517,10 +523,11 @@ class WorkflowState:
           - ``runs/<run_id>/cancel-request`` (manual UI cancel button) —
             lambda writes this on a check_run.requested_action=cancel
             event addressed to a specific run.
-          - ``pr/<pr>/cancel-before`` carrying ``{ts}`` (new push) — lambda
-            writes this on synchronize. Every still-running orchestrator
-            for the PR with ``event_ts < ts`` self-cancels; the freshly
-            enqueued run has ``event_ts == ts`` and stays alive.
+          - ``pr/<pr>/cancel-before-<scope>`` carrying ``{ts}`` (new push)
+            — lambda writes this on synchronize. Every still-running
+            orchestrator for the same PR and orchestrator scope with
+            ``event_ts < ts`` self-cancels; the freshly enqueued run has
+            ``event_ts == ts`` and stays alive.
 
         Both paths set ``state.cancelled = True``; the main loop handles
         that flag exactly once via ``cancel_unfinished_jobs``, so seeing
@@ -807,7 +814,7 @@ class WorkflowState:
         ``WAIT_POLL_INTERVAL_S`` and then sweeps the three S3 channels.
         Liveness, completion, and cancel all live under
         ``runs/<run_id>/`` (cancel-by-event-ts also reads
-        ``pr/<pr>/cancel-before``).
+        ``pr/<pr>/cancel-before-<scope>``).
         """
         if self._s3 is None or self.local_mode:
             return

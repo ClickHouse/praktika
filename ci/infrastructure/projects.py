@@ -37,52 +37,38 @@ def _write_file_from_base64(path: str, content: str) -> str:
     return f"printf '%s' '{payload}' | base64 -d > {path}"
 
 
-def _common_linux_component(name: str, *, version: str):
+def _setup_component(name: str, *, with_docker: bool):
+    commands = [
+        "dnf install -y python3 python3-pip python3.12 python3.12-pip git jq awscli",
+        "ln -sf /usr/bin/python3.12 /usr/local/bin/python3",
+        "curl -fsSL https://cli.github.com/packages/rpm/gh-cli.repo -o /etc/yum.repos.d/gh-cli.repo",
+        "dnf install -y gh",
+    ]
+    if with_docker:
+        commands.extend(
+            [
+                "dnf install -y docker",
+                "mkdir -p /etc/docker",
+                "printf '%s\n' '{' '  \"log-driver\": \"json-file\",' '  \"log-opts\": {' '    \"max-file\": \"5\",' '    \"max-size\": \"1000m\"' '  }' '}' > /etc/docker/daemon.json",
+                "usermod -aG docker ec2-user || true",
+                "systemctl enable docker || true",
+            ]
+        )
     return {
         "name": name,
-        "version": version,
         "platform": "Linux",
-        "description": "Install common AL2023 system packages for Praktika images",
-        "commands": [
-            "dnf install -y python3 python3-pip python3.12 python3.12-pip git jq awscli",
-            "ln -sf /usr/bin/python3.12 /usr/local/bin/python3",
-        ],
+        "description": (
+            "Install AL2023 system packages, GitHub CLI, and Docker"
+            if with_docker
+            else "Install AL2023 system packages and GitHub CLI"
+        ),
+        "commands": commands,
     }
 
 
-def _gh_cli_component(name: str, *, version: str):
+def _runner_runtime_component(name: str):
     return {
         "name": name,
-        "version": version,
-        "platform": "Linux",
-        "description": "Install GitHub CLI on the image",
-        "commands": [
-            "curl -fsSL https://cli.github.com/packages/rpm/gh-cli.repo -o /etc/yum.repos.d/gh-cli.repo",
-            "dnf install -y gh",
-        ],
-    }
-
-
-def _runner_tools_component(name: str, *, version: str):
-    return {
-        "name": name,
-        "version": version,
-        "platform": "Linux",
-        "description": "Install runner OS-level tools like Docker",
-        "commands": [
-            "dnf install -y docker",
-            "mkdir -p /etc/docker",
-            "printf '%s\n' '{' '  \"log-driver\": \"json-file\",' '  \"log-opts\": {' '    \"max-file\": \"5\",' '    \"max-size\": \"1000m\"' '  }' '}' > /etc/docker/daemon.json",
-            "usermod -aG docker ec2-user || true",
-            "systemctl enable docker || true",
-        ],
-    }
-
-
-def _runner_runtime_component(name: str, *, version: str):
-    return {
-        "name": name,
-        "version": version,
         "platform": "Linux",
         "description": "Install Praktika bootstrap and runner runtime dependencies into the image",
         "commands": [
@@ -96,7 +82,7 @@ def _runner_runtime_component(name: str, *, version: str):
     }
 
 
-def _runner_agent_component(name: str, *, version: str):
+def _runner_agent_component(name: str):
     launcher = """#!/usr/bin/env bash
 set -euo pipefail
 
@@ -133,7 +119,6 @@ WantedBy=multi-user.target
 """
     return {
         "name": name,
-        "version": version,
         "platform": "Linux",
         "description": "Bake the Praktika job-agent service into the image",
         "commands": [
@@ -147,10 +132,9 @@ WantedBy=multi-user.target
     }
 
 
-def _orchestrator_runtime_component(name: str, *, version: str):
+def _orchestrator_runtime_component(name: str):
     return {
         "name": name,
-        "version": version,
         "platform": "Linux",
         "description": "Install Praktika bootstrap and orchestrator runtime dependencies into the image",
         "commands": [
@@ -163,17 +147,22 @@ def _orchestrator_runtime_component(name: str, *, version: str):
     }
 
 
-def _orchestrator_agent_component(name: str, *, version: str):
+def _orchestrator_agent_component(name: str):
     launcher = """#!/usr/bin/env bash
 set -euo pipefail
 
 TOKEN=$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
 REGION=${AWS_DEFAULT_REGION:-$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region)}
 INSTANCE_ID=${INSTANCE_ID:-$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)}
+SQS_QUEUE_NAME=${SQS_QUEUE_NAME:-$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/tags/instance/praktika_queue || true)}
+if [ -z "$SQS_QUEUE_NAME" ]; then
+  echo "SQS_QUEUE_NAME is not set and instance tag praktika_queue is unavailable" >&2
+  exit 1
+fi
 export HOME=/root
 export AWS_DEFAULT_REGION="$REGION"
 export INSTANCE_ID="$INSTANCE_ID"
-export SQS_QUEUE_NAME=${SQS_QUEUE_NAME:-praktika-workflows}
+export SQS_QUEUE_NAME
 export PRAKTIKA_WHEELHOUSE=/opt/praktika/wheelhouse
 exec /usr/local/bin/praktika_bootstrap workflow_orchestrator
 """
@@ -185,7 +174,6 @@ After=network.target
 Type=simple
 Environment=HOME=/root
 Environment=PRAKTIKA_WHEELHOUSE=/opt/praktika/wheelhouse
-Environment=SQS_QUEUE_NAME=praktika-workflows
 EnvironmentFile=-/etc/praktika/workflow-agent.env
 ExecStart=/usr/local/bin/praktika-workflow-agent-start
 Restart=always
@@ -196,7 +184,6 @@ WantedBy=multi-user.target
 """
     return {
         "name": name,
-        "version": version,
         "platform": "Linux",
         "description": "Bake the Praktika workflow-agent service into the image",
         "commands": [
@@ -225,24 +212,22 @@ def _runtime_base_packages(*, include_praktika: bool = False):
     return packages
 
 
-def _runtime_prebuilt_venvs(*, version: str):
+def _runtime_prebuilt_venvs():
     return [
         ImageBuilder.PrebuiltVenv(
             name=_RUNTIME_BASE_VENV,
             packages=_runtime_base_packages(),
-            version=version,
             description=(
                 "Shared Python base venv for Praktika workflow and job runs"
             ),
         ),
     ]
 
-def _public_runtime_prebuilt_venvs(*, version: str):
+def _public_runtime_prebuilt_venvs():
     return [
         ImageBuilder.PrebuiltVenv(
             name=_RUNTIME_BASE_VENV,
             packages=_runtime_base_packages(include_praktika=True),
-            version=version,
             description=(
                 "Shared Python base venv with pytest, Praktika runtime deps, and the published Praktika wheel"
             ),
@@ -251,12 +236,12 @@ def _public_runtime_prebuilt_venvs(*, version: str):
 
 
 def _image_builders():
-    runner_arm64_version = "1.0.3"
-    runner_x86_64_version = "1.0.3"
-    orchestrator_arm64_version = "1.0.3"
-    base_runner_arm64_version = "1.0.5"
-    base_orchestrator_arm64_version = "1.0.5"
-    base_runner_x86_64_version = "1.0.5"
+    runner_arm64_version = "1.0.7"
+    runner_x86_64_version = "1.0.7"
+    orchestrator_arm64_version = "1.0.7"
+    base_runner_arm64_version = "1.0.7"
+    base_orchestrator_arm64_version = "1.0.7"
+    base_runner_x86_64_version = "1.0.7"
 
     return [
         ImageBuilder.Config(
@@ -265,17 +250,12 @@ def _image_builders():
             image_recipe_name="praktika-runner-arm64-image-recipe",
             image_recipe_version=runner_arm64_version,
             inline_components=[
-                _common_linux_component(
-                    "praktika-runner-common-linux", version=runner_arm64_version
-                ),
-                _gh_cli_component(
-                    "praktika-runner-gh-cli", version=runner_arm64_version
-                ),
-                _runner_tools_component(
-                    "praktika-runner-tools", version=runner_arm64_version
+                _setup_component(
+                    "praktika-runner-setup",
+                    with_docker=True,
                 ),
             ],
-            prebuilt_venvs=_runtime_prebuilt_venvs(version=runner_arm64_version),
+            prebuilt_venvs=_runtime_prebuilt_venvs(),
             infrastructure_configuration_name="praktika-runner-arm64-imagebuilder-infra",
             instance_profile_name=RUNNER_INSTANCE_PROFILE_NAME,
             instance_types=["t4g.small"],
@@ -293,17 +273,12 @@ def _image_builders():
             image_recipe_name="praktika-runner-x86_64-image-recipe",
             image_recipe_version=runner_x86_64_version,
             inline_components=[
-                _common_linux_component(
-                    "praktika-runner-common-linux", version=runner_x86_64_version
-                ),
-                _gh_cli_component(
-                    "praktika-runner-gh-cli", version=runner_x86_64_version
-                ),
-                _runner_tools_component(
-                    "praktika-runner-tools", version=runner_x86_64_version
+                _setup_component(
+                    "praktika-runner-setup",
+                    with_docker=True,
                 ),
             ],
-            prebuilt_venvs=_runtime_prebuilt_venvs(version=runner_x86_64_version),
+            prebuilt_venvs=_runtime_prebuilt_venvs(),
             infrastructure_configuration_name="praktika-runner-x86_64-imagebuilder-infra",
             instance_profile_name=RUNNER_INSTANCE_PROFILE_NAME,
             instance_types=["t3.small"],
@@ -321,18 +296,12 @@ def _image_builders():
             image_recipe_name="praktika-orchestrator-arm64-image-recipe",
             image_recipe_version=orchestrator_arm64_version,
             inline_components=[
-                _common_linux_component(
-                    "praktika-orchestrator-common-linux",
-                    version=orchestrator_arm64_version,
-                ),
-                _gh_cli_component(
-                    "praktika-orchestrator-gh-cli",
-                    version=orchestrator_arm64_version,
+                _setup_component(
+                    "praktika-orchestrator-setup",
+                    with_docker=False,
                 ),
             ],
-            prebuilt_venvs=_runtime_prebuilt_venvs(
-                version=orchestrator_arm64_version
-            ),
+            prebuilt_venvs=_runtime_prebuilt_venvs(),
             infrastructure_configuration_name="praktika-orchestrator-arm64-imagebuilder-infra",
             instance_profile_name=ORCHESTRATOR_INSTANCE_PROFILE_NAME,
             instance_types=["t4g.small"],
@@ -350,29 +319,18 @@ def _image_builders():
             image_recipe_name="praktika-base-runner-arm64-image-recipe",
             image_recipe_version=base_runner_arm64_version,
             inline_components=[
-                _common_linux_component(
-                    "praktika-base-runner-common-linux",
-                    version=base_runner_arm64_version,
-                ),
-                _gh_cli_component(
-                    "praktika-base-runner-gh-cli", version=base_runner_arm64_version
-                ),
-                _runner_tools_component(
-                    "praktika-base-runner-tools",
-                    version=base_runner_arm64_version,
+                _setup_component(
+                    "praktika-base-runner-setup",
+                    with_docker=True,
                 ),
                 _runner_runtime_component(
                     "praktika-base-runner-runtime",
-                    version=base_runner_arm64_version,
                 ),
                 _runner_agent_component(
                     "praktika-base-runner-agent",
-                    version=base_runner_arm64_version,
                 ),
             ],
-            prebuilt_venvs=_public_runtime_prebuilt_venvs(
-                version=base_runner_arm64_version
-            ),
+            prebuilt_venvs=_public_runtime_prebuilt_venvs(),
             infrastructure_configuration_name="praktika-base-runner-arm64-imagebuilder-infra",
             instance_profile_name=RUNNER_INSTANCE_PROFILE_NAME,
             instance_types=["t4g.small"],
@@ -390,26 +348,18 @@ def _image_builders():
             image_recipe_name="praktika-base-orchestrator-arm64-image-recipe",
             image_recipe_version=base_orchestrator_arm64_version,
             inline_components=[
-                _common_linux_component(
-                    "praktika-base-orchestrator-common-linux",
-                    version=base_orchestrator_arm64_version,
-                ),
-                _gh_cli_component(
-                    "praktika-base-orchestrator-gh-cli",
-                    version=base_orchestrator_arm64_version,
+                _setup_component(
+                    "praktika-base-orchestrator-setup",
+                    with_docker=False,
                 ),
                 _orchestrator_runtime_component(
                     "praktika-base-orchestrator-runtime",
-                    version=base_orchestrator_arm64_version,
                 ),
                 _orchestrator_agent_component(
                     "praktika-base-orchestrator-agent",
-                    version=base_orchestrator_arm64_version,
                 ),
             ],
-            prebuilt_venvs=_public_runtime_prebuilt_venvs(
-                version=base_orchestrator_arm64_version
-            ),
+            prebuilt_venvs=_public_runtime_prebuilt_venvs(),
             infrastructure_configuration_name="praktika-base-orchestrator-arm64-imagebuilder-infra",
             instance_profile_name=ORCHESTRATOR_INSTANCE_PROFILE_NAME,
             instance_types=["t4g.small"],
@@ -427,30 +377,18 @@ def _image_builders():
             image_recipe_name="praktika-base-runner-x86_64-image-recipe",
             image_recipe_version=base_runner_x86_64_version,
             inline_components=[
-                _common_linux_component(
-                    "praktika-base-runner-common-linux",
-                    version=base_runner_x86_64_version,
-                ),
-                _gh_cli_component(
-                    "praktika-base-runner-gh-cli",
-                    version=base_runner_x86_64_version,
-                ),
-                _runner_tools_component(
-                    "praktika-base-runner-tools",
-                    version=base_runner_x86_64_version,
+                _setup_component(
+                    "praktika-base-runner-setup",
+                    with_docker=True,
                 ),
                 _runner_runtime_component(
                     "praktika-base-runner-runtime",
-                    version=base_runner_x86_64_version,
                 ),
                 _runner_agent_component(
                     "praktika-base-runner-agent",
-                    version=base_runner_x86_64_version,
                 ),
             ],
-            prebuilt_venvs=_public_runtime_prebuilt_venvs(
-                version=base_runner_x86_64_version
-            ),
+            prebuilt_venvs=_public_runtime_prebuilt_venvs(),
             infrastructure_configuration_name="praktika-base-runner-x86_64-imagebuilder-infra",
             instance_profile_name=RUNNER_INSTANCE_PROFILE_NAME,
             instance_types=["t3.small"],

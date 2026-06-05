@@ -20,6 +20,14 @@ ALLOWED_SENDERS = set()
 ALLOWED_PUSH_BRANCHES = {"main"}
 
 
+def _cancel_scope(queue_name: str) -> str:
+    return "base" if (queue_name or "").strip().endswith("-base") else "default"
+
+
+def _cancel_before_key(pr_number) -> str:
+    return f"pr/{pr_number}/cancel-before-{_cancel_scope(SQS_QUEUE_NAME)}"
+
+
 def _get_raw_body(event) -> str:
     body = event.get("body", "")
     if event.get("isBase64Encoded"):
@@ -179,17 +187,17 @@ def _cancel_run(run_id):
 
 
 def _cancel_runs_before(pr_number, event_ts):
-    """New push: write ``pr/<pr>/cancel-before`` with the new event ts.
+    """New push: write the scoped ``cancel-before`` marker with the new event ts.
 
-    Every still-running orchestrator for this PR with
-    ``event_ts < cancel-before`` self-cancels via ``sweep_cancel``. The
-    freshly enqueued run carries the same ``event_ts`` so it stays alive
-    (sweep_cancel uses strict less-than).
+    Every still-running orchestrator for this PR in the same queue scope
+    with ``event_ts < cancel-before`` self-cancels via ``sweep_cancel``.
+    The freshly enqueued run carries the same ``event_ts`` so it stays
+    alive (sweep_cancel uses strict less-than).
     """
     if not S3_BUCKET:
         print("  [warn] S3_BUCKET not set; cannot write cancel-before")
         return
-    key = f"pr/{pr_number}/cancel-before"
+    key = _cancel_before_key(pr_number)
     try:
         _s3().put_object(
             Bucket=S3_BUCKET,
@@ -230,9 +238,10 @@ def lambda_handler(event, context):
         return {"statusCode": 401, "body": "unauthorized"}
 
     # One ts per webhook delivery: stamped on the workflow event AND used
-    # as cancel-before for older runs of the same PR. Sequential operations
-    # in this invocation share the same ts so the freshly enqueued run
-    # (event_ts == cancel-before-ts) does not self-cancel.
+    # as the scoped cancel-before marker for older runs of the same PR.
+    # Sequential operations in this invocation share the same ts so the
+    # freshly enqueued run (event_ts == cancel-before-ts) does not
+    # self-cancel.
     event_ts = time.time()
 
     headers = event.get("headers") or {}
@@ -326,10 +335,11 @@ def lambda_handler(event, context):
 
     workflow = _build_workflow(action, payload, event_ts)
     if workflow:
-        # On a new push (synchronize) write pr/<pr>/cancel-before with this
-        # event_ts BEFORE enqueuing the new run, so older runs see the flag
-        # on their next sweep_cancel and self-cancel. The freshly enqueued
-        # run carries the same event_ts and stays alive.
+        # On a new push (synchronize) write the scoped cancel-before marker
+        # with this event_ts BEFORE enqueuing the new run, so older runs in
+        # the same orchestrator scope see the flag on their next
+        # sweep_cancel and self-cancel. The freshly enqueued run carries
+        # the same event_ts and stays alive.
         if action == "synchronize":
             _cancel_runs_before(workflow["pr_number"], event_ts)
         _enqueue(workflow, delivery_id)

@@ -1,3 +1,5 @@
+import base64
+
 import pytest
 
 from ci.infrastructure.projects import (
@@ -11,6 +13,11 @@ from praktika.settings import Settings
 from praktika.infrastructure.cloud import CloudInfrastructure
 from praktika.infrastructure.native.orchestrator_pool import OrchestratorPool
 from praktika.infrastructure.native.runner_pool import RunnerPool
+
+
+def _decode_embedded_file(command: str) -> str:
+    payload = command.split("'")[3]
+    return base64.b64decode(payload).decode("utf-8")
 
 
 def test_get_infra_config_requires_project_when_multiple(tmp_path, monkeypatch):
@@ -115,9 +122,7 @@ def test_base_runner_image_builders_are_declared():
         }
         assert builder.instance_types == [instance_type]
         assert [component["name"] for component in builder.inline_components] == [
-            "praktika-base-runner-common-linux",
-            "praktika-base-runner-gh-cli",
-            "praktika-base-runner-tools",
+            "praktika-base-runner-setup",
             "praktika-base-runner-runtime",
             "praktika-base-runner-agent",
         ]
@@ -188,8 +193,7 @@ def test_base_orchestrator_image_builder_is_declared():
         "workflow-orchestrator-base-lt"
     ]
     assert [component["name"] for component in builder.inline_components] == [
-        "praktika-base-orchestrator-common-linux",
-        "praktika-base-orchestrator-gh-cli",
+        "praktika-base-orchestrator-setup",
         "praktika-base-orchestrator-runtime",
         "praktika-base-orchestrator-agent",
     ]
@@ -215,11 +219,15 @@ def test_base_orchestrator_image_builder_is_declared():
         for component in builder.inline_components
         if component["name"] == "praktika-base-orchestrator-agent"
     )
+    launcher = _decode_embedded_file(agent_component["commands"][1])
+    unit = _decode_embedded_file(agent_component["commands"][3])
     assert any("workflow-agent.service" in cmd for cmd in agent_component["commands"])
     assert any(
         "multi-user.target.wants/workflow-agent.service" in cmd
         for cmd in agent_component["commands"]
     )
+    assert "latest/meta-data/tags/instance/praktika_queue" in launcher
+    assert "Environment=SQS_QUEUE_NAME=praktika-workflows" not in unit
 
 
 def test_projects_orchestrator_pools_include_default_and_base_image_variants():

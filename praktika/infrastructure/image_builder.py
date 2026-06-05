@@ -16,7 +16,7 @@ class ImageBuilder:
         packages: List[str] = field(default_factory=list)
         python: str = "python3.12"
         path: str = ""
-        version: str = "1.0.0"
+        version: str = ""
         description: str = ""
 
     @dataclass
@@ -129,6 +129,12 @@ class ImageBuilder:
                 lines.append(f'            - "{cmd}"')
             return "\n".join(lines) + "\n"
 
+        def _component_version(self, raw_version: Any) -> str:
+            version = str(raw_version or "").strip()
+            if version:
+                return version
+            return str(self.image_recipe_version or "").strip()
+
         def _prebuilt_venv_component_specs(self) -> List[Dict[str, Any]]:
             specs: List[Dict[str, Any]] = []
             for venv in self.prebuilt_venvs:
@@ -151,7 +157,7 @@ class ImageBuilder:
                 specs.append(
                     {
                         "name": f"{self.name}-{venv.name}-venv",
-                        "version": venv.version,
+                        "version": self._component_version(venv.version),
                         "platform": "Linux",
                         "description": venv.description
                         or f"Create prebaked Python venv '{venv.name}'",
@@ -170,7 +176,7 @@ class ImageBuilder:
 
             for spec in specs_to_create:
                 name = str(spec.get("name", "")).strip()
-                version = str(spec.get("version", "")).strip()
+                version = self._component_version(spec.get("version"))
                 platform = self._normalize_component_platform(
                     str(spec.get("platform", "macOS"))
                 )

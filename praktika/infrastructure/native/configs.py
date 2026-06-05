@@ -54,8 +54,8 @@ lambda_gh_trigger_config = Lambda.Config(
         GH_TRIGGER_WEBHOOK_SECRET_NAME: "GH_WEBHOOK_SECRET",
     },
     # S3_BUCKET points the lambda at the per-run S3 prefix where it writes
-    # cancel-request and cancel-before flags. Same artifacts bucket the
-    # orchestrator and runners use.
+    # cancel-request and scoped cancel-before flags. Same artifacts bucket
+    # the orchestrator and runners use.
     environments={
         "S3_BUCKET": (Settings.S3_ARTIFACT_PATH or "").split("/")[0],
     },

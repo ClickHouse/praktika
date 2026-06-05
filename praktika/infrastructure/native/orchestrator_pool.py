@@ -248,7 +248,7 @@ class OrchestratorPool:
             inline_policies={
                 # Lambda enqueues workflow trigger events to the main
                 # workflow queue and writes cancel signals to S3 (per-run
-                # cancel-request and per-PR cancel-before).
+                # cancel-request and per-PR scoped cancel-before).
                 "SQSSendMessage": {
                     "Version": "2012-10-17",
                     "Statement": [
@@ -269,7 +269,7 @@ class OrchestratorPool:
                             "Action": ["s3:PutObject"],
                             "Resource": [
                                 "arn:aws:s3:::praktika-artifacts-*/runs/*/cancel-request",
-                                "arn:aws:s3:::praktika-artifacts-*/pr/*/cancel-before",
+                                "arn:aws:s3:::praktika-artifacts-*/pr/*/cancel-before*",
                             ],
                         },
                     ],
