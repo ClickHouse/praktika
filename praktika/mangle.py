@@ -20,6 +20,23 @@ def _is_local_run():
         return False
 
 
+def _is_default_local_workflow(py_file: Path, workflow_name: str) -> bool:
+    configured = Settings.DEFAULT_LOCAL_TEST_WORKFLOW
+    if not configured:
+        return False
+    configured_values = {
+        configured,
+        Path(configured).name,
+        Path(configured).stem,
+    }
+    workflow_values = {
+        workflow_name,
+        py_file.name,
+        py_file.stem,
+    }
+    return bool(configured_values & workflow_values)
+
+
 def _get_workflows(
     name=None,
     file=None,
@@ -59,10 +76,6 @@ def _get_workflows(
                     continue
             if file and str(file) not in str(py_file):
                 continue
-        elif py_file.name != Settings.DEFAULT_LOCAL_TEST_WORKFLOW:
-            if not _is_local_run():
-                print(f"Skip [{py_file.name}]")
-            continue
         module_name = py_file.name.removeprefix(".py")
         spec = importlib.util.spec_from_file_location(
             module_name, f"{Settings.WORKFLOWS_DIRECTORY}/{module_name}"
@@ -72,7 +85,11 @@ def _get_workflows(
         assert spec.loader
         spec.loader.exec_module(foo)
         try:
+            matched_default_workflow = False
             for workflow in foo.WORKFLOWS:
+                if default and not _is_default_local_workflow(py_file, workflow.name):
+                    continue
+                matched_default_workflow = True
                 if name:
                     if name == workflow.name:
                         print(f"Read workflow [{name}] config from [{module_name}]")
@@ -87,6 +104,8 @@ def _get_workflows(
                     )
                 if isinstance(_file_names_out, list):
                     _file_names_out.append(py_file.name.removeprefix(".py"))
+            if default and not matched_default_workflow and not _is_local_run():
+                print(f"Skip [{py_file.name}]")
         except Exception as e:
             pass
             # print(

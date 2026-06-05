@@ -623,14 +623,22 @@ class Result(MetaClasses.Serializable):
         """
         sw = Utils.Stopwatch()
         files = []
-        if pytest_report_file:
-            files.append(pytest_report_file)
-        else:
+        if not pytest_report_file:
             pytest_report_file = ResultTranslator.PYTEST_RESULT_FILE
 
         with ContextManager.cd(cwd):
-            # Construct the full pytest command with jsonl report
-            full_command = f"pytest {command} --report-log={pytest_report_file}"
+            supports_report_log = "--report-log" in Shell.get_output(
+                "pytest --help", verbose=False
+            )
+
+            # Construct the full pytest command with jsonl report when the
+            # plugin is installed; otherwise fall back to plain pytest so local
+            # `praktika run <job>` still works in dev envs that only have the
+            # base `pytest` package.
+            full_command = f"pytest {command}"
+            if supports_report_log:
+                full_command += f" --report-log={pytest_report_file}"
+                files.append(pytest_report_file)
             if pytest_logfile:
                 full_command += f" --log-file={pytest_logfile}"
                 files.append(pytest_logfile)
@@ -646,10 +654,37 @@ class Result(MetaClasses.Serializable):
                 name = f"pytest_{command}"
 
             # Run pytest
-            Shell.run(full_command, log_file=logfile, timeout=timeout)
-            test_result = ResultTranslator.from_pytest_jsonl(
-                pytest_report_file=pytest_report_file
-            )
+            exit_code = Shell.run(full_command, log_file=logfile, timeout=timeout)
+            if supports_report_log:
+                test_result = ResultTranslator.from_pytest_jsonl(
+                    pytest_report_file=pytest_report_file
+                )
+            else:
+                print(
+                    "WARNING: pytest-reportlog is unavailable, falling back to plain pytest results"
+                )
+                info = ""
+                if exit_code != 0:
+                    if logfile and os.path.isfile(logfile):
+                        with open(logfile, "r", encoding="utf-8", errors="ignore") as f:
+                            info = "".join(f.readlines()[-300:]).strip()
+                    if not info:
+                        info = f"pytest exited with code [{exit_code}]"
+                    info = (
+                        "pytest-reportlog plugin is not installed; using plain pytest fallback.\n\n"
+                        + info
+                    )
+                test_result = Result.create_from(
+                    name="pytest",
+                    status=(
+                        Result.Status.OK
+                        if exit_code == 0
+                        else Result.Status.FAIL
+                        if exit_code == 1
+                        else Result.Status.ERROR
+                    ),
+                    info=info,
+                )
 
         return Result.create_from(
             name=name,

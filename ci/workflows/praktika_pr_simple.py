@@ -18,7 +18,6 @@ _INSTALL_DEPS = (
     "|| python3 -m pip install -r ./ci/requirements.txt"
 )
 _BASE_PRAKTIKA_VERSION = "0.1"
-_BOOTSTRAP_VERSION = "0.1.1"
 
 artifact = Artifact.Config(name="greet", type=Artifact.Type.S3, path="./artifact.txt")
 
@@ -34,11 +33,16 @@ workflow = Workflow.Config(
             runs_on=[RunnerLabels.SMALL_ARM_BASE],
             command=(
                 "python3 -c \"import importlib.metadata as m; "
-                f"praktika=m.version('praktika'); bootstrap=m.version('praktika-bootstrap'); "
-                "print('praktika=', praktika); print('praktika-bootstrap=', bootstrap); "
-                f"assert praktika == '{_BASE_PRAKTIKA_VERSION}', praktika; "
-                f"assert bootstrap == '{_BOOTSTRAP_VERSION}', bootstrap\""
+                f"praktika=m.version('praktika'); "
+                "print('praktika=', praktika); "
+                f"assert praktika == '{_BASE_PRAKTIKA_VERSION}', praktika\""
             ),
+        ),
+        Job.Config(
+            name="Praktika Pytests",
+            runs_on=[RunnerLabels.SMALL_ARM_BASE],
+            command="python3 ./ci/scripts/run_ci_pytests.py",
+            pre_hooks=[_INSTALL_DEPS],
         ),
         Job.Config(
             name="Unit Tests",
