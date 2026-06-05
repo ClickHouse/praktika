@@ -6,7 +6,7 @@ echo "=== Workflow agent bootstrap ==="
 RUNNER_HOME=/opt/praktika
 mkdir -p "$RUNNER_HOME" "$RUNNER_HOME/work"
 
-PRAKTIKA_BOOTSTRAP_WHL="https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_bootstrap-0.1.0-py3-none-any.whl"
+PRAKTIKA_BOOTSTRAP_WHL="https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_bootstrap-0.1.1-py3-none-any.whl"
 python3.12 -m pip install --force-reinstall "$PRAKTIKA_BOOTSTRAP_WHL" --break-system-packages
 
 TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")

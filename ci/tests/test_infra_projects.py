@@ -132,11 +132,11 @@ def test_base_runner_image_builders_are_declared():
             if component["name"] == "praktika-base-runner-runtime"
         )
         assert any(
-            "praktika_bootstrap-0.1.0-py3-none-any.whl" in cmd
+            "praktika_bootstrap-0.1.1-py3-none-any.whl" in cmd
             for cmd in runtime_component["commands"]
         )
         assert any(
-            "praktika-0.1-py3-none-any.whl" in cmd
+            "praktika-0.1.1-py3-none-any.whl" in cmd
             for cmd in runtime_component["commands"]
         )
         assert builder.prebuilt_venvs[0].name == "praktika-runtime"
@@ -203,11 +203,11 @@ def test_base_orchestrator_image_builder_is_declared():
         if component["name"] == "praktika-base-orchestrator-runtime"
     )
     assert any(
-        "praktika_bootstrap-0.1.0-py3-none-any.whl" in cmd
+        "praktika_bootstrap-0.1.1-py3-none-any.whl" in cmd
         for cmd in runtime_component["commands"]
     )
     assert any(
-        "praktika-0.1-py3-none-any.whl" in cmd
+        "praktika-0.1.1-py3-none-any.whl" in cmd
         for cmd in runtime_component["commands"]
     )
     assert builder.prebuilt_venvs[0].name == "praktika-runtime"

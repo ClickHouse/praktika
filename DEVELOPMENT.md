@@ -21,8 +21,8 @@ Build and upload `praktika`:
 ```bash
 .build-venv/bin/python -m build --wheel --no-isolation --outdir dist/
 aws --profile Box s3 cp \
-  dist/praktika-0.1-py3-none-any.whl \
-  s3://praktika-artifacts-eu-north-1/packages/praktika-0.1-py3-none-any.whl
+  dist/praktika-0.1.1-py3-none-any.whl \
+  s3://praktika-artifacts-eu-north-1/packages/praktika-0.1.1-py3-none-any.whl
 ```
 
 Build and upload `praktika_bootstrap`:
@@ -30,15 +30,15 @@ Build and upload `praktika_bootstrap`:
 ```bash
 .build-venv/bin/python -m build --wheel --no-isolation --outdir bootstrap/dist bootstrap
 aws --profile Box s3 cp \
-  bootstrap/dist/praktika_bootstrap-0.1.0-py3-none-any.whl \
-  s3://praktika-artifacts-eu-north-1/packages/praktika_bootstrap-0.1.0-py3-none-any.whl
+  bootstrap/dist/praktika_bootstrap-0.1.1-py3-none-any.whl \
+  s3://praktika-artifacts-eu-north-1/packages/praktika_bootstrap-0.1.1-py3-none-any.whl
 ```
 
 Optionally, refresh the local install of `praktika` from the same S3 URL:
 
 ```bash
 pip install --force-reinstall \
-  "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1-py3-none-any.whl" \
+  "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1.1-py3-none-any.whl" \
   --break-system-packages
 ```
 

@@ -12,6 +12,8 @@ _INSTALL_DEPS = (
     "python3 -m pip install -r ./ci/requirements.txt --break-system-packages "
     "|| python3 -m pip install -r ./ci/requirements.txt"
 )
+_HEAD_PRAKTIKA_VERSION = "0.1.1"
+_BOOTSTRAP_VERSION = "0.1.1"
 
 artifact = Artifact.Config(name="greet", type=Artifact.Type.S3, path="./artifact.txt")
 
@@ -20,6 +22,17 @@ workflow = Workflow.Config(
     event=Workflow.Event.PULL_REQUEST,
     base_branches=["main"],
     jobs=[
+        Job.Config(
+            name="Version Check",
+            runs_on=[RunnerLabels.SMALL_ARM],
+            command=(
+                "python3 -c \"import importlib.metadata as m; "
+                f"praktika=m.version('praktika'); bootstrap=m.version('praktika-bootstrap'); "
+                "print('praktika=', praktika); print('praktika-bootstrap=', bootstrap); "
+                f"assert praktika == '{_HEAD_PRAKTIKA_VERSION}', praktika; "
+                f"assert bootstrap == '{_BOOTSTRAP_VERSION}', bootstrap\""
+            ),
+        ),
         # S3 artifact with cache digest
         Job.Config(
             name="Build",

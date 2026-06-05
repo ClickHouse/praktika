@@ -11,8 +11,9 @@ from praktika.infrastructure.native.configs import (
 CI_VPC_NAME = "praktika-ci"
 CI_REGION = "eu-north-1"
 _HERE = Path(__file__).parent
-_PRAKTIKA_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1-py3-none-any.whl"
-_PRAKTIKA_BOOTSTRAP_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_bootstrap-0.1.0-py3-none-any.whl"
+_PRAKTIKA_BASE_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1-py3-none-any.whl"
+_PRAKTIKA_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1.1-py3-none-any.whl"
+_PRAKTIKA_BOOTSTRAP_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_bootstrap-0.1.1-py3-none-any.whl"
 _RUNTIME_BASE_VENV = "praktika-runtime"
 
 
@@ -208,7 +209,7 @@ def _runtime_base_packages(*, include_praktika: bool = False):
         "pytest>=7.0.0",
     ]
     if include_praktika:
-        packages.append(_PRAKTIKA_WHL)
+        packages.append(_PRAKTIKA_BASE_WHL)
     return packages
 
 
@@ -236,12 +237,12 @@ def _public_runtime_prebuilt_venvs():
 
 
 def _image_builders():
-    runner_arm64_version = "1.0.7"
-    runner_x86_64_version = "1.0.7"
-    orchestrator_arm64_version = "1.0.7"
-    base_runner_arm64_version = "1.0.7"
-    base_orchestrator_arm64_version = "1.0.7"
-    base_runner_x86_64_version = "1.0.7"
+    runner_arm64_version = "1.0.8"
+    runner_x86_64_version = "1.0.8"
+    orchestrator_arm64_version = "1.0.8"
+    base_runner_arm64_version = "1.0.8"
+    base_orchestrator_arm64_version = "1.0.8"
+    base_runner_x86_64_version = "1.0.8"
 
     return [
         ImageBuilder.Config(

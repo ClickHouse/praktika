@@ -5,5 +5,5 @@
 set -euo pipefail
 
 python3 -m build --wheel --outdir dist/
-aws s3 cp dist/praktika-0.1-py3-none-any.whl \
-  s3://praktika-artifacts-eu-north-1/packages/praktika-0.1-py3-none-any.whl
+aws s3 cp dist/praktika-0.1.1-py3-none-any.whl \
+  s3://praktika-artifacts-eu-north-1/packages/praktika-0.1.1-py3-none-any.whl
