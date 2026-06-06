@@ -4,6 +4,7 @@ import pytest
 
 from ci.infrastructure.projects import (
     _IMAGE_BUILDERS_BY_NAME,
+    _gh_token_minter,
     _orchestrator_pool,
     _orchestrator_pool_base,
     _runner_pools,
@@ -170,6 +171,19 @@ def test_all_image_builders_stay_private():
         "praktika-base-runner-x86_64-image",
     ]:
         assert _IMAGE_BUILDERS_BY_NAME[name].ami_launch_permission == {}
+
+
+def test_project_image_builders_rely_on_settings_region_defaults():
+    for builder in _IMAGE_BUILDERS_BY_NAME.values():
+        assert builder.region == ""
+        assert builder.regions == []
+
+
+def test_project_github_token_minter_uses_defaults_and_project_repo_scope():
+    assert _gh_token_minter.name == "praktika-gh-token"
+    assert _gh_token_minter.role_name == "praktika-gh-token-role"
+    assert _gh_token_minter.secret_name == "praktika-gh-app"
+    assert _gh_token_minter.repositories == ["praktika"]
 
 
 def test_base_runner_pool_uses_base_image_without_bootstrap_user_data():

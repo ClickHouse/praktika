@@ -404,7 +404,7 @@ class WorkflowState:
         # sweep_cancel polls both. The orchestrator → runners kill flag at
         # runs/<run_id>/cancel is written by cancel_unfinished_jobs.
         from ..settings import Settings
-        self._cancel_s3_bucket = Settings.S3_ARTIFACT_PATH.split("/")[0]
+        self._cancel_s3_bucket = Settings.S3_ARTIFACT_BUCKET
         self._runs_s3_prefix = f"runs/{self._run_id}"
         self._cancel_s3_key = f"{self._runs_s3_prefix}/cancel"
         self._cancel_request_s3_key = f"{self._runs_s3_prefix}/cancel-request"

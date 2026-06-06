@@ -171,8 +171,8 @@ class Validator:
                     )
                     if artifact.is_s3_artifact():
                         assert (
-                            Settings.S3_ARTIFACT_PATH
-                        ), "Provide S3_ARTIFACT_PATH setting in any .py file in ./ci/settings/* to be able to use s3 for artifacts"
+                            Settings.S3_ARTIFACT_BUCKET
+                        ), "Provide S3_ARTIFACT_BUCKET setting in any .py file in ./ci/settings/* to be able to use s3 for artifacts"
 
             for job in workflow.jobs:
                 if job.requires and workflow.artifacts:

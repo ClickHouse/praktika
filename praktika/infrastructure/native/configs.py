@@ -57,7 +57,7 @@ lambda_gh_trigger_config = Lambda.Config(
     # cancel-request and scoped cancel-before flags. Same artifacts bucket
     # the orchestrator and runners use.
     environments={
-        "S3_BUCKET": (Settings.S3_ARTIFACT_PATH or "").split("/")[0],
+        "S3_BUCKET": Settings.S3_ARTIFACT_BUCKET or "",
     },
     timeout_ms=10 * 1000,
     memory_size_mb=128,

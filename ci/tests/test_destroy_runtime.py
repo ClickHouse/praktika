@@ -33,14 +33,7 @@ def test_destroy_runtime_keeps_webhook_lambda_and_data_plane(monkeypatch):
         size=0,
         max_size=1,
     )
-    token_minter = GitHubTokenMinter(
-        name="praktika-gh-token",
-        role_name="praktika-gh-token-role",
-        secret_name="praktika-gh-app",
-        region="eu-north-1",
-        repositories=["praktika"],
-        permissions={"checks": "write"},
-    )
+    token_minter = GitHubTokenMinter()
 
     cloud = CloudInfrastructure.Config(
         name="cloud_ci_infra",

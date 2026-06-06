@@ -5,6 +5,16 @@ from praktika.infrastructure.iam_role import IAMRole
 from praktika.infrastructure.lambda_function import Lambda
 
 
+DEFAULT_GITHUB_TOKEN_PERMISSIONS = {
+    "checks": "write",
+    "contents": "read",
+    "issues": "write",
+    "metadata": "read",
+    "pull_requests": "write",
+    "statuses": "write",
+}
+
+
 @dataclass
 class GitHubTokenMinter:
     """Native component that deploys a Lambda which mints scoped GitHub App tokens.
@@ -14,10 +24,12 @@ class GitHubTokenMinter:
     Callers only get the token scope this component is configured with.
     """
 
-    permissions: Dict[str, str]
-    repositories: List[str]
-    secret_name: str
-    region: str
+    permissions: Dict[str, str] = field(
+        default_factory=lambda: dict(DEFAULT_GITHUB_TOKEN_PERMISSIONS)
+    )
+    repositories: List[str] = field(default_factory=list)
+    secret_name: str = "praktika-gh-app"
+    region: str = ""
     name: str = "praktika-gh-token"
     role_name: str = "praktika-gh-token-role"
 
@@ -25,6 +37,7 @@ class GitHubTokenMinter:
     lambda_config: Lambda.Config = field(init=False)
 
     def __post_init__(self):
+        self._validate()
         self.lambda_role = IAMRole.Config(
             name=self.role_name,
             trust_service="lambda.amazonaws.com",
@@ -68,6 +81,22 @@ class GitHubTokenMinter:
             timeout_ms=10 * 1000,
             memory_size_mb=128,
         )
+
+    def _validate(self):
+        if not self.permissions:
+            raise ValueError("GitHubTokenMinter.permissions must not be empty")
+
+    def apply_defaults(self, default_repository: str = ""):
+        if not self.repositories and default_repository:
+            self.repositories = [default_repository]
+            self.lambda_config.environments["GH_TOKEN_REPOSITORIES_JSON"] = __import__(
+                "json"
+            ).dumps(self.repositories)
+        if not self.repositories:
+            raise ValueError(
+                "GitHubTokenMinter.repositories must be set, or CloudInfrastructure.Config.name "
+                "must provide the default repository scope"
+            )
 
     def grant_invoke(self, role: IAMRole.Config):
         policy = role.inline_policies.setdefault(

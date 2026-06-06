@@ -47,3 +47,14 @@ def test_from_pytest_run_falls_back_without_reportlog(tmp_path, monkeypatch):
     assert result.files == [str(pytest_log), str(stdout_log)]
     assert "pytest-reportlog plugin is not installed" in result.info
     assert "AssertionError: boom" in result.info
+
+
+def test_assets_live_in_ext():
+    result = Result.create_from(
+        name="job",
+        status=Result.Status.OK,
+        assets=["./asset.txt"],
+    )
+
+    assert result.ext["assets"] == ["./asset.txt"]
+    assert "assets" not in Result.to_dict(result)

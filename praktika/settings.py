@@ -43,7 +43,7 @@ class _Settings:
     ######################################
     #   S3 (artifact storage) settings   #
     ######################################
-    S3_ARTIFACT_PATH: str = ""
+    S3_ARTIFACT_BUCKET: str = ""
 
     ######################################
     #        CI workspace settings       #
@@ -154,7 +154,7 @@ class _Settings:
 
 
 _USER_DEFINED_SETTINGS = [
-    "S3_ARTIFACT_PATH",
+    "S3_ARTIFACT_BUCKET",
     "CACHE_S3_PATH",
     "S3_REPORT_BUCKET",
     "S3_UPSTREAM_REPORT_BUCKET",

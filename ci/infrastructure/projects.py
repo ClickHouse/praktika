@@ -9,7 +9,6 @@ from praktika.infrastructure.native.configs import (
 )
 
 CI_VPC_NAME = "praktika-ci"
-CI_REGION = "eu-north-1"
 _HERE = Path(__file__).parent
 _PRAKTIKA_BASE_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1-py3-none-any.whl"
 _PRAKTIKA_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1.1-py3-none-any.whl"
@@ -247,7 +246,6 @@ def _image_builders():
     return [
         ImageBuilder.Config(
             name="praktika-runner-arm64-image",
-            region=CI_REGION,
             image_recipe_name="praktika-runner-arm64-image-recipe",
             image_recipe_version=runner_arm64_version,
             inline_components=[
@@ -265,12 +263,10 @@ def _image_builders():
             distribution_configuration_name="praktika-runner-arm64-imagebuilder-dist",
             ami_name="praktika-runner-arm64-{{ imagebuilder:buildDate }}",
             ami_tags={"praktika_resource_tag": "runner", "arch": "arm64"},
-            regions=[CI_REGION],
             image_pipeline_name="praktika-runner-arm64-imagebuilder-pipeline",
         ),
         ImageBuilder.Config(
             name="praktika-runner-x86_64-image",
-            region=CI_REGION,
             image_recipe_name="praktika-runner-x86_64-image-recipe",
             image_recipe_version=runner_x86_64_version,
             inline_components=[
@@ -288,12 +284,10 @@ def _image_builders():
             distribution_configuration_name="praktika-runner-x86_64-imagebuilder-dist",
             ami_name="praktika-runner-x86_64-{{ imagebuilder:buildDate }}",
             ami_tags={"praktika_resource_tag": "runner", "arch": "x86_64"},
-            regions=[CI_REGION],
             image_pipeline_name="praktika-runner-x86_64-imagebuilder-pipeline",
         ),
         ImageBuilder.Config(
             name="praktika-orchestrator-arm64-image",
-            region=CI_REGION,
             image_recipe_name="praktika-orchestrator-arm64-image-recipe",
             image_recipe_version=orchestrator_arm64_version,
             inline_components=[
@@ -311,12 +305,10 @@ def _image_builders():
             distribution_configuration_name="praktika-orchestrator-arm64-imagebuilder-dist",
             ami_name="praktika-orchestrator-arm64-{{ imagebuilder:buildDate }}",
             ami_tags={"praktika_resource_tag": "workflow_orchestrator", "arch": "arm64"},
-            regions=[CI_REGION],
             image_pipeline_name="praktika-orchestrator-arm64-imagebuilder-pipeline",
         ),
         ImageBuilder.Config(
             name="praktika-base-runner-arm64-image",
-            region=CI_REGION,
             image_recipe_name="praktika-base-runner-arm64-image-recipe",
             image_recipe_version=base_runner_arm64_version,
             inline_components=[
@@ -340,12 +332,10 @@ def _image_builders():
             distribution_configuration_name="praktika-base-runner-arm64-imagebuilder-dist",
             ami_name="praktika-base-runner-arm64-{{ imagebuilder:buildDate }}",
             ami_tags={"praktika_resource_tag": "base_runner", "arch": "arm64"},
-            regions=[CI_REGION],
             image_pipeline_name="praktika-base-runner-arm64-imagebuilder-pipeline",
         ),
         ImageBuilder.Config(
             name="praktika-base-orchestrator-arm64-image",
-            region=CI_REGION,
             image_recipe_name="praktika-base-orchestrator-arm64-image-recipe",
             image_recipe_version=base_orchestrator_arm64_version,
             inline_components=[
@@ -369,12 +359,10 @@ def _image_builders():
             distribution_configuration_name="praktika-base-orchestrator-arm64-imagebuilder-dist",
             ami_name="praktika-base-orchestrator-arm64-{{ imagebuilder:buildDate }}",
             ami_tags={"praktika_resource_tag": "base_orchestrator", "arch": "arm64"},
-            regions=[CI_REGION],
             image_pipeline_name="praktika-base-orchestrator-arm64-imagebuilder-pipeline",
         ),
         ImageBuilder.Config(
             name="praktika-base-runner-x86_64-image",
-            region=CI_REGION,
             image_recipe_name="praktika-base-runner-x86_64-image-recipe",
             image_recipe_version=base_runner_x86_64_version,
             inline_components=[
@@ -398,7 +386,6 @@ def _image_builders():
             distribution_configuration_name="praktika-base-runner-x86_64-imagebuilder-dist",
             ami_name="praktika-base-runner-x86_64-{{ imagebuilder:buildDate }}",
             ami_tags={"praktika_resource_tag": "base_runner", "arch": "x86_64"},
-            regions=[CI_REGION],
             image_pipeline_name="praktika-base-runner-x86_64-imagebuilder-pipeline",
         ),
     ]
@@ -406,21 +393,7 @@ def _image_builders():
 
 _IMAGE_BUILDERS = _image_builders()
 _IMAGE_BUILDERS_BY_NAME = {builder.name: builder for builder in _IMAGE_BUILDERS}
-_gh_token_minter = NativeComponents.GitHubTokenMinter(
-    name="praktika-gh-token",
-    role_name="praktika-gh-token-role",
-    secret_name="praktika-gh-app",
-    region=CI_REGION,
-    repositories=["praktika"],
-    permissions={
-        "checks": "write",
-        "contents": "read",
-        "issues": "write",
-        "metadata": "read",
-        "pull_requests": "write",
-        "statuses": "write",
-    },
-)
+_gh_token_minter = NativeComponents.GitHubTokenMinter()
 
 _runner_pools = [
     NativeComponents.RunnerPool(

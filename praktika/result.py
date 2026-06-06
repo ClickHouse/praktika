@@ -111,7 +111,6 @@ class Result(MetaClasses.Serializable):
     duration: Optional[float] = None
     results: List["Result"] = dataclasses.field(default_factory=list)
     files: List[Union[str, Path]] = dataclasses.field(default_factory=list)
-    assets: List[Union[str, Path]] = dataclasses.field(default_factory=list)
     links: List[str] = dataclasses.field(default_factory=list)
     info: str = ""
     ext: Dict[str, Any] = dataclasses.field(default_factory=dict)
@@ -194,10 +193,11 @@ class Result(MetaClasses.Serializable):
             duration=duration,
             info="\n".join(infos) if infos else "",
             results=results or [],
-            assets=assets or [],
             files=files or [],
             links=links or [],
         )
+        if assets:
+            result.ext["assets"] = list(assets)
         if isinstance(labels, str):
             labels = [labels]
         for label in labels or []:
@@ -1458,9 +1458,10 @@ class _ResultS3:
         result.files = []
 
         # Upload assets in parallel (preserving relative paths for HTML interlinking)
-        if result.assets:
+        assets = result.ext.get("assets") or []
+        if assets:
             asset_paths = [
-                Path(a).resolve() for a in result.assets if Path(a).is_file()
+                Path(a).resolve() for a in assets if Path(a).is_file()
             ]
             if asset_paths:
                 common_root = os.path.commonpath([p.parent for p in asset_paths])
@@ -1486,7 +1487,7 @@ class _ResultS3:
                         future.result()
                     except Exception as e:
                         print(f"ERROR: Failed to upload asset [{asset}]: {e}")
-        result.assets = []
+        result.ext.pop("assets", None)
 
         if result.results:
             for result_ in result.results:

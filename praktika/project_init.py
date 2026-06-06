@@ -177,6 +177,66 @@ def detect_aws_profiles() -> Set[str]:
     return {profile for profile in profiles if profile}
 
 
+def detect_aws_account_ids() -> Set[str]:
+    files = [
+        Path(os.environ.get("AWS_CONFIG_FILE", Path.home() / ".aws/config")),
+        Path(
+            os.environ.get(
+                "AWS_SHARED_CREDENTIALS_FILE", Path.home() / ".aws/credentials"
+            )
+        ),
+    ]
+    account_ids: Set[str] = set()
+    parser = configparser.RawConfigParser()
+
+    for file_path in files:
+        if not file_path.is_file():
+            continue
+        parser.read(file_path, encoding="utf8")
+        for section in parser.sections():
+            for _, raw_value in parser.items(section):
+                value = (raw_value or "").strip()
+                if re.fullmatch(r"\d{12}", value):
+                    account_ids.add(value)
+        parser.clear()
+
+    return account_ids
+
+
+def detect_aws_profile_account_ids() -> Dict[str, Set[str]]:
+    files = [
+        Path(os.environ.get("AWS_CONFIG_FILE", Path.home() / ".aws/config")),
+        Path(
+            os.environ.get(
+                "AWS_SHARED_CREDENTIALS_FILE", Path.home() / ".aws/credentials"
+            )
+        ),
+    ]
+    profile_account_ids: Dict[str, Set[str]] = {}
+    parser = configparser.RawConfigParser()
+
+    for file_path in files:
+        if not file_path.is_file():
+            continue
+        parser.read(file_path, encoding="utf8")
+        for section in parser.sections():
+            if section == "default":
+                profile = "default"
+            elif section.startswith("profile "):
+                profile = section.removeprefix("profile ").strip()
+            else:
+                profile = section.strip()
+            if not profile:
+                continue
+            for _, raw_value in parser.items(section):
+                value = (raw_value or "").strip()
+                if re.fullmatch(r"\d{12}", value):
+                    profile_account_ids.setdefault(profile, set()).add(value)
+        parser.clear()
+
+    return profile_account_ids
+
+
 def _validate_aws_profile(value: str) -> bool:
     profile = value.strip()
     if not profile:
@@ -188,9 +248,16 @@ def _validate_aws_profile(value: str) -> bool:
 
 
 def _prompt_aws_profile(default: str = "default") -> str:
+    profiles = sorted(detect_aws_profiles())
     prompt = f"\nAWS profile name"
+    if profiles:
+        prompt += f" (options: {', '.join(profiles)}"
+        if default:
+            prompt += f"; default: {default}"
+        prompt += ")"
     if default:
-        prompt += f" (default: {default})"
+        if not profiles:
+            prompt += f" (default: {default})"
     prompt += ": "
 
     while True:
@@ -200,7 +267,6 @@ def _prompt_aws_profile(default: str = "default") -> str:
         if _validate_aws_profile(choice):
             return choice
 
-        profiles = sorted(detect_aws_profiles())
         if profiles:
             print(
                 "ERROR: Unknown AWS profile "
@@ -208,6 +274,41 @@ def _prompt_aws_profile(default: str = "default") -> str:
             )
         else:
             print("ERROR: Invalid AWS profile name.")
+
+
+def _prompt_aws_account_id(profile: str = "") -> str:
+    profile_account_ids = detect_aws_profile_account_ids()
+    account_ids = sorted(profile_account_ids.get(profile, set()))
+    if len(account_ids) == 1:
+        print(
+            f"Using AWS account ID [{account_ids[0]}] from local config for profile [{profile}]"
+        )
+        return account_ids[0]
+    if not account_ids:
+        account_ids = sorted(detect_aws_account_ids())
+    default = account_ids[0] if len(account_ids) == 1 else ""
+    prompt = "\nAWS account ID"
+    if account_ids:
+        prompt += f" (options: {', '.join(account_ids)}"
+        if default:
+            prompt += f"; default: {default}"
+        prompt += ")"
+    prompt += ": "
+
+    while True:
+        choice = UserPrompt._safe_input(prompt).strip()
+        if not choice and default:
+            choice = default
+        if _validate_aws_account_id(choice):
+            return choice
+
+        if account_ids:
+            print(
+                "ERROR: Invalid AWS account ID "
+                f"[{choice}]. Available account IDs: {', '.join(account_ids)}"
+            )
+        else:
+            print("ERROR: Invalid AWS account ID.")
 
 
 def _prompt_for_answers(root: Path) -> InitAnswers:
@@ -228,11 +329,8 @@ def _prompt_for_answers(root: Path) -> InitAnswers:
         validator=_validate_availability_zone,
         default=f"{aws_region}a",
     ).strip()
-    aws_account_id = UserPrompt.get_string(
-        "AWS account ID",
-        validator=_validate_aws_account_id,
-    ).strip()
     aws_profile = _prompt_aws_profile(default="default")
+    aws_account_id = _prompt_aws_account_id(profile=aws_profile)
     return InitAnswers(
         project_name=project_name,
         main_branch=main_branch,
@@ -263,10 +361,9 @@ def _settings_template(answers: InitAnswers) -> str:
         AWS_ACCOUNT_ID = "{answers.aws_account_id}"
         AWS_PROFILE = "{answers.aws_profile}"
 
-        CLOUD_INFRASTRUCTURE_CONFIG_PATH = "./ci/infrastructure/projects.py"
-        S3_ARTIFACT_PATH = f"{{PROJECT_SLUG}}-artifacts"
-        S3_REPORT_BUCKET = S3_ARTIFACT_PATH
-        CACHE_S3_PATH = f"{{S3_ARTIFACT_PATH}}/ci_cache"
+        S3_ARTIFACT_BUCKET = f"{{PROJECT_SLUG}}-artifacts"
+        S3_REPORT_BUCKET = S3_ARTIFACT_BUCKET
+        CACHE_S3_PATH = f"{{S3_ARTIFACT_BUCKET}}/ci_cache"
         S3_BUCKET_TO_HTTP_ENDPOINT = {{
             S3_REPORT_BUCKET: f"{{S3_REPORT_BUCKET}}.s3.amazonaws.com",
         }}
@@ -275,12 +372,11 @@ def _settings_template(answers: InitAnswers) -> str:
         GH_AUTH_LAMBDA_NAME = f"{{PROJECT_SLUG}}-gh-token"
         GH_AUTH_LAMBDA_REGION = AWS_REGION
 
-        PRAKTIKA_INSTALL_SOURCE = "."
         """
     )
 
 
-def _workflow_template(answers: InitAnswers) -> str:
+def _pull_request_workflow_template(answers: InitAnswers) -> str:
     command = 'python3 -c "print(\\"hello from praktika\\")"'
     return textwrap.dedent(
         f"""\
@@ -308,31 +404,46 @@ def _workflow_template(answers: InitAnswers) -> str:
     )
 
 
+def _main_ci_workflow_template(answers: InitAnswers) -> str:
+    command = 'python3 -c "print(\\"hello from main ci\\")"'
+    return textwrap.dedent(
+        f"""\
+        from praktika import Job, Workflow
+        from ci.settings.settings import RunnerLabels
+
+
+        WORKFLOWS = [
+            Workflow.Config(
+                name="Main CI",
+                event=Workflow.Event.PUSH,
+                branches=["{answers.main_branch}"],
+                jobs=[
+                    Job.Config(
+                        name="Smoke Test",
+                        runs_on=[RunnerLabels.SMALL_ARM],
+                        command='{command}',
+                    ),
+                ],
+                enable_report=True,
+                enable_exit_code_result=True,
+            )
+        ]
+        """
+    )
+
+
 def _infrastructure_template(answers: InitAnswers) -> str:
     return textwrap.dedent(
         f"""\
-        from ci.settings.settings import AWS_REGION, PROJECT_NAME, PROJECT_SLUG
+        from ci.settings.settings import PROJECT_NAME, PROJECT_SLUG
         from praktika.infrastructure import NativeComponents, Storage, VPC
         from praktika.infrastructure.cloud import CloudInfrastructure
 
 
-        CI_REGION = AWS_REGION
         CI_VPC_NAME = f"{{PROJECT_SLUG}}-ci"
 
         _GH_TOKEN_MINTER = NativeComponents.GitHubTokenMinter(
-            name="gh-token",
-            role_name="gh-token-role",
-            secret_name="gh-app",
-            region=CI_REGION,
-            repositories=[],
-            permissions={{
-                "checks": "write",
-                "contents": "read",
-                "issues": "write",
-                "metadata": "read",
-                "pull_requests": "write",
-                "statuses": "write",
-            }},
+            repositories=[PROJECT_NAME],
         )
 
         PROJECTS = [
@@ -341,7 +452,6 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                 vpcs=[
                     VPC.Config(
                         name=CI_VPC_NAME,
-                        region=CI_REGION,
                         subnets=[
                             VPC.Subnet(availability_zone="{answers.availability_zone}"),
                         ],
@@ -405,19 +515,25 @@ def _infrastructure_template(answers: InitAnswers) -> str:
     )
 
 
-def _render_files(answers: InitAnswers) -> Dict[str, str]:
+def _render_files(answers: InitAnswers) -> Dict[str, Dict[Path, str] | str]:
     return {
         "settings": _settings_template(answers),
-        "workflows": _workflow_template(answers),
+        "workflows": {
+            PRAKTIKA_MARKERS["workflows"] / "pull_request.py": _pull_request_workflow_template(answers),
+            PRAKTIKA_MARKERS["workflows"] / "main_ci.py": _main_ci_workflow_template(answers),
+        },
         "infrastructure": _infrastructure_template(answers),
     }
 
 
-def _component_file_targets() -> Dict[str, Path]:
+def _component_file_targets() -> Dict[str, List[Path]]:
     return {
-        "settings": PRAKTIKA_MARKERS["settings"],
-        "workflows": PRAKTIKA_MARKERS["workflows"] / "pull_request.py",
-        "infrastructure": PRAKTIKA_MARKERS["infrastructure"],
+        "settings": [PRAKTIKA_MARKERS["settings"]],
+        "workflows": [
+            PRAKTIKA_MARKERS["workflows"] / "pull_request.py",
+            PRAKTIKA_MARKERS["workflows"] / "main_ci.py",
+        ],
+        "infrastructure": [PRAKTIKA_MARKERS["infrastructure"]],
     }
 
 
@@ -426,14 +542,31 @@ def _pick_components(root: Path) -> List[str]:
     selected = []
     labels = {
         "settings": "ci/settings/settings.py",
-        "workflows": "ci/workflows/pull_request.py",
+        "workflows": "ci/workflows/",
         "infrastructure": "ci/infrastructure/projects.py",
     }
+    descriptions = {
+        "settings": (
+            "Defines runner labels, AWS settings, and Praktika project defaults."
+        ),
+        "workflows": (
+            "Creates starter pull request and push workflow configs."
+        ),
+        "infrastructure": (
+            "Required only for standalone Praktika CI (not GitHub Actions), and only if this repo should manage the infrastructure."
+        ),
+    }
     for component in ("settings", "workflows", "infrastructure"):
+        if component in {"settings", "workflows"} and not existing[component]:
+            selected.append(component)
+            continue
         if existing[component]:
-            question = f"Replace existing {labels[component]}?"
+            question = (
+                f"Remove existing {labels[component]} and regenerate it? "
+                f"{descriptions[component]}"
+            )
         else:
-            question = f"Create {labels[component]}?"
+            question = f"Create {labels[component]}? {descriptions[component]}"
         if UserPrompt.confirm(question):
             selected.append(component)
     return selected
@@ -444,10 +577,21 @@ def scaffold_project(root: Path, answers: InitAnswers, components: List[str]) ->
     rendered = _render_files(answers)
     targets = _component_file_targets()
     for component in components:
-        target = root / targets[component]
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(rendered[component], encoding="utf8")
-        written.append(target)
+        component_targets = targets[component]
+        component_rendered = rendered[component]
+        if isinstance(component_rendered, dict):
+            for rel_path in component_targets:
+                target = root / rel_path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(component_rendered[rel_path], encoding="utf8")
+                written.append(target)
+            continue
+
+        for rel_path in component_targets:
+            target = root / rel_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(component_rendered, encoding="utf8")
+            written.append(target)
     return written
 
 

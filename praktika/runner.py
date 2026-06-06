@@ -323,12 +323,12 @@ class Runner:
                     recursive = False
                     include_pattern = ""
                     if "*" in artifact_path:
-                        s3_path = f"{Settings.S3_ARTIFACT_PATH}/{prefix}/{Utils.normalize_string(artifact._provided_by)}/"
+                        s3_path = f"{Settings.S3_ARTIFACT_BUCKET}/{prefix}/{Utils.normalize_string(artifact._provided_by)}/"
                         recursive = True
                         include_pattern = Path(artifact_path).name
                         assert "*" in include_pattern
                     else:
-                        s3_path = f"{Settings.S3_ARTIFACT_PATH}/{prefix}/{Utils.normalize_string(artifact._provided_by)}/{Path(artifact_path).name}"
+                        s3_path = f"{Settings.S3_ARTIFACT_BUCKET}/{prefix}/{Utils.normalize_string(artifact._provided_by)}/{Path(artifact_path).name}"
                     S3.copy_file_from_s3(
                         s3_path=s3_path,
                         local_path=Settings.INPUT_DIR,
@@ -720,7 +720,7 @@ class Runner:
             if providing_artifacts:
                 print(f"Job provides s3 artifacts [{providing_artifacts}]")
                 artifact_links = []
-                s3_path = f"{Settings.S3_ARTIFACT_PATH}/{env.get_s3_prefix()}/{Utils.normalize_string(env.JOB_NAME)}"
+                s3_path = f"{Settings.S3_ARTIFACT_BUCKET}/{env.get_s3_prefix()}/{Utils.normalize_string(env.JOB_NAME)}"
                 for artifact in providing_artifacts:
                     if artifact.compress_zst:
                         if isinstance(artifact.path, (tuple, list)):

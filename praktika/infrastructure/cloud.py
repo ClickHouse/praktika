@@ -587,6 +587,8 @@ class CloudInfrastructure:
             self.orchestrator_pool = (
                 self.orchestrator_pools[0] if self.orchestrator_pools else None
             )
+            for token_minter in self.github_token_minters:
+                token_minter.apply_defaults(default_repository=self.name)
 
             # 1. Namespace all resources for this project.
             # 2. Materialize implicit child components from the high-level
