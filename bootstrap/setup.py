@@ -2,10 +2,10 @@ from setuptools import find_packages, setup
 
 
 setup(
-    name="praktika-bootstrap",
+    name="praktika-controller",
     version="0.1.1",
-    description="Thin bootstrap launcher for versioned Praktika workloads",
-    packages=find_packages(where="src", include=["praktika_bootstrap*"]),
+    description="Thin controller launcher for versioned Praktika workloads",
+    packages=find_packages(where="src", include=["praktika_controller*"]),
     package_dir={"": "src"},
     install_requires=[
         "boto3>=1.18.0",
@@ -15,7 +15,7 @@ setup(
     ],
     entry_points={
         "console_scripts": [
-            "praktika_bootstrap=praktika_bootstrap.main:main",
+            "praktika-controller=praktika_controller.main:main",
         ],
     },
 )

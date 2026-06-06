@@ -175,6 +175,23 @@ class LaunchTemplate:
                 self.image_id = resolve_al2023_x86_64_ami(self.region)
             return self.image_id
 
+        def _current_launch_template_image_id(self, ec2, lt_id: str) -> str:
+            resp = ec2.describe_launch_template_versions(
+                LaunchTemplateId=lt_id,
+                Versions=["$Latest"],
+            )
+            versions = resp.get("LaunchTemplateVersions", [])
+            if not versions:
+                raise Exception(
+                    f"Launch Template '{self.name}' has no latest version to reuse"
+                )
+            image_id = versions[0].get("LaunchTemplateData", {}).get("ImageId", "")
+            if not image_id:
+                raise Exception(
+                    f"Launch Template '{self.name}' latest version has no ImageId"
+                )
+            return image_id
+
         def _build_launch_template_data(self) -> Dict[str, Any]:
             if self.data:
                 return self.data
@@ -341,8 +358,6 @@ class LaunchTemplate:
             """
             import boto3
 
-            launch_template_data = self._build_launch_template_data()
-
             ec2 = aws_client("ec2", self.region, self.name)
 
             # Determine if LT exists
@@ -357,6 +372,35 @@ class LaunchTemplate:
                 print(
                     f"Launch Template {self.name} does not exist yet, will create new"
                 )
+
+            try:
+                launch_template_data = self._build_launch_template_data()
+            except Exception as e:
+                message = str(e)
+                missing_pipeline_image = (
+                    "No images found for Image Builder pipeline" in message
+                    or "Image Builder pipeline" in message and "not found" in message
+                )
+                if not missing_pipeline_image:
+                    raise
+
+                if exists:
+                    lt_id = self._resolve_launch_template_id()
+                    current_image_id = self._current_launch_template_image_id(ec2, lt_id)
+                    print(
+                        f"Image Builder output is not available yet for Launch Template '{self.name}'; "
+                        f"keeping current image {current_image_id}"
+                    )
+                    self.image_id = current_image_id
+                    launch_template_data = self._build_launch_template_data()
+                else:
+                    print(
+                        f"Image Builder output is not available yet for Launch Template '{self.name}'; "
+                        "skipping until the first AMI is built"
+                    )
+                    self.ext["version_updated"] = False
+                    self.ext["deferred_missing_image"] = True
+                    return self
 
             if not exists:
                 resp = ec2.create_launch_template(

@@ -1,4 +1,4 @@
-from praktika_bootstrap import common
+from praktika_controller import common
 from praktika.infrastructure.native.runner_pool import RunnerPool
 
 

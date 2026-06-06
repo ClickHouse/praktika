@@ -24,11 +24,6 @@ DOCKER_BUILD_AMD_RUNS_ON = [RunnerLabels.SMALL_AMD]
 SECRET_DOCKER_REGISTRY = "praktika-docker-registry-connection"
 USE_CUSTOM_GH_AUTH = True
 
-# Install praktika from the cloned PR tree (packaging metadata lives at the repo root).
-# If the selected base venv already has praktika installed, bootstrap uses it
-# directly and ignores PRAKTIKA_INSTALL_SOURCE. Otherwise bootstrap clones that
-# base env and installs praktika from the source below for this dispatch.
-PRAKTIKA_INSTALL_SOURCE = "."
 PRAKTIKA_BASE_VENV = "praktika-runtime"
 GH_AUTH_LAMBDA_NAME = "praktika-gh-token"
 GH_AUTH_LAMBDA_REGION = AWS_REGION

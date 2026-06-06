@@ -17,7 +17,6 @@ DEFAULT_BASE_VENV_ROOT = os.environ.get(
     "PRAKTIKA_BASE_VENV_ROOT",
     "/opt/praktika/base-venvs",
 )
-DEFAULT_WHEELHOUSE = os.environ.get("PRAKTIKA_WHEELHOUSE")
 
 
 def ensure_praktika_venv(
@@ -25,13 +24,11 @@ def ensure_praktika_venv(
     *,
     cache_root: str | os.PathLike[str] | None = None,
     python_executable: str | os.PathLike[str] | None = None,
-    wheelhouse: str | os.PathLike[str] | None = None,
     log=None,
 ) -> Path:
     source = _normalize_source(source)
     cache_root = Path(cache_root or DEFAULT_VENV_ROOT)
     cache_root.mkdir(parents=True, exist_ok=True)
-    wheelhouse_path = _resolve_wheelhouse(wheelhouse or DEFAULT_WHEELHOUSE)
 
     python_path = str(python_executable or sys.executable)
     py_tag = f"py{sys.version_info.major}.{sys.version_info.minor}"
@@ -47,7 +44,7 @@ def ensure_praktika_venv(
 
         if log is not None:
             log.info("Building Praktika venv %s for %s", venv_dir, source)
-        _build_venv(venv_dir, source, python_path, wheelhouse_path)
+        _build_venv(venv_dir, source, python_path)
         return venv_dir
 
 
@@ -58,10 +55,8 @@ def ensure_praktika_runtime(
     cache_root: str | os.PathLike[str] | None = None,
     base_venv_root: str | os.PathLike[str] | None = None,
     python_executable: str | os.PathLike[str] | None = None,
-    wheelhouse: str | os.PathLike[str] | None = None,
     log=None,
 ) -> Path:
-    wheelhouse_path = _resolve_wheelhouse(wheelhouse or DEFAULT_WHEELHOUSE)
     source = _normalize_source(source) if source else ""
 
     if base_venv:
@@ -74,7 +69,7 @@ def ensure_praktika_runtime(
         if not source:
             raise ValueError(
                 "PRAKTIKA_BASE_VENV is set but the base venv does not contain "
-                "praktika and PRAKTIKA_INSTALL_SOURCE is not set"
+                "praktika and no install source was provided"
             )
 
         return _rebuild_runtime_from_base_venv(
@@ -82,7 +77,6 @@ def ensure_praktika_runtime(
             base_dir=base_dir,
             base_name=base_venv,
             cache_root=cache_root,
-            wheelhouse=wheelhouse_path,
             log=log,
         )
 
@@ -93,7 +87,6 @@ def ensure_praktika_runtime(
         source,
         cache_root=cache_root,
         python_executable=python_executable,
-        wheelhouse=wheelhouse_path,
         log=log,
     )
 
@@ -121,7 +114,6 @@ def _build_venv(
     venv_dir: Path,
     source: str,
     python_path: str,
-    wheelhouse: Path | None,
 ) -> None:
     temp_parent = venv_dir.parent
     with tempfile.TemporaryDirectory(prefix=f"{venv_dir.name}.tmp.", dir=temp_parent) as temp_dir:
@@ -132,7 +124,6 @@ def _build_venv(
         subprocess.run(
             _pip_install_cmd(
                 temp_python,
-                wheelhouse,
                 "--upgrade",
                 "pip",
                 "setuptools",
@@ -140,7 +131,7 @@ def _build_venv(
             ),
             check=True,
         )
-        subprocess.run(_pip_install_cmd(temp_python, wheelhouse, source), check=True)
+        subprocess.run(_pip_install_cmd(temp_python, source), check=True)
 
         if venv_dir.exists():
             shutil.rmtree(venv_dir)
@@ -158,25 +149,11 @@ def _file_lock(lock_path: Path):
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def _resolve_wheelhouse(
-    wheelhouse: str | os.PathLike[str] | None,
-) -> Path | None:
-    if not wheelhouse:
-        return None
-    path = Path(wheelhouse).resolve()
-    if not path.is_dir():
-        raise FileNotFoundError(f"Praktika wheelhouse does not exist: {path}")
-    return path
-
-
 def _pip_install_cmd(
     python_path: Path,
-    wheelhouse: Path | None,
     *packages: str,
 ) -> list[str]:
     cmd = [str(python_path), "-m", "pip", "install"]
-    if wheelhouse is not None:
-        cmd.extend(["--no-index", "--find-links", str(wheelhouse)])
     cmd.extend(packages)
     return cmd
 
@@ -214,7 +191,6 @@ def _rebuild_runtime_from_base_venv(
     base_dir: Path,
     base_name: str,
     cache_root: str | os.PathLike[str] | None,
-    wheelhouse: Path | None,
     log=None,
 ) -> Path:
     source = _normalize_source(source)
@@ -242,7 +218,6 @@ def _rebuild_runtime_from_base_venv(
         _build_runtime_from_base_venv(
             venv_dir,
             source,
-            wheelhouse,
             base_dir,
         )
         return venv_dir
@@ -251,7 +226,6 @@ def _rebuild_runtime_from_base_venv(
 def _build_runtime_from_base_venv(
     venv_dir: Path,
     source: str,
-    wheelhouse: Path | None,
     base_dir: Path,
 ) -> None:
     temp_parent = venv_dir.parent
@@ -260,7 +234,7 @@ def _build_runtime_from_base_venv(
         shutil.copytree(base_dir, temp_path, symlinks=True, dirs_exist_ok=True)
 
         temp_python = temp_path / "bin" / "python"
-        subprocess.run(_pip_install_cmd(temp_python, wheelhouse, source), check=True)
+        subprocess.run(_pip_install_cmd(temp_python, source), check=True)
 
         if venv_dir.exists():
             shutil.rmtree(venv_dir)

@@ -3,7 +3,7 @@
 Notes for working on praktika itself (the Python package), not for adopting it
 to drive your own CI.
 
-## Build and publish `praktika` / `praktika_bootstrap`
+## Build and publish `praktika` / `praktika-controller`
 
 Runners, orchestrators, and AMI builds install both wheels from fixed S3 keys,
 so after changing either package you need to rebuild it and overwrite the
@@ -25,13 +25,13 @@ aws --profile Box s3 cp \
   s3://praktika-artifacts-eu-north-1/packages/praktika-0.1.1-py3-none-any.whl
 ```
 
-Build and upload `praktika_bootstrap`:
+Build and upload `praktika-controller`:
 
 ```bash
 .build-venv/bin/python -m build --wheel --no-isolation --outdir bootstrap/dist bootstrap
 aws --profile Box s3 cp \
-  bootstrap/dist/praktika_bootstrap-0.1.1-py3-none-any.whl \
-  s3://praktika-artifacts-eu-north-1/packages/praktika_bootstrap-0.1.1-py3-none-any.whl
+  bootstrap/dist/praktika_controller-0.1.1-py3-none-any.whl \
+  s3://praktika-artifacts-eu-north-1/packages/praktika_controller-0.1.1-py3-none-any.whl
 ```
 
 Optionally, refresh the local install of `praktika` from the same S3 URL:
@@ -44,30 +44,17 @@ pip install --force-reinstall \
 
 If you change the bootstrap package version, update the wheel name in both:
 
-- `praktika/infrastructure/native/user_data_orchestrator.sh`
-- `praktika/infrastructure/native/user_data_runner.sh`
-
-## Prebaked wheelhouse on runner images
-
-Both user-data scripts now populate a local wheelhouse at
-`/opt/praktika/wheelhouse` and export `PRAKTIKA_WHEELHOUSE` into the agent
-systemd unit. `praktika_bootstrap` will install the per-source Praktika venv
-from that wheelhouse with `pip --no-index --find-links=...` when the directory
-is present; otherwise it falls back to normal network installs.
-
-If you add a new core Praktika dependency that should be available in prebaked
-images, update the download list in both:
-
-- `praktika/infrastructure/native/user_data_orchestrator.sh`
-- `praktika/infrastructure/native/user_data_runner.sh`
+- `ci/infrastructure/projects.py`
+- `ci/scripts/publish_controller_wheel.sh`
 
 ## Base vs non-base routing
 
 Praktika can route workflows to different orchestrator queues and runner pools.
 In this repo that split is used to keep one pipeline on "base" images, where
-the Praktika version is baked into the AMI, while the normal pipelines run
-against the current Praktika code from the checkout. This routing is usually
-not required for ordinary Praktika projects; here it exists so we can keep a
+the previous Praktika release is baked into the AMI, while the normal pipelines
+force-reinstall the current Praktika wheel into the shared base venv at boot
+before starting the controller. This routing is usually not required for
+ordinary Praktika projects; here it exists so we can keep a
 backward-compatibility pipeline running against a previous Praktika release.
 
 The workflow-side knobs are `Workflow.Config.orchestrator_filter` and
@@ -92,14 +79,14 @@ Pick the ASG and unit for the side you're debugging:
 
 | What | ASG | systemd unit |
 |---|---|---|
-| Workflow orchestrator | `praktika-workflow-orchestrator` | `workflow-agent` |
-| Runner pool          | `praktika-arm-2xsmall` (or `praktika-amd-2xsmall`) | `job-agent` |
+| Workflow orchestrator | `praktika-workflow-orchestrator` | `praktika-controller` |
+| Runner pool          | `praktika-arm-2xsmall` (or `praktika-amd-2xsmall`) | `praktika-controller` |
 
 ```bash
 # Pick a side
-ASG=praktika-amd-2xsmall ; UNIT=job-agent
+ASG=praktika-amd-2xsmall ; UNIT=praktika-controller
 # or:
-# ASG=praktika-workflow-orchestrator ; UNIT=workflow-agent
+# ASG=praktika-workflow-orchestrator ; UNIT=praktika-controller
 
 INST=$(aws autoscaling describe-auto-scaling-instances \
   --region eu-north-1 --profile Box \

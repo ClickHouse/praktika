@@ -1,4 +1,5 @@
 from praktika.infrastructure.image_builder import ImageBuilder
+from praktika.infrastructure.launch_template import LaunchTemplate
 from praktika.infrastructure.native.orchestrator_pool import OrchestratorPool
 from praktika.infrastructure.native.runner_pool import RunnerPool
 
@@ -260,6 +261,93 @@ def test_image_builder_pipeline_update_is_skipped_when_unchanged(monkeypatch):
     assert update_called["value"] is False
 
 
+def test_launch_template_deploy_skips_when_image_builder_has_no_images(monkeypatch):
+    lt = LaunchTemplate.Config(
+        name="workflow-orchestrator-lt",
+        region="eu-north-1",
+        instance_type="t4g.small",
+        image_builder=ImageBuilder.Config(
+            name="ci-arm64-image",
+            image_pipeline_name="ci-arm64-imagebuilder-pipeline",
+        ),
+    )
+
+    class _EC2Client:
+        pass
+
+    monkeypatch.setattr(
+        "praktika.infrastructure.launch_template.aws_client",
+        lambda *args, **kwargs: _EC2Client(),
+    )
+    monkeypatch.setattr(
+        lt,
+        "fetch",
+        lambda: (_ for _ in ()).throw(Exception("Launch Template not found")),
+    )
+
+    def _build():
+        raise Exception(
+            "No images found for Image Builder pipeline 'ci-arm64-imagebuilder-pipeline'"
+        )
+
+    monkeypatch.setattr(lt, "_build_launch_template_data", _build)
+
+    result = lt.deploy()
+
+    assert result is lt
+    assert lt.ext["deferred_missing_image"] is True
+    assert lt.ext["version_updated"] is False
+
+
+def test_launch_template_deploy_reuses_existing_image_when_pipeline_has_no_images(
+    monkeypatch,
+):
+    lt = LaunchTemplate.Config(
+        name="workflow-orchestrator-lt",
+        region="eu-north-1",
+        instance_type="t4g.small",
+        image_builder=ImageBuilder.Config(
+            name="ci-arm64-image",
+            image_pipeline_name="ci-arm64-imagebuilder-pipeline",
+        ),
+    )
+    lt.ext["launch_template_id"] = "lt-0123456789abcdef0"
+
+    class _EC2Client:
+        pass
+
+    monkeypatch.setattr(
+        "praktika.infrastructure.launch_template.aws_client",
+        lambda *args, **kwargs: _EC2Client(),
+    )
+    monkeypatch.setattr(lt, "fetch", lambda: lt)
+    monkeypatch.setattr(
+        lt,
+        "_current_launch_template_image_id",
+        lambda ec2, lt_id: "ami-existing0123456789",
+    )
+
+    build_calls = {"count": 0}
+
+    def _build():
+        build_calls["count"] += 1
+        if build_calls["count"] == 1:
+            raise Exception(
+                "No images found for Image Builder pipeline 'ci-arm64-imagebuilder-pipeline'"
+            )
+        return {"ImageId": lt.image_id, "InstanceType": lt.instance_type}
+
+    monkeypatch.setattr(lt, "_build_launch_template_data", _build)
+    monkeypatch.setattr(lt, "_is_current_version_up_to_date", lambda *args: True)
+
+    result = lt.deploy()
+
+    assert result is lt
+    assert lt.image_id == "ami-existing0123456789"
+    assert build_calls["count"] == 2
+    assert lt.ext["version_updated"] is False
+
+
 def test_image_builder_reuses_existing_inline_component_when_create_conflicts(
     monkeypatch,
 ):
@@ -296,3 +384,90 @@ def test_image_builder_reuses_existing_inline_component_when_create_conflicts(
     arns = builder._ensure_inline_components()
 
     assert arns == ["arn:component:praktika-base-runner-runtime/1.0.0/1"]
+
+
+def test_image_builder_deploy_starts_build_when_pipeline_changed(monkeypatch):
+    builder = ImageBuilder.Config(
+        name="orchestrator-arm64-image",
+        region="eu-north-1",
+        image_pipeline_name="praktika-orchestrator-arm64-imagebuilder-pipeline",
+        enabled=True,
+    )
+
+    monkeypatch.setattr(builder, "fetch", lambda: builder)
+    monkeypatch.setattr(builder, "_get_or_create_recipe_arn", lambda: "arn:recipe:new")
+    monkeypatch.setattr(
+        builder,
+        "_get_or_create_infrastructure_configuration_arn",
+        lambda: "arn:infra:new",
+    )
+    monkeypatch.setattr(
+        builder,
+        "_get_or_create_distribution_configuration_arn",
+        lambda: "arn:dist:new",
+    )
+    monkeypatch.setattr(
+        builder,
+        "_get_or_create_pipeline_arn",
+        lambda recipe, infra, dist: "arn:pipeline:new",
+    )
+
+    started = {}
+
+    class _Client:
+        def start_image_pipeline_execution(self, imagePipelineArn):
+            started["arn"] = imagePipelineArn
+            return {"imageBuildVersionArn": "arn:build:new"}
+
+    monkeypatch.setattr(builder, "_client", lambda: _Client())
+
+    result = builder.deploy()
+
+    assert result is builder
+    assert started["arn"] == "arn:pipeline:new"
+    assert builder.ext["last_started_build_arn"] == "arn:build:new"
+
+
+def test_image_builder_deploy_skips_build_when_unchanged(monkeypatch):
+    builder = ImageBuilder.Config(
+        name="orchestrator-arm64-image",
+        region="eu-north-1",
+        image_pipeline_name="praktika-orchestrator-arm64-imagebuilder-pipeline",
+        enabled=True,
+    )
+    builder.ext["image_recipe_arn"] = "arn:recipe:same"
+    builder.ext["infrastructure_configuration_arn"] = "arn:infra:same"
+    builder.ext["distribution_configuration_arn"] = "arn:dist:same"
+    builder.ext["image_pipeline_arn"] = "arn:pipeline:same"
+
+    monkeypatch.setattr(builder, "fetch", lambda: builder)
+    monkeypatch.setattr(builder, "_get_or_create_recipe_arn", lambda: "arn:recipe:same")
+    monkeypatch.setattr(
+        builder,
+        "_get_or_create_infrastructure_configuration_arn",
+        lambda: "arn:infra:same",
+    )
+    monkeypatch.setattr(
+        builder,
+        "_get_or_create_distribution_configuration_arn",
+        lambda: "arn:dist:same",
+    )
+    monkeypatch.setattr(
+        builder,
+        "_get_or_create_pipeline_arn",
+        lambda recipe, infra, dist: "arn:pipeline:same",
+    )
+
+    started = {"called": False}
+
+    class _Client:
+        def start_image_pipeline_execution(self, imagePipelineArn):
+            started["called"] = True
+            return {}
+
+    monkeypatch.setattr(builder, "_client", lambda: _Client())
+
+    result = builder.deploy()
+
+    assert result is builder
+    assert started["called"] is False

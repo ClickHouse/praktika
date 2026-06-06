@@ -294,7 +294,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
 
     # The top-level check body is rendered from `state.md_status()` (a live
     # per-job table) by `_check_output`, not from this stream — so we print
-    # straight to stdout. Lets the user (or `journalctl -fu workflow-agent`)
+    # straight to stdout. Lets the user (or `journalctl -fu praktika-controller`)
     # see progress in real time, especially important when the loop hangs.
     error = None
     state = None

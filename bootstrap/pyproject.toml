@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "praktika-bootstrap"
+name = "praktika-controller"
 version = "0.1.1"
-description = "Thin bootstrap agents for launching versioned Praktika workloads"
+description = "Thin controller for launching versioned Praktika workloads"
 requires-python = ">=3.10"
 dependencies = [
     "boto3>=1.18.0",
@@ -15,8 +15,8 @@ dependencies = [
 ]
 
 [project.scripts]
-praktika_bootstrap = "praktika_bootstrap.main:main"
+praktika-controller = "praktika_controller.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["praktika_bootstrap*"]
+include = ["praktika_controller*"]

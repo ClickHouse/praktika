@@ -17,7 +17,7 @@ SQS praktika_clickhouse_workflows
     |
     v
 Orchestrator ASG (praktika-workflow-orchestrator)
-    user_data -> praktika_bootstrap workflow_orchestrator
+    user_data -> systemctl enable --now praktika-controller
         |-- clone the PR head
         |-- install Praktika into the shared runtime venv if it is not already there
         |-- subprocess: praktika orchestrate workflow event.json --ci
@@ -32,7 +32,7 @@ Orchestrator ASG (praktika-workflow-orchestrator)
     |
     v  (SQS: one queue per runner pool, named praktika-<runs_on>)
 Runner ASGs (e.g. praktika-arm-2xsmall)
-    user_data -> praktika_bootstrap job_runner
+    user_data -> systemctl enable --now praktika-controller
         |-- clone the PR head
         |-- install Praktika into the shared runtime venv if it is not already there
         |-- subprocess: praktika orchestrate job task.json --ci
@@ -46,7 +46,7 @@ flowchart TD
     GH[GitHub PR event] --> L[Lambda webhook handler]
     L --> WQ[SQS: praktika-workflows]
 
-    WQ --> WB[workflow-agent on orchestrator ASG]
+    WQ --> WB[praktika-controller on orchestrator ASG]
     WB --> WC[Clone PR head]
     WC --> WV[Resolve Praktika runtime]
     WV --> WO[praktika orchestrate workflow event.json --ci]
@@ -57,8 +57,8 @@ flowchart TD
     DAG --> J1Q[SQS: praktika-arm-2xsmall]
     DAG --> J2Q[SQS: praktika-amd-2xsmall]
 
-    J1Q --> R1[job-agent on arm runner ASG]
-    J2Q --> R2[job-agent on amd runner ASG]
+    J1Q --> R1[praktika-controller on arm runner ASG]
+    J2Q --> R2[praktika-controller on amd runner ASG]
 
     R1 --> RC1[Clone PR head]
     R2 --> RC2[Clone PR head]
@@ -89,13 +89,14 @@ flowchart TD
 ## Code split (intentional)
 
 The orchestrator and runner are each composed of two pieces — one stable
-bootstrap package that's installed by the EC2 user_data, and one orchestrator
+controller bootstrap package that's installed on the EC2 image and enabled by
+the launch-time user_data, and one orchestrator
 module that ships with each PR:
 
-|                   | Installed by user_data (needs LT+ASG redeploy or wheel refresh to change) | Ships with each PR (plain `git push`) |
+|                   | Installed on the image (needs LT+ASG redeploy or wheel refresh to change) | Ships with each PR (plain `git push`) |
 |-------------------|--------------------------------------------------------|---------------------------------------|
-| **Workflow side** | `praktika_bootstrap run_workflow` — SQS poll, clone, GH App token, cached venv reuse, S3 log | `__init__.py::orchestrate`, `state.py` (`WorkflowState`, `JobState`, `JobCheckRun`) |
-| **Job side**      | `praktika_bootstrap run_job` — SQS poll, clone, GH App token, cached venv reuse, S3 log | `job_runner.py::run_job` (maps task -> `praktika.Runner.run`) |
+| **Workflow side** | `praktika-controller` — SQS poll, clone, GH App token, cached venv reuse, S3 log | `__init__.py::orchestrate`, `state.py` (`WorkflowState`, `JobState`, `JobCheckRun`) |
+| **Job side**      | `praktika-controller` — SQS poll, clone, GH App token, cached venv reuse, S3 log | `job_runner.py::run_job` (maps task -> `praktika.Runner.run`) |
 
 When you want to tweak workflow orchestration or job-execution policy, you
 only need `git push`. Only the stable bootstrap layer requires an LT/ASG redeploy
@@ -107,74 +108,55 @@ Praktika runtime selection is split between three layers:
 
 | Layer | Component | What it owns |
 |---|---|---|
-| **Image bake** | `ImageBuilder.Config.prebuilt_venvs` in `ci/infrastructure/projects.py` | Creates named base venvs under `/opt/praktika/base-venvs/<name>` |
-| **Repo settings** | `ci/settings/settings.py` | Selects the shared base venv and the source to install Praktika from when that base env does not already contain it |
-| **Bootstrap** | `praktika_bootstrap` | Resolves the settings, checks whether the selected base venv already has Praktika, and otherwise builds the runtime env under `/opt/praktika/venvs/` |
+| **Image bake** | `ImageBuilder.Config.prebuilt_venvs` in `ci/infrastructure/projects.py` | Creates named base venvs under `/opt/praktika/base-venvs/<name>` and bakes the shared base Praktika wheel |
+| **Repo settings** | `ci/settings/settings.py` | Selects the shared base venv |
+| **Launch-time user data** | runner/orchestrator pool config in `ci/infrastructure/projects.py` | Optionally force-reinstalls the current Praktika wheel into the shared base venv before starting the controller |
+| **Bootstrap** | `praktika-controller` / `praktika_controller` | Resolves the base venv and runs Praktika from it |
 
 Current settings:
 
 | Setting | Used by | Meaning |
 |---|---|---|
 | `PRAKTIKA_BASE_VENV` | both sides | Shared base venv name for workflow and job dispatches |
-| `PRAKTIKA_INSTALL_SOURCE` | both sides | Source used only when the selected base venv does not already contain Praktika |
 
 Current repo policy in `ci/settings/settings.py`:
 
 - Both sides select base venv `praktika-runtime`
-- If that base env does not already contain Praktika, bootstrap installs from `PRAKTIKA_INSTALL_SOURCE="."`
+- Base pools bake Praktika `0.1` into that env
+- Non-base pools force-reinstall Praktika `0.1.1` into that same env at boot before starting the controller
 
 This means:
 
 - the image provides stable Python/tooling dependencies
-- the checked-out PR provides the Praktika code whenever the image did not bake it in already
-- bootstrap reuses the base env directly when possible and only installs Praktika when needed
+- base pools test a published Praktika release baked into the image
+- non-base pools update the shared base venv to the current Praktika wheel at boot
 
 ### Resolution flow
 
 ```mermaid
 flowchart TD
-    A[GitHub event / SQS message] --> B[praktika_bootstrap role entrypoint]
+    A[GitHub event / SQS message] --> B[praktika-controller]
     B --> C[Clone repo at PR head]
     C --> D[Read ci/settings/settings.py]
     D --> E[Read PRAKTIKA_BASE_VENV]
-    D --> F[Read PRAKTIKA_INSTALL_SOURCE]
-
-    E --> G{Base venv selected?}
-    G -->|no| H{Install source set?}
-    G -->|yes| I[Resolve /opt/praktika/base-venvs/<name>]
-
-    I --> J{Base imports praktika?}
-    J -->|yes| K[Run directly from base venv]
-    J -->|no| L{Install source set?}
-
-    H -->|yes| M[Create or reuse /opt/praktika/venvs/praktika-<py>]
-    H -->|no| N[Fail: Praktika source is required]
-
-    L -->|yes| O[Rebuild runtime env in /opt/praktika/venvs from base venv + source]
-    L -->|no| N
-
-    F --> H
-    F --> L
-    M --> P[python -m praktika ...]
-    N --> P
-    K --> P
-    O --> P
+    E --> F[Resolve /opt/praktika/base-venvs/<name>]
+    F --> G[Optional: user data force-reinstalls current Praktika wheel into that venv]
+    G --> H{Base imports praktika?}
+    H -->|yes| I[python -m praktika ...]
+    H -->|no| J[Fail: selected base env must contain Praktika]
 ```
 
 ### Venv layout
 
 | Path | Created by | Purpose |
 |---|---|---|
-| `/opt/praktika/base-venvs/praktika-runtime` | Image Builder | Shared workflow/job Python base with runtime deps and `pytest` |
-| `/opt/praktika/venvs/praktika-<py>` | bootstrap | Shared source-installed env when no base venv is selected |
-| `/opt/praktika/venvs/praktika-<base>-<py>` | bootstrap | Runtime env rebuilt from the named base venv when that base does not already contain Praktika |
+| `/opt/praktika/base-venvs/praktika-runtime` | Image Builder | Shared workflow/job Python base with runtime deps, `pytest`, and the published base Praktika wheel |
 
 ### Which component changes what
 
-- Change `ci/infrastructure/projects.py` when you want a different prebaked shared base venv or different image-level tooling.
-- Change `ci/settings/settings.py` when you want to select a different shared base venv or override the Praktika install source.
-- Change `PRAKTIKA_INSTALL_SOURCE` when you want Praktika code to come from the checked-out repo instead of the default bootstrap wheel whenever bootstrap needs to install it.
-- Change `bootstrap/src/praktika_bootstrap/venv_manager.py` only when the runtime composition algorithm itself needs to change.
+- Change `ci/infrastructure/projects.py` when you want a different prebaked shared base venv, a different image-level tooling set, or a different launch-time Praktika override for non-base pools.
+- Change `ci/settings/settings.py` when you want to select a different shared base venv.
+- Change `bootstrap/src/praktika_controller/venv_manager.py` only when base-venv resolution itself needs to change.
 
 ## Debugging runner logs
 
@@ -257,11 +239,11 @@ FAILURE.
 ## Deploy
 
 ```bash
-# Workflow bootstrap infra (changes to praktika_bootstrap / user_data_orchestrator.sh):
+# Workflow runtime infra (changes to praktika-controller or the baked orchestrator image):
 python3 -m praktika infrastructure --deploy --only LaunchTemplate AutoScalingGroup
 # Plus terminate running orchestrator instances so the ASG relaunches on the new LT.
 
-# Job bootstrap infra (new runner types, or changes to praktika_bootstrap / user_data_runner.sh):
+# Job runtime infra (new runner types, or changes to praktika-controller or the baked runner image):
 python3 -m praktika infrastructure --deploy --only LaunchTemplate AutoScalingGroup SQSQueue
 # Plus terminate running runners on the affected pool.
 ```

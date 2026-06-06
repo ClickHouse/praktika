@@ -835,6 +835,46 @@ class ImageBuilder:
                 f"Failed to resolve AMI id from latest image build for pipeline '{self.image_pipeline_name}'"
             )
 
+        def _start_build_on_change(self, pipeline_arn: str) -> None:
+            if not self.enabled:
+                print(
+                    f"Image Builder pipeline '{self.image_pipeline_name}' is disabled; "
+                    "skipping build start"
+                )
+                return
+
+            client = self._client()
+            try:
+                resp = client.start_image_pipeline_execution(
+                    imagePipelineArn=pipeline_arn
+                )
+            except Exception as e:
+                message = str(e)
+                if (
+                    e.__class__.__name__ == "ResourceInUseException"
+                    or "ResourceInUseException" in message
+                    or "in progress" in message.lower()
+                    or "already running" in message.lower()
+                ):
+                    print(
+                        f"Image Builder pipeline '{self.image_pipeline_name}' already "
+                        "has a build in progress, skipping start"
+                    )
+                    return
+                raise
+
+            execution_arn = resp.get("imageBuildVersionArn", "")
+            if execution_arn:
+                self.ext["last_started_build_arn"] = execution_arn
+                print(
+                    f"Started Image Builder build for '{self.image_pipeline_name}': "
+                    f"{execution_arn}"
+                )
+            else:
+                print(
+                    f"Started Image Builder build for '{self.image_pipeline_name}'"
+                )
+
         def deploy(self):
             try:
                 self.fetch()
@@ -868,6 +908,7 @@ class ImageBuilder:
                 )
                 return self
 
+            self._start_build_on_change(pipeline_arn)
             print(
                 f"Successfully deployed Image Builder pipeline: {self.image_pipeline_name}"
             )

@@ -12,18 +12,10 @@ import time
 from pathlib import Path
 
 
-def resolve_praktika_runtime(
-    clone_dir: str | os.PathLike[str], log
-) -> tuple[str, str]:
-    """Read Praktika base-venv/source settings from the repo settings.
-
-    Resolution order:
-      1. PRAKTIKA_BASE_VENV from settings.py
-      2. PRAKTIKA_INSTALL_SOURCE from settings.py
-    """
+def resolve_praktika_base_venv(clone_dir: str | os.PathLike[str], log) -> str:
+    """Read the shared Praktika base-venv selection from repo settings."""
     settings_file = Path(clone_dir) / "ci" / "settings" / "settings.py"
     base_venv = ""
-    src = ""
     if settings_file.exists():
         try:
             spec = importlib.util.spec_from_file_location(
@@ -33,23 +25,13 @@ def resolve_praktika_runtime(
             assert spec.loader is not None
             spec.loader.exec_module(mod)
             base_venv = getattr(mod, "PRAKTIKA_BASE_VENV", "") or ""
-            src = getattr(mod, "PRAKTIKA_INSTALL_SOURCE", "") or ""
         except Exception as e:
             log.warning(
                 "Could not read Praktika runtime config from %s: %s",
                 settings_file,
                 e,
             )
-
-    if src:
-        if src.startswith(("http://", "https://")):
-            return base_venv, src
-        src_path = Path(src)
-        if not src_path.is_absolute():
-            src_path = Path(clone_dir) / src_path
-        src = str(src_path.resolve())
-
-    return base_venv, src
+    return base_venv
 
 
 def configure_logging(name: str, instance_id: str) -> logging.Logger:
@@ -311,12 +293,6 @@ class Heartbeat:
     def _run(self):
         while not self._stop.wait(self._interval):
             self._beat()
-
-
-def resolve_praktika_install_source(clone_dir: str | os.PathLike[str], log) -> str:
-    """Backward-compatible helper for callers that only care about source."""
-    _, source = resolve_praktika_runtime(clone_dir, log)
-    return source
 
 
 def git(args, cwd=None) -> str:

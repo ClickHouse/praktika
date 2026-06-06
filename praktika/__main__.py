@@ -285,8 +285,8 @@ def main(argv=None):
             from .utils import Shell
             with open(args.task_file) as f:
                 task = _json.load(f)
-            # `gh` CLI is already authenticated by the bootstrap runner
-            # (`praktika_bootstrap job_runner`); pull the token out of `gh auth token`
+            # `gh` CLI is already authenticated by the bootstrap controller
+            # (`praktika-controller`); pull the token out of `gh auth token`
             # for `_patch_check_run`, which uses requests directly.
             gh_token = None
             if args.ci:

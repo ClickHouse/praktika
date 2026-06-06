@@ -853,19 +853,10 @@ class CloudInfrastructure:
                     print("=" * 60)
                     vpc_config.deploy()
 
-            # Deploy all Launch Templates
-            if _wants("LaunchTemplate", "LaunchTemplates"):
-                for lt_config in self.launch_templates:
-                    lt_config.region = self._settings.AWS_REGION
-
-                    print("\n" + "=" * 60)
-                    print(f"Deploying Launch Template: {lt_config.name}")
-                    print("=" * 60)
-                    lt_config.deploy()
-
-            # Deploy Image Builder pipelines after LaunchTemplates so
-            # distribution settings can reference LT ids for automatic
-            # Image Builder-managed AMI propagation.
+            # Deploy Image Builder pipelines before LaunchTemplates so AMI
+            # resolution works on first deploy and after pipeline renames.
+            # Missing launch templates are tolerated by Image Builder deploy
+            # and can be attached on a later deploy.
             if _wants("ImageBuilder", "ImageBuilders"):
                 for ib_config in self.image_builders:
                     ib_config.region = self._settings.AWS_REGION
@@ -874,6 +865,17 @@ class CloudInfrastructure:
                     print(f"Deploying Image Builder: {ib_config.name}")
                     print("=" * 60)
                     ib_config.deploy()
+
+            # Deploy all Launch Templates after ImageBuilders so image-builder
+            # backed templates can resolve their latest AMI ids.
+            if _wants("LaunchTemplate", "LaunchTemplates"):
+                for lt_config in self.launch_templates:
+                    lt_config.region = self._settings.AWS_REGION
+
+                    print("\n" + "=" * 60)
+                    print(f"Deploying Launch Template: {lt_config.name}")
+                    print("=" * 60)
+                    lt_config.deploy()
 
             # Deploy all ASGs
             if _wants("AutoScalingGroup", "AutoScalingGroups", "ASG", "ASGs"):

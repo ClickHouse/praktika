@@ -9,7 +9,17 @@ from praktika.infrastructure.launch_template import LaunchTemplate
 from praktika.infrastructure.sqs_queue import SQSQueue
 
 from .configs import RUNNER_INSTANCE_PROFILE_NAME, RUNNER_ROLE_NAME
-from .user_data import runner_user_data
+
+_DEFAULT_PRAKTIKA_CONTROLLER_USER_DATA = "\n".join(
+    [
+        "#!/usr/bin/env bash",
+        "set -xeuo pipefail",
+        "",
+        "# Add any host customization you need above this line.",
+        "systemctl enable --now praktika-controller",
+        "",
+    ]
+)
 
 
 @dataclass
@@ -20,6 +30,11 @@ class RunnerPool:
     The ASG always starts with min_size=0; `size` sets the desired capacity
     and `max_size` caps the pool. The queue name matches the `runs_on` label
     1:1 so praktika routes jobs without extra configuration.
+
+    The pool assumes the selected AMI already contains the Praktika runner
+    runtime and systemd unit. By default it enables `praktika-controller` at
+    boot; `user_data` can override that when extra instance boot customization
+    is required.
 
     All three AWS components are created at construction time and registered
     into CloudInfrastructure.Config automatically via its runner_pools list.
@@ -70,6 +85,8 @@ class RunnerPool:
     queue: SQSQueue.Config = field(init=False)
 
     def __post_init__(self):
+        if not self.user_data:
+            self.user_data = _DEFAULT_PRAKTIKA_CONTROLLER_USER_DATA
         if not self.security_group_ids and not self.security_group_names:
             self.security_group_names = [f"{self.vpc_name}-sg"]
         assert self.scaling in (self.Scaling.Disabled, self.Scaling.Auto), (
@@ -164,6 +181,7 @@ class RunnerPool:
         asg_name = f"praktika-{self.name}"
         runtime_tags = {
             "praktika_pool": self.name,
+            "praktika_role": "job_runner",
             "praktika_queue": queue_name,
             "praktika_asg": asg_name,
             "praktika_scaling": self.scaling,
@@ -178,7 +196,7 @@ class RunnerPool:
             vpc_name=self.vpc_name,
             iam_instance_profile_name=self.iam_instance_profile_name,
             set_default_version_to_latest=True,
-            user_data=self.user_data or runner_user_data(queue_name),
+            user_data=self.user_data,
             block_device_mappings=[
                 {
                     "DeviceName": "/dev/xvda",

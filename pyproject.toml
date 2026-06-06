@@ -67,7 +67,12 @@ include = ["praktika", "praktika.*"]
 exclude = ["tests*", "*.tests", "*.tests.*"]
 
 [tool.setuptools.package-data]
-praktika = ["*.html", "*.html.gz", "py.typed"]
+praktika = [
+    "*.html",
+    "py.typed",
+    "infrastructure/native/user_data_cidb.sh",
+    "infrastructure/native/cidb_schema.sql",
+]
 
 [tool.black]
 line-length = 88

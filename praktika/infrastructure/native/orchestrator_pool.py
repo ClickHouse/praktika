@@ -16,7 +16,17 @@ from .configs import (
     ORCHESTRATOR_ROLE_NAME,
     lambda_gh_trigger_config,
 )
-from .user_data import ci_engine_user_data
+
+_DEFAULT_PRAKTIKA_CONTROLLER_USER_DATA = "\n".join(
+    [
+        "#!/usr/bin/env bash",
+        "set -xeuo pipefail",
+        "",
+        "# Add any host customization you need above this line.",
+        "systemctl enable --now praktika-controller",
+        "",
+    ]
+)
 
 
 @dataclass
@@ -27,6 +37,11 @@ class OrchestratorPool:
     The orchestrator polls the workflow-trigger SQS queue and dispatches
     jobs to per-runner-type queues. min_size is always 0; `size` sets the
     desired capacity and `max_size` caps the pool.
+
+    The pool assumes the selected AMI already contains the Praktika workflow
+    runtime and systemd unit. By default it enables `praktika-controller` at
+    boot; `user_data` can override that when extra instance boot customization
+    is required.
 
     Registered into CloudInfrastructure.Config automatically via its
     orchestrator_pool field.
@@ -97,6 +112,8 @@ class OrchestratorPool:
         return self.gh_trigger_webhook_secret_name or f"{self.name}-webhook-secret"
 
     def __post_init__(self):
+        if not self.user_data:
+            self.user_data = _DEFAULT_PRAKTIKA_CONTROLLER_USER_DATA
         if not self.security_group_ids and not self.security_group_names:
             self.security_group_names = [f"{self.vpc_name}-sg"]
         assert self.scaling in (self.Scaling.Disabled, self.Scaling.Auto), (
@@ -199,6 +216,7 @@ class OrchestratorPool:
         )
         runtime_tags = {
             "praktika_pool": self.name,
+            "praktika_role": "workflow_orchestrator",
             "praktika_queue": queue_name,
             "praktika_asg": asg_name,
             "praktika_scaling": self.scaling,
@@ -213,7 +231,7 @@ class OrchestratorPool:
             vpc_name=self.vpc_name,
             iam_instance_profile_name=self.iam_instance_profile_name,
             set_default_version_to_latest=True,
-            user_data=self.user_data or ci_engine_user_data(queue_name),
+            user_data=self.user_data,
             block_device_mappings=[
                 {
                     "DeviceName": "/dev/xvda",

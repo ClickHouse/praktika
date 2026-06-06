@@ -8,7 +8,7 @@ Run with:
 import time
 from unittest.mock import MagicMock
 
-from praktika_bootstrap.common import VisibilityHeartbeat
+from praktika_controller.common import VisibilityHeartbeat
 
 
 def _wait_for_calls(mock, n, timeout=1.0):

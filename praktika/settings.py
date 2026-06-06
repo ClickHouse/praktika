@@ -130,26 +130,8 @@ class _Settings:
     # S3 path for Slack feed events storage (format: bucket/prefix)
     # Used by EventFeed and FeedSubscription for PR notification subscriptions
     EVENT_FEED_S3_PATH: str = ""
-    # Where the workflow/job agents should install praktika from when the
-    # selected runtime still needs it. Three forms:
-    #   ""             — no explicit source override; if PRAKTIKA_BASE_VENV
-    #                    already has praktika installed, bootstrap uses it as
-    #                    is. Otherwise bootstrap errors out.
-    #   "https://..."  — pip install <url>; pulls a wheel from that URL.
-    #   "<rel/path>"   — pip install <clone_dir>/<rel/path>; resolves
-    #                    relative to the cloned PR tree, so a PR's praktika
-    #                    changes take effect on the very dispatch that
-    #                    picked the PR up. If PRAKTIKA_BASE_VENV is also
-    #                    set and does not already include praktika,
-    #                    bootstrap uses it to install praktika into the
-    #                    shared runtime copy the first time that copy is
-    #                    missing praktika.
-    PRAKTIKA_INSTALL_SOURCE: str = ""
     # Optional prebaked base venv name shared by both workflow and job sides.
-    # If that env already has praktika installed, PRAKTIKA_INSTALL_SOURCE is
-    # ignored. Otherwise bootstrap installs praktika into a runtime copy of
-    # this env the first time that runtime copy is missing praktika, using
-    # PRAKTIKA_INSTALL_SOURCE.
+    # The selected env is expected to already contain praktika.
     PRAKTIKA_BASE_VENV: str = ""
 
 
@@ -199,7 +181,6 @@ _USER_DEFINED_SETTINGS = [
     "CI_DB_READ_USER",
     "CI_DB_READ_URL",
     "TEST_FAILURE_PATTERNS",
-    "PRAKTIKA_INSTALL_SOURCE",
     "PRAKTIKA_BASE_VENV",
 ]
 
