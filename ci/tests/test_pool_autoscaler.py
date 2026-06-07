@@ -7,6 +7,7 @@ from praktika.infrastructure.native.orchestrator_pool import OrchestratorPool
 from praktika.infrastructure.native.runner_pool import RunnerPool
 from praktika.infrastructure.native.lambda_pool_autoscaler import (
     _calculate_desired_capacity,
+    lambda_handler,
 )
 
 
@@ -51,6 +52,69 @@ def test_calculate_desired_capacity_scales_up_only_when_needed():
         )
         == 2
     )
+
+
+def test_lambda_handler_updates_all_pools_that_need_scaling(monkeypatch):
+    class _FakeSQS:
+        def get_queue_url(self, QueueName):
+            return {"QueueUrl": f"https://example.invalid/{QueueName}"}
+
+        def get_queue_attributes(self, QueueUrl, AttributeNames):
+            queue_name = QueueUrl.rsplit("/", 1)[-1]
+            attrs = {
+                "pool-a": {
+                    "ApproximateNumberOfMessages": "3",
+                    "ApproximateNumberOfMessagesNotVisible": "0",
+                },
+                "pool-b": {
+                    "ApproximateNumberOfMessages": "2",
+                    "ApproximateNumberOfMessagesNotVisible": "1",
+                },
+                "pool-c": {
+                    "ApproximateNumberOfMessages": "0",
+                    "ApproximateNumberOfMessagesNotVisible": "0",
+                },
+            }
+            return {"Attributes": attrs[queue_name]}
+
+    class _FakeAutoscaling:
+        def __init__(self):
+            self.updated = []
+
+        def describe_auto_scaling_groups(self, AutoScalingGroupNames):
+            name = AutoScalingGroupNames[0]
+            groups = {
+                "asg-a": {"DesiredCapacity": 0, "MaxSize": 10},
+                "asg-b": {"DesiredCapacity": 1, "MaxSize": 10},
+                "asg-c": {"DesiredCapacity": 2, "MaxSize": 10},
+            }
+            return {"AutoScalingGroups": [groups[name]]}
+
+        def update_auto_scaling_group(self, AutoScalingGroupName, DesiredCapacity):
+            self.updated.append((AutoScalingGroupName, DesiredCapacity))
+
+    fake_autoscaling = _FakeAutoscaling()
+
+    def _fake_boto3_client(service_name, region_name=None):
+        if service_name == "sqs":
+            return _FakeSQS()
+        if service_name == "autoscaling":
+            return fake_autoscaling
+        raise AssertionError(f"Unexpected boto3 client: {service_name}")
+
+    monkeypatch.setenv(
+        "POOLS_CONFIG_JSON",
+        '[{"name":"pool-a","queue_name":"pool-a","asg_name":"asg-a"},'
+        '{"name":"pool-b","queue_name":"pool-b","asg_name":"asg-b"},'
+        '{"name":"pool-c","queue_name":"pool-c","asg_name":"asg-c"}]',
+    )
+    monkeypatch.setenv("AWS_REGION", "eu-north-1")
+    monkeypatch.setattr("praktika.infrastructure.native.lambda_pool_autoscaler.boto3.client", _fake_boto3_client)
+
+    result = lambda_handler({}, None)
+
+    assert result["pool_count"] == 3
+    assert fake_autoscaling.updated == [("asg-a", 1), ("asg-b", 2)]
 
 
 def test_cloud_infrastructure_registers_pool_autoscaler():

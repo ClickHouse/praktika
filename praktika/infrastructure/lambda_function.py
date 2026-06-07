@@ -518,35 +518,38 @@ class Lambda:
             lambda_client = aws_client("lambda", self.region, self.name)
             api_name = f"{function_name}-API"
 
+            # Get Lambda ARN. Even when the API already exists we still need to
+            # ensure invoke permission is present, because the Lambda may have
+            # been recreated after the API was left intact.
+            func = lambda_client.get_function(FunctionName=function_name)
+            lambda_arn = func["Configuration"]["FunctionArn"]
+            account_id = lambda_arn.split(":")[4]
+
             # Check if API already exists
             apis = apigw.get_apis().get("Items", [])
             existing = [a for a in apis if a["Name"] == api_name]
 
             if existing:
                 api = existing[0]
+                api_id = api["ApiId"]
                 endpoint = api["ApiEndpoint"]
                 print(f"API Gateway already exists: {endpoint}")
                 self.ext["api_endpoint"] = endpoint
                 self._dump_api_endpoint(function_name, endpoint)
-                return
-
-            # Get Lambda ARN
-            func = lambda_client.get_function(FunctionName=function_name)
-            lambda_arn = func["Configuration"]["FunctionArn"]
-
-            # Create HTTP API with Lambda integration
-            api = apigw.create_api(
-                Name=api_name,
-                ProtocolType="HTTP",
-                Target=lambda_arn,
-            )
-            api_id = api["ApiId"]
-            endpoint = api["ApiEndpoint"]
-            print(f"Created API Gateway: {endpoint}")
-            self._dump_api_endpoint(function_name, endpoint)
+            else:
+                # Create HTTP API with Lambda integration
+                api = apigw.create_api(
+                    Name=api_name,
+                    ProtocolType="HTTP",
+                    Target=lambda_arn,
+                )
+                api_id = api["ApiId"]
+                endpoint = api["ApiEndpoint"]
+                print(f"Created API Gateway: {endpoint}")
+                self._dump_api_endpoint(function_name, endpoint)
+                self.ext["api_endpoint"] = endpoint
 
             # Grant API Gateway permission to invoke the Lambda
-            account_id = lambda_arn.split(":")[4]
             source_arn = f"arn:aws:execute-api:{self.region}:{account_id}:{api_id}/*/*"
             try:
                 lambda_client.add_permission(
@@ -559,8 +562,6 @@ class Lambda:
                 print("Added API Gateway invoke permission")
             except lambda_client.exceptions.ResourceConflictException:
                 print("API Gateway invoke permission already exists")
-
-            self.ext["api_endpoint"] = endpoint
 
         def _schedule_rule_name(self) -> str:
             return f"{self.name}-schedule"

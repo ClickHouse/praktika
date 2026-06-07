@@ -79,6 +79,12 @@ def _resolve_runtime(clone_dir: str, log):
     return base_venv, venv_dir
 
 
+def _praktika_env(venv_dir: str, queue_name: str) -> dict[str, str]:
+    env = venv_env(venv_dir)
+    env["SQS_QUEUE_NAME"] = queue_name
+    return env
+
+
 def handle_workflow(event, log, queue_name: str):
     wf_type = event.get("type", "unknown")
     log.info("Processing: %s", wf_type)
@@ -92,7 +98,7 @@ def handle_workflow(event, log, queue_name: str):
     head_sha = event.get("head_sha", "")
     branch = event.get("head_ref", "")
 
-    gh_token = get_github_token(REGION, role=ROLE_WORKFLOW, queue_name=queue_name)
+    gh_token = get_github_token(REGION)
     subprocess.run(
         ["gh", "auth", "login", "--with-token"],
         input=gh_token,
@@ -122,7 +128,7 @@ def handle_workflow(event, log, queue_name: str):
     result = subprocess.run(
         praktika_command(venv_dir, "orchestrate", "workflow", event_file, "--ci"),
         cwd=clone_dir,
-        env=venv_env(venv_dir),
+        env=_praktika_env(venv_dir, queue_name),
         stderr=subprocess.PIPE,
         text=True,
     )
@@ -155,7 +161,7 @@ def handle_task(task, log, queue_name: str):
     pr_number = task.get("pr_number")
     head_sha = task.get("head_sha", "")
 
-    gh_token = get_github_token(REGION, role=ROLE_RUNNER, queue_name=queue_name)
+    gh_token = get_github_token(REGION)
     subprocess.run(
         ["gh", "auth", "login", "--with-token"],
         input=gh_token,
@@ -192,7 +198,7 @@ def handle_task(task, log, queue_name: str):
     proc = subprocess.Popen(
         praktika_command(venv_dir, "orchestrate", "job", task_file, "--ci"),
         cwd=clone_dir,
-        env=venv_env(venv_dir),
+        env=_praktika_env(venv_dir, queue_name),
         stderr=subprocess.PIPE,
         text=True,
     )
@@ -283,8 +289,10 @@ def poll():
                 sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt)
                 log.info("DONE: message deleted")
             log.info("RESULT: %s", json.dumps(result))
-        except Exception:
-            log.exception("ERROR processing message")
+        except Exception as exc:
+            log.exception("ERROR processing message: %s", type(exc).__name__)
+            sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt)
+            log.info("DONE: message deleted on Exception; won't be retried")
 
 
 def main():

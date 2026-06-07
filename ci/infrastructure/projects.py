@@ -70,6 +70,7 @@ REGION=${AWS_DEFAULT_REGION:-$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" h
 INSTANCE_ID=${INSTANCE_ID:-$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)}
 PRAKTIKA_CONTROLLER_ROLE=${PRAKTIKA_CONTROLLER_ROLE:-$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/tags/instance/praktika_role || true)}
 PRAKTIKA_CONTROLLER_QUEUE=${PRAKTIKA_CONTROLLER_QUEUE:-$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/tags/instance/praktika_queue || true)}
+PRAKTIKA_PROJECT_SLUG=${PRAKTIKA_PROJECT_SLUG:-$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/tags/instance/praktika_project_slug || true)}
 if [ -z "$PRAKTIKA_CONTROLLER_ROLE" ] || [ -z "$PRAKTIKA_CONTROLLER_QUEUE" ]; then
   echo "praktika_role or praktika_queue instance tag is unavailable" >&2
   exit 1
@@ -77,8 +78,10 @@ fi
 export HOME=/root
 export AWS_DEFAULT_REGION="$REGION"
 export INSTANCE_ID="$INSTANCE_ID"
+export PRAKTIKA_PROJECT_SLUG
 export PRAKTIKA_CONTROLLER_ROLE
 export PRAKTIKA_CONTROLLER_QUEUE
+export SQS_QUEUE_NAME="$PRAKTIKA_CONTROLLER_QUEUE"
 exec /usr/local/bin/praktika-controller
 """
     cloudwatch = """{
@@ -155,10 +158,10 @@ def _runtime_prebuilt_venvs():
 
 
 def _image_builders():
-    ci_arm64_version = "1.0.11"
-    ci_x86_64_version = "1.0.11"
-    base_ci_arm64_version = "1.0.11"
-    base_ci_x86_64_version = "1.0.11"
+    ci_arm64_version = "1.0.14"
+    ci_x86_64_version = "1.0.14"
+    base_ci_arm64_version = "1.0.14"
+    base_ci_x86_64_version = "1.0.14"
 
     return [
         ImageBuilder.Config(
@@ -307,6 +310,8 @@ _runner_pools = [
                 "#!/usr/bin/env bash",
                 "set -xeuo pipefail",
                 "",
+                "# Update the controller if changed (to test new version w/o inage rebuild)",
+                f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages",
                 "# Add any host customization you need above this line.",
                 "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/praktika/amazon-cloudwatch-agent.json -s",
                 (
@@ -333,6 +338,8 @@ _orchestrator_pool = Components.OrchestratorPool(
             "#!/usr/bin/env bash",
             "set -xeuo pipefail",
             "",
+            "# Update the controller if changed (to test new version w/o inage rebuild)",
+            f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages",
             "# Add any host customization you need above this line.",
             "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/praktika/amazon-cloudwatch-agent.json -s",
             (

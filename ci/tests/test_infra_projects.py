@@ -1,4 +1,5 @@
 import base64
+from types import SimpleNamespace
 
 import pytest
 
@@ -100,6 +101,7 @@ def test_cloud_config_prefixes_embedded_pool_resources():
     assert runner.autoscaling_group.vpc_name == "sandbox-praktika-ci"
     assert runner.launch_template.tags["praktika_role"] == "job_runner"
     assert runner.launch_template.tags["praktika_queue"] == runner.queue.name
+    assert runner.launch_template.tags["praktika_project_slug"] == "sandbox"
     assert all(
         stmt.get("Sid") != "SecretsManagerRead"
         for stmt in runner.ec2_role.inline_policies["RunnerAccess"]["Statement"]
@@ -124,6 +126,7 @@ def test_cloud_config_prefixes_embedded_pool_resources():
     assert orchestrator.lambda_config.role_name == "sandbox-gh-webhook-role"
     assert orchestrator.webhook_secret.name == "sandbox-gh-webhook-secret"
     assert orchestrator.launch_template.tags["praktika_role"] == "workflow_orchestrator"
+    assert orchestrator.launch_template.tags["praktika_project_slug"] == "sandbox"
     assert all(
         stmt.get("Sid") != "SecretsManagerRead"
         for stmt in orchestrator.ec2_role.inline_policies["WorkflowOrchestratorAccess"]["Statement"]
@@ -267,6 +270,77 @@ def test_cloud_config_prefixes_all_top_level_resource_types():
     assert builder.prebuilt_venvs[0].name == "prefix-check-runtime"
 
 
+def test_cloud_deploy_runs_lambdas_before_image_backed_compute(monkeypatch):
+    calls = []
+
+    cloud = CloudInfrastructure.Config(
+        name="deploy-order",
+        lambda_functions=[
+            Lambda.Config(
+                name="webhook",
+                path=__file__,
+                handler="handler.main",
+                role_name="lambda-role",
+            )
+        ],
+        image_builders=[
+            ImageBuilder.Config(
+                name="builder",
+                image_pipeline_name="builder-pipeline",
+            )
+        ],
+        launch_templates=[
+            LaunchTemplate.Config(
+                name="runner-lt",
+                image_id="ami-1234567890abcdef0",
+                instance_type="t4g.small",
+            )
+        ],
+        autoscaling_groups=[
+            AutoScalingGroup.Config(
+                name="runner-asg",
+                vpc_name="ci",
+                min_size=0,
+                max_size=1,
+                desired_capacity=0,
+                launch_template_name="runner-lt",
+            )
+        ],
+    )
+    cloud._settings = SimpleNamespace(AWS_REGION="eu-north-1", EVENT_FEED_S3_PATH="")
+    monkeypatch.setattr(cloud, "_verify_account", lambda: None)
+
+    monkeypatch.setattr(
+        cloud.lambda_functions[0],
+        "deploy",
+        lambda: calls.append(f"lambda:{cloud.lambda_functions[0].name}"),
+    )
+    monkeypatch.setattr(
+        cloud.image_builders[0],
+        "deploy",
+        lambda: calls.append(f"imagebuilder:{cloud.image_builders[0].name}"),
+    )
+    monkeypatch.setattr(
+        cloud.launch_templates[0],
+        "deploy",
+        lambda: calls.append(f"lt:{cloud.launch_templates[0].name}"),
+    )
+    monkeypatch.setattr(
+        cloud.autoscaling_groups[0],
+        "deploy",
+        lambda: calls.append(f"asg:{cloud.autoscaling_groups[0].name}"),
+    )
+
+    cloud.deploy()
+
+    assert calls == [
+        "lambda:deploy-order-webhook",
+        "imagebuilder:deploy-order-builder",
+        "lt:deploy-order-runner-lt",
+        "asg:deploy-order-runner-asg",
+    ]
+
+
 def test_shared_controller_image_builders_are_declared():
     for name, arch, instance_type in [
         ("praktika-base-ci-arm64-image", "arm64", "t4g.small"),
@@ -327,6 +401,9 @@ def test_shared_controller_image_builders_are_declared():
         )
         assert "praktika_role" in launcher
         assert "praktika_queue" in launcher
+        assert "praktika_project_slug" in launcher
+        assert "export PRAKTIKA_PROJECT_SLUG" in launcher
+        assert 'export SQS_QUEUE_NAME="$PRAKTIKA_CONTROLLER_QUEUE"' in launcher
         assert "exec /usr/local/bin/praktika-controller" in launcher
         assert "ExecStart=/usr/local/bin/praktika-controller-start" in unit
         assert "StandardOutput=append:/var/log/praktika-controller.log" in unit
@@ -372,6 +449,8 @@ def test_project_github_token_minter_uses_defaults_and_project_repo_scope():
 
     assert any("lambda:InvokeFunction" in stmt["Action"] for stmt in runner_invoke)
     assert any("lambda:InvokeFunction" in stmt["Action"] for stmt in orchestrator_invoke)
+    assert runner.launch_template.tags["praktika_project_slug"] == "praktika"
+    assert orchestrator.launch_template.tags["praktika_project_slug"] == "praktika"
 
 
 def test_base_runner_pool_uses_base_image_without_bootstrap_user_data():

@@ -44,36 +44,7 @@ def configure_logging(name: str, instance_id: str) -> logging.Logger:
     return logging.getLogger(name)
 
 
-def _guess_gh_auth_lambda_name(role: str = "", queue_name: str = "") -> str:
-    configured = os.environ.get("GH_AUTH_LAMBDA_NAME", "").strip()
-    if configured:
-        return configured
-
-    role = (role or os.environ.get("PRAKTIKA_CONTROLLER_ROLE", "")).strip()
-    queue_name = (queue_name or os.environ.get("PRAKTIKA_CONTROLLER_QUEUE", "")).strip()
-    pool_name = os.environ.get("PRAKTIKA_CONTROLLER_POOL", "").strip()
-
-    prefix = ""
-    if role == "workflow_orchestrator":
-        for suffix in ("workflow-orchestrator-base", "workflow-orchestrator"):
-            if queue_name.endswith(suffix):
-                prefix = queue_name[: -len(suffix)].rstrip("-")
-                break
-    elif role == "job_runner" and queue_name and pool_name:
-        if queue_name == pool_name:
-            prefix = ""
-        elif queue_name.endswith(pool_name):
-            prefix = queue_name[: -len(pool_name)].rstrip("-")
-
-    return f"{prefix}-gh-token" if prefix else "gh-token"
-
-
-def get_github_token(
-    region: str = "",
-    *,
-    role: str = "",
-    queue_name: str = "",
-) -> str:
+def get_github_token(region: str = "") -> str:
     """Mint a GitHub installation token by invoking the GH auth lambda."""
     import boto3
 
@@ -85,7 +56,14 @@ def get_github_token(
     if not region:
         raise RuntimeError("AWS_DEFAULT_REGION or AWS_REGION must be set")
 
-    lambda_name = _guess_gh_auth_lambda_name(role=role, queue_name=queue_name)
+    lambda_name = (
+        os.environ.get("GH_AUTH_LAMBDA_NAME", "").strip()
+        or (
+            f"{os.environ.get('PRAKTIKA_PROJECT_SLUG', '').strip()}-gh-token"
+            if os.environ.get("PRAKTIKA_PROJECT_SLUG", "").strip()
+            else "gh-token"
+        )
+    )
     client = boto3.client("lambda", region_name=region)
     response = client.invoke(
         FunctionName=lambda_name,

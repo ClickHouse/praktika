@@ -550,12 +550,16 @@ class CloudInfrastructure:
                 config.user_data = self._replace_recursive(getattr(config, "user_data", ""), replacements)
 
             for pool in self.runner_pools:
+                pool.launch_template.tags["praktika_project_slug"] = self.name
+                pool.autoscaling_group.tags["praktika_project_slug"] = self.name
                 pool.ec2_role.inline_policies = self._replace_recursive(pool.ec2_role.inline_policies, replacements)
                 pool.launch_template.tags = self._replace_recursive(pool.launch_template.tags, replacements)
                 pool.launch_template.user_data = self._replace_recursive(pool.launch_template.user_data, replacements)
                 pool.autoscaling_group.tags = self._replace_recursive(pool.autoscaling_group.tags, replacements)
 
             for pool in self.orchestrator_pools:
+                pool.launch_template.tags["praktika_project_slug"] = self.name
+                pool.autoscaling_group.tags["praktika_project_slug"] = self.name
                 pool.ec2_role.inline_policies = self._replace_recursive(pool.ec2_role.inline_policies, replacements)
                 pool.lambda_role.inline_policies = self._replace_recursive(pool.lambda_role.inline_policies, replacements)
                 pool.lambda_config.environments = self._replace_recursive(pool.lambda_config.environments, replacements)
@@ -853,40 +857,6 @@ class CloudInfrastructure:
                     print("=" * 60)
                     vpc_config.deploy()
 
-            # Deploy Image Builder pipelines before LaunchTemplates so AMI
-            # resolution works on first deploy and after pipeline renames.
-            # Missing launch templates are tolerated by Image Builder deploy
-            # and can be attached on a later deploy.
-            if _wants("ImageBuilder", "ImageBuilders"):
-                for ib_config in self.image_builders:
-                    ib_config.region = self._settings.AWS_REGION
-
-                    print("\n" + "=" * 60)
-                    print(f"Deploying Image Builder: {ib_config.name}")
-                    print("=" * 60)
-                    ib_config.deploy()
-
-            # Deploy all Launch Templates after ImageBuilders so image-builder
-            # backed templates can resolve their latest AMI ids.
-            if _wants("LaunchTemplate", "LaunchTemplates"):
-                for lt_config in self.launch_templates:
-                    lt_config.region = self._settings.AWS_REGION
-
-                    print("\n" + "=" * 60)
-                    print(f"Deploying Launch Template: {lt_config.name}")
-                    print("=" * 60)
-                    lt_config.deploy()
-
-            # Deploy all ASGs
-            if _wants("AutoScalingGroup", "AutoScalingGroups", "ASG", "ASGs"):
-                for asg_config in self.autoscaling_groups:
-                    asg_config.region = self._settings.AWS_REGION
-
-                    print("\n" + "=" * 60)
-                    print(f"Deploying Auto Scaling Group: {asg_config.name}")
-                    print("=" * 60)
-                    asg_config.deploy()
-
             # Deploy secret parameters (before Lambdas that reference them)
             if _wants("SecretParameter", "SecretParameters", "Secret", "Secrets"):
                 for secret_config in self.secret_parameters:
@@ -936,7 +906,9 @@ class CloudInfrastructure:
                     print("=" * 60)
                     sqs_config.deploy()
 
-            # Deploy all Lambdas (code only or with configuration)
+            # Deploy all Lambdas before image-backed compute so webhook/API
+            # entrypoints are recreated even while Image Builder pipelines are
+            # still producing their first ready AMIs.
             if _wants("Lambda", "Lambdas", "LambdaFunction", "LambdaFunctions"):
                 for lambda_config in self.lambda_functions:
                     # Always set region if available (needed even for code-only deploys)
@@ -993,6 +965,39 @@ class CloudInfrastructure:
                 print("\n" + "=" * 60)
                 print("Lambda deployment completed!")
                 print("=" * 60)
+
+            # Deploy Image Builder pipelines after Lambdas. The webhook/API
+            # surface should be available even if compute images are still
+            # building.
+            if _wants("ImageBuilder", "ImageBuilders"):
+                for ib_config in self.image_builders:
+                    ib_config.region = self._settings.AWS_REGION
+
+                    print("\n" + "=" * 60)
+                    print(f"Deploying Image Builder: {ib_config.name}")
+                    print("=" * 60)
+                    ib_config.deploy()
+
+            # Deploy all Launch Templates after ImageBuilders so image-builder
+            # backed templates can resolve their latest AMI ids.
+            if _wants("LaunchTemplate", "LaunchTemplates"):
+                for lt_config in self.launch_templates:
+                    lt_config.region = self._settings.AWS_REGION
+
+                    print("\n" + "=" * 60)
+                    print(f"Deploying Launch Template: {lt_config.name}")
+                    print("=" * 60)
+                    lt_config.deploy()
+
+            # Deploy all ASGs after Launch Templates.
+            if _wants("AutoScalingGroup", "AutoScalingGroups", "ASG", "ASGs"):
+                for asg_config in self.autoscaling_groups:
+                    asg_config.region = self._settings.AWS_REGION
+
+                    print("\n" + "=" * 60)
+                    print(f"Deploying Auto Scaling Group: {asg_config.name}")
+                    print("=" * 60)
+                    asg_config.deploy()
 
         def destroy_runtime(
             self,

@@ -23,6 +23,7 @@ def test_runner_pool_stamps_idle_scale_tags():
     assert {"Key": "praktika_scaling", "Value": "auto"} in instance_tags
     assert {"Key": "praktika_queue", "Value": "arm-2xsmall"} in instance_tags
     assert {"Key": "praktika_asg", "Value": "arm-2xsmall"} in instance_tags
+    assert {"Key": "praktika_project_slug", "Value": "arm-2xsmall"} not in instance_tags
     assert lt_data["MetadataOptions"]["InstanceMetadataTags"] == "enabled"
 
 
