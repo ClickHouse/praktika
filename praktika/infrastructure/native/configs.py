@@ -28,25 +28,25 @@ def resolve_al2023_x86_64_ami(region: str) -> str:
     print(f"Resolved AL2023 x86_64 AMI for {region}: {value}")
     return value
 
-RUNNER_ROLE_NAME = "praktika-runner-role"
-RUNNER_INSTANCE_PROFILE_NAME = "praktika-runner-profile"
+RUNNER_ROLE_NAME = "runner-role"
+RUNNER_INSTANCE_PROFILE_NAME = "runner-profile"
 
-ORCHESTRATOR_ROLE_NAME = "praktika-workflow-orchestrator-role"
-ORCHESTRATOR_INSTANCE_PROFILE_NAME = "praktika-workflow-orchestrator-profile"
+ORCHESTRATOR_ROLE_NAME = "workflow-orchestrator-role"
+ORCHESTRATOR_INSTANCE_PROFILE_NAME = "workflow-orchestrator-profile"
 
 report_page_config = ReportPage.Config(
     path=str(Path(__file__).parent.parent.parent / "json.html"),
 )
 
-GH_TRIGGER_ROLE_NAME = "praktika-gh-trigger-role"
-GH_TRIGGER_WEBHOOK_SECRET_NAME = "praktika-gh-trigger-webhook-secret"
+GH_TRIGGER_ROLE_NAME = "gh-trigger-role"
+GH_TRIGGER_WEBHOOK_SECRET_NAME = "gh-trigger-webhook-secret"
 
-CIDB_ROLE_NAME = "praktika-cidb-role"
-CIDB_INSTANCE_PROFILE_NAME = "praktika-cidb-profile"
-CIDB_ADMIN_PASSWORD_SECRET_NAME = "praktika-cidb-admin-password"
+CIDB_ROLE_NAME = "cidb-role"
+CIDB_INSTANCE_PROFILE_NAME = "cidb-profile"
+CIDB_ADMIN_PASSWORD_SECRET_NAME = "cidb-admin-password"
 
 lambda_gh_trigger_config = Lambda.Config(
-    name="praktika-gh-trigger",
+    name="gh-trigger",
     path=f"{os.path.dirname(__file__)}/lambda_gh_trigger.py",
     handler="lambda_gh_trigger.lambda_handler",
     role_name=GH_TRIGGER_ROLE_NAME,

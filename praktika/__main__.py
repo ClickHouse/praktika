@@ -160,13 +160,13 @@ def create_parser():
     )
     _infra_parser.add_argument(
         "--destroy-runtime",
-        help="Delete the execution-plane metadata and recreatable compute while keeping S3, VPC, CIDB, Dedicated Hosts, and GitHub webhook wiring",
+        help="Delete recreatable runtime resources. With --all, also deletes all configured lambdas, IAM roles/profiles, and Image Builder configs while still keeping S3, secrets, and parameters",
         action="store_true",
         default=False,
     )
     _infra_parser.add_argument(
         "--all",
-        help="Deploy all configured components (used with --deploy)",
+        help="With --deploy: deploy all configured components. With --destroy-runtime: expand deletion to all configured lambdas, IAM roles/profiles, and Image Builder configs",
         action="store_true",
         default=False,
     )
@@ -196,6 +196,13 @@ def create_parser():
     _infra_parser.add_argument(
         "--test",
         help="Test mode for HTML upload (creates _test.html variant)",
+        action="store_true",
+        default=False,
+    )
+    _infra_parser.add_argument(
+        "-y",
+        "--yes",
+        help="Automatically answer yes to interactive confirmations",
         action="store_true",
         default=False,
     )
@@ -248,33 +255,41 @@ def main(argv=None):
         Validator().validate()
         YamlGenerator().generate()
     elif args.command == "infrastructure":
+        from .interactive import UserPrompt
+
         project = getattr(args, "project", None) or None
-        if not args.deploy and not args.destroy_runtime and not args.restart_instances:
-            Utils.raise_with_error(
-                "infrastructure command requires --deploy, --destroy-runtime, or --restart-instances"
-            )
+        previous_auto_confirm = UserPrompt.AUTO_CONFIRM
+        UserPrompt.AUTO_CONFIRM = bool(getattr(args, "yes", False))
+        try:
+            if not args.deploy and not args.destroy_runtime and not args.restart_instances:
+                Utils.raise_with_error(
+                    "infrastructure command requires --deploy, --destroy-runtime, or --restart-instances"
+                )
 
-        if args.deploy:
-            from .mangle import _get_infra_config
+            if args.deploy:
+                from .mangle import _get_infra_config
 
-            _get_infra_config(project).deploy(
-                all=args.all,
-                only=args.only,
-                is_test=args.test,
-            )
+                _get_infra_config(project).deploy(
+                    all=args.all,
+                    only=args.only,
+                    is_test=args.test,
+                )
 
-        if args.destroy_runtime:
-            from .mangle import _get_infra_config
+            if args.destroy_runtime:
+                from .mangle import _get_infra_config
 
-            _get_infra_config(project).destroy_runtime(
-                force=True,
-                only=args.only,
-            )
+                _get_infra_config(project).destroy_runtime(
+                    force=True,
+                    only=args.only,
+                    all=args.all,
+                )
 
-        if args.restart_instances:
-            from .mangle import _get_infra_config
+            if args.restart_instances:
+                from .mangle import _get_infra_config
 
-            _get_infra_config(project).restart_instances()
+                _get_infra_config(project).restart_instances()
+        finally:
+            UserPrompt.AUTO_CONFIRM = previous_auto_confirm
     elif args.command == "orchestrate":
         if args.orch_command == "workflow":
             from .orchestrator import run as orchestrate_run

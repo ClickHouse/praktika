@@ -998,6 +998,7 @@ class CloudInfrastructure:
             self,
             force: bool = True,
             only: Optional[List[str]] = None,
+            all: bool = False,
         ):
             """
             Delete the execution-plane resources that can be safely recreated.
@@ -1006,6 +1007,9 @@ class CloudInfrastructure:
             Args:
                 force: If True, forcefully terminate instances without stopping first.
                 only: If set, destroy only selected runtime component types by name.
+                all: If True, also delete all configured lambdas, IAM roles/profiles,
+                    and Image Builder configs, while still keeping S3, secrets,
+                    and parameters.
             """
             self._verify_account()
 
@@ -1041,13 +1045,20 @@ class CloudInfrastructure:
                 runtime_lambdas.append(token_minter.lambda_config)
                 runtime_lambda_roles.append(token_minter.lambda_role)
 
+            lambda_targets = self.lambda_functions if all else runtime_lambdas
+            iam_role_targets = self.iam_roles if all else runtime_lambda_roles
+            iam_instance_profile_targets = self.iam_instance_profiles if all else []
+            image_builder_targets = self.image_builders if all else []
+
             any_work = any([
                 self.sqs_queues,
                 self.launch_templates,
                 self.autoscaling_groups,
                 self.ec2_instances,
-                runtime_lambdas,
-                runtime_lambda_roles,
+                lambda_targets,
+                iam_role_targets,
+                iam_instance_profile_targets,
+                image_builder_targets,
             ])
             if not any_work:
                 print("No runtime resources configured to destroy")
@@ -1083,14 +1094,29 @@ class CloudInfrastructure:
                 "LambdaFunction",
                 "LambdaFunctions",
             ):
-                for c in runtime_lambdas:
+                for c in lambda_targets:
                     c.region = self._settings.AWS_REGION
                     _confirm_and_run(f"Lambda {c.name}", c.delete)
 
+            if _wants(
+                "IAMInstanceProfile",
+                "IAMInstanceProfiles",
+                "InstanceProfile",
+                "InstanceProfiles",
+            ):
+                for c in iam_instance_profile_targets:
+                    c.region = self._settings.AWS_REGION
+                    _confirm_and_run(f"IAMInstanceProfile {c.name}", c.delete)
+
             if _wants("RuntimeIAMRole", "RuntimeIAMRoles", "IAMRole", "IAMRoles"):
-                for c in runtime_lambda_roles:
+                for c in iam_role_targets:
                     c.region = self._settings.AWS_REGION
                     _confirm_and_run(f"IAMRole {c.name}", c.delete)
+
+            if _wants("ImageBuilder", "ImageBuilders"):
+                for c in image_builder_targets:
+                    c.region = self._settings.AWS_REGION
+                    _confirm_and_run(f"ImageBuilder {c.name}", c.delete)
 
             print("\n" + "=" * 60)
             print("Runtime destroy completed!")

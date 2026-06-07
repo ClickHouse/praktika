@@ -38,7 +38,7 @@ class CIDBCluster:
     Example::
 
         cidb = CIDBCluster(
-            vpc_name="praktika-ci",
+            vpc_name="project-ci",
             instance_type="t4g.large",
             size=1,
         )
@@ -123,7 +123,7 @@ class CIDBCluster:
 
         self.instances = []
         for index in range(1, self.size + 1):
-            replica_name = f"praktika-cidb-{index:02d}"
+            replica_name = f"cidb-{index:02d}"
             user_data = cidb_user_data(
                 vpc_cidr=self.vpc_cidr,
                 admin_password_ssm_name=self.admin_password_secret_name,

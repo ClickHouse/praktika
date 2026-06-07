@@ -30,10 +30,10 @@ python3 -m praktika infrastructure --destroy-runtime
   and orchestrator pools attach to a VPC by name.
 - **`Storage.Config`** — an S3 bucket for artifacts and the HTML report,
   with retention policy and public/private access.
-- **`NativeComponents.OrchestratorPool`** — ASG of EC2 VMs that polls SQS,
+- **`Components.OrchestratorPool`** — ASG of EC2 VMs that polls SQS,
   resolves workflow DAGs, and dispatches jobs to runner pools. Supports
   `Scaling.Disabled` and `Scaling.Auto`.
-- **`NativeComponents.RunnerPool`** — ASG of EC2 VMs that pull job tasks
+- **`Components.RunnerPool`** — ASG of EC2 VMs that pull job tasks
   from per-pool SQS queues and execute them. Pools are referenced by jobs
   via the `runs_on` label and support `Scaling.Disabled` / `Scaling.Auto`.
 - **Implicit pool autoscaler** — when any pool uses `Scaling.Auto`,
@@ -41,7 +41,7 @@ python3 -m praktika infrastructure --destroy-runtime
   the corresponding SQS queues and scales ASG desired capacity up. Idle
   runner/orchestrator instances then scale themselves back in by
   decrementing ASG desired capacity and terminating the instance.
-- **`NativeComponents.report_page_config`** — the static HTML page +
+- **`Components.report_page_config`** — the static HTML page +
   bucket policy that renders a workflow's `result_*.json` files.
 - **`ImageBuilder.Config`** — AMI build pipelines. Supports ordinary
   Image Builder components plus `prebuilt_venvs`, which bake named Python

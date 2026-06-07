@@ -21,8 +21,8 @@ def test_runner_pool_stamps_idle_scale_tags():
             instance_tags.extend(spec["Tags"])
 
     assert {"Key": "praktika_scaling", "Value": "auto"} in instance_tags
-    assert {"Key": "praktika_queue", "Value": "praktika-arm-2xsmall"} in instance_tags
-    assert {"Key": "praktika_asg", "Value": "praktika-arm-2xsmall"} in instance_tags
+    assert {"Key": "praktika_queue", "Value": "arm-2xsmall"} in instance_tags
+    assert {"Key": "praktika_asg", "Value": "arm-2xsmall"} in instance_tags
     assert lt_data["MetadataOptions"]["InstanceMetadataTags"] == "enabled"
 
 
@@ -30,7 +30,7 @@ def test_try_scale_in_if_idle_decrements_and_terminates(monkeypatch):
     monkeypatch.setattr(common, "imds_token", lambda: "token")
     tags = {
         "praktika_scaling": "auto",
-        "praktika_asg": "praktika-arm-2xsmall",
+        "praktika_asg": "arm-2xsmall",
     }
     monkeypatch.setattr(common, "instance_tag", lambda name, token=None: tags.get(name, ""))
 
@@ -64,7 +64,7 @@ def test_try_scale_in_if_idle_decrements_and_terminates(monkeypatch):
     assert common.try_scale_in_if_idle(
         sqs=_SQS(),
         queue_url="queue-url",
-        queue_name="praktika-arm-2xsmall",
+        queue_name="arm-2xsmall",
         region="eu-north-1",
         instance_id="i-123",
         log=_Log(),

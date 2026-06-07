@@ -70,8 +70,7 @@ the latter.
 
 ## Check logs on orchestrator or runners
 
-Two ways. The SSM grep is convenient for live tailing; the S3 dump is the
-authoritative full journal (no 24 KB SSM truncation).
+Use the systemd journal on the live instance.
 
 ### A. Tail the systemd journal via SSM
 
@@ -106,23 +105,3 @@ aws ssm get-command-invocation --command-id "$CMD" --instance-id "$INST" \
 
 For a free-form filter swap the inner pipeline for whatever you need
 (e.g. `grep RECEIVED`, `tail -200`, `--since '5 min ago'`).
-
-### B. Pull the full journal from S3 (no truncation)
-
-Both agents upload a journal snapshot after every task / workflow:
-
-| Side | S3 prefix |
-|---|---|
-| Workflow orchestrator | `s3://praktika-artifacts-eu-north-1/workflow-orchestrator/<date>/<instance>/<HH-MM-SS-...>.json` |
-| Runner pool          | `s3://praktika-artifacts-eu-north-1/job-runner/<date>/<instance>/<HH-MM-SS-...>.json` |
-
-```bash
-# List today's runner logs, newest last
-aws s3 ls --profile Box --recursive \
-  "s3://praktika-artifacts-eu-north-1/job-runner/$(date -u +%Y-%m-%d)/" | sort | tail
-
-# Fetch one
-aws s3 cp --profile Box \
-  s3://praktika-artifacts-eu-north-1/job-runner/2026-05-01/i-0e45fb9dbab778f40/15-09-57-998957.json - \
-  | jq .
-```

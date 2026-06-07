@@ -7,7 +7,7 @@ from .runner_pool import RunnerPool
 from .user_data import cidb_user_data
 
 
-class NativeComponents:
+class Components:
     CIDBCluster = CIDBCluster
     GitHubTokenMinter = GitHubTokenMinter
     OrchestratorPool = OrchestratorPool

@@ -22,10 +22,10 @@ class PoolAutoscaler:
         queue_name: str = ""
         asg_name: str = ""
 
-    name: str = "praktika-pool-autoscaler"
+    name: str = "pool-autoscaler"
     interval_seconds: int = 60
     pools: List[Pool] = field(default_factory=list)
-    lambda_role_name: str = "praktika-pool-autoscaler-role"
+    lambda_role_name: str = "pool-autoscaler-role"
     timeout_ms: int = 30 * 1000
     memory_size_mb: int = 128
 
@@ -43,7 +43,7 @@ class PoolAutoscaler:
         )
         queue_arns = sorted(
             {
-                f"arn:aws:sqs:*:*:{pool.queue_name or f'praktika-{pool.name}'}"
+                f"arn:aws:sqs:*:*:{pool.queue_name or pool.name}"
                 for pool in self.pools
                 if (pool.queue_name or pool.name)
             }
@@ -98,9 +98,9 @@ class PoolAutoscaler:
         cls,
         pools,
         *,
-        name: str = "praktika-pool-autoscaler",
+        name: str = "pool-autoscaler",
         interval_seconds: int = 60,
-        lambda_role_name: str = "praktika-pool-autoscaler-role",
+        lambda_role_name: str = "pool-autoscaler-role",
         timeout_ms: int = 30 * 1000,
         memory_size_mb: int = 128,
     ):

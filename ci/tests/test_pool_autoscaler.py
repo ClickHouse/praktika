@@ -20,7 +20,7 @@ def test_pool_autoscaler_builds_scheduled_lambda():
         ],
     )
 
-    assert autoscaler.lambda_config.name == "praktika-pool-autoscaler"
+    assert autoscaler.lambda_config.name == "pool-autoscaler"
     assert autoscaler.lambda_config.schedule_expression == "rate(2 minutes)"
     assert autoscaler.lambda_config.environments["POLL_INTERVAL_SECONDS"] == "75"
     assert '"name":"arm-2xsmall"' in autoscaler.lambda_config.environments["POOLS_CONFIG_JSON"]
@@ -68,11 +68,11 @@ def test_cloud_infrastructure_registers_pool_autoscaler():
     )
 
     assert any(
-        config.name == "test-cloud-praktika-pool-autoscaler"
+        config.name == "test-cloud-pool-autoscaler"
         for config in cloud.lambda_functions
     )
     assert any(
-        role.name == "test-cloud-praktika-pool-autoscaler-role"
+        role.name == "test-cloud-pool-autoscaler-role"
         for role in cloud.iam_roles
     )
 
@@ -102,7 +102,7 @@ def test_cloud_infrastructure_creates_implicit_runner_autoscaler():
     )
 
     autoscalers = [
-        l for l in cloud.lambda_functions if l.name == "test-cloud-praktika-pool-autoscaler"
+        l for l in cloud.lambda_functions if l.name == "test-cloud-pool-autoscaler"
     ]
     assert len(autoscalers) == 1
     autoscaler = autoscalers[0]
@@ -127,7 +127,7 @@ def test_cloud_infrastructure_creates_implicit_orchestrator_autoscaler():
     )
 
     autoscalers = [
-        l for l in cloud.lambda_functions if l.name == "test-cloud-praktika-pool-autoscaler"
+        l for l in cloud.lambda_functions if l.name == "test-cloud-pool-autoscaler"
     ]
     assert len(autoscalers) == 1
     autoscaler = autoscalers[0]

@@ -16,6 +16,7 @@ _DEFAULT_PRAKTIKA_CONTROLLER_USER_DATA = "\n".join(
         "set -xeuo pipefail",
         "",
         "# Add any host customization you need above this line.",
+        "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/praktika/amazon-cloudwatch-agent.json -s",
         "systemctl enable --now praktika-controller",
         "",
     ]
@@ -47,7 +48,7 @@ class RunnerPool:
             ami_id="ami-...",
             security_group_ids=["sg-..."],
             vpc_name="ci-cd",
-            iam_instance_profile_name="praktika-workflow-orchestrator-profile",
+            iam_instance_profile_name="workflow-orchestrator-profile",
             scaling=RunnerPool.Scaling.Disabled,
             size=1,
             max_size=2,
@@ -102,6 +103,10 @@ class RunnerPool:
             f"max_size={self.max_size} must be >= size={self.size}"
         )
 
+        queue_name = self.name
+        asg_name = self.name
+        launch_template_name = f"{self.name}-lt"
+
         self.ec2_role = IAMRole.Config(
             name=self.ec2_role_name,
             trust_service="ec2.amazonaws.com",
@@ -143,16 +148,7 @@ class RunnerPool:
                                 "sqs:GetQueueUrl",
                                 "sqs:GetQueueAttributes",
                             ],
-                            "Resource": "arn:aws:sqs:*:*:praktika-*",
-                        },
-                        {
-                            "Sid": "SecretsManagerRead",
-                            "Effect": "Allow",
-                            "Action": [
-                                "secretsmanager:DescribeSecret",
-                                "secretsmanager:GetSecretValue",
-                            ],
-                            "Resource": "arn:aws:secretsmanager:*:*:secret:praktika-gh-app*",
+                            "Resource": f"arn:aws:sqs:*:*:{queue_name}",
                         },
                         {
                             "Sid": "AutoScalingScaleIn",
@@ -177,8 +173,6 @@ class RunnerPool:
             name=self.iam_instance_profile_name,
             role_name=self.ec2_role_name,
         )
-        queue_name = f"praktika-{self.name}"
-        asg_name = f"praktika-{self.name}"
         runtime_tags = {
             "praktika_pool": self.name,
             "praktika_role": "job_runner",
@@ -187,7 +181,7 @@ class RunnerPool:
             "praktika_scaling": self.scaling,
         }
         self.launch_template = LaunchTemplate.Config(
-            name=f"praktika-{self.name}-lt",
+            name=launch_template_name,
             image_id=self.ami_id,
             image_builder=self.image_builder,
             instance_type=self.instance_type,
@@ -219,7 +213,7 @@ class RunnerPool:
             min_size=0,
             max_size=self.max_size,
             desired_capacity=self.size,
-            launch_template_name=f"praktika-{self.name}-lt",
+            launch_template_name=launch_template_name,
             launch_template_version="$Default" if self.image_builder else "$Latest",
             tags=runtime_tags,
             praktika_resource_tag="runner",

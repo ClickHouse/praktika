@@ -264,6 +264,13 @@ class AutoScalingGroup:
             )
             desired_tags = self._desired_tags()
 
+            def _is_missing_launch_template_error(exc: Exception) -> bool:
+                message = str(exc).lower()
+                return (
+                    "launch template" in message
+                    and "does not exist" in message
+                )
+
             # Try to fetch existing ASG first
             exists = False
             try:
@@ -297,7 +304,16 @@ class AutoScalingGroup:
                     f"ASG '{self.name}': UpdateAutoScalingGroup request: {req}",
                     flush=True,
                 )
-                asg_client.update_auto_scaling_group(**req)
+                try:
+                    asg_client.update_auto_scaling_group(**req)
+                except Exception as e:
+                    if _is_missing_launch_template_error(e):
+                        self.ext["deferred_missing_launch_template"] = True
+                        print(
+                            f"Launch Template is not available yet for ASG '{self.name}'; skipping until the launch template exists"
+                        )
+                        return self
+                    raise
                 print(f"Successfully updated ASG: {self.name}")
             else:
                 print(f"Creating new ASG: {self.name}")
@@ -318,7 +334,16 @@ class AutoScalingGroup:
                     f"ASG '{self.name}': CreateAutoScalingGroup request: {req}",
                     flush=True,
                 )
-                asg_client.create_auto_scaling_group(**req)
+                try:
+                    asg_client.create_auto_scaling_group(**req)
+                except Exception as e:
+                    if _is_missing_launch_template_error(e):
+                        self.ext["deferred_missing_launch_template"] = True
+                        print(
+                            f"Launch Template is not available yet for ASG '{self.name}'; skipping until the launch template exists"
+                        )
+                        return self
+                    raise
                 print(f"Successfully created ASG: {self.name}")
 
             if desired_tags:

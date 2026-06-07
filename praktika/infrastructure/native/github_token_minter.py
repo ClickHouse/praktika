@@ -28,10 +28,10 @@ class GitHubTokenMinter:
         default_factory=lambda: dict(DEFAULT_GITHUB_TOKEN_PERMISSIONS)
     )
     repositories: List[str] = field(default_factory=list)
-    secret_name: str = "praktika-gh-app"
+    secret_name: str = "gh-app"
     region: str = ""
-    name: str = "praktika-gh-token"
-    role_name: str = "praktika-gh-token-role"
+    name: str = "gh-token"
+    role_name: str = "gh-token-role"
 
     lambda_role: IAMRole.Config = field(init=False)
     lambda_config: Lambda.Config = field(init=False)

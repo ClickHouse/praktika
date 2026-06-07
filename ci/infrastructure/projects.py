@@ -1,12 +1,12 @@
 import base64
 
 from praktika.infrastructure.cloud import CloudInfrastructure
-from praktika.infrastructure import ImageBuilder, NativeComponents, Storage, VPC
+from praktika.infrastructure import ImageBuilder, Components, Storage, VPC
 from praktika.infrastructure.native.configs import RUNNER_INSTANCE_PROFILE_NAME
 
 
 CI_VPC_NAME = "praktika-ci"
-_PRAKTIKA_BASE_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1-py3-none-any.whl"
+_PRAKTIKA_BASE_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.0.1-py3-none-any.whl"
 _PRAKTIKA_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1.1-py3-none-any.whl"
 _PRAKTIKA_CONTROLLER_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_controller-0.1.1-py3-none-any.whl"
 _RUNTIME_BASE_VENV = "praktika-runtime"
@@ -20,6 +20,7 @@ def _write_file_from_base64(path: str, content: str) -> str:
 def _setup_component(name: str, *, with_docker: bool):
     commands = [
         "dnf install -y python3 python3-pip python3.12 python3.12-pip git jq awscli",
+        "dnf install -y amazon-cloudwatch-agent",
         "ln -sf /usr/bin/python3.12 /usr/local/bin/python3",
         "curl -fsSL https://cli.github.com/packages/rpm/gh-cli.repo -o /etc/yum.repos.d/gh-cli.repo",
         "dnf install -y gh",
@@ -80,6 +81,23 @@ export PRAKTIKA_CONTROLLER_ROLE
 export PRAKTIKA_CONTROLLER_QUEUE
 exec /usr/local/bin/praktika-controller
 """
+    cloudwatch = """{
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "/var/log/praktika-controller.log",
+            "log_group_name": "/praktika/controller",
+            "log_stream_name": "{instance_id}",
+            "timezone": "UTC"
+          }
+        ]
+      }
+    }
+  }
+}
+"""
     unit = """[Unit]
 Description=Praktika Controller
 After=network.target docker.service
@@ -90,6 +108,8 @@ Environment=HOME=/root
 ExecStart=/usr/local/bin/praktika-controller-start
 Restart=always
 RestartSec=5
+StandardOutput=append:/var/log/praktika-controller.log
+StandardError=append:/var/log/praktika-controller.log
 
 [Install]
 WantedBy=multi-user.target
@@ -100,8 +120,11 @@ WantedBy=multi-user.target
         "description": "Bake the Praktika controller service into the image",
         "commands": [
             "mkdir -p /etc/praktika",
+            "touch /var/log/praktika-controller.log",
+            "chmod 0644 /var/log/praktika-controller.log",
             _write_file_from_base64("/usr/local/bin/praktika-controller-start", launcher),
             "chmod 0755 /usr/local/bin/praktika-controller-start",
+            _write_file_from_base64("/etc/praktika/amazon-cloudwatch-agent.json", cloudwatch),
             _write_file_from_base64("/etc/systemd/system/praktika-controller.service", unit),
             "systemctl daemon-reload || true",
         ],
@@ -132,10 +155,10 @@ def _runtime_prebuilt_venvs():
 
 
 def _image_builders():
-    ci_arm64_version = "1.0.10"
-    ci_x86_64_version = "1.0.10"
-    base_ci_arm64_version = "1.0.10"
-    base_ci_x86_64_version = "1.0.10"
+    ci_arm64_version = "1.0.11"
+    ci_x86_64_version = "1.0.11"
+    base_ci_arm64_version = "1.0.11"
+    base_ci_x86_64_version = "1.0.11"
 
     return [
         ImageBuilder.Config(
@@ -235,14 +258,14 @@ def _image_builders():
 
 _IMAGE_BUILDERS = _image_builders()
 _IMAGE_BUILDERS_BY_NAME = {builder.name: builder for builder in _IMAGE_BUILDERS}
-_gh_token_minter = NativeComponents.GitHubTokenMinter()
+_gh_token_minter = Components.GitHubTokenMinter()
 
 _runner_pools = [
-    NativeComponents.RunnerPool(
+    Components.RunnerPool(
         name="arm-2xsmall",
         instance_type="t4g.small",
         vpc_name=CI_VPC_NAME,
-        scaling=NativeComponents.RunnerPool.Scaling.Auto,
+        scaling=Components.RunnerPool.Scaling.Auto,
         size=0,
         max_size=10,
         image_builder=_IMAGE_BUILDERS_BY_NAME["praktika-ci-arm64-image"],
@@ -252,6 +275,7 @@ _runner_pools = [
                 "set -xeuo pipefail",
                 "",
                 "# Add any host customization you need above this line.",
+                "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/praktika/amazon-cloudwatch-agent.json -s",
                 (
                     f"/opt/praktika/base-venvs/{_RUNTIME_BASE_VENV}/bin/python "
                     f"-m pip install --force-reinstall {_PRAKTIKA_WHL}"
@@ -261,20 +285,20 @@ _runner_pools = [
             ]
         ),
     ),
-    NativeComponents.RunnerPool(
+    Components.RunnerPool(
         name="arm-2xsmall-base",
         instance_type="t4g.small",
         vpc_name=CI_VPC_NAME,
-        scaling=NativeComponents.RunnerPool.Scaling.Auto,
+        scaling=Components.RunnerPool.Scaling.Auto,
         size=0,
         max_size=10,
         image_builder=_IMAGE_BUILDERS_BY_NAME["praktika-base-ci-arm64-image"],
     ),
-    NativeComponents.RunnerPool(
+    Components.RunnerPool(
         name="amd-2xsmall",
         instance_type="t3.small",
         vpc_name=CI_VPC_NAME,
-        scaling=NativeComponents.RunnerPool.Scaling.Auto,
+        scaling=Components.RunnerPool.Scaling.Auto,
         size=0,
         max_size=10,
         image_builder=_IMAGE_BUILDERS_BY_NAME["praktika-ci-x86_64-image"],
@@ -284,6 +308,7 @@ _runner_pools = [
                 "set -xeuo pipefail",
                 "",
                 "# Add any host customization you need above this line.",
+                "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/praktika/amazon-cloudwatch-agent.json -s",
                 (
                     f"/opt/praktika/base-venvs/{_RUNTIME_BASE_VENV}/bin/python "
                     f"-m pip install --force-reinstall {_PRAKTIKA_WHL}"
@@ -295,11 +320,11 @@ _runner_pools = [
     ),
 ]
 
-_orchestrator_pool = NativeComponents.OrchestratorPool(
+_orchestrator_pool = Components.OrchestratorPool(
     name="workflow-orchestrator",
     instance_type="t4g.small",
     vpc_name=CI_VPC_NAME,
-    scaling=NativeComponents.OrchestratorPool.Scaling.Auto,
+    scaling=Components.OrchestratorPool.Scaling.Auto,
     size=0,
     max_size=10,
     image_builder=_IMAGE_BUILDERS_BY_NAME["praktika-ci-arm64-image"],
@@ -309,6 +334,7 @@ _orchestrator_pool = NativeComponents.OrchestratorPool(
             "set -xeuo pipefail",
             "",
             "# Add any host customization you need above this line.",
+            "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/praktika/amazon-cloudwatch-agent.json -s",
             (
                 f"/opt/praktika/base-venvs/{_RUNTIME_BASE_VENV}/bin/python "
                 f"-m pip install --force-reinstall {_PRAKTIKA_WHL}"
@@ -317,23 +343,19 @@ _orchestrator_pool = NativeComponents.OrchestratorPool(
             "",
         ]
     ),
-    gh_trigger_role_name="gh-trigger-shared-role",
-    gh_trigger_webhook_secret_name="gh-trigger-shared-secret",
 )
 
-_orchestrator_pool_base = NativeComponents.OrchestratorPool(
+_orchestrator_pool_base = Components.OrchestratorPool(
     name="workflow-orchestrator-base",
     instance_type="t4g.small",
     vpc_name=CI_VPC_NAME,
-    scaling=NativeComponents.OrchestratorPool.Scaling.Auto,
+    scaling=Components.OrchestratorPool.Scaling.Auto,
     size=0,
     max_size=10,
     image_builder=_IMAGE_BUILDERS_BY_NAME["praktika-base-ci-arm64-image"],
-    gh_trigger_role_name="gh-trigger-shared-role",
-    gh_trigger_webhook_secret_name="gh-trigger-shared-secret",
 )
 
-_cidb_cluster = NativeComponents.CIDBCluster(
+_cidb_cluster = Components.CIDBCluster(
     vpc_name=CI_VPC_NAME,
     instance_type="t4g.large",
     size=1,
@@ -354,7 +376,7 @@ PROJECTS = [
             Storage.Config(name="praktika-artifacts-eu-north-1", retention_days=90, public=True),
         ],
         report_pages=[
-            NativeComponents.report_page_config,
+            Components.report_page_config,
         ],
         image_builders=_IMAGE_BUILDERS,
         github_token_minters=[_gh_token_minter],

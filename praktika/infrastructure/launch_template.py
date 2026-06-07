@@ -100,6 +100,40 @@ class LaunchTemplate:
             return self.ext["launch_template_id"]
 
         def _resolve_image_id(self) -> str:
+            def _resolve_ready_ami_from_pipeline(client, pipeline_arn: str, label: str) -> str:
+                resp = client.list_image_pipeline_images(
+                    imagePipelineArn=pipeline_arn,
+                    maxResults=25,
+                )
+                images = resp.get("imageSummaryList", []) or []
+                if not images:
+                    raise Exception(
+                        f"No ready AMI found for Image Builder pipeline '{label}'. "
+                        "Rerun deploy after the image is ready."
+                    )
+
+                images.sort(key=lambda s: s.get("dateCreated", "") or "", reverse=True)
+                for summary in images:
+                    image_arn = summary.get("arn", "")
+                    if not image_arn:
+                        continue
+
+                    image_resp = client.get_image(imageBuildVersionArn=image_arn)
+                    image = image_resp.get("image") or {}
+
+                    for output in image.get("outputResources", {}).get("amis", []) or []:
+                        if output.get("region") == self.region and output.get("image"):
+                            return output["image"]
+
+                    for output in image.get("outputResources", {}).get("amis", []) or []:
+                        if output.get("image"):
+                            return output["image"]
+
+                raise Exception(
+                    f"No ready AMI found for Image Builder pipeline '{label}'. "
+                    "Rerun deploy after the image is ready."
+                )
+
             if self.image_id:
                 return self.image_id
 
@@ -129,39 +163,12 @@ class LaunchTemplate:
                         f"Failed to resolve Image Builder pipeline ARN for '{self.image_builder_pipeline_name}'"
                     )
 
-                resp = client.list_image_pipeline_images(
-                    imagePipelineArn=pipeline_arn,
-                    maxResults=25,
+                self.image_id = _resolve_ready_ami_from_pipeline(
+                    client,
+                    pipeline_arn,
+                    self.image_builder_pipeline_name,
                 )
-                images = resp.get("imageSummaryList", []) or []
-                if not images:
-                    raise Exception(
-                        f"No images found for Image Builder pipeline '{self.image_builder_pipeline_name}'"
-                    )
-
-                images.sort(key=lambda s: s.get("dateCreated", "") or "", reverse=True)
-                image_arn = images[0].get("arn", "")
-                if not image_arn:
-                    raise Exception(
-                        f"Failed to resolve latest image ARN for pipeline '{self.image_builder_pipeline_name}'"
-                    )
-
-                image_resp = client.get_image(imageBuildVersionArn=image_arn)
-                image = image_resp.get("image") or {}
-
-                for output in image.get("outputResources", {}).get("amis", []) or []:
-                    if output.get("region") == self.region and output.get("image"):
-                        self.image_id = output["image"]
-                        return self.image_id
-
-                for output in image.get("outputResources", {}).get("amis", []) or []:
-                    if output.get("image"):
-                        self.image_id = output["image"]
-                        return self.image_id
-
-                raise Exception(
-                    f"Failed to resolve AMI id for pipeline '{self.image_builder_pipeline_name}'"
-                )
+                return self.image_id
 
             # Detect architecture from instance type: Graviton families end in 'g'
             # (t4g, m6g, c6g, r6g, ...). Everything else is x86_64.
@@ -378,29 +385,15 @@ class LaunchTemplate:
             except Exception as e:
                 message = str(e)
                 missing_pipeline_image = (
-                    "No images found for Image Builder pipeline" in message
+                    "No ready AMI found for Image Builder pipeline" in message
                     or "Image Builder pipeline" in message and "not found" in message
                 )
                 if not missing_pipeline_image:
                     raise
-
-                if exists:
-                    lt_id = self._resolve_launch_template_id()
-                    current_image_id = self._current_launch_template_image_id(ec2, lt_id)
-                    print(
-                        f"Image Builder output is not available yet for Launch Template '{self.name}'; "
-                        f"keeping current image {current_image_id}"
-                    )
-                    self.image_id = current_image_id
-                    launch_template_data = self._build_launch_template_data()
-                else:
-                    print(
-                        f"Image Builder output is not available yet for Launch Template '{self.name}'; "
-                        "skipping until the first AMI is built"
-                    )
-                    self.ext["version_updated"] = False
-                    self.ext["deferred_missing_image"] = True
-                    return self
+                raise Exception(
+                    f"Image Builder output is not ready yet for Launch Template '{self.name}'. "
+                    "Rerun deploy after the image is ready."
+                ) from e
 
             if not exists:
                 resp = ec2.create_launch_template(

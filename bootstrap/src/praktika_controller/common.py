@@ -44,33 +44,72 @@ def configure_logging(name: str, instance_id: str) -> logging.Logger:
     return logging.getLogger(name)
 
 
-def get_github_token(region: str) -> str:
-    """Mint a GitHub installation token for cloning and gh-auth."""
-    import jwt
-    import requests as _requests
+def _guess_gh_auth_lambda_name(role: str = "", queue_name: str = "") -> str:
+    configured = os.environ.get("GH_AUTH_LAMBDA_NAME", "").strip()
+    if configured:
+        return configured
 
-    sm = __import__("boto3").client("secretsmanager", region_name=region)
-    secret = json.loads(
-        sm.get_secret_value(SecretId="praktika-gh-app")["SecretString"]
+    role = (role or os.environ.get("PRAKTIKA_CONTROLLER_ROLE", "")).strip()
+    queue_name = (queue_name or os.environ.get("PRAKTIKA_CONTROLLER_QUEUE", "")).strip()
+    pool_name = os.environ.get("PRAKTIKA_CONTROLLER_POOL", "").strip()
+
+    prefix = ""
+    if role == "workflow_orchestrator":
+        for suffix in ("workflow-orchestrator-base", "workflow-orchestrator"):
+            if queue_name.endswith(suffix):
+                prefix = queue_name[: -len(suffix)].rstrip("-")
+                break
+    elif role == "job_runner" and queue_name and pool_name:
+        if queue_name == pool_name:
+            prefix = ""
+        elif queue_name.endswith(pool_name):
+            prefix = queue_name[: -len(pool_name)].rstrip("-")
+
+    return f"{prefix}-gh-token" if prefix else "gh-token"
+
+
+def get_github_token(
+    region: str = "",
+    *,
+    role: str = "",
+    queue_name: str = "",
+) -> str:
+    """Mint a GitHub installation token by invoking the GH auth lambda."""
+    import boto3
+
+    region = (
+        region
+        or os.environ.get("AWS_DEFAULT_REGION", "").strip()
+        or os.environ.get("AWS_REGION", "").strip()
     )
-    app_id = secret["app-id"]
-    app_key = secret["app-key"]
-    installation_id = secret["app-installation-id"]
+    if not region:
+        raise RuntimeError("AWS_DEFAULT_REGION or AWS_REGION must be set")
 
-    now = int(time.time())
-    payload = {"iat": now - 60, "exp": now + 600, "iss": app_id}
-    jwt_token = jwt.encode(payload, app_key, algorithm="RS256")
-
-    resp = _requests.post(
-        f"https://api.github.com/app/installations/{installation_id}/access_tokens",
-        headers={
-            "Authorization": f"Bearer {jwt_token}",
-            "Accept": "application/vnd.github.v3+json",
-        },
-        timeout=10,
+    lambda_name = _guess_gh_auth_lambda_name(role=role, queue_name=queue_name)
+    client = boto3.client("lambda", region_name=region)
+    response = client.invoke(
+        FunctionName=lambda_name,
+        InvocationType="RequestResponse",
+        Payload=b"{}",
     )
-    resp.raise_for_status()
-    return resp.json()["token"]
+    payload = response["Payload"].read().decode("utf-8")
+    data = json.loads(payload)
+    if "FunctionError" in response:
+        raise RuntimeError(f"GH auth lambda [{lambda_name}] failed (payload redacted)")
+    if isinstance(data, dict) and "statusCode" in data:
+        if int(data.get("statusCode", 500)) >= 400:
+            raise RuntimeError(
+                f"GH auth lambda [{lambda_name}] returned statusCode={data.get('statusCode')} "
+                "(body redacted)"
+            )
+        body = data.get("body", "{}")
+        data = json.loads(body) if isinstance(body, str) else body
+    token = data.get("token")
+    if not token:
+        raise RuntimeError(
+            f"GH auth lambda [{lambda_name}] returned no token (payload redacted)"
+        )
+    return token
 
 
 def imds_token() -> str:
@@ -349,17 +388,3 @@ def clone_repo(repo, head_sha, pr_number, token, work_dir, branch=None, log=None
     if log is not None:
         log.info("Checked out %s in %s", actual_sha[:12], clone_dir)
     return clone_dir, actual_sha
-
-
-def upload_log(s3, bucket, prefix, instance_id, message, log):
-    from datetime import datetime, timezone
-
-    now = datetime.now(timezone.utc)
-    key = f"{prefix}/{now:%Y-%m-%d}/{instance_id}/{now:%H-%M-%S-%f}.json"
-    s3.put_object(
-        Bucket=bucket,
-        Key=key,
-        Body=json.dumps(message, indent=2),
-        ContentType="application/json",
-    )
-    log.info("Log uploaded to s3://%s/%s", bucket, key)

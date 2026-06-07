@@ -1,3 +1,5 @@
+PROJECT_SLUG = "praktika"
+
 class RunnerLabels:
     SMALL_ARM = "arm-2xsmall"
     SMALL_ARM_BASE = "arm-2xsmall-base"
@@ -30,7 +32,7 @@ GH_AUTH_LAMBDA_REGION = AWS_REGION
 
 CI_DB_DB_NAME = "default"
 CI_DB_TABLE_NAME = "checks"
-# JSON connection blob auto-published by NativeComponents.CIDBCluster.deploy().
+# JSON connection blob auto-published by Components.CIDBCluster.deploy().
 SECRET_CI_DB_CONNECTION = "praktika-cidb-connection"
 
 DEFAULT_LOCAL_TEST_WORKFLOW = "Praktika CI Advanced"

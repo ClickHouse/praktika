@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from datetime import datetime, timezone
 
 from praktika_controller.common import (
     CancelWatchdog,
@@ -19,7 +18,6 @@ from praktika_controller.common import (
     instance_tag,
     resolve_praktika_base_venv,
     try_scale_in_if_idle,
-    upload_log,
 )
 from praktika_controller.venv_manager import (
     ensure_praktika_runtime,
@@ -30,8 +28,6 @@ from praktika_controller.venv_manager import (
 REGION = os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION") or ""
 INSTANCE_ID = os.environ.get("INSTANCE_ID", "local-dev")
 WORK_DIR = os.environ.get("WORK_DIR", "/opt/praktika/work")
-S3_LOG_BUCKET = "praktika-artifacts-eu-north-1"
-
 ROLE_WORKFLOW = "workflow_orchestrator"
 ROLE_RUNNER = "job_runner"
 SUPPORTED_ROLES = {ROLE_WORKFLOW, ROLE_RUNNER}
@@ -83,7 +79,7 @@ def _resolve_runtime(clone_dir: str, log):
     return base_venv, venv_dir
 
 
-def handle_workflow(event, log):
+def handle_workflow(event, log, queue_name: str):
     wf_type = event.get("type", "unknown")
     log.info("Processing: %s", wf_type)
 
@@ -96,7 +92,7 @@ def handle_workflow(event, log):
     head_sha = event.get("head_sha", "")
     branch = event.get("head_ref", "")
 
-    gh_token = get_github_token(REGION)
+    gh_token = get_github_token(REGION, role=ROLE_WORKFLOW, queue_name=queue_name)
     subprocess.run(
         ["gh", "auth", "login", "--with-token"],
         input=gh_token,
@@ -146,7 +142,7 @@ def handle_workflow(event, log):
     }
 
 
-def handle_task(task, log):
+def handle_task(task, log, queue_name: str):
     task_type = task.get("type", "unknown")
     job_name = task.get("job_name", "?")
     log.info("Processing task: %s job=%r", task_type, job_name)
@@ -159,7 +155,7 @@ def handle_task(task, log):
     pr_number = task.get("pr_number")
     head_sha = task.get("head_sha", "")
 
-    gh_token = get_github_token(REGION)
+    gh_token = get_github_token(REGION, role=ROLE_RUNNER, queue_name=queue_name)
     subprocess.run(
         ["gh", "auth", "login", "--with-token"],
         input=gh_token,
@@ -242,31 +238,15 @@ def poll():
     import boto3
 
     role, queue_name = _resolve_role_and_queue()
-    log_name, s3_log_prefix = _role_config(role)
+    log_name, _ = _role_config(role)
     log = configure_logging(log_name, INSTANCE_ID)
 
     sqs = boto3.client("sqs", region_name=REGION)
-    s3 = boto3.client("s3", region_name=REGION)
     queue_url = sqs.get_queue_url(QueueName=queue_name)["QueueUrl"]
     visibility = int(
         sqs.get_queue_attributes(
             QueueUrl=queue_url, AttributeNames=["VisibilityTimeout"]
         )["Attributes"]["VisibilityTimeout"]
-    )
-
-    upload_log(
-        s3,
-        S3_LOG_BUCKET,
-        s3_log_prefix,
-        INSTANCE_ID,
-        {
-            "event": "startup",
-            "role": role,
-            "instance_id": INSTANCE_ID,
-            "queue": queue_name,
-            "time": datetime.now(timezone.utc).isoformat(),
-        },
-        log,
     )
     log.info("Role=%s polling %s (visibility_timeout=%ss)", role, queue_url, visibility)
 
@@ -297,48 +277,14 @@ def poll():
 
             with VisibilityHeartbeat(sqs, queue_url, receipt, visibility):
                 if role == ROLE_WORKFLOW:
-                    result = handle_workflow(payload, log)
-                    event_name = "workflow_processed"
-                    payload_key = "trigger"
+                    result = handle_workflow(payload, log, queue_name)
                 else:
-                    result = handle_task(payload, log)
-                    event_name = "task_processed"
-                    payload_key = "task"
+                    result = handle_task(payload, log, queue_name)
                 sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt)
                 log.info("DONE: message deleted")
-
-            upload_log(
-                s3,
-                S3_LOG_BUCKET,
-                s3_log_prefix,
-                INSTANCE_ID,
-                {
-                    "event": event_name,
-                    "role": role,
-                    "instance_id": INSTANCE_ID,
-                    payload_key: payload,
-                    "result": result,
-                    "time": datetime.now(timezone.utc).isoformat(),
-                },
-                log,
-            )
-        except Exception as e:
-            error_event = "workflow_error" if role == ROLE_WORKFLOW else "task_error"
+            log.info("RESULT: %s", json.dumps(result))
+        except Exception:
             log.exception("ERROR processing message")
-            upload_log(
-                s3,
-                S3_LOG_BUCKET,
-                s3_log_prefix,
-                INSTANCE_ID,
-                {
-                    "event": error_event,
-                    "role": role,
-                    "instance_id": INSTANCE_ID,
-                    "error": str(e),
-                    "time": datetime.now(timezone.utc).isoformat(),
-                },
-                log,
-            )
 
 
 def main():

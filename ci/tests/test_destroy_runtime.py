@@ -17,6 +17,24 @@ def test_infrastructure_parser_supports_destroy_runtime():
     assert args.restart_instances is False
 
 
+def test_infrastructure_parser_supports_destroy_runtime_all():
+    parser = create_parser()
+    args = parser.parse_args(["infrastructure", "--destroy-runtime", "--all"])
+
+    assert args.command == "infrastructure"
+    assert args.destroy_runtime is True
+    assert args.all is True
+
+
+def test_infrastructure_parser_supports_yes():
+    parser = create_parser()
+    args = parser.parse_args(["infrastructure", "--destroy-runtime", "-y"])
+
+    assert args.command == "infrastructure"
+    assert args.destroy_runtime is True
+    assert args.yes is True
+
+
 def test_destroy_runtime_keeps_webhook_lambda_and_data_plane(monkeypatch):
     runner_pool = RunnerPool(
         name="arm-2xsmall",
@@ -97,8 +115,97 @@ def test_destroy_runtime_keeps_webhook_lambda_and_data_plane(monkeypatch):
     assert f"lt:{cloud.orchestrator_pool.launch_template.name}" in calls
     assert f"queue:{cloud.runner_pools[0].queue.name}" in calls
     assert f"queue:{cloud.orchestrator_pool.queue.name}" in calls
-    assert "lambda:cloud-ci-infra-praktika-pool-autoscaler" in calls
-    assert "role:cloud-ci-infra-praktika-pool-autoscaler-role" in calls
-    assert "lambda:cloud-ci-infra-praktika-gh-token" in calls
-    assert "role:cloud-ci-infra-praktika-gh-token-role" in calls
+    assert "lambda:cloud-ci-infra-pool-autoscaler" in calls
+    assert "role:cloud-ci-infra-pool-autoscaler-role" in calls
+    assert "lambda:cloud-ci-infra-gh-token" in calls
+    assert "role:cloud-ci-infra-gh-token-role" in calls
     assert "lambda:cloud-ci-infra-workflow-orchestrator" not in calls
+
+
+def test_destroy_runtime_all_deletes_all_control_plane_runtime(monkeypatch):
+    runner_pool = RunnerPool(
+        name="arm-2xsmall",
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        scaling=RunnerPool.Scaling.Auto,
+        size=0,
+        max_size=1,
+    )
+    orchestrator_pool = OrchestratorPool(
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        scaling=OrchestratorPool.Scaling.Auto,
+        size=0,
+        max_size=1,
+    )
+    token_minter = GitHubTokenMinter()
+
+    cloud = CloudInfrastructure.Config(
+        name="cloud_ci_infra",
+        runner_pools=[runner_pool],
+        orchestrator_pool=orchestrator_pool,
+        github_token_minters=[token_minter],
+    )
+    cloud._settings = SimpleNamespace(AWS_REGION="eu-north-1")
+    monkeypatch.setattr(cloud, "_verify_account", lambda: None)
+
+    from praktika.interactive import UserPrompt
+
+    monkeypatch.setattr(UserPrompt, "confirm", staticmethod(lambda _: True))
+
+    calls = []
+
+    def _record(label):
+        def _fn(*args, **kwargs):
+            calls.append(label)
+        return _fn
+
+    for config in cloud.autoscaling_groups:
+        monkeypatch.setattr(config, "delete", _record(f"asg:{config.name}"))
+    for config in cloud.launch_templates:
+        monkeypatch.setattr(config, "delete", _record(f"lt:{config.name}"))
+    for config in cloud.sqs_queues:
+        monkeypatch.setattr(config, "shutdown", _record(f"queue:{config.name}"))
+    for config in cloud.lambda_functions:
+        monkeypatch.setattr(config, "delete", _record(f"lambda:{config.name}"))
+    for config in cloud.iam_roles:
+        monkeypatch.setattr(config, "delete", _record(f"role:{config.name}"))
+    for config in cloud.iam_instance_profiles:
+        monkeypatch.setattr(config, "delete", _record(f"profile:{config.name}"))
+    for config in cloud.image_builders:
+        monkeypatch.setattr(config, "delete", _record(f"imagebuilder:{config.name}"))
+
+    cloud.destroy_runtime(all=True)
+
+    assert f"lambda:{cloud.orchestrator_pool.lambda_config.name}" in calls
+    assert f"role:{cloud.orchestrator_pool.ec2_role.name}" in calls
+    assert f"profile:{cloud.orchestrator_pool.instance_profile.name}" in calls
+    assert f"role:{cloud.runner_pools[0].ec2_role.name}" in calls
+    assert f"profile:{cloud.runner_pools[0].instance_profile.name}" in calls
+    assert calls.index(f"profile:{cloud.orchestrator_pool.instance_profile.name}") < calls.index(
+        f"role:{cloud.orchestrator_pool.ec2_role.name}"
+    )
+    assert calls.index(f"profile:{cloud.runner_pools[0].instance_profile.name}") < calls.index(
+        f"role:{cloud.runner_pools[0].ec2_role.name}"
+    )
+
+
+def test_infrastructure_main_yes_enables_auto_confirm(monkeypatch):
+    from praktika.__main__ import main
+    from praktika.interactive import UserPrompt
+
+    previous = UserPrompt.AUTO_CONFIRM
+    seen = {"auto_confirm": None}
+
+    class _Config:
+        def destroy_runtime(self, **kwargs):
+            seen["auto_confirm"] = UserPrompt.AUTO_CONFIRM
+
+    monkeypatch.setattr("praktika.mangle._get_infra_config", lambda project: _Config())
+
+    try:
+        main(["infrastructure", "--destroy-runtime", "--yes"])
+    finally:
+        UserPrompt.AUTO_CONFIRM = previous
+
+    assert seen["auto_confirm"] is True

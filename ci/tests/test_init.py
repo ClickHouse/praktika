@@ -13,7 +13,6 @@ from praktika.project_init import (
     _prompt_aws_account_id,
     _prompt_aws_profile,
     run_init_interactive,
-    should_auto_prompt_init,
     _validate_aws_profile,
 )
 
@@ -41,19 +40,6 @@ def test_has_nested_git_repositories_detects_workspace_layout(tmp_path):
     (nested_repo / ".git").mkdir()
 
     assert has_nested_git_repositories(tmp_path) is True
-
-
-def test_should_auto_prompt_init_skips_workspace_git_root(tmp_path, monkeypatch):
-    (tmp_path / ".git").mkdir()
-    nested_repo = tmp_path / "praktika"
-    nested_repo.mkdir()
-    (nested_repo / ".git").mkdir()
-
-    monkeypatch.chdir(tmp_path)
-
-    assert should_auto_prompt_init(tmp_path) is False
-
-
 def test_detect_default_branch_prefers_origin_head(monkeypatch, tmp_path):
     calls = iter(
         [
@@ -266,7 +252,7 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     assert 'branches=["main"]' in main_ci_workflow_text
     assert "from ci.settings.settings import PROJECT_NAME, PROJECT_SLUG" in infra_text
     assert "AWS_REGION" not in infra_text
-    assert "NativeComponents.GitHubTokenMinter(" in infra_text
+    assert "Components.GitHubTokenMinter(" in infra_text
     assert "repositories=[PROJECT_NAME]" in infra_text
     assert 'name="gh-token"' not in infra_text
     assert 'secret_name="gh-app"' not in infra_text

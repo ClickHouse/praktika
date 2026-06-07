@@ -6,6 +6,8 @@ from typing import Dict, Iterable, List, Optional
 
 @dataclasses.dataclass
 class _Settings:
+    PROJECT_SLUG: str = ""
+
     ######################################
     #    Pipeline generation settings    #
     ######################################
@@ -58,7 +60,7 @@ class _Settings:
     RUN_LOG: str = f"{TEMP_DIR}/job.log"
 
     USE_CUSTOM_GH_AUTH: bool = False
-    SECRET_GH_APP: str = "praktika-gh-app"
+    SECRET_GH_APP: str = "gh-app"
     GH_AUTH_LAMBDA_NAME: str = ""
     GH_AUTH_LAMBDA_REGION: str = ""
 
@@ -99,7 +101,7 @@ class _Settings:
     ######################################
     # SSM/secret name holding a JSON connection blob:
     #   {"url": "http://host:8123", "user": null, "password": null}
-    # Auto-published by NativeComponents.CIDBCluster.deploy() for CIDB
+    # Auto-published by Components.CIDBCluster.deploy() for CIDB
     # instances praktika manages. Null/empty user+password means "send no
     # auth header" — runners rely on the server-side <no_password/> ACL
     # gated by VPC CIDR.

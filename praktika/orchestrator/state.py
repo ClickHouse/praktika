@@ -26,13 +26,17 @@ from collections import defaultdict
 from enum import Enum
 
 from . import build_job_dag
+from praktika.settings import Settings
 
 
-# Convention (matches RunnerPool): a workflow's ``runs_on=[X]`` routes to
-# the SQS queue ``praktika-X``. The runner pool of the same name listens
-# on that queue. So a label of ``arm-2xsmall`` dispatches to queue
-# ``praktika-arm-2xsmall``.
-_QUEUE_PREFIX = "praktika-"
+def _queue_prefix():
+    project_slug = (getattr(Settings, "PROJECT_SLUG", "") or "").strip()
+    if project_slug:
+        return f"{project_slug}-"
+    gh_auth_lambda = (getattr(Settings, "GH_AUTH_LAMBDA_NAME", "") or "").strip()
+    if gh_auth_lambda.endswith("-gh-token"):
+        return gh_auth_lambda.removesuffix("-gh-token") + "-"
+    return ""
 
 # Job liveness — S3-based heartbeat (see roadmap). The job agent posts
 # ``heartbeat.json`` under ``runs/<run_id>/<job>/`` every
@@ -60,10 +64,10 @@ def _normalize_job_name_for_s3(name):
 
 
 def _queue_for_runs_on(runs_on):
-    """First non-empty ``runs_on`` label → ``praktika-<label>`` queue name."""
+    """First non-empty ``runs_on`` label → ``<project-slug>-<label>`` queue name."""
     for label in runs_on or ():
         if label:
-            return f"{_QUEUE_PREFIX}{label}"
+            return f"{_queue_prefix()}{label}"
     return None
 
 
@@ -392,7 +396,7 @@ class WorkflowState:
             self._s3 = None
 
         # SQS client is still used by ``_dispatch`` for the per-runner-pool
-        # job_task queues (`praktika-<label>`). Phase 2b only retired the
+        # job_task queues (`<project-slug>-<label>`). Phase 2b only retired the
         # per-run completions queue.
         self._sqs = None
         self._queue_urls = {}

@@ -67,7 +67,7 @@ pipeline.
 - S3 buckets for artifacts and the HTML report
 - SSM Parameter Store and Secrets Manager bindings for workflow secrets
 - API Gateway plus Lambda webhook receiver for inbound Git events
-- CI DB integration for analytics: every job and test result can be streamed to a CI DB, and Praktika can also provision its own native CI DB component (`NativeComponents.CIDBCluster`) or use an existing endpoint via `Settings.SECRET_CI_DB_CONNECTION`
+- CI DB integration for analytics: every job and test result can be streamed to a CI DB, and Praktika can also provision its own native CI DB component (`Components.CIDBCluster`) or use an existing endpoint via `Settings.SECRET_CI_DB_CONNECTION`
 
 ## Known limitations
 

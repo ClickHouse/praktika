@@ -34,7 +34,7 @@ def test_gh_auth_uses_lambda_response(monkeypatch):
     )
     client = _DummyLambdaClient(payload)
     monkeypatch.setattr("boto3.client", lambda service, region_name=None: client)
-    monkeypatch.setattr(Settings, "GH_AUTH_LAMBDA_NAME", "praktika-gh-token")
+    monkeypatch.setattr(Settings, "GH_AUTH_LAMBDA_NAME", "gh-token")
     monkeypatch.setattr(Settings, "GH_AUTH_LAMBDA_REGION", "eu-north-1")
 
     token, expires_at = GHAuth.get_installation_token_with_expiry()
@@ -43,7 +43,7 @@ def test_gh_auth_uses_lambda_response(monkeypatch):
     assert expires_at > 0
     assert client.invocations == [
         {
-            "FunctionName": "praktika-gh-token",
+            "FunctionName": "gh-token",
             "InvocationType": "RequestResponse",
             "Payload": b"{}",
         }
@@ -51,7 +51,7 @@ def test_gh_auth_uses_lambda_response(monkeypatch):
 
 
 def test_gh_auth_prefers_lambda_for_raw_token(monkeypatch):
-    monkeypatch.setattr(Settings, "GH_AUTH_LAMBDA_NAME", "praktika-gh-token")
+    monkeypatch.setattr(Settings, "GH_AUTH_LAMBDA_NAME", "gh-token")
     monkeypatch.setattr(Settings, "GH_AUTH_LAMBDA_REGION", "eu-north-1")
     monkeypatch.setattr(
         GHAuth,
@@ -66,7 +66,7 @@ def test_gh_auth_redacts_lambda_error_payload(monkeypatch):
     client = _DummyLambdaClient('{"token":"should-not-leak"}')
     client.function_error = "Unhandled"
     monkeypatch.setattr("boto3.client", lambda service, region_name=None: client)
-    monkeypatch.setattr(Settings, "GH_AUTH_LAMBDA_NAME", "praktika-gh-token")
+    monkeypatch.setattr(Settings, "GH_AUTH_LAMBDA_NAME", "gh-token")
     monkeypatch.setattr(Settings, "GH_AUTH_LAMBDA_REGION", "eu-north-1")
 
     try:

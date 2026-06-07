@@ -212,6 +212,58 @@ def test_image_builder_distribution_reuses_cached_launch_template_id(monkeypatch
     ]
 
 
+def test_image_builder_delete_skips_dependent_components(monkeypatch):
+    builder = ImageBuilder.Config(
+        name="controller-image",
+        region="eu-north-1",
+        inline_components=[
+            {
+                "name": "praktika-controller-setup",
+                "version": "1.0.10",
+                "description": "test",
+                "data": "name: test",
+            }
+        ],
+    )
+
+    class _Client:
+        def list_image_pipelines(self, **req):
+            return {"imagePipelineList": []}
+
+        def list_image_recipes(self, **req):
+            return {"imageRecipeSummaryList": []}
+
+        def list_distribution_configurations(self, **req):
+            return {"distributionConfigurationSummaryList": []}
+
+        def list_infrastructure_configurations(self, **req):
+            return {"infrastructureConfigurationSummaryList": []}
+
+        def list_components(self, **req):
+            return {
+                "componentVersionList": [
+                    {
+                        "name": "praktika-controller-setup",
+                        "semanticVersion": "1.0.10",
+                        "arn": (
+                            "arn:aws:imagebuilder:eu-north-1:123456789012:"
+                            "component/praktika-controller-setup/1.0.10/1"
+                        ),
+                    }
+                ]
+            }
+
+        def delete_component(self, **req):
+            class ResourceDependencyException(Exception):
+                pass
+
+            raise ResourceDependencyException("Resource dependency error")
+
+    monkeypatch.setattr(builder, "_client", lambda: _Client())
+
+    builder.delete()
+
+
 def test_image_builder_pipeline_update_is_skipped_when_unchanged(monkeypatch):
     builder = ImageBuilder.Config(
         name="orchestrator-arm64-image",
@@ -287,21 +339,69 @@ def test_launch_template_deploy_skips_when_image_builder_has_no_images(monkeypat
 
     def _build():
         raise Exception(
-            "No images found for Image Builder pipeline 'ci-arm64-imagebuilder-pipeline'"
+            "No ready AMI found for Image Builder pipeline "
+            "'ci-arm64-imagebuilder-pipeline'. Rerun deploy after the image is ready."
         )
 
     monkeypatch.setattr(lt, "_build_launch_template_data", _build)
 
-    result = lt.deploy()
+    try:
+        lt.deploy()
+        assert False, "expected deploy to fail"
+    except Exception as e:
+        assert str(e) == (
+            "Image Builder output is not ready yet for Launch Template "
+            "'workflow-orchestrator-lt'. Rerun deploy after the image is ready."
+        )
 
-    assert result is lt
-    assert lt.ext["deferred_missing_image"] is True
-    assert lt.ext["version_updated"] is False
+
+def test_image_builder_resolves_latest_ready_ami_not_latest_pending(monkeypatch):
+    builder = ImageBuilder.Config(
+        name="ci-arm64-image",
+        region="eu-north-1",
+        image_pipeline_name="ci-arm64-imagebuilder-pipeline",
+    )
+
+    class _Client:
+        def list_image_pipelines(self, **req):
+            return {
+                "imagePipelineList": [
+                    {
+                        "name": "ci-arm64-imagebuilder-pipeline",
+                        "arn": "arn:pipeline",
+                    }
+                ]
+            }
+
+        def list_image_pipeline_images(self, **req):
+            return {
+                "imageSummaryList": [
+                    {"arn": "arn:image-new", "dateCreated": "2026-06-07T11:00:00Z"},
+                    {"arn": "arn:image-old", "dateCreated": "2026-06-07T10:00:00Z"},
+                ]
+            }
+
+        def get_image(self, imageBuildVersionArn):
+            if imageBuildVersionArn == "arn:image-new":
+                return {"image": {"outputResources": {"amis": []}}}
+            if imageBuildVersionArn == "arn:image-old":
+                return {
+                    "image": {
+                        "outputResources": {
+                            "amis": [
+                                {"region": "eu-north-1", "image": "ami-ready0123456789"}
+                            ]
+                        }
+                    }
+                }
+            raise AssertionError(f"unexpected image arn {imageBuildVersionArn}")
+
+    monkeypatch.setattr(builder, "_client", lambda: _Client())
+
+    assert builder.resolve_latest_ami_id() == "ami-ready0123456789"
 
 
-def test_launch_template_deploy_reuses_existing_image_when_pipeline_has_no_images(
-    monkeypatch,
-):
+def test_launch_template_deploy_fails_when_latest_builds_have_no_ready_ami(monkeypatch):
     lt = LaunchTemplate.Config(
         name="workflow-orchestrator-lt",
         region="eu-north-1",
@@ -311,7 +411,6 @@ def test_launch_template_deploy_reuses_existing_image_when_pipeline_has_no_image
             image_pipeline_name="ci-arm64-imagebuilder-pipeline",
         ),
     )
-    lt.ext["launch_template_id"] = "lt-0123456789abcdef0"
 
     class _EC2Client:
         pass
@@ -320,32 +419,28 @@ def test_launch_template_deploy_reuses_existing_image_when_pipeline_has_no_image
         "praktika.infrastructure.launch_template.aws_client",
         lambda *args, **kwargs: _EC2Client(),
     )
-    monkeypatch.setattr(lt, "fetch", lambda: lt)
     monkeypatch.setattr(
         lt,
-        "_current_launch_template_image_id",
-        lambda ec2, lt_id: "ami-existing0123456789",
+        "fetch",
+        lambda: (_ for _ in ()).throw(Exception("Launch Template not found")),
     )
 
-    build_calls = {"count": 0}
-
     def _build():
-        build_calls["count"] += 1
-        if build_calls["count"] == 1:
-            raise Exception(
-                "No images found for Image Builder pipeline 'ci-arm64-imagebuilder-pipeline'"
-            )
-        return {"ImageId": lt.image_id, "InstanceType": lt.instance_type}
+        raise Exception(
+            "No ready AMI found for Image Builder pipeline "
+            "'ci-arm64-imagebuilder-pipeline'. Rerun deploy after the image is ready."
+        )
 
     monkeypatch.setattr(lt, "_build_launch_template_data", _build)
-    monkeypatch.setattr(lt, "_is_current_version_up_to_date", lambda *args: True)
 
-    result = lt.deploy()
-
-    assert result is lt
-    assert lt.image_id == "ami-existing0123456789"
-    assert build_calls["count"] == 2
-    assert lt.ext["version_updated"] is False
+    try:
+        lt.deploy()
+        assert False, "expected deploy to fail"
+    except Exception as e:
+        assert str(e) == (
+            "Image Builder output is not ready yet for Launch Template "
+            "'workflow-orchestrator-lt'. Rerun deploy after the image is ready."
+        )
 
 
 def test_image_builder_reuses_existing_inline_component_when_create_conflicts(

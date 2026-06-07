@@ -10,6 +10,7 @@ from praktika.infrastructure.lambda_function import Lambda
 from praktika.infrastructure.launch_template import LaunchTemplate
 from praktika.infrastructure.secret_parameter import SecretParameter
 from praktika.infrastructure.sqs_queue import SQSQueue
+from praktika.settings import Settings
 
 from .configs import (
     ORCHESTRATOR_INSTANCE_PROFILE_NAME,
@@ -17,12 +18,16 @@ from .configs import (
     lambda_gh_trigger_config,
 )
 
+GH_TRIGGER_ROLE_NAME = "gh-webhook-role"
+GH_TRIGGER_WEBHOOK_SECRET_NAME = "gh-webhook-secret"
+
 _DEFAULT_PRAKTIKA_CONTROLLER_USER_DATA = "\n".join(
     [
         "#!/usr/bin/env bash",
         "set -xeuo pipefail",
         "",
         "# Add any host customization you need above this line.",
+        "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/praktika/amazon-cloudwatch-agent.json -s",
         "systemctl enable --now praktika-controller",
         "",
     ]
@@ -52,7 +57,7 @@ class OrchestratorPool:
             ami_id="ami-...",
             security_group_ids=["sg-..."],
             vpc_name="ci-cd",
-            iam_instance_profile_name="praktika-workflow-orchestrator-profile",
+            iam_instance_profile_name="workflow-orchestrator-profile",
             instance_type="t4g.small",
             size=2,
             max_size=2,
@@ -78,8 +83,6 @@ class OrchestratorPool:
     user_data: str = ""
     iam_instance_profile_name: str = ORCHESTRATOR_INSTANCE_PROFILE_NAME
     ec2_role_name: str = ORCHESTRATOR_ROLE_NAME
-    gh_trigger_role_name: str = ""
-    gh_trigger_webhook_secret_name: str = ""
     security_group_ids: List[str] = field(default_factory=list)
     security_group_names: List[str] = field(default_factory=list)
     volume_size_gb: int = 30
@@ -106,10 +109,10 @@ class OrchestratorPool:
         return self.name
 
     def _lambda_role_name(self) -> str:
-        return self.gh_trigger_role_name or f"{self.name}-role"
+        return GH_TRIGGER_ROLE_NAME
 
     def _webhook_secret_name(self) -> str:
-        return self.gh_trigger_webhook_secret_name or f"{self.name}-webhook-secret"
+        return GH_TRIGGER_WEBHOOK_SECRET_NAME
 
     def __post_init__(self):
         if not self.user_data:
@@ -130,6 +133,16 @@ class OrchestratorPool:
         )
         queue_name = self._queue_name()
         asg_name = self._asg_name()
+
+        artifact_bucket = (Settings.S3_ARTIFACT_BUCKET or "").strip()
+        artifact_resources = (
+            [
+                f"arn:aws:s3:::{artifact_bucket}/runs/*/cancel-request",
+                f"arn:aws:s3:::{artifact_bucket}/pr/*/cancel-before*",
+            ]
+            if artifact_bucket
+            else ["arn:aws:s3:::*/runs/*/cancel-request", "arn:aws:s3:::*/pr/*/cancel-before*"]
+        )
 
         self.ec2_role = IAMRole.Config(
             name=self.ec2_role_name,
@@ -186,15 +199,6 @@ class OrchestratorPool:
                                 "ec2:CreateTags",
                             ],
                             "Resource": "*",
-                        },
-                        {
-                            "Sid": "SecretsManagerRead",
-                            "Effect": "Allow",
-                            "Action": [
-                                "secretsmanager:DescribeSecret",
-                                "secretsmanager:GetSecretValue",
-                            ],
-                            "Resource": "arn:aws:secretsmanager:*:*:secret:praktika-gh-app*",
                         },
                         {
                             "Sid": "CloudWatchLogs",
@@ -256,7 +260,7 @@ class OrchestratorPool:
         self.lambda_config.environments["SQS_QUEUE_NAME"] = queue_name
         self.webhook_secret = SecretParameter.Config(
             name=self._webhook_secret_name(),
-            description="GitHub webhook secret for praktika-gh-trigger Lambda",
+            description="GitHub webhook secret for the workflow trigger Lambda",
             generate_random=True,
         )
         self.lambda_role = IAMRole.Config(
@@ -286,8 +290,7 @@ class OrchestratorPool:
                             "Effect": "Allow",
                             "Action": ["s3:PutObject"],
                             "Resource": [
-                                "arn:aws:s3:::praktika-artifacts-*/runs/*/cancel-request",
-                                "arn:aws:s3:::praktika-artifacts-*/pr/*/cancel-before*",
+                                *artifact_resources,
                             ],
                         },
                     ],

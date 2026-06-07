@@ -805,34 +805,35 @@ class ImageBuilder:
             images = resp.get("imageSummaryList", []) or []
             if not images:
                 raise Exception(
-                    f"No images found for Image Builder pipeline '{self.image_pipeline_name}'"
+                    f"No ready AMI found for Image Builder pipeline '{self.image_pipeline_name}'. "
+                    "Rerun deploy after the image is ready."
                 )
 
             def _created_at(summary: Dict[str, Any]) -> str:
                 return summary.get("dateCreated", "") or ""
 
             images.sort(key=_created_at, reverse=True)
-            image_arn = images[0].get("arn", "")
-            if not image_arn:
-                raise Exception(
-                    f"Failed to resolve latest image ARN for pipeline '{self.image_pipeline_name}'"
-                )
+            for summary in images:
+                image_arn = summary.get("arn", "")
+                if not image_arn:
+                    continue
 
-            image_resp = client.get_image(imageBuildVersionArn=image_arn)
-            image = image_resp.get("image") or {}
+                image_resp = client.get_image(imageBuildVersionArn=image_arn)
+                image = image_resp.get("image") or {}
 
-            for output in image.get("outputResources", {}).get("amis", []) or []:
-                if output.get("region") == self.region and output.get("image"):
-                    self.ext["latest_ami_id"] = output["image"]
-                    return output["image"]
+                for output in image.get("outputResources", {}).get("amis", []) or []:
+                    if output.get("region") == self.region and output.get("image"):
+                        self.ext["latest_ami_id"] = output["image"]
+                        return output["image"]
 
-            for output in image.get("outputResources", {}).get("amis", []) or []:
-                if output.get("image"):
-                    self.ext["latest_ami_id"] = output["image"]
-                    return output["image"]
+                for output in image.get("outputResources", {}).get("amis", []) or []:
+                    if output.get("image"):
+                        self.ext["latest_ami_id"] = output["image"]
+                        return output["image"]
 
             raise Exception(
-                f"Failed to resolve AMI id from latest image build for pipeline '{self.image_pipeline_name}'"
+                f"No ready AMI found for Image Builder pipeline '{self.image_pipeline_name}'. "
+                "Rerun deploy after the image is ready."
             )
 
         def _start_build_on_change(self, pipeline_arn: str) -> None:
@@ -913,3 +914,142 @@ class ImageBuilder:
                 f"Successfully deployed Image Builder pipeline: {self.image_pipeline_name}"
             )
             return self
+
+        def delete(self):
+            client = self._client()
+
+            def _ignore_missing(fn, *args, ignore_dependency: bool = False, **kwargs):
+                try:
+                    return fn(*args, **kwargs)
+                except Exception as e:
+                    message = str(e)
+                    if (
+                        e.__class__.__name__ in {
+                            "ResourceNotFoundException",
+                            "InvalidRequestException",
+                            "InvalidParameterValueException",
+                        }
+                        or "not found" in message.lower()
+                        or "does not exist" in message.lower()
+                    ):
+                        return None
+                    if (
+                        ignore_dependency
+                        and e.__class__.__name__ == "ResourceDependencyException"
+                    ) or "dependency" in message.lower():
+                        return None
+                    raise
+
+            if self.image_pipeline_name:
+                arn = self._find_arn_by_name(
+                    "list_image_pipelines",
+                    "imagePipelineList",
+                    self.image_pipeline_name,
+                )
+                if arn:
+                    _ignore_missing(
+                        client.delete_image_pipeline,
+                        imagePipelineArn=arn,
+                    )
+                    print(f"Deleted Image Builder pipeline '{self.image_pipeline_name}'")
+
+            if self.image_recipe_name:
+                token: str = ""
+                found = False
+                while True:
+                    req: Dict[str, Any] = {}
+                    if token:
+                        req["nextToken"] = token
+                    page = client.list_image_recipes(**req)
+                    for item in page.get("imageRecipeSummaryList", []) or []:
+                        if (
+                            item.get("name") == self.image_recipe_name
+                            and (item.get("semanticVersion") or item.get("version"))
+                            == self.image_recipe_version
+                            and item.get("arn")
+                        ):
+                            _ignore_missing(
+                                client.delete_image_recipe,
+                                imageRecipeArn=item["arn"],
+                            )
+                            print(f"Deleted Image Builder recipe '{self.image_recipe_name}'")
+                            found = True
+                            break
+                    if found:
+                        break
+                    token = page.get("nextToken", "") or ""
+                    if not token:
+                        break
+
+            if self.distribution_configuration_name:
+                arn = self._find_arn_by_name(
+                    "list_distribution_configurations",
+                    "distributionConfigurationSummaryList",
+                    self.distribution_configuration_name,
+                )
+                if arn:
+                    _ignore_missing(
+                        client.delete_distribution_configuration,
+                        distributionConfigurationArn=arn,
+                    )
+                    print(
+                        f"Deleted Image Builder distribution configuration '{self.distribution_configuration_name}'"
+                    )
+
+            if self.infrastructure_configuration_name:
+                arn = self._find_arn_by_name(
+                    "list_infrastructure_configurations",
+                    "infrastructureConfigurationSummaryList",
+                    self.infrastructure_configuration_name,
+                )
+                if arn:
+                    _ignore_missing(
+                        client.delete_infrastructure_configuration,
+                        infrastructureConfigurationArn=arn,
+                    )
+                    print(
+                        f"Deleted Image Builder infrastructure configuration '{self.infrastructure_configuration_name}'"
+                    )
+
+            component_specs = [*self.inline_components, *self._prebuilt_venv_component_specs()]
+            for spec in component_specs:
+                name = str(spec.get("name", "")).strip()
+                version = self._component_version(spec.get("version"))
+                if not name or not version:
+                    continue
+                token = ""
+                while True:
+                    req: Dict[str, Any] = {"owner": "Self"}
+                    if token:
+                        req["nextToken"] = token
+                    page = client.list_components(**req)
+                    found = False
+                    for item in page.get("componentVersionList", []) or []:
+                        if (
+                            item.get("name") == name
+                            and (item.get("semanticVersion") or item.get("version"))
+                            == version
+                            and item.get("arn")
+                        ):
+                            arn = item["arn"]
+                            deleted = _ignore_missing(
+                                client.delete_component,
+                                componentBuildVersionArn=arn,
+                                ignore_dependency=True,
+                            )
+                            if deleted is None:
+                                _ignore_missing(
+                                    client.delete_component,
+                                    componentBuildVersionArn=f"{arn}/1",
+                                    ignore_dependency=True,
+                                )
+                            print(
+                                f"Deleted or skipped dependent Image Builder component '{name}'"
+                            )
+                            found = True
+                            break
+                    if found:
+                        break
+                    token = page.get("nextToken", "") or ""
+                    if not token:
+                        break

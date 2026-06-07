@@ -436,13 +436,13 @@ def _infrastructure_template(answers: InitAnswers) -> str:
     return textwrap.dedent(
         f"""\
         from ci.settings.settings import PROJECT_NAME, PROJECT_SLUG
-        from praktika.infrastructure import NativeComponents, Storage, VPC
+        from praktika.infrastructure import Components, Storage, VPC
         from praktika.infrastructure.cloud import CloudInfrastructure
 
 
         CI_VPC_NAME = f"{{PROJECT_SLUG}}-ci"
 
-        _GH_TOKEN_MINTER = NativeComponents.GitHubTokenMinter(
+        _GH_TOKEN_MINTER = Components.GitHubTokenMinter(
             repositories=[PROJECT_NAME],
         )
 
@@ -464,46 +464,46 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                         public=False,
                     ),
                 ],
-                report_pages=[NativeComponents.report_page_config],
+                report_pages=[Components.report_page_config],
                 github_token_minters=[_GH_TOKEN_MINTER],
-                orchestrator_pool=NativeComponents.OrchestratorPool(
+                orchestrator_pool=Components.OrchestratorPool(
                     instance_type="t4g.small",
                     vpc_name=CI_VPC_NAME,
-                    scaling=NativeComponents.OrchestratorPool.Scaling.Auto,
+                    scaling=Components.OrchestratorPool.Scaling.Auto,
                     size=0,
                     max_size=2,
                 ),
                 runner_pools=[
-                    NativeComponents.RunnerPool(
+                    Components.RunnerPool(
                         name="arm-small",
                         instance_type="t4g.small",
                         vpc_name=CI_VPC_NAME,
-                        scaling=NativeComponents.RunnerPool.Scaling.Auto,
+                        scaling=Components.RunnerPool.Scaling.Auto,
                         size=0,
                         max_size=5,
                     ),
-                    NativeComponents.RunnerPool(
+                    Components.RunnerPool(
                         name="amd-small",
                         instance_type="t3.small",
                         vpc_name=CI_VPC_NAME,
-                        scaling=NativeComponents.RunnerPool.Scaling.Auto,
+                        scaling=Components.RunnerPool.Scaling.Auto,
                         size=0,
                         max_size=5,
                     ),
-                    NativeComponents.RunnerPool(
+                    Components.RunnerPool(
                         name="arm-medium",
                         instance_type="c7g.4xlarge",
                         vpc_name=CI_VPC_NAME,
-                        scaling=NativeComponents.RunnerPool.Scaling.Auto,
+                        scaling=Components.RunnerPool.Scaling.Auto,
                         size=0,
                         max_size=5,
                         volume_size_gb=30,
                     ),
-                    NativeComponents.RunnerPool(
+                    Components.RunnerPool(
                         name="amd-medium",
                         instance_type="c7a.4xlarge",
                         vpc_name=CI_VPC_NAME,
-                        scaling=NativeComponents.RunnerPool.Scaling.Auto,
+                        scaling=Components.RunnerPool.Scaling.Auto,
                         size=0,
                         max_size=5,
                         volume_size_gb=30,
@@ -649,12 +649,3 @@ def prompt_init_from_repo_root(root: Optional[Path] = None) -> bool:
 
     run_init_interactive(repo_root)
     return True
-
-
-def should_auto_prompt_init(root: Optional[Path] = None) -> bool:
-    repo_root = Path(root or Path.cwd()).resolve()
-    return (
-        is_git_repo_root(repo_root)
-        and not has_praktika_project_files(repo_root)
-        and not has_nested_git_repositories(repo_root)
-    )
