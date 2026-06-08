@@ -246,6 +246,7 @@ def poll():
     role, queue_name = _resolve_role_and_queue()
     log_name, _ = _role_config(role)
     log = configure_logging(log_name, INSTANCE_ID)
+    log.info("Resolved controller role=%s queue=%s", role, queue_name)
 
     sqs = boto3.client("sqs", region_name=REGION)
     queue_url = sqs.get_queue_url(QueueName=queue_name)["QueueUrl"]

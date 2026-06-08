@@ -2,10 +2,10 @@ import base64
 
 from praktika.infrastructure.cloud import CloudInfrastructure
 from praktika.infrastructure import ImageBuilder, Components, Storage, VPC
-from praktika.infrastructure.native.configs import RUNNER_INSTANCE_PROFILE_NAME
 
 
 CI_VPC_NAME = "praktika-ci"
+RUNNER_IMAGE_BUILDER_PROFILE_NAME = "runner-profile"
 _PRAKTIKA_BASE_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.0.1-py3-none-any.whl"
 _PRAKTIKA_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1.1-py3-none-any.whl"
 _PRAKTIKA_CONTROLLER_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_controller-0.1.1-py3-none-any.whl"
@@ -158,10 +158,10 @@ def _runtime_prebuilt_venvs():
 
 
 def _image_builders():
-    ci_arm64_version = "1.0.14"
-    ci_x86_64_version = "1.0.14"
-    base_ci_arm64_version = "1.0.14"
-    base_ci_x86_64_version = "1.0.14"
+    ci_arm64_version = "1.0.15"
+    ci_x86_64_version = "1.0.15"
+    base_ci_arm64_version = "1.0.15"
+    base_ci_x86_64_version = "1.0.15"
 
     return [
         ImageBuilder.Config(
@@ -178,7 +178,7 @@ def _image_builders():
             ],
             prebuilt_venvs=_runtime_prebuilt_venvs(),
             infrastructure_configuration_name="praktika-ci-arm64-imagebuilder-infra",
-            instance_profile_name=RUNNER_INSTANCE_PROFILE_NAME,
+            instance_profile_name=RUNNER_IMAGE_BUILDER_PROFILE_NAME,
             instance_types=["t4g.small"],
             vpc_name=CI_VPC_NAME,
             security_group_names=[f"{CI_VPC_NAME}-sg"],
@@ -201,7 +201,7 @@ def _image_builders():
             ],
             prebuilt_venvs=_runtime_prebuilt_venvs(),
             infrastructure_configuration_name="praktika-base-ci-arm64-imagebuilder-infra",
-            instance_profile_name=RUNNER_INSTANCE_PROFILE_NAME,
+            instance_profile_name=RUNNER_IMAGE_BUILDER_PROFILE_NAME,
             instance_types=["t4g.small"],
             vpc_name=CI_VPC_NAME,
             security_group_names=[f"{CI_VPC_NAME}-sg"],
@@ -224,7 +224,7 @@ def _image_builders():
             ],
             prebuilt_venvs=_runtime_prebuilt_venvs(),
             infrastructure_configuration_name="praktika-ci-x86_64-imagebuilder-infra",
-            instance_profile_name=RUNNER_INSTANCE_PROFILE_NAME,
+            instance_profile_name=RUNNER_IMAGE_BUILDER_PROFILE_NAME,
             instance_types=["t3.small"],
             vpc_name=CI_VPC_NAME,
             security_group_names=[f"{CI_VPC_NAME}-sg"],
@@ -247,7 +247,7 @@ def _image_builders():
             ],
             prebuilt_venvs=_runtime_prebuilt_venvs(),
             infrastructure_configuration_name="praktika-base-ci-x86_64-imagebuilder-infra",
-            instance_profile_name=RUNNER_INSTANCE_PROFILE_NAME,
+            instance_profile_name=RUNNER_IMAGE_BUILDER_PROFILE_NAME,
             instance_types=["t3.small"],
             vpc_name=CI_VPC_NAME,
             security_group_names=[f"{CI_VPC_NAME}-sg"],

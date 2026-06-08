@@ -161,15 +161,27 @@ def print_execution_plan(workflow, levels, job_deps):
     print(f"\n{'='*80}\n")
 
 
+def _current_instance_id():
+    return (os.environ.get("INSTANCE_ID") or "").strip()
+
+
 def _check_output(workflow, state, error=None, report_url=None):
     """Assemble a Check API `output` dict (title, summary, text) from the
     live ``WorkflowState``. Called on every PATCH so the top-level check's
     Markdown body tracks the current per-job table."""
+    instance_id = _current_instance_id()
     if workflow is None:
+        summary = "No workflow matched this event"
+        if instance_id:
+            summary += f" — orchestrator `{instance_id}`"
         return {
             "title": "No workflow",
-            "summary": "No workflow matched this event",
-            "text": "",
+            "summary": summary,
+            "text": (
+                f"**Orchestrator instance:** `{instance_id}`"
+                if instance_id
+                else ""
+            ),
         }
     title = workflow.name
     if error is not None:
@@ -182,7 +194,13 @@ def _check_output(workflow, state, error=None, report_url=None):
         summary = state.md_status_summary()
     if report_url:
         summary += f" — [CI Report]({report_url})"
+    if instance_id:
+        summary += f" — orchestrator `{instance_id}`"
     text = state.md_status() if state is not None else ""
+    if instance_id:
+        text = f"**Orchestrator instance:** `{instance_id}`" + (
+            f"\n\n{text}" if text else ""
+        )
     if error is not None:
         text += f"\n\n### Error\n\n```\n{error}\n```"
     # Check API caps output.text at ~64 KB.

@@ -613,6 +613,7 @@ class WorkflowState:
             return
         now = now if now is not None else time.time()
         for js in running:
+            runs_on = ", ".join(js.job.runs_on) if js.job.runs_on else "default"
             key = self._heartbeat_s3_key(js.name)
             try:
                 obj = self._s3.get_object(Bucket=self._cancel_s3_bucket, Key=key)
@@ -633,14 +634,14 @@ class WorkflowState:
             if js.last_heartbeat_ts is None:
                 if age_since_kick > HEARTBEAT_PICKUP_GRACE_S:
                     js.fail_dead(
-                        f"runner never started job (no heartbeat in "
+                        f"runner pool `{runs_on}` never started job (no heartbeat in "
                         f"{int(age_since_kick)}s, grace={HEARTBEAT_PICKUP_GRACE_S}s)"
                     )
             else:
                 age_since_hb = now - js.last_heartbeat_ts
                 if age_since_hb > HEARTBEAT_DEAD_THRESHOLD_S:
                     js.fail_dead(
-                        f"runner died (no heartbeat in {int(age_since_hb)}s, "
+                        f"runner pool `{runs_on}` died (no heartbeat in {int(age_since_hb)}s, "
                         f"threshold={HEARTBEAT_DEAD_THRESHOLD_S}s)"
                     )
 

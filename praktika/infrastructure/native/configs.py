@@ -28,9 +28,6 @@ def resolve_al2023_x86_64_ami(region: str) -> str:
     print(f"Resolved AL2023 x86_64 AMI for {region}: {value}")
     return value
 
-RUNNER_ROLE_NAME = "runner-role"
-RUNNER_INSTANCE_PROFILE_NAME = "runner-profile"
-
 ORCHESTRATOR_ROLE_NAME = "workflow-orchestrator-role"
 ORCHESTRATOR_INSTANCE_PROFILE_NAME = "workflow-orchestrator-profile"
 

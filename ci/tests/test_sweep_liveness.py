@@ -106,6 +106,26 @@ def test_pickup_grace_expired_with_no_heartbeat_marks_dead():
     assert state.jobs["A"].rc == 1
 
 
+def test_pickup_grace_reason_mentions_runner_pool():
+    s3 = _FakeS3()
+    state = _make_running_state(
+        ["A"], {"A": HEARTBEAT_PICKUP_GRACE_S + 30}, s3
+    )
+    state.jobs["A"].job.runs_on = ["arm-2xsmall"]
+    reasons = []
+    state.jobs["A"].fail_dead = reasons.append
+
+    state.sweep_liveness()
+
+    assert reasons == [
+        (
+            "runner pool `arm-2xsmall` never started job "
+            f"(no heartbeat in {HEARTBEAT_PICKUP_GRACE_S + 30}s, "
+            f"grace={HEARTBEAT_PICKUP_GRACE_S}s)"
+        )
+    ]
+
+
 def test_within_pickup_grace_with_no_heartbeat_stays_running():
     """Slow clone/pip install path — must not be flagged before grace expires."""
     s3 = _FakeS3()

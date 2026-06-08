@@ -91,9 +91,9 @@ def test_cloud_config_prefixes_embedded_pool_resources():
     )
 
     assert runner.queue.name == "sandbox-arm-2xsmall"
-    assert runner.ec2_role.name == "sandbox-runner-role"
-    assert runner.instance_profile.name == "sandbox-runner-profile"
-    assert runner.instance_profile.role_name == "sandbox-runner-role"
+    assert runner.ec2_role.name == "sandbox-arm-2xsmall-role"
+    assert runner.instance_profile.name == "sandbox-arm-2xsmall-profile"
+    assert runner.instance_profile.role_name == "sandbox-arm-2xsmall-role"
     assert runner.launch_template.name == "sandbox-arm-2xsmall-lt"
     assert runner.launch_template.vpc_name == "sandbox-praktika-ci"
     assert runner.launch_template.security_group_names == ["sandbox-praktika-ci-sg"]
@@ -147,6 +147,69 @@ def test_cloud_config_prefixes_embedded_pool_resources():
         base_orchestrator.autoscaling_group.tags["praktika_queue"]
         == "sandbox-workflow-orchestrator-base"
     )
+
+
+def test_runner_pools_get_distinct_roles_and_profiles():
+    cloud = CloudInfrastructure.Config(
+        name="sandbox",
+        image_builders=[],
+        runner_pools=[
+            RunnerPool(
+                name="arm-2xsmall",
+                instance_type="t4g.small",
+                vpc_name="praktika-ci",
+                scaling=RunnerPool.Scaling.Auto,
+                size=0,
+                max_size=1,
+            ),
+            RunnerPool(
+                name="arm-2xsmall-base",
+                instance_type="t4g.small",
+                vpc_name="praktika-ci",
+                scaling=RunnerPool.Scaling.Auto,
+                size=0,
+                max_size=1,
+            ),
+        ],
+    )
+
+    roles = {pool.ec2_role.name for pool in cloud.runner_pools}
+    profiles = {pool.instance_profile.name for pool in cloud.runner_pools}
+
+    assert roles == {
+        "sandbox-arm-2xsmall-role",
+        "sandbox-arm-2xsmall-base-role",
+    }
+    assert profiles == {
+        "sandbox-arm-2xsmall-profile",
+        "sandbox-arm-2xsmall-base-profile",
+    }
+
+
+def test_runner_pool_accepts_custom_role_and_profile_configs():
+    role = IAMRole.Config(
+        name="custom-runner-role",
+        trust_service="ec2.amazonaws.com",
+    )
+    profile = IAMInstanceProfile.Config(
+        name="custom-runner-profile",
+        role_name="custom-runner-role",
+    )
+
+    pool = RunnerPool(
+        name="arm-2xsmall",
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        scaling=RunnerPool.Scaling.Auto,
+        size=0,
+        max_size=1,
+        ec2_role=role,
+        instance_profile=profile,
+    )
+
+    assert pool.ec2_role is role
+    assert pool.instance_profile is profile
+    assert pool.launch_template.iam_instance_profile_name == "custom-runner-profile"
 
 
 def test_cloud_config_prefixes_all_top_level_resource_types():

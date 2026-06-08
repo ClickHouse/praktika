@@ -66,7 +66,11 @@ def _patch_check_run(token, repo, check_id, body):
         return False
 
 
-def _build_check_output(job_name, rc):
+def _current_instance_id():
+    return (os.environ.get("INSTANCE_ID") or "").strip()
+
+
+def _build_check_output(job_name, rc, instance_id=""):
     """Load the job's dumped Result from TEMP_DIR and render it as the
     ``output`` dict for a completion PATCH. Returns None on any failure
     so the caller can fall back to a bodyless completion."""
@@ -81,6 +85,11 @@ def _build_check_output(job_name, rc):
             text = text[:limit] + "\n\n_… (truncated)_\n"
         dur = f" in {int(result.duration)}s" if result.duration else ""
         summary = f"**{result.status}**{dur}"
+        if instance_id:
+            summary += f" — runner `{instance_id}`"
+            text = f"**Runner instance:** `{instance_id}`" + (
+                f"\n\n{text}" if text else ""
+            )
         return {"title": job_name, "summary": summary, "text": text}
     except Exception as e:
         print(f"  [warn] could not render job Result as MD: {type(e).__name__}: {e}")
@@ -244,9 +253,16 @@ def run_job(task, gh_token=None, local=False):
     # the PR UI reflects that a runner has picked the job up.
     check_run_id = task.get("check_run_id")
     repo = task.get("repo", "")
+    instance_id = _current_instance_id()
     post_check_updates = bool(check_run_id and gh_token and repo and not local)
     if post_check_updates:
-        _patch_check_run(gh_token, repo, check_run_id, {"status": "in_progress"})
+        body = {"status": "in_progress"}
+        if instance_id:
+            body["output"] = {
+                "title": job_name,
+                "summary": f"Running on runner `{instance_id}`.",
+            }
+        _patch_check_run(gh_token, repo, check_run_id, body)
 
     # Pre-populate ci/tmp/environment.json BEFORE calling _get_workflows(), because
     # _get_workflows() triggers Info() -> _Environment.get() and would fall back to
@@ -327,7 +343,7 @@ def run_job(task, gh_token=None, local=False):
             "status": "completed",
             "conclusion": "success" if rc == 0 else "failure",
         }
-        output = _build_check_output(job_name, rc)
+        output = _build_check_output(job_name, rc, instance_id=instance_id)
         if output is not None:
             body["output"] = output
         _patch_check_run(gh_token, repo, check_run_id, body)

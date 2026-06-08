@@ -315,14 +315,6 @@ class CloudInfrastructure:
                     old_vpc = pool.vpc_name
                     pool.vpc_name = self._prefixed(pool.vpc_name)
                     self._record_rename(replacements, old_vpc, pool.vpc_name)
-                if pool.iam_instance_profile_name:
-                    old_profile = pool.iam_instance_profile_name
-                    pool.iam_instance_profile_name = self._prefixed(pool.iam_instance_profile_name)
-                    self._record_rename(replacements, old_profile, pool.iam_instance_profile_name)
-                if pool.ec2_role_name:
-                    old_role = pool.ec2_role_name
-                    pool.ec2_role_name = self._prefixed(pool.ec2_role_name)
-                    self._record_rename(replacements, old_role, pool.ec2_role_name)
                 pool.security_group_names = [self._prefixed(name) for name in pool.security_group_names]
                 old_role_name = pool.ec2_role.name
                 pool.ec2_role.name = self._prefixed(pool.ec2_role.name)
