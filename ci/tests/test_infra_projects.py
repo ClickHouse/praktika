@@ -434,7 +434,7 @@ def test_shared_controller_image_builders_are_declared():
         )
         assert builder.prebuilt_venvs[0].name == "praktika-runtime"
         assert _IMAGE_BUILDERS_BY_NAME[name].prebuilt_venvs[0].packages[-1].endswith(
-            "/praktika-0.1-py3-none-any.whl"
+            "/praktika-0.0.1-py3-none-any.whl"
         )
         agent_component = next(
             component
@@ -531,7 +531,7 @@ def test_non_base_runner_pools_patch_praktika_into_shared_base_venv():
         pool = next(pool for pool in _runner_pools if pool.name == pool_name)
 
         assert pool.image_builder.prebuilt_venvs[0].packages[-1].endswith(
-            "/praktika-0.1-py3-none-any.whl"
+            "/praktika-0.0.1-py3-none-any.whl"
         )
         assert (
             "/opt/praktika/base-venvs/praktika-runtime/bin/python -m pip install --force-reinstall"
@@ -565,7 +565,7 @@ def test_projects_orchestrator_pools_include_default_and_base_image_variants():
         "praktika-ci-arm64-image"
     ]
     assert _orchestrator_pool.image_builder.prebuilt_venvs[0].packages[-1].endswith(
-        "/praktika-0.1-py3-none-any.whl"
+        "/praktika-0.0.1-py3-none-any.whl"
     )
     assert "amazon-cloudwatch-agent-ctl -a fetch-config" in _orchestrator_pool.launch_template.user_data
     assert (
@@ -594,7 +594,7 @@ def test_projects_orchestrator_pools_include_default_and_base_image_variants():
     assert _orchestrator_pool_base.autoscaling_group.name == "workflow-orchestrator-base"
     assert _orchestrator_pool_base.launch_template.tags["praktika_role"] == "workflow_orchestrator"
     assert _orchestrator_pool_base.image_builder.prebuilt_venvs[0].packages[-1].endswith(
-        "/praktika-0.1-py3-none-any.whl"
+        "/praktika-0.0.1-py3-none-any.whl"
     )
     assert _orchestrator_pool_base.autoscaling_group.tags["praktika_queue"] == (
         "workflow-orchestrator-base"
