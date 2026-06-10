@@ -104,6 +104,13 @@ pipeline.
   those run on private endpoints; optionally also SSH to runner instances
   for debugging
 
+**Report / UX**
+- **Pre/post-hook results in report** — move hook sub-results out of
+  `Result.results` into `Result.ext.pre_hook_result` / `Result.ext.post_hook_result`
+  so they are hidden by default and revealed only when the user clicks something like
+  "show infra results"; if any hook result is failed the report page must still surface
+  a Warning note regardless of the toggle state
+
 **Project ergonomics**
 - **`praktika init`** — scaffold a new project with a starter
   `ci/workflows/` and `ci/infrastructure/projects.py` so adopters do not have to copy

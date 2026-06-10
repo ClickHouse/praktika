@@ -8,10 +8,6 @@ from praktika import Artifact, Docker, Job, Secret, Workflow
 from ci.settings.settings import RunnerLabels
 from praktika.settings import Settings
 
-_INSTALL_DEPS = (
-    "python3 -m pip install -r ./ci/requirements.txt --break-system-packages "
-    "|| python3 -m pip install -r ./ci/requirements.txt"
-)
 _HEAD_PRAKTIKA_VERSION = "0.1.1"
 
 artifact = Artifact.Config(name="greet", type=Artifact.Type.S3, path="./artifact.txt")
@@ -35,7 +31,6 @@ workflow = Workflow.Config(
             name="Praktika Pytests",
             runs_on=[RunnerLabels.SMALL_ARM],
             command="python3 ./ci/scripts/run_ci_pytests.py",
-            pre_hooks=[_INSTALL_DEPS],
         ),
         # S3 artifact with cache digest
         Job.Config(
@@ -43,7 +38,6 @@ workflow = Workflow.Config(
             runs_on=[RunnerLabels.SMALL_ARM],
             command='echo "Hello from praktika" > ./artifact.txt && python3 ./ci/tests/example_2/some_job_script.py',
             provides=[artifact.name],
-            pre_hooks=[_INSTALL_DEPS],
             digest_config=Job.CacheDigestConfig(
                 include_paths=["./ci/tests/example_2/some_job_script.py"],
             ),
@@ -54,7 +48,6 @@ workflow = Workflow.Config(
             runs_on=[RunnerLabels.SMALL_ARM],
             command=f"cat {Settings.INPUT_DIR}/artifact.txt && python3 ./ci/tests/example_1/test_example_consume_artifact.py",
             requires=[artifact.name],
-            pre_hooks=[_INSTALL_DEPS],
             digest_config=Job.CacheDigestConfig(
                 include_paths=["./ci/tests/example_1"],
                 exclude_paths=["./ci/tests/example_1/test_example_produce*"],
@@ -65,7 +58,6 @@ workflow = Workflow.Config(
             name="Docker Job",
             runs_on=[RunnerLabels.SMALL_ARM],
             command="python3 ./ci/tests/example_2/some_job_script.py",
-            pre_hooks=[_INSTALL_DEPS],
             digest_config=Job.CacheDigestConfig(
                 include_paths=["./ci/tests/example_2/some_job_script.py"],
             ),
@@ -76,7 +68,6 @@ workflow = Workflow.Config(
             name="Parametrized",
             runs_on=[RunnerLabels.SMALL_ARM],
             command="python3 ./ci/tests/example_3/script_for_parametrized_job.py",
-            pre_hooks=[_INSTALL_DEPS],
             requires=[artifact.name],
         ).parametrize(
             Job.ParamSet(parameter={"key_1": [1, 2, "ABC"], "key_2": None}),
