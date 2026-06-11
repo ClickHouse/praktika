@@ -40,7 +40,9 @@ python3 -m praktika infrastructure --destroy-runtime
   `CloudInfrastructure.Config` synthesizes a scheduled Lambda that watches
   the corresponding SQS queues and scales ASG desired capacity up. Idle
   runner/orchestrator instances then scale themselves back in by
-  decrementing ASG desired capacity and terminating the instance.
+  decrementing ASG desired capacity and terminating the instance. Set
+  `capacity_reserve=N` on an auto-scaled pool to keep `N` extra idle
+  instances above queue demand, capped by `max_size`.
 - **`Components.report_page_config`** — the static HTML page +
   bucket policy that renders a workflow's `result_*.json` files.
 - **`ImageBuilder.Config`** — AMI build pipelines. Supports ordinary

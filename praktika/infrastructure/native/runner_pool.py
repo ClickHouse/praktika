@@ -27,8 +27,10 @@ class RunnerPool:
     and SQSQueue that together form a single runner type.
 
     The ASG always starts with min_size=0; `size` sets the desired capacity
-    and `max_size` caps the pool. The queue name matches the `runs_on` label
-    1:1 so praktika routes jobs without extra configuration.
+    and `max_size` caps the pool. When auto-scaled, `capacity_reserve` keeps
+    that many extra idle instances above the queue demand. The queue name
+    matches the `runs_on` label 1:1 so praktika routes jobs without extra
+    configuration.
 
     The pool assumes the selected AMI already contains the Praktika runner
     runtime and systemd unit. By default it enables `praktika-controller` at
@@ -75,6 +77,7 @@ class RunnerPool:
     security_group_ids: List[str] = field(default_factory=list)
     security_group_names: List[str] = field(default_factory=list)
     volume_size_gb: int = 30
+    capacity_reserve: int = 0
 
     launch_template: LaunchTemplate.Config = field(init=False)
     autoscaling_group: AutoScalingGroup.Config = field(init=False)
@@ -94,9 +97,15 @@ class RunnerPool:
             f"size={self.size} is invalid for scaling={self.scaling!r}; "
             f"must be >= {min_size}"
         )
-        assert self.max_size >= self.size, (
-            f"max_size={self.max_size} must be >= size={self.size}"
-        )
+        assert (
+            self.max_size >= self.size
+        ), f"max_size={self.max_size} must be >= size={self.size}"
+        assert (
+            self.capacity_reserve >= 0
+        ), f"capacity_reserve={self.capacity_reserve} must be >= 0"
+        assert (
+            self.max_size >= self.capacity_reserve
+        ), f"max_size={self.max_size} must be >= capacity_reserve={self.capacity_reserve}"
 
         queue_name = self.name
         asg_name = self.name
@@ -176,6 +185,7 @@ class RunnerPool:
             "praktika_queue": queue_name,
             "praktika_asg": asg_name,
             "praktika_scaling": self.scaling,
+            "praktika_capacity_reserve": str(self.capacity_reserve),
         }
         self.launch_template = LaunchTemplate.Config(
             name=launch_template_name,

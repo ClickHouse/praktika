@@ -24,7 +24,14 @@ def test_pool_autoscaler_builds_scheduled_lambda():
     assert autoscaler.lambda_config.name == "pool-autoscaler"
     assert autoscaler.lambda_config.schedule_expression == "rate(2 minutes)"
     assert autoscaler.lambda_config.environments["POLL_INTERVAL_SECONDS"] == "75"
-    assert '"name":"arm-2xsmall"' in autoscaler.lambda_config.environments["POOLS_CONFIG_JSON"]
+    assert (
+        '"name":"arm-2xsmall"'
+        in autoscaler.lambda_config.environments["POOLS_CONFIG_JSON"]
+    )
+    assert (
+        '"capacity_reserve":0'
+        in autoscaler.lambda_config.environments["POOLS_CONFIG_JSON"]
+    )
 
 
 def test_rate_expression_clamps_to_minute():
@@ -51,6 +58,49 @@ def test_calculate_desired_capacity_scales_up_only_when_needed():
             in_flight_messages=1,
         )
         == 2
+    )
+
+
+def test_calculate_desired_capacity_applies_capacity_reserve_once():
+    assert (
+        _calculate_desired_capacity(
+            current_desired=0,
+            max_size=10,
+            visible_messages=0,
+            in_flight_messages=0,
+            capacity_reserve=2,
+        )
+        == 2
+    )
+    assert (
+        _calculate_desired_capacity(
+            current_desired=2,
+            max_size=10,
+            visible_messages=3,
+            in_flight_messages=0,
+            capacity_reserve=2,
+        )
+        == 3
+    )
+    assert (
+        _calculate_desired_capacity(
+            current_desired=5,
+            max_size=10,
+            visible_messages=0,
+            in_flight_messages=0,
+            capacity_reserve=2,
+        )
+        == 5
+    )
+    assert (
+        _calculate_desired_capacity(
+            current_desired=0,
+            max_size=1,
+            visible_messages=0,
+            in_flight_messages=0,
+            capacity_reserve=2,
+        )
+        == 1
     )
 
 
@@ -86,7 +136,7 @@ def test_lambda_handler_updates_all_pools_that_need_scaling(monkeypatch):
             groups = {
                 "asg-a": {"DesiredCapacity": 0, "MaxSize": 10},
                 "asg-b": {"DesiredCapacity": 1, "MaxSize": 10},
-                "asg-c": {"DesiredCapacity": 2, "MaxSize": 10},
+                "asg-c": {"DesiredCapacity": 0, "MaxSize": 10},
             }
             return {"AutoScalingGroups": [groups[name]]}
 
@@ -106,15 +156,19 @@ def test_lambda_handler_updates_all_pools_that_need_scaling(monkeypatch):
         "POOLS_CONFIG_JSON",
         '[{"name":"pool-a","queue_name":"pool-a","asg_name":"asg-a"},'
         '{"name":"pool-b","queue_name":"pool-b","asg_name":"asg-b"},'
-        '{"name":"pool-c","queue_name":"pool-c","asg_name":"asg-c"}]',
+        '{"name":"pool-c","queue_name":"pool-c","asg_name":"asg-c","capacity_reserve":2}]',
     )
     monkeypatch.setenv("AWS_REGION", "eu-north-1")
-    monkeypatch.setattr("praktika.infrastructure.native.lambda_pool_autoscaler.boto3.client", _fake_boto3_client)
+    monkeypatch.setattr(
+        "praktika.infrastructure.native.lambda_pool_autoscaler.boto3.client",
+        _fake_boto3_client,
+    )
 
     result = lambda_handler({}, None)
 
     assert result["pool_count"] == 3
-    assert fake_autoscaling.updated == [("asg-a", 1), ("asg-b", 2)]
+    assert fake_autoscaling.updated == [("asg-a", 1), ("asg-b", 2), ("asg-c", 2)]
+    assert result["results"][2]["capacity_reserve"] == 2
 
 
 def test_cloud_infrastructure_registers_pool_autoscaler():
@@ -132,12 +186,10 @@ def test_cloud_infrastructure_registers_pool_autoscaler():
     )
 
     assert any(
-        config.name == "test-cloud-pool-autoscaler"
-        for config in cloud.lambda_functions
+        config.name == "test-cloud-pool-autoscaler" for config in cloud.lambda_functions
     )
     assert any(
-        role.name == "test-cloud-pool-autoscaler-role"
-        for role in cloud.iam_roles
+        role.name == "test-cloud-pool-autoscaler-role" for role in cloud.iam_roles
     )
 
 
@@ -172,7 +224,10 @@ def test_cloud_infrastructure_creates_implicit_runner_autoscaler():
     autoscaler = autoscalers[0]
     assert autoscaler.schedule_expression == "rate(2 minutes)"
     assert f'"name":"{auto_pool.name}"' in autoscaler.environments["POOLS_CONFIG_JSON"]
-    assert f'"name":"{disabled_pool.name}"' not in autoscaler.environments["POOLS_CONFIG_JSON"]
+    assert (
+        f'"name":"{disabled_pool.name}"'
+        not in autoscaler.environments["POOLS_CONFIG_JSON"]
+    )
 
 
 def test_cloud_infrastructure_creates_implicit_orchestrator_autoscaler():
@@ -181,7 +236,8 @@ def test_cloud_infrastructure_creates_implicit_orchestrator_autoscaler():
         vpc_name="praktika-ci",
         scaling=OrchestratorPool.Scaling.Auto,
         size=0,
-        max_size=1,
+        max_size=3,
+        capacity_reserve=2,
     )
 
     cloud = CloudInfrastructure.Config(
@@ -199,3 +255,4 @@ def test_cloud_infrastructure_creates_implicit_orchestrator_autoscaler():
     assert '"name":"workflow-orchestrator"' in env
     assert '"queue_name":"test-cloud-workflow-orchestrator"' in env
     assert '"asg_name":"test-cloud-workflow-orchestrator"' in env
+    assert '"capacity_reserve":2' in env

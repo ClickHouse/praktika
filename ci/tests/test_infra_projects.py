@@ -87,7 +87,9 @@ def test_cloud_config_prefixes_embedded_pool_resources():
     runner = cloud.runner_pools[0]
     orchestrator = cloud.orchestrator_pool
     base_orchestrator = next(
-        pool for pool in cloud.orchestrator_pools if pool.name == "workflow-orchestrator-base"
+        pool
+        for pool in cloud.orchestrator_pools
+        if pool.name == "workflow-orchestrator-base"
     )
 
     assert runner.queue.name == "sandbox-arm-2xsmall"
@@ -106,20 +108,26 @@ def test_cloud_config_prefixes_embedded_pool_resources():
         stmt.get("Sid") != "SecretsManagerRead"
         for stmt in runner.ec2_role.inline_policies["RunnerAccess"]["Statement"]
     )
-    assert "amazon-cloudwatch-agent-ctl -a fetch-config" in runner.launch_template.user_data
-    assert "systemctl enable --now praktika-controller" in runner.launch_template.user_data
+    assert (
+        "amazon-cloudwatch-agent-ctl -a fetch-config"
+        in runner.launch_template.user_data
+    )
+    assert (
+        "systemctl enable --now praktika-controller" in runner.launch_template.user_data
+    )
 
     assert orchestrator is not None
     assert orchestrator.queue.name == "sandbox-workflow-orchestrator"
     assert orchestrator.ec2_role.name == "sandbox-workflow-orchestrator-role"
     assert orchestrator.instance_profile.name == "sandbox-workflow-orchestrator-profile"
     assert (
-        orchestrator.instance_profile.role_name
-        == "sandbox-workflow-orchestrator-role"
+        orchestrator.instance_profile.role_name == "sandbox-workflow-orchestrator-role"
     )
     assert orchestrator.launch_template.name == "sandbox-workflow-orchestrator-lt"
     assert orchestrator.launch_template.vpc_name == "sandbox-praktika-ci"
-    assert orchestrator.launch_template.security_group_names == ["sandbox-praktika-ci-sg"]
+    assert orchestrator.launch_template.security_group_names == [
+        "sandbox-praktika-ci-sg"
+    ]
     assert orchestrator.autoscaling_group.name == "sandbox-workflow-orchestrator"
     assert orchestrator.autoscaling_group.vpc_name == "sandbox-praktika-ci"
     assert orchestrator.lambda_config.name == "sandbox-workflow-orchestrator"
@@ -129,7 +137,9 @@ def test_cloud_config_prefixes_embedded_pool_resources():
     assert orchestrator.launch_template.tags["praktika_project_slug"] == "sandbox"
     assert all(
         stmt.get("Sid") != "SecretsManagerRead"
-        for stmt in orchestrator.ec2_role.inline_policies["WorkflowOrchestratorAccess"]["Statement"]
+        for stmt in orchestrator.ec2_role.inline_policies["WorkflowOrchestratorAccess"][
+            "Statement"
+        ]
     )
     assert (
         "amazon-cloudwatch-agent-ctl -a fetch-config"
@@ -427,14 +437,20 @@ def test_shared_controller_image_builders_are_declared():
             for component in builder.inline_components
             if component["name"] == "praktika-base-controller-runtime"
         )
-        assert any("amazon-cloudwatch-agent" in cmd for cmd in builder.inline_components[0]["commands"])
+        assert any(
+            "amazon-cloudwatch-agent" in cmd
+            for cmd in builder.inline_components[0]["commands"]
+        )
         assert any(
             "praktika_controller-0.1.1-py3-none-any.whl" in cmd
             for cmd in runtime_component["commands"]
         )
         assert builder.prebuilt_venvs[0].name == "praktika-runtime"
-        assert _IMAGE_BUILDERS_BY_NAME[name].prebuilt_venvs[0].packages[-1].endswith(
-            "/praktika-0.0.1-py3-none-any.whl"
+        assert (
+            _IMAGE_BUILDERS_BY_NAME[name]
+            .prebuilt_venvs[0]
+            .packages[-1]
+            .endswith("/praktika-0.0.1-py3-none-any.whl")
         )
         agent_component = next(
             component
@@ -452,14 +468,16 @@ def test_shared_controller_image_builders_are_declared():
             next(
                 cmd
                 for cmd in agent_component["commands"]
-                if "/etc/systemd/system/praktika-controller.service" in cmd and "printf" in cmd
+                if "/etc/systemd/system/praktika-controller.service" in cmd
+                and "printf" in cmd
             )
         )
         cloudwatch = _decode_embedded_file(
             next(
                 cmd
                 for cmd in agent_component["commands"]
-                if "/etc/praktika/amazon-cloudwatch-agent.json" in cmd and "printf" in cmd
+                if "/etc/praktika/amazon-cloudwatch-agent.json" in cmd
+                and "printf" in cmd
             )
         )
         assert "praktika_role" in launcher
@@ -475,11 +493,18 @@ def test_shared_controller_image_builders_are_declared():
         assert '"file_path": "/var/log/praktika-controller.log"' in cloudwatch
         assert '"log_group_name": "/praktika/controller"' in cloudwatch
 
-    assert [lt.name for lt in _IMAGE_BUILDERS_BY_NAME["praktika-base-ci-arm64-image"].launch_templates] == [
+    assert [
+        lt.name
+        for lt in _IMAGE_BUILDERS_BY_NAME[
+            "praktika-base-ci-arm64-image"
+        ].launch_templates
+    ] == [
         "arm-2xsmall-base-lt",
         "workflow-orchestrator-base-lt",
     ]
-    assert _IMAGE_BUILDERS_BY_NAME["praktika-base-ci-x86_64-image"].launch_templates == []
+    assert (
+        _IMAGE_BUILDERS_BY_NAME["praktika-base-ci-x86_64-image"].launch_templates == []
+    )
 
 
 def test_all_image_builders_stay_private():
@@ -507,11 +532,17 @@ def test_project_github_token_minter_uses_defaults_and_project_repo_scope():
     cloud = _get_infra_config("praktika")
     runner = next(pool for pool in cloud.runner_pools if pool.name == "arm-2xsmall")
     orchestrator = cloud.orchestrator_pool
-    runner_invoke = runner.ec2_role.inline_policies["GitHubTokenMinterInvoke"]["Statement"]
-    orchestrator_invoke = orchestrator.ec2_role.inline_policies["GitHubTokenMinterInvoke"]["Statement"]
+    runner_invoke = runner.ec2_role.inline_policies["GitHubTokenMinterInvoke"][
+        "Statement"
+    ]
+    orchestrator_invoke = orchestrator.ec2_role.inline_policies[
+        "GitHubTokenMinterInvoke"
+    ]["Statement"]
 
     assert any("lambda:InvokeFunction" in stmt["Action"] for stmt in runner_invoke)
-    assert any("lambda:InvokeFunction" in stmt["Action"] for stmt in orchestrator_invoke)
+    assert any(
+        "lambda:InvokeFunction" in stmt["Action"] for stmt in orchestrator_invoke
+    )
     assert runner.launch_template.tags["praktika_project_slug"] == "praktika"
     assert orchestrator.launch_template.tags["praktika_project_slug"] == "praktika"
 
@@ -520,8 +551,12 @@ def test_base_runner_pool_uses_base_image_without_bootstrap_user_data():
     pool = next(pool for pool in _runner_pools if pool.name == "arm-2xsmall-base")
 
     assert pool.image_builder is _IMAGE_BUILDERS_BY_NAME["praktika-base-ci-arm64-image"]
-    assert "amazon-cloudwatch-agent-ctl -a fetch-config" in pool.launch_template.user_data
-    assert "systemctl enable --now praktika-controller" in pool.launch_template.user_data
+    assert (
+        "amazon-cloudwatch-agent-ctl -a fetch-config" in pool.launch_template.user_data
+    )
+    assert (
+        "systemctl enable --now praktika-controller" in pool.launch_template.user_data
+    )
     assert "pip install --force-reinstall" not in pool.launch_template.user_data
     assert pool.queue.name == "arm-2xsmall-base"
 
@@ -530,16 +565,24 @@ def test_non_base_runner_pools_patch_praktika_into_shared_base_venv():
     for pool_name in ["arm-2xsmall", "amd-2xsmall"]:
         pool = next(pool for pool in _runner_pools if pool.name == pool_name)
 
-        assert pool.image_builder.prebuilt_venvs[0].packages[-1].endswith(
-            "/praktika-0.0.1-py3-none-any.whl"
+        assert (
+            pool.image_builder.prebuilt_venvs[0]
+            .packages[-1]
+            .endswith("/praktika-0.0.1-py3-none-any.whl")
         )
         assert (
             "/opt/praktika/base-venvs/praktika-runtime/bin/python -m pip install --force-reinstall"
             in pool.launch_template.user_data
         )
-        assert "amazon-cloudwatch-agent-ctl -a fetch-config" in pool.launch_template.user_data
+        assert (
+            "amazon-cloudwatch-agent-ctl -a fetch-config"
+            in pool.launch_template.user_data
+        )
         assert "praktika-0.1.1-py3-none-any.whl" in pool.launch_template.user_data
-        assert "systemctl enable --now praktika-controller" in pool.launch_template.user_data
+        assert (
+            "systemctl enable --now praktika-controller"
+            in pool.launch_template.user_data
+        )
 
 
 def test_shared_arm64_images_are_used_by_runner_and_orchestrator_pools():
@@ -553,7 +596,7 @@ def test_shared_arm64_images_are_used_by_runner_and_orchestrator_pools():
     assert builder.instance_types == ["t4g.small"]
     assert [lt.name for lt in builder.launch_templates] == [
         "arm-2xsmall-base-lt",
-        "workflow-orchestrator-base-lt"
+        "workflow-orchestrator-base-lt",
     ]
 
 
@@ -561,22 +604,37 @@ def test_projects_orchestrator_pools_include_default_and_base_image_variants():
     assert _orchestrator_pool.name == "workflow-orchestrator"
     assert _orchestrator_pool.queue.name == "workflow-orchestrator"
     assert _orchestrator_pool.lambda_config.name == "workflow-orchestrator"
-    assert _orchestrator_pool.image_builder is _IMAGE_BUILDERS_BY_NAME[
-        "praktika-ci-arm64-image"
-    ]
-    assert _orchestrator_pool.image_builder.prebuilt_venvs[0].packages[-1].endswith(
-        "/praktika-0.0.1-py3-none-any.whl"
+    assert (
+        _orchestrator_pool.image_builder
+        is _IMAGE_BUILDERS_BY_NAME["praktika-ci-arm64-image"]
     )
-    assert "amazon-cloudwatch-agent-ctl -a fetch-config" in _orchestrator_pool.launch_template.user_data
+    assert (
+        _orchestrator_pool.image_builder.prebuilt_venvs[0]
+        .packages[-1]
+        .endswith("/praktika-0.0.1-py3-none-any.whl")
+    )
+    assert (
+        "amazon-cloudwatch-agent-ctl -a fetch-config"
+        in _orchestrator_pool.launch_template.user_data
+    )
     assert (
         "/opt/praktika/base-venvs/praktika-runtime/bin/python -m pip install --force-reinstall"
         in _orchestrator_pool.launch_template.user_data
     )
-    assert "praktika-0.1.1-py3-none-any.whl" in _orchestrator_pool.launch_template.user_data
-    assert "systemctl enable --now praktika-controller" in _orchestrator_pool.launch_template.user_data
+    assert (
+        "praktika-0.1.1-py3-none-any.whl"
+        in _orchestrator_pool.launch_template.user_data
+    )
+    assert (
+        "systemctl enable --now praktika-controller"
+        in _orchestrator_pool.launch_template.user_data
+    )
     assert _orchestrator_pool.launch_template.name == "workflow-orchestrator-lt"
     assert _orchestrator_pool.autoscaling_group.name == "workflow-orchestrator"
-    assert _orchestrator_pool.launch_template.tags["praktika_role"] == "workflow_orchestrator"
+    assert (
+        _orchestrator_pool.launch_template.tags["praktika_role"]
+        == "workflow_orchestrator"
+    )
 
     assert _orchestrator_pool_base.name == "workflow-orchestrator-base"
     assert _orchestrator_pool_base.queue.name == "workflow-orchestrator-base"
@@ -584,20 +642,44 @@ def test_projects_orchestrator_pools_include_default_and_base_image_variants():
     assert _orchestrator_pool_base.lambda_config.environments["SQS_QUEUE_NAME"] == (
         "workflow-orchestrator-base"
     )
-    assert _orchestrator_pool_base.image_builder is _IMAGE_BUILDERS_BY_NAME[
-        "praktika-base-ci-arm64-image"
-    ]
-    assert "amazon-cloudwatch-agent-ctl -a fetch-config" in _orchestrator_pool_base.launch_template.user_data
-    assert "systemctl enable --now praktika-controller" in _orchestrator_pool_base.launch_template.user_data
-    assert "pip install --force-reinstall" not in _orchestrator_pool_base.launch_template.user_data
-    assert _orchestrator_pool_base.launch_template.name == "workflow-orchestrator-base-lt"
-    assert _orchestrator_pool_base.autoscaling_group.name == "workflow-orchestrator-base"
-    assert _orchestrator_pool_base.launch_template.tags["praktika_role"] == "workflow_orchestrator"
-    assert _orchestrator_pool_base.image_builder.prebuilt_venvs[0].packages[-1].endswith(
-        "/praktika-0.0.1-py3-none-any.whl"
+    assert (
+        _orchestrator_pool_base.image_builder
+        is _IMAGE_BUILDERS_BY_NAME["praktika-base-ci-arm64-image"]
+    )
+    assert (
+        "amazon-cloudwatch-agent-ctl -a fetch-config"
+        in _orchestrator_pool_base.launch_template.user_data
+    )
+    assert (
+        "systemctl enable --now praktika-controller"
+        in _orchestrator_pool_base.launch_template.user_data
+    )
+    assert (
+        "pip install --force-reinstall"
+        not in _orchestrator_pool_base.launch_template.user_data
+    )
+    assert (
+        _orchestrator_pool_base.launch_template.name == "workflow-orchestrator-base-lt"
+    )
+    assert (
+        _orchestrator_pool_base.autoscaling_group.name == "workflow-orchestrator-base"
+    )
+    assert (
+        _orchestrator_pool_base.launch_template.tags["praktika_role"]
+        == "workflow_orchestrator"
+    )
+    assert (
+        _orchestrator_pool_base.image_builder.prebuilt_venvs[0]
+        .packages[-1]
+        .endswith("/praktika-0.0.1-py3-none-any.whl")
     )
     assert _orchestrator_pool_base.autoscaling_group.tags["praktika_queue"] == (
         "workflow-orchestrator-base"
+    )
+    assert _orchestrator_pool_base.capacity_reserve == 2
+    assert (
+        _orchestrator_pool_base.autoscaling_group.tags["praktika_capacity_reserve"]
+        == "2"
     )
 
     assert _orchestrator_pool.lambda_role.name == "gh-webhook-role"

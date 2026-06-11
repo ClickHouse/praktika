@@ -125,10 +125,16 @@ WantedBy=multi-user.target
             "mkdir -p /etc/praktika",
             "touch /var/log/praktika-controller.log",
             "chmod 0644 /var/log/praktika-controller.log",
-            _write_file_from_base64("/usr/local/bin/praktika-controller-start", launcher),
+            _write_file_from_base64(
+                "/usr/local/bin/praktika-controller-start", launcher
+            ),
             "chmod 0755 /usr/local/bin/praktika-controller-start",
-            _write_file_from_base64("/etc/praktika/amazon-cloudwatch-agent.json", cloudwatch),
-            _write_file_from_base64("/etc/systemd/system/praktika-controller.service", unit),
+            _write_file_from_base64(
+                "/etc/praktika/amazon-cloudwatch-agent.json", cloudwatch
+            ),
+            _write_file_from_base64(
+                "/etc/systemd/system/praktika-controller.service", unit
+            ),
             "systemctl daemon-reload || true",
         ],
     }
@@ -158,16 +164,14 @@ def _runtime_prebuilt_venvs():
 
 
 def _image_builders():
-    ci_arm64_version = "1.0.15"
-    ci_x86_64_version = "1.0.15"
-    base_ci_arm64_version = "1.0.15"
-    base_ci_x86_64_version = "1.0.15"
+    ci_version = "1.0.16"
+    base_ci_version = "1.0.15"
 
     return [
         ImageBuilder.Config(
             name="praktika-ci-arm64-image",
             image_recipe_name="praktika-ci-arm64-image-recipe",
-            image_recipe_version=ci_arm64_version,
+            image_recipe_version=ci_version,
             inline_components=[
                 _setup_component(
                     "praktika-controller-setup",
@@ -190,7 +194,7 @@ def _image_builders():
         ImageBuilder.Config(
             name="praktika-base-ci-arm64-image",
             image_recipe_name="praktika-base-ci-arm64-image-recipe",
-            image_recipe_version=base_ci_arm64_version,
+            image_recipe_version=base_ci_version,
             inline_components=[
                 _setup_component(
                     "praktika-base-controller-setup",
@@ -213,7 +217,7 @@ def _image_builders():
         ImageBuilder.Config(
             name="praktika-ci-x86_64-image",
             image_recipe_name="praktika-ci-x86_64-image-recipe",
-            image_recipe_version=ci_x86_64_version,
+            image_recipe_version=ci_version,
             inline_components=[
                 _setup_component(
                     "praktika-controller-setup",
@@ -236,7 +240,7 @@ def _image_builders():
         ImageBuilder.Config(
             name="praktika-base-ci-x86_64-image",
             image_recipe_name="praktika-base-ci-x86_64-image-recipe",
-            image_recipe_version=base_ci_x86_64_version,
+            image_recipe_version=base_ci_version,
             inline_components=[
                 _setup_component(
                     "praktika-base-controller-setup",
@@ -359,6 +363,7 @@ _orchestrator_pool_base = Components.OrchestratorPool(
     scaling=Components.OrchestratorPool.Scaling.Auto,
     size=0,
     max_size=10,
+    capacity_reserve=2,
     image_builder=_IMAGE_BUILDERS_BY_NAME["praktika-base-ci-arm64-image"],
 )
 
@@ -380,7 +385,9 @@ PROJECTS = [
             )
         ],
         storages=[
-            Storage.Config(name="praktika-artifacts-eu-north-1", retention_days=90, public=True),
+            Storage.Config(
+                name="praktika-artifacts-eu-north-1", retention_days=90, public=True
+            ),
         ],
         report_pages=[
             Components.report_page_config,

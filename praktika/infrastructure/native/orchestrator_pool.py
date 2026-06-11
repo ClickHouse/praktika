@@ -41,7 +41,9 @@ class OrchestratorPool:
 
     The orchestrator polls the workflow-trigger SQS queue and dispatches
     jobs to per-runner-type queues. min_size is always 0; `size` sets the
-    desired capacity and `max_size` caps the pool.
+    desired capacity and `max_size` caps the pool. When auto-scaled,
+    `capacity_reserve` keeps that many extra idle instances above the queue
+    demand.
 
     The pool assumes the selected AMI already contains the Praktika workflow
     runtime and systemd unit. By default it enables `praktika-controller` at
@@ -86,6 +88,7 @@ class OrchestratorPool:
     security_group_ids: List[str] = field(default_factory=list)
     security_group_names: List[str] = field(default_factory=list)
     volume_size_gb: int = 30
+    capacity_reserve: int = 0
 
     launch_template: LaunchTemplate.Config = field(init=False)
     autoscaling_group: AutoScalingGroup.Config = field(init=False)
@@ -128,9 +131,15 @@ class OrchestratorPool:
             f"size={self.size} is invalid for scaling={self.scaling!r}; "
             f"must be >= {min_size}"
         )
-        assert self.max_size >= self.size, (
-            f"max_size={self.max_size} must be >= size={self.size}"
-        )
+        assert (
+            self.max_size >= self.size
+        ), f"max_size={self.max_size} must be >= size={self.size}"
+        assert (
+            self.capacity_reserve >= 0
+        ), f"capacity_reserve={self.capacity_reserve} must be >= 0"
+        assert (
+            self.max_size >= self.capacity_reserve
+        ), f"max_size={self.max_size} must be >= capacity_reserve={self.capacity_reserve}"
         queue_name = self._queue_name()
         asg_name = self._asg_name()
 
@@ -141,7 +150,10 @@ class OrchestratorPool:
                 f"arn:aws:s3:::{artifact_bucket}/pr/*/cancel-before*",
             ]
             if artifact_bucket
-            else ["arn:aws:s3:::*/runs/*/cancel-request", "arn:aws:s3:::*/pr/*/cancel-before*"]
+            else [
+                "arn:aws:s3:::*/runs/*/cancel-request",
+                "arn:aws:s3:::*/pr/*/cancel-before*",
+            ]
         )
 
         self.ec2_role = IAMRole.Config(
@@ -224,6 +236,7 @@ class OrchestratorPool:
             "praktika_queue": queue_name,
             "praktika_asg": asg_name,
             "praktika_scaling": self.scaling,
+            "praktika_capacity_reserve": str(self.capacity_reserve),
         }
         self.launch_template = LaunchTemplate.Config(
             name=self._launch_template_name(),
@@ -266,7 +279,9 @@ class OrchestratorPool:
         self.lambda_role = IAMRole.Config(
             name=self._lambda_role_name(),
             trust_service="lambda.amazonaws.com",
-            policy_arns=["arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"],
+            policy_arns=[
+                "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+            ],
             inline_policies={
                 # Lambda enqueues workflow trigger events to the main
                 # workflow queue and writes cancel signals to S3 (per-run

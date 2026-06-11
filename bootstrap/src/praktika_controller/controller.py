@@ -35,9 +35,8 @@ SUPPORTED_ROLES = {ROLE_WORKFLOW, ROLE_RUNNER}
 
 def _instance_runtime_tags() -> tuple[str, str]:
     token = imds_token()
-    role = (
-        os.environ.get("PRAKTIKA_CONTROLLER_ROLE", "").strip()
-        or instance_tag("praktika_role", token=token)
+    role = os.environ.get("PRAKTIKA_CONTROLLER_ROLE", "").strip() or instance_tag(
+        "praktika_role", token=token
     )
     queue = instance_tag("praktika_queue", token=token)
     return role, queue
@@ -48,7 +47,9 @@ def _resolve_role_and_queue() -> tuple[str, str]:
     queue = os.environ.get("PRAKTIKA_CONTROLLER_QUEUE", "").strip() or queue
 
     if not role and queue:
-        role = ROLE_WORKFLOW if queue.startswith("workflow-orchestrator") else ROLE_RUNNER
+        role = (
+            ROLE_WORKFLOW if queue.startswith("workflow-orchestrator") else ROLE_RUNNER
+        )
 
     if role not in SUPPORTED_ROLES:
         raise RuntimeError(
@@ -257,6 +258,7 @@ def poll():
     )
     log.info("Role=%s polling %s (visibility_timeout=%ss)", role, queue_url, visibility)
 
+    has_received_message = False
     while True:
         resp = sqs.receive_message(
             QueueUrl=queue_url,
@@ -271,11 +273,13 @@ def poll():
                 queue_name=queue_name,
                 region=REGION,
                 instance_id=INSTANCE_ID,
+                has_received_message=has_received_message,
                 log=log,
             ):
                 return
             continue
 
+        has_received_message = True
         msg = messages[0]
         receipt = msg["ReceiptHandle"]
         try:

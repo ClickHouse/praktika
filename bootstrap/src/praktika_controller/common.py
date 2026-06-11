@@ -56,13 +56,10 @@ def get_github_token(region: str = "") -> str:
     if not region:
         raise RuntimeError("AWS_DEFAULT_REGION or AWS_REGION must be set")
 
-    lambda_name = (
-        os.environ.get("GH_AUTH_LAMBDA_NAME", "").strip()
-        or (
-            f"{os.environ.get('PRAKTIKA_PROJECT_SLUG', '').strip()}-gh-token"
-            if os.environ.get("PRAKTIKA_PROJECT_SLUG", "").strip()
-            else "gh-token"
-        )
+    lambda_name = os.environ.get("GH_AUTH_LAMBDA_NAME", "").strip() or (
+        f"{os.environ.get('PRAKTIKA_PROJECT_SLUG', '').strip()}-gh-token"
+        if os.environ.get("PRAKTIKA_PROJECT_SLUG", "").strip()
+        else "gh-token"
     )
     client = boto3.client("lambda", region_name=region)
     response = client.invoke(
@@ -124,6 +121,7 @@ def try_scale_in_if_idle(
     queue_name: str,
     region: str,
     instance_id: str,
+    has_received_message: bool = True,
     log,
 ) -> bool:
     if not region or not instance_id:
@@ -134,6 +132,17 @@ def try_scale_in_if_idle(
             return False
         asg_name = instance_tag("praktika_asg", token=token)
         if not asg_name:
+            return False
+        capacity_reserve = max(
+            0,
+            int(instance_tag("praktika_capacity_reserve", token=token) or "0"),
+        )
+        if capacity_reserve and not has_received_message:
+            log.info(
+                "Queue %s is idle, preserving reserved instance %s until first job",
+                queue_name,
+                instance_id,
+            )
             return False
         attrs = sqs.get_queue_attributes(
             QueueUrl=queue_url,
@@ -279,9 +288,7 @@ class Heartbeat:
 
     def start(self):
         self._beat()
-        self._thread = threading.Thread(
-            target=self._run, daemon=True, name="heartbeat"
-        )
+        self._thread = threading.Thread(target=self._run, daemon=True, name="heartbeat")
         self._thread.start()
 
     def stop(self):
