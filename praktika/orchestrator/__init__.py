@@ -32,7 +32,7 @@ def _current_orchestrator_filter() -> str:
     if explicit:
         return explicit
 
-    queue_name = (os.environ.get("SQS_QUEUE_NAME") or "").strip()
+    queue_name = (os.environ.get("PRAKTIKA_CONTROLLER_QUEUE") or "").strip()
     if queue_name.endswith("-base"):
         return "base"
     return "default"

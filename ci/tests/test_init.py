@@ -44,6 +44,8 @@ def test_has_nested_git_repositories_detects_workspace_layout(tmp_path):
     (nested_repo / ".git").mkdir()
 
     assert has_nested_git_repositories(tmp_path) is True
+
+
 def test_detect_default_branch_prefers_origin_head(monkeypatch, tmp_path):
     calls = iter(
         [
@@ -80,7 +82,9 @@ def test_detect_aws_profiles_reads_config_and_credentials(tmp_path, monkeypatch)
     assert detect_aws_profiles() == {"default", "Box", "personal"}
 
 
-def test_detect_aws_account_ids_reads_values_from_local_aws_files(tmp_path, monkeypatch):
+def test_detect_aws_account_ids_reads_values_from_local_aws_files(
+    tmp_path, monkeypatch
+):
     aws_dir = tmp_path / ".aws"
     aws_dir.mkdir()
     config_path = aws_dir / "config"
@@ -161,7 +165,9 @@ def test_prompt_aws_account_id_auto_uses_profile_match(monkeypatch, capsys):
 
     assert _prompt_aws_account_id(profile="Box") == "123456789012"
     out = capsys.readouterr().out
-    assert "Using AWS account ID [123456789012] from local config for profile [Box]" in out
+    assert (
+        "Using AWS account ID [123456789012] from local config for profile [Box]" in out
+    )
 
 
 def test_prompt_aws_account_id_retries_with_available_account_ids(monkeypatch, capsys):
@@ -243,7 +249,11 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     assert f'PROJECT_SLUG = "{project_slug}"' in settings_text
     assert 'GH_AUTH_LAMBDA_NAME = f"{PROJECT_SLUG}-gh-token"' in settings_text
     assert 'S3_ARTIFACT_BUCKET = f"{PROJECT_SLUG}-artifacts"' in settings_text
-    assert 'CLOUD_INFRASTRUCTURE_CONFIG_PATH = "./ci/infrastructure/projects.py"' not in settings_text
+    assert 'PRAKTIKA_BASE_VENV = "praktika-runtime"' in settings_text
+    assert (
+        'CLOUD_INFRASTRUCTURE_CONFIG_PATH = "./ci/infrastructure/projects.py"'
+        not in settings_text
+    )
     assert 'PRAKTIKA_INSTALL_SOURCE = "."' not in settings_text
     assert 'SMALL_ARM = "arm-small"' in settings_text
     assert 'SMALL_AMD = "amd-small"' in settings_text
@@ -251,11 +261,26 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     assert 'MEDIUM_AMD = "amd-medium"' in settings_text
     assert 'name="Pull Request CI"' in pr_workflow_text
     assert 'base_branches=["main"]' in pr_workflow_text
+    assert "enable_gh_summary_comment=True" in pr_workflow_text
+    assert "enable_gh_summary_comment=True" not in main_ci_workflow_text
     assert 'name="Main CI"' in main_ci_workflow_text
     assert "event=Workflow.Event.PUSH" in main_ci_workflow_text
     assert 'branches=["main"]' in main_ci_workflow_text
     assert "from ci.settings.settings import PROJECT_NAME, PROJECT_SLUG" in infra_text
+    assert (
+        "from praktika.infrastructure import Components, ImageBuilder, Storage, VPC"
+        in infra_text
+    )
     assert f'min_praktika_version="{current_praktika_version()}"' in infra_text
+    assert "# until published in pip" in infra_text
+    assert (
+        f"https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/"
+        f"praktika-{current_praktika_version()}-py3-none-any.whl"
+    ) in infra_text
+    assert (
+        "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/"
+        "praktika_controller-0.1.1-py3-none-any.whl"
+    ) in infra_text
     assert "AWS_REGION" not in infra_text
     assert "Components.GitHubTokenMinter(" in infra_text
     assert "repositories=[PROJECT_NAME]" in infra_text
@@ -266,6 +291,28 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     assert 'CI_VPC_NAME = f"{PROJECT_SLUG}-ci"' in infra_text
     assert "region=CI_REGION" not in infra_text
     assert "capacity_reserve=1" in infra_text
+    assert "def _controller_image_component(name: str):" in infra_text
+    assert infra_text.count("def _controller_image_component(name: str):") == 1
+    assert "latest/meta-data/placement/region" in infra_text
+    assert "latest/meta-data/instance-id" in infra_text
+    assert "latest/meta-data/tags/instance/praktika_role" in infra_text
+    assert "latest/meta-data/tags/instance/praktika_queue" in infra_text
+    assert "latest/meta-data/tags/instance/praktika_project_slug" in infra_text
+    assert 'export AWS_DEFAULT_REGION="$REGION"' in infra_text
+    assert 'export INSTANCE_ID="$INSTANCE_ID"' in infra_text
+    assert "export PRAKTIKA_CONTROLLER_QUEUE" in infra_text
+    assert "SQS_QUEUE_NAME" not in infra_text
+    assert "ImageBuilder.Config(" in infra_text
+    assert 'name="ci-arm64-image"' in infra_text
+    assert 'name="ci-x86_64-image"' in infra_text
+    assert 'ami_name="ci-arm64-{{ imagebuilder:buildDate }}"' in infra_text
+    assert 'ami_name="ci-x86_64-{{ imagebuilder:buildDate }}"' in infra_text
+    assert "image_builders=_IMAGE_BUILDERS" in infra_text
+    assert 'image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"]' in infra_text
+    assert 'image_builder=_IMAGE_BUILDERS_BY_NAME["ci-x86_64-image"]' in infra_text
+    assert "/etc/systemd/system/praktika-controller.service" in infra_text
+    assert '"log_group_name": f"/praktika/{PROJECT_SLUG}/controller"' in infra_text
+    assert '"/praktika/controller"' not in infra_text
     assert 'name="artifacts"' in infra_text
     assert "public=False" in infra_text
     assert 'name="arm-small"' in infra_text
@@ -274,6 +321,8 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     assert 'instance_type="c7g.4xlarge"' in infra_text
     assert 'name="amd-medium"' in infra_text
     assert 'instance_type="c7a.4xlarge"' in infra_text
+    assert "max_size=50" in infra_text
+    assert infra_text.count("max_size=50") == 5
     assert "volume_size_gb=30" in infra_text
 
     compile(settings_text, str(settings_path), "exec")
@@ -314,7 +363,13 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
     run_init_interactive(tmp_path)
 
     monkeypatch.syspath_prepend(str(tmp_path))
-    for module_name in ("ci.settings.settings", "ci.settings"):
+    module_names = ("ci.settings.settings", "ci.settings")
+    missing_module = object()
+    previous_modules = {
+        module_name: sys.modules.get(module_name, missing_module)
+        for module_name in module_names
+    }
+    for module_name in module_names:
         sys.modules.pop(module_name, None)
     monkeypatch.setattr(
         Settings,
@@ -329,16 +384,66 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
     monkeypatch.setattr(Settings, "ENABLED_WORKFLOWS", None)
     monkeypatch.setattr(Settings, "DISABLED_WORKFLOWS", None)
 
-    workflows = _get_workflows(_for_validation_check=True)
-    cloud = _get_infra_config()
+    try:
+        workflows = _get_workflows(_for_validation_check=True)
+        cloud = _get_infra_config()
+    finally:
+        for module_name in module_names:
+            sys.modules.pop(module_name, None)
+        for module_name, previous_module in previous_modules.items():
+            if previous_module is not missing_module:
+                sys.modules[module_name] = previous_module
+    builders_by_arch = {
+        builder.ami_tags["arch"]: builder for builder in cloud.image_builders
+    }
 
     assert {workflow.name for workflow in workflows} == {
         "Pull Request CI",
         "Main CI",
     }
+    workflows_by_name = {workflow.name: workflow for workflow in workflows}
+    assert (
+        workflows_by_name["Pull Request CI"].jobs[0].command
+        == "python3 -c 'print(\"hello from praktika\")'"
+    )
+    assert (
+        workflows_by_name["Main CI"].jobs[0].command
+        == "python3 -c 'print(\"hello from main ci\")'"
+    )
     assert cloud.name == tmp_path.name
     assert cloud.min_praktika_version == current_praktika_version()
     assert cloud.orchestrator_pool.capacity_reserve == 1
+    assert cloud.orchestrator_pool.max_size == 50
+    assert {pool.name: pool.max_size for pool in cloud.runner_pools} == {
+        "arm-small": 50,
+        "amd-small": 50,
+        "arm-medium": 50,
+        "amd-medium": 50,
+    }
+    assert set(builders_by_arch) == {"arm64", "x86_64"}
+    assert all(len(builder.inline_components) == 1 for builder in cloud.image_builders)
+    assert cloud.orchestrator_pool.image_builder is builders_by_arch["arm64"]
+    assert (
+        cloud.orchestrator_pool.launch_template.image_builder
+        is builders_by_arch["arm64"]
+    )
+    assert {
+        pool.name: pool.image_builder.ami_tags["arch"] for pool in cloud.runner_pools
+    } == {
+        "arm-small": "arm64",
+        "amd-small": "x86_64",
+        "arm-medium": "arm64",
+        "amd-medium": "x86_64",
+    }
+    assert {
+        pool.name: pool.launch_template.image_builder.ami_tags["arch"]
+        for pool in cloud.runner_pools
+    } == {
+        "arm-small": "arm64",
+        "amd-small": "x86_64",
+        "arm-medium": "arm64",
+        "amd-medium": "x86_64",
+    }
 
 
 def test_run_init_interactive_auto_creates_missing_settings_and_workflow(

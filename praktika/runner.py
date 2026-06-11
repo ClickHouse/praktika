@@ -250,8 +250,6 @@ class Runner:
         dirty = Shell.get_output("git status --short", verbose=False) or ""
         if dirty:
             print(f"NOTE: Dirty repo state before job start:\n{dirty}")
-            print("NOTE: Cleaning repo")
-            Shell.check("git clean -ffd", verbose=True)
         else:
             print("NOTE: Repo state is clean before job start")
         env = _Environment.get()

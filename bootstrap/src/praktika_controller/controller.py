@@ -82,7 +82,7 @@ def _resolve_runtime(clone_dir: str, log):
 
 def _praktika_env(venv_dir: str, queue_name: str) -> dict[str, str]:
     env = venv_env(venv_dir)
-    env["SQS_QUEUE_NAME"] = queue_name
+    env["PRAKTIKA_CONTROLLER_QUEUE"] = queue_name
     return env
 
 

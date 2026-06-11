@@ -390,10 +390,11 @@ class LaunchTemplate:
                 )
                 if not missing_pipeline_image:
                     raise
-                raise Exception(
+                raise SystemExit(
                     f"Image Builder output is not ready yet for Launch Template '{self.name}'. "
-                    "Rerun deploy after the image is ready."
-                ) from e
+                    "This can happen on the first deploy while Image Builder is still "
+                    "building the first AMI. Rerun deploy after the image is ready."
+                )
 
             if not exists:
                 resp = ec2.create_launch_template(

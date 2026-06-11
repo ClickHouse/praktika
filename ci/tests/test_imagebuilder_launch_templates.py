@@ -1,3 +1,5 @@
+import pytest
+
 from praktika.infrastructure.image_builder import ImageBuilder
 from praktika.infrastructure.launch_template import LaunchTemplate
 from praktika.infrastructure.native.orchestrator_pool import OrchestratorPool
@@ -348,10 +350,12 @@ def test_launch_template_deploy_skips_when_image_builder_has_no_images(monkeypat
     try:
         lt.deploy()
         assert False, "expected deploy to fail"
-    except Exception as e:
+    except SystemExit as e:
         assert str(e) == (
             "Image Builder output is not ready yet for Launch Template "
-            "'workflow-orchestrator-lt'. Rerun deploy after the image is ready."
+            "'workflow-orchestrator-lt'. This can happen on the first deploy while "
+            "Image Builder is still building the first AMI. Rerun deploy after the "
+            "image is ready."
         )
 
 
@@ -433,14 +437,15 @@ def test_launch_template_deploy_fails_when_latest_builds_have_no_ready_ami(monke
 
     monkeypatch.setattr(lt, "_build_launch_template_data", _build)
 
-    try:
+    with pytest.raises(SystemExit) as exc:
         lt.deploy()
-        assert False, "expected deploy to fail"
-    except Exception as e:
-        assert str(e) == (
-            "Image Builder output is not ready yet for Launch Template "
-            "'workflow-orchestrator-lt'. Rerun deploy after the image is ready."
-        )
+
+    assert str(exc.value) == (
+        "Image Builder output is not ready yet for Launch Template "
+        "'workflow-orchestrator-lt'. This can happen on the first deploy while "
+        "Image Builder is still building the first AMI. Rerun deploy after the "
+        "image is ready."
+    )
 
 
 def test_image_builder_reuses_existing_inline_component_when_create_conflicts(

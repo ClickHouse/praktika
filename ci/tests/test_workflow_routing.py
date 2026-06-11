@@ -25,7 +25,7 @@ def test_default_orchestrator_skips_base_workflows(monkeypatch):
     base_workflow = _make_pr_workflow("base", orchestrator_filter="base")
     event = {"type": "pull_request", "base_ref": "main"}
 
-    monkeypatch.setenv("SQS_QUEUE_NAME", "workflow-orchestrator")
+    monkeypatch.setenv("PRAKTIKA_CONTROLLER_QUEUE", "workflow-orchestrator")
     monkeypatch.setattr(
         "praktika.orchestrator._get_workflows",
         lambda: [default_workflow, base_workflow],
@@ -41,7 +41,7 @@ def test_base_orchestrator_skips_default_workflows(monkeypatch):
     base_workflow = _make_pr_workflow("base", orchestrator_filter="base")
     event = {"type": "pull_request", "base_ref": "main"}
 
-    monkeypatch.setenv("SQS_QUEUE_NAME", "workflow-orchestrator-base")
+    monkeypatch.setenv("PRAKTIKA_CONTROLLER_QUEUE", "workflow-orchestrator-base")
     monkeypatch.setattr(
         "praktika.orchestrator._get_workflows",
         lambda: [default_workflow, base_workflow],

@@ -45,11 +45,6 @@ workflow = Workflow.Config(
             command="python3 ./ci/scripts/run_ci_pytests.py",
         ),
         Job.Config(
-            name="Unit Tests",
-            runs_on=[RunnerLabels.SMALL_ARM_BASE],
-            command="python3 -m pytest ./ci/tests/ --ignore=./ci/tests/example_1",
-        ),
-        Job.Config(
             name="Yaml Lint",
             runs_on=[RunnerLabels.SMALL_ARM_BASE],
             command="yamllint . --config-file=.yamllint",

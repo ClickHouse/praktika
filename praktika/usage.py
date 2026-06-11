@@ -38,6 +38,7 @@ class StorageUsage(MetaClasses.SerializableSingleton):
     def _init(cls):
         if not StorageUsage.exist():
             print("NOTE: UsageStorage data will be initialized")
+            Path(cls.file_name_static()).parent.mkdir(parents=True, exist_ok=True)
             StorageUsage(
                 downloaded=0, uploaded=0, downloaded_details={}, uploaded_details={}
             ).dump()

@@ -464,6 +464,36 @@ def test_infrastructure_main_rejects_destroy_runtime_all(monkeypatch):
         main(["infrastructure", "--destroy-runtime", "--all", "--project", "cloud_ci_infra"])
 
 
+def test_infrastructure_main_deploy_validates_before_deploy(monkeypatch):
+    from praktika.__main__ import main
+    from praktika.validator import Validator
+
+    calls = []
+
+    class _Config:
+        def deploy(self, **kwargs):
+            calls.append(("deploy", kwargs))
+
+    config = _Config()
+
+    monkeypatch.setattr(
+        "praktika.mangle._get_infra_config",
+        lambda project, require_project=False: config,
+    )
+    monkeypatch.setattr(
+        Validator,
+        "validate_infrastructure_deploy",
+        lambda self, cloud: calls.append(("validate", cloud)),
+    )
+
+    main(["infrastructure", "--deploy", "--project", "cloud_ci_infra"])
+
+    assert calls == [
+        ("validate", config),
+        ("deploy", {"all": False, "only": None, "is_test": False}),
+    ]
+
+
 def test_infrastructure_main_yes_enables_auto_confirm(monkeypatch):
     from praktika.__main__ import main
     from praktika.interactive import UserPrompt

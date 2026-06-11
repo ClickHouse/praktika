@@ -23,6 +23,7 @@ from praktika.infrastructure.native.orchestrator_pool import OrchestratorPool
 from praktika.infrastructure.native.runner_pool import RunnerPool
 from praktika.infrastructure.secret_parameter import SecretParameter
 from praktika.infrastructure.sqs_queue import SQSQueue
+from praktika.validator import Validator
 from praktika.version import current_praktika_version
 
 
@@ -103,6 +104,77 @@ def test_current_infrastructure_config_imports_all_component_groups(monkeypatch)
     assert cloud.sqs_queues
     assert cloud.pool_autoscalers
     assert any(pool.capacity_reserve == 2 for pool in cloud.orchestrator_pools)
+
+
+def test_infrastructure_deploy_validation_accepts_matching_s3_settings(monkeypatch):
+    bucket = "silk-artifacts-eu-north-1"
+    cloud = CloudInfrastructure.Config(
+        name="silk",
+        storages=[Storage.Config(name="artifacts-eu-north-1", retention_days=30)],
+    )
+
+    monkeypatch.setattr(Settings, "S3_ARTIFACT_BUCKET", bucket)
+    monkeypatch.setattr(Settings, "S3_REPORT_BUCKET", bucket)
+    monkeypatch.setattr(Settings, "CACHE_S3_PATH", f"{bucket}/ci_cache")
+    monkeypatch.setattr(
+        Settings,
+        "S3_BUCKET_TO_HTTP_ENDPOINT",
+        {bucket: f"{bucket}.s3.amazonaws.com"},
+    )
+
+    Validator.validate_infrastructure_deploy(cloud)
+
+
+def test_infrastructure_deploy_validation_rejects_missing_s3_endpoint(
+    monkeypatch, capsys
+):
+    bucket = "silk-artifacts-eu-north-1"
+    cloud = CloudInfrastructure.Config(
+        name="silk",
+        storages=[Storage.Config(name="artifacts-eu-north-1", retention_days=30)],
+    )
+
+    monkeypatch.setattr(Settings, "S3_ARTIFACT_BUCKET", bucket)
+    monkeypatch.setattr(Settings, "S3_REPORT_BUCKET", bucket)
+    monkeypatch.setattr(Settings, "CACHE_S3_PATH", f"{bucket}/ci_cache")
+    monkeypatch.setattr(
+        Settings,
+        "S3_BUCKET_TO_HTTP_ENDPOINT",
+        {"silk-artifacts": "silk-artifacts.s3.amazonaws.com"},
+    )
+
+    with pytest.raises(SystemExit):
+        Validator.validate_infrastructure_deploy(cloud)
+
+    assert (
+        f"S3_BUCKET_TO_HTTP_ENDPOINT must include bucket [{bucket}]"
+        in capsys.readouterr().out
+    )
+
+
+def test_infrastructure_deploy_validation_rejects_storage_bucket_mismatch(
+    monkeypatch, capsys
+):
+    cloud = CloudInfrastructure.Config(
+        name="silk",
+        storages=[Storage.Config(name="artifacts-eu-north-1", retention_days=30)],
+    )
+
+    monkeypatch.setattr(Settings, "S3_ARTIFACT_BUCKET", "silk-artifacts")
+    monkeypatch.setattr(Settings, "S3_REPORT_BUCKET", "silk-artifacts")
+    monkeypatch.setattr(Settings, "CACHE_S3_PATH", "silk-artifacts/ci_cache")
+    monkeypatch.setattr(
+        Settings,
+        "S3_BUCKET_TO_HTTP_ENDPOINT",
+        {"silk-artifacts": "silk-artifacts.s3.amazonaws.com"},
+    )
+
+    with pytest.raises(SystemExit):
+        Validator.validate_infrastructure_deploy(cloud)
+
+    out = capsys.readouterr().out
+    assert "Setting S3_ARTIFACT_BUCKET bucket [silk-artifacts]" in out
+    assert "silk-artifacts-eu-north-1" in out
 
 
 def test_cloud_config_prefixes_embedded_pool_resources():
@@ -538,7 +610,7 @@ def test_shared_controller_image_builders_are_declared():
         assert "praktika_queue" in launcher
         assert "praktika_project_slug" in launcher
         assert "export PRAKTIKA_PROJECT_SLUG" in launcher
-        assert 'export SQS_QUEUE_NAME="$PRAKTIKA_CONTROLLER_QUEUE"' in launcher
+        assert "SQS_QUEUE_NAME" not in launcher
         assert "exec /usr/local/bin/praktika-controller" in launcher
         assert "ExecStart=/usr/local/bin/praktika-controller-start" in unit
         assert "StandardOutput=append:/var/log/praktika-controller.log" in unit

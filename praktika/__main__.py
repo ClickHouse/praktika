@@ -284,7 +284,9 @@ def main(argv=None):
             if args.deploy:
                 from .mangle import _get_infra_config
 
-                _get_infra_config(project).deploy(
+                infra_config = _get_infra_config(project)
+                Validator().validate_infrastructure_deploy(infra_config)
+                infra_config.deploy(
                     all=args.all,
                     only=args.only,
                     is_test=args.test,

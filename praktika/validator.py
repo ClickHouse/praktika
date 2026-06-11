@@ -13,6 +13,58 @@ from .settings import GHRunners, Settings
 
 class Validator:
     @classmethod
+    def _s3_bucket_name(cls, value: str) -> str:
+        return str(value or "").removeprefix("s3://").split("/", maxsplit=1)[0]
+
+    @classmethod
+    def validate_infrastructure_deploy(cls, cloud):
+        print("---Start validating Infrastructure and settings---")
+
+        storage_names = {storage.name for storage in getattr(cloud, "storages", [])}
+
+        def _check_setting_bucket(setting_name: str, setting_value: str):
+            bucket = cls._s3_bucket_name(setting_value)
+            if not bucket:
+                return ""
+            cls.evaluate_check_simple(
+                not storage_names or bucket in storage_names,
+                f"Setting {setting_name} bucket [{bucket}] must match one of "
+                f"infrastructure Storage names [{', '.join(sorted(storage_names))}]",
+            )
+            return bucket
+
+        referenced_buckets = {
+            bucket
+            for bucket in (
+                _check_setting_bucket("S3_ARTIFACT_BUCKET", Settings.S3_ARTIFACT_BUCKET),
+                _check_setting_bucket("S3_REPORT_BUCKET", Settings.S3_REPORT_BUCKET),
+                _check_setting_bucket("CACHE_S3_PATH", Settings.CACHE_S3_PATH),
+            )
+            if bucket
+        }
+
+        for report_page in getattr(cloud, "report_pages", []) or []:
+            bucket = cls._s3_bucket_name(
+                getattr(report_page, "bucket_name", "") or Settings.S3_REPORT_BUCKET
+            )
+            if not bucket:
+                continue
+            referenced_buckets.add(bucket)
+            cls.evaluate_check_simple(
+                not storage_names or bucket in storage_names,
+                f"ReportPage bucket [{bucket}] must match one of infrastructure "
+                f"Storage names [{', '.join(sorted(storage_names))}]",
+            )
+
+        endpoint_map = Settings.S3_BUCKET_TO_HTTP_ENDPOINT or {}
+        for bucket in sorted(referenced_buckets):
+            cls.evaluate_check_simple(
+                bucket in endpoint_map,
+                f"S3_BUCKET_TO_HTTP_ENDPOINT must include bucket [{bucket}] used by "
+                "infrastructure/settings S3 configuration",
+            )
+
+    @classmethod
     def validate(cls):
         print("---Start validating Pipeline and settings---")
 
@@ -387,4 +439,4 @@ class Validator:
             print(f"ERROR: Validation failed:")
             for message in messages:
                 print(" ||  " + message)
-            raise
+            sys.exit(1)

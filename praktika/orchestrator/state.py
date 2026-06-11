@@ -412,7 +412,7 @@ class WorkflowState:
         self._runs_s3_prefix = f"runs/{self._run_id}"
         self._cancel_s3_key = f"{self._runs_s3_prefix}/cancel"
         self._cancel_request_s3_key = f"{self._runs_s3_prefix}/cancel-request"
-        queue_name = (os.environ.get("SQS_QUEUE_NAME") or "").strip()
+        queue_name = (os.environ.get("PRAKTIKA_CONTROLLER_QUEUE") or "").strip()
         cancel_scope = "base" if queue_name.endswith("-base") else "default"
         self._pr_cancel_before_s3_key = (
             f"pr/{self._pr_number}/cancel-before-{cancel_scope}"

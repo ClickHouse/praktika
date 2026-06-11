@@ -81,7 +81,6 @@ export INSTANCE_ID="$INSTANCE_ID"
 export PRAKTIKA_PROJECT_SLUG
 export PRAKTIKA_CONTROLLER_ROLE
 export PRAKTIKA_CONTROLLER_QUEUE
-export SQS_QUEUE_NAME="$PRAKTIKA_CONTROLLER_QUEUE"
 exec /usr/local/bin/praktika-controller
 """
     cloudwatch = """{
@@ -164,7 +163,7 @@ def _runtime_prebuilt_venvs():
 
 
 def _image_builders():
-    ci_version = "1.0.17"
+    ci_version = "1.0.18"
     base_ci_version = "1.0.15"
 
     return [
