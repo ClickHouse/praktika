@@ -7,7 +7,7 @@ if __name__ == "__main__":
     with open(artifact_path, "r", encoding="utf-8") as f:
         content = f.read().strip()
 
-    Result.get().set_results(
+    Result.get().set_success().set_results(
         results=[
             Result(
                 name="Read artifact",

@@ -1087,15 +1087,58 @@ class CloudInfrastructure:
                         if e.__class__.__name__ != "OperationNotPageableError":
                             raise
 
+                def _operation_input_members():
+                    meta = getattr(client, "meta", None)
+                    mapping = getattr(meta, "method_to_api_mapping", {}) or {}
+                    operation_name = mapping.get(operation)
+                    service_model = getattr(meta, "service_model", None)
+                    if not operation_name or service_model is None:
+                        return set()
+                    try:
+                        operation_model = service_model.operation_model(operation_name)
+                    except Exception:
+                        return set()
+                    input_shape = getattr(operation_model, "input_shape", None)
+                    return set(getattr(input_shape, "members", {}) or {})
+
+                def _request_token_key() -> str:
+                    input_members = _operation_input_members()
+                    for candidate in (
+                        "NextToken",
+                        "nextToken",
+                        "Marker",
+                        "marker",
+                        "ContinuationToken",
+                    ):
+                        if candidate in input_members:
+                            return candidate
+                    return "NextToken"
+
+                def _response_token(page) -> str:
+                    for candidate in (
+                        "NextToken",
+                        "nextToken",
+                        "NextMarker",
+                        "nextMarker",
+                        "Marker",
+                        "marker",
+                        "NextContinuationToken",
+                    ):
+                        token = page.get(candidate)
+                        if token:
+                            return token
+                    return ""
+
                 method = getattr(client, operation)
                 token = ""
+                token_key = _request_token_key()
                 while True:
                     request = dict(kwargs)
                     if token:
-                        request["NextToken"] = token
+                        request[token_key] = token
                     page = method(**request)
                     yield page
-                    token = page.get("NextToken") or page.get("nextToken") or ""
+                    token = _response_token(page)
                     if not token:
                         break
 

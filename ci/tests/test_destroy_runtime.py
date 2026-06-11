@@ -14,6 +14,32 @@ class _Paginator:
         return [self._fn(**kwargs)]
 
 
+class OperationNotPageableError(Exception):
+    pass
+
+
+class _OperationShape:
+    def __init__(self, members):
+        self.members = {name: object() for name in members}
+
+
+class _OperationModel:
+    def __init__(self, input_members):
+        self.input_shape = _OperationShape(input_members)
+
+
+class _ServiceModel:
+    def operation_model(self, operation):
+        if operation == "ListImageRecipes":
+            return _OperationModel(["owner", "filters", "maxResults", "nextToken"])
+        return _OperationModel([])
+
+
+class _ClientMeta:
+    method_to_api_mapping = {"list_image_recipes": "ListImageRecipes"}
+    service_model = _ServiceModel()
+
+
 class _FakeAWS:
     def __init__(self, calls):
         self.calls = calls
@@ -207,6 +233,9 @@ class _FakeImageBuilder:
     def list_image_recipes(self):
         return {"imageRecipeSummaryList": []}
 
+    def delete_image_recipe(self, imageRecipeArn):
+        self.calls.append(f"ib-recipe:{imageRecipeArn}")
+
     def list_distribution_configurations(self):
         return {"distributionConfigurationSummaryList": []}
 
@@ -215,6 +244,26 @@ class _FakeImageBuilder:
 
     def list_components(self, owner):
         return {"componentVersionList": []}
+
+
+class _FakeImageBuilderWithoutPaginator(_FakeImageBuilder):
+    meta = _ClientMeta()
+
+    def get_paginator(self, op):
+        raise OperationNotPageableError()
+
+    def list_image_recipes(self, **request):
+        self.calls.append(f"ib-recipe-request:{','.join(sorted(request))}")
+        if "NextToken" in request:
+            raise AssertionError("Image Builder list_image_recipes expects nextToken")
+        if request.get("nextToken") == "page-2":
+            return {"imageRecipeSummaryList": []}
+        return {
+            "imageRecipeSummaryList": [
+                {"name": "cloud-ci-infra-recipe", "arn": "arn:recipe"}
+            ],
+            "nextToken": "page-2",
+        }
 
 
 class _FakeIAM:
@@ -377,6 +426,21 @@ def test_destroy_all_expands_to_project_prefixed_stateful_and_webhook_resources(
     assert "ssm:cloud-ci-infra-secret" in calls
     assert "ssm:/cloud-ci-infra-secret" in calls
     assert "s3:cloud-ci-infra-artifacts" in calls
+
+
+def test_destroy_runtime_imagebuilder_fallback_uses_lowercase_next_token(monkeypatch):
+    cloud, calls = _cloud(monkeypatch)
+    calls.clear()
+
+    fake = _FakeAWS(calls)
+    fake.clients["imagebuilder"] = _FakeImageBuilderWithoutPaginator(calls)
+    monkeypatch.setattr("praktika.infrastructure.cloud.aws_client", fake.client)
+
+    cloud.destroy_runtime(only=["ImageBuilder"])
+
+    assert "ib-recipe-request:" in calls
+    assert "ib-recipe-request:nextToken" in calls
+    assert "ib-recipe:arn:recipe" in calls
 
 
 def test_infrastructure_main_destroy_requires_project(monkeypatch):
