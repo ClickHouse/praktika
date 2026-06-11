@@ -1,8 +1,10 @@
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 from praktika.__main__ import create_parser, main
 from praktika.interactive import UserPrompt
+from praktika.mangle import _get_infra_config, _get_workflows
 from praktika.project_init import (
     detect_aws_account_ids,
     detect_aws_profile_account_ids,
@@ -15,6 +17,8 @@ from praktika.project_init import (
     run_init_interactive,
     _validate_aws_profile,
 )
+from praktika.settings import Settings
+from praktika.version import current_praktika_version
 
 
 def test_init_parser_supports_command():
@@ -251,6 +255,7 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     assert "event=Workflow.Event.PUSH" in main_ci_workflow_text
     assert 'branches=["main"]' in main_ci_workflow_text
     assert "from ci.settings.settings import PROJECT_NAME, PROJECT_SLUG" in infra_text
+    assert f'min_praktika_version="{current_praktika_version()}"' in infra_text
     assert "AWS_REGION" not in infra_text
     assert "Components.GitHubTokenMinter(" in infra_text
     assert "repositories=[PROJECT_NAME]" in infra_text
@@ -260,6 +265,7 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     assert 'name="praktika-ci"' not in infra_text
     assert 'CI_VPC_NAME = f"{PROJECT_SLUG}-ci"' in infra_text
     assert "region=CI_REGION" not in infra_text
+    assert "capacity_reserve=1" in infra_text
     assert 'name="artifacts"' in infra_text
     assert "public=False" in infra_text
     assert 'name="arm-small"' in infra_text
@@ -274,6 +280,65 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     compile(pr_workflow_text, str(pr_workflow_path), "exec")
     compile(main_ci_workflow_text, str(main_ci_workflow_path), "exec")
     compile(infra_text, str(infra_path), "exec")
+
+
+def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeypatch):
+    confirm_answers = iter([True])
+    string_answers = iter(
+        [
+            "main",
+            "us-east-1",
+            "us-east-1a",
+        ]
+    )
+
+    monkeypatch.setattr(
+        UserPrompt,
+        "confirm",
+        staticmethod(lambda _: next(confirm_answers)),
+    )
+    monkeypatch.setattr(
+        UserPrompt,
+        "get_string",
+        staticmethod(lambda *args, **kwargs: next(string_answers)),
+    )
+    monkeypatch.setattr(
+        "praktika.project_init._prompt_aws_profile",
+        lambda default="default": "default",
+    )
+    monkeypatch.setattr(
+        "praktika.project_init._prompt_aws_account_id",
+        lambda profile="": "123456789012",
+    )
+
+    run_init_interactive(tmp_path)
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    for module_name in ("ci.settings.settings", "ci.settings"):
+        sys.modules.pop(module_name, None)
+    monkeypatch.setattr(
+        Settings,
+        "WORKFLOWS_DIRECTORY",
+        str(tmp_path / "ci/workflows"),
+    )
+    monkeypatch.setattr(
+        Settings,
+        "CLOUD_INFRASTRUCTURE_CONFIG_PATH",
+        str(tmp_path / "ci/infrastructure/projects.py"),
+    )
+    monkeypatch.setattr(Settings, "ENABLED_WORKFLOWS", None)
+    monkeypatch.setattr(Settings, "DISABLED_WORKFLOWS", None)
+
+    workflows = _get_workflows(_for_validation_check=True)
+    cloud = _get_infra_config()
+
+    assert {workflow.name for workflow in workflows} == {
+        "Pull Request CI",
+        "Main CI",
+    }
+    assert cloud.name == tmp_path.name
+    assert cloud.min_praktika_version == current_praktika_version()
+    assert cloud.orchestrator_pool.capacity_reserve == 1
 
 
 def test_run_init_interactive_auto_creates_missing_settings_and_workflow(

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from .interactive import UserPrompt
+from .version import current_praktika_version
 
 
 PRAKTIKA_MARKERS = {
@@ -449,6 +450,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
         PROJECTS = [
             CloudInfrastructure.Config(
                 name=PROJECT_NAME,
+                min_praktika_version="{current_praktika_version()}",
                 vpcs=[
                     VPC.Config(
                         name=CI_VPC_NAME,
@@ -472,6 +474,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                     scaling=Components.OrchestratorPool.Scaling.Auto,
                     size=0,
                     max_size=2,
+                    capacity_reserve=1,
                 ),
                 runner_pools=[
                     Components.RunnerPool(

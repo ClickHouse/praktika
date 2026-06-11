@@ -336,6 +336,7 @@ _orchestrator_pool = Components.OrchestratorPool(
     scaling=Components.OrchestratorPool.Scaling.Auto,
     size=0,
     max_size=10,
+    capacity_reserve=2,
     image_builder=_IMAGE_BUILDERS_BY_NAME["praktika-ci-arm64-image"],
     user_data="\n".join(
         [
