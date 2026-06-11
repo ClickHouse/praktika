@@ -185,8 +185,14 @@ def _get_infra_projects():
     return None
 
 
-def _get_infra_config(project_name=None):
+def _get_infra_config(project_name=None, require_project: bool = False):
     projects = _get_infra_projects()
+    if require_project and not project_name:
+        names = ", ".join(sorted(project.name for project in projects))
+        Utils.raise_with_error(
+            f"Infrastructure destroy requires --project NAME. Available projects: {names}"
+        )
+
     if len(projects) == 1:
         only = projects[0]
         if project_name and project_name != only.name:

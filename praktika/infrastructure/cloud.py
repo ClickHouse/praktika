@@ -1,10 +1,11 @@
 import copy
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ..settings import _Settings
 from ..version import current_praktika_version, version_key
+from ._utils import aws_client
 from .autoscaling_group import AutoScalingGroup
 from .dedicated_host import DedicatedHost
 from .ec2_instance import EC2Instance
@@ -1028,23 +1029,41 @@ class CloudInfrastructure:
             self,
             force: bool = True,
             only: Optional[List[str]] = None,
-            all: bool = False,
         ):
             """
-            Delete the execution-plane resources that can be safely recreated.
-            Preserve shared/data-plane resources and scarce capacity allocations.
+            Delete project-prefixed execution-plane resources that can be safely
+            recreated. Preserve shared/data-plane resources and scarce capacity
+            allocations.
 
             Args:
                 force: If True, forcefully terminate instances without stopping first.
                 only: If set, destroy only selected runtime component types by name.
-                all: If True, also delete all configured lambdas, IAM roles/profiles,
-                    and Image Builder configs, while still keeping S3, secrets,
-                    and parameters.
             """
             self._verify_account()
+            self._destroy_by_prefix(include_all=False, force=force, only=only)
 
+        def destroy_all(self, only: Optional[List[str]] = None):
+            """
+            Delete all project-prefixed managed infrastructure resources.
+
+            This intentionally discovers resources from AWS by project slug
+            prefix instead of trusting the current config object graph.
+            """
+            self._verify_account()
+            self._destroy_by_prefix(include_all=True, force=True, only=only)
+
+        def _destroy_by_prefix(
+            self,
+            *,
+            include_all: bool,
+            force: bool,
+            only: Optional[List[str]],
+        ):
             from ..interactive import UserPrompt
 
+            region = self._settings.AWS_REGION
+            prefix = self._project_prefix()
+            prefix_dash = f"{prefix}-"
             only_set = {
                 s.strip().lower()
                 for s in (only or [])
@@ -1057,64 +1076,254 @@ class CloudInfrastructure:
                 keys = {type_name.lower(), *{a.lower() for a in aliases if a}}
                 return bool(keys & only_set)
 
+            def _iter_pages(client, operation: str, **kwargs):
+                paginator = getattr(client, "get_paginator", None)
+                if paginator:
+                    try:
+                        for page in paginator(operation).paginate(**kwargs):
+                            yield page
+                        return
+                    except Exception as e:
+                        if e.__class__.__name__ != "OperationNotPageableError":
+                            raise
+
+                method = getattr(client, operation)
+                token = ""
+                while True:
+                    request = dict(kwargs)
+                    if token:
+                        request["NextToken"] = token
+                    page = method(**request)
+                    yield page
+                    token = page.get("NextToken") or page.get("nextToken") or ""
+                    if not token:
+                        break
+
+            def _resource_name_from_tags(tags) -> str:
+                for tag in tags or []:
+                    if tag.get("Key") == "Name":
+                        return tag.get("Value", "")
+                return ""
+
+            def _tag_value(tags, key: str) -> str:
+                for tag in tags or []:
+                    if tag.get("Key") == key:
+                        return tag.get("Value", "")
+                return ""
+
+            def _is_prefix_name(name: str) -> bool:
+                return bool(name and name.startswith(prefix_dash))
+
+            def _ignore_missing(fn, *args, ignore_dependency: bool = False, **kwargs):
+                try:
+                    return fn(*args, **kwargs)
+                except Exception as e:
+                    message = str(e).lower()
+                    missing = (
+                        "not found" in message
+                        or "does not exist" in message
+                        or "nonexistent" in message
+                        or e.__class__.__name__
+                        in {
+                            "NoSuchEntityException",
+                            "ResourceNotFoundException",
+                            "QueueDoesNotExist",
+                            "ParameterNotFound",
+                        }
+                    )
+                    dependency = "dependency" in message or "in use" in message
+                    if missing or (ignore_dependency and dependency):
+                        print(f"Skipped missing/dependent resource: {e}")
+                        return None
+                    raise
+
             def _confirm_and_run(label: str, fn):
                 print("\n" + "=" * 60)
-                print(f"Shutdown: {label}")
+                print(f"Destroy: {label}")
                 print("=" * 60)
                 if UserPrompt.confirm(f"Delete '{label}'?"):
                     fn()
                 else:
                     print("Skipped.")
 
-            runtime_lambdas = []
-            runtime_lambda_roles = []
-            for autoscaler in self.pool_autoscalers:
-                runtime_lambdas.append(autoscaler.lambda_config)
-                runtime_lambda_roles.append(autoscaler.lambda_role)
-            for token_minter in self.github_token_minters:
-                runtime_lambdas.append(token_minter.lambda_config)
-                runtime_lambda_roles.append(token_minter.lambda_role)
+            def _api_gateway_names() -> Dict[str, str]:
+                apigw = aws_client("apigatewayv2", region, f"{prefix}-api-discovery")
+                api_by_lambda: Dict[str, str] = {}
+                for page in _iter_pages(apigw, "get_apis"):
+                    for api in page.get("Items", []) or []:
+                        name = api.get("Name", "")
+                        api_id = api.get("ApiId", "")
+                        if _is_prefix_name(name) and name.endswith("-API") and api_id:
+                            api_by_lambda[name[:-4]] = api_id
+                return api_by_lambda
 
-            lambda_targets = self.lambda_functions if all else runtime_lambdas
-            iam_role_targets = self.iam_roles if all else runtime_lambda_roles
-            iam_instance_profile_targets = self.iam_instance_profiles if all else []
-            image_builder_targets = self.image_builders if all else []
+            def _lambda_names() -> List[str]:
+                client = aws_client("lambda", region, f"{prefix}-lambda-discovery")
+                names = []
+                for page in _iter_pages(client, "list_functions"):
+                    for item in page.get("Functions", []) or []:
+                        name = item.get("FunctionName", "")
+                        if _is_prefix_name(name):
+                            names.append(name)
+                return sorted(set(names))
 
-            any_work = any([
-                self.sqs_queues,
-                self.launch_templates,
-                self.autoscaling_groups,
-                self.ec2_instances,
-                lambda_targets,
-                iam_role_targets,
-                iam_instance_profile_targets,
-                image_builder_targets,
-            ])
-            if not any_work:
-                print("No runtime resources configured to destroy")
-                return
+            def _protected_runtime_lambda_names() -> set:
+                return set(_api_gateway_names().keys())
 
-            # Tear down compute first so ENIs/instances are released before
-            # launch templates and queues disappear.
+            protected_lambda_names = set() if include_all else _protected_runtime_lambda_names()
+            protected_role_names = set()
+            if protected_lambda_names:
+                lambda_client = aws_client("lambda", region, f"{prefix}-lambda-protect")
+                for lambda_name in protected_lambda_names:
+                    try:
+                        role_arn = lambda_client.get_function(
+                            FunctionName=lambda_name
+                        )["Configuration"].get("Role", "")
+                    except Exception as e:
+                        print(
+                            f"Warning: failed to resolve role for protected Lambda {lambda_name}: {e}"
+                        )
+                        continue
+                    role_name = role_arn.split("/")[-1] if role_arn else ""
+                    if role_name:
+                        protected_role_names.add(role_name)
+            if not include_all:
+                protected_role_names.update(
+                    {
+                        f"{prefix_dash}cidb-role",
+                        f"{prefix_dash}cidb-profile",
+                    }
+                )
+
+            did_work = False
+
             if _wants("AutoScalingGroup", "AutoScalingGroups", "ASG", "ASGs"):
-                for c in self.autoscaling_groups:
-                    c.region = self._settings.AWS_REGION
-                    _confirm_and_run(f"AutoScalingGroup {c.name}", c.delete)
+                client = aws_client("autoscaling", region, f"{prefix}-asg-destroy")
+                names = []
+                for page in _iter_pages(client, "describe_auto_scaling_groups"):
+                    for item in page.get("AutoScalingGroups", []) or []:
+                        name = item.get("AutoScalingGroupName", "")
+                        if _is_prefix_name(name):
+                            names.append(name)
+                for name in sorted(set(names)):
+                    did_work = True
+                    _confirm_and_run(
+                        f"AutoScalingGroup {name}",
+                        lambda n=name: _ignore_missing(
+                            client.delete_auto_scaling_group,
+                            AutoScalingGroupName=n,
+                            ForceDelete=True,
+                        ),
+                    )
 
-            if _wants("EC2Instance", "EC2Instances", "Instance", "Instances"):
-                for c in self.ec2_instances:
-                    c.region = self._settings.AWS_REGION
-                    _confirm_and_run(f"EC2Instance {c.name}", lambda cfg=c: cfg.shutdown(force=force))
+            if include_all and _wants(
+                "EC2Instance", "EC2Instances", "Instance", "Instances"
+            ):
+                client = aws_client("ec2", region, f"{prefix}-ec2-destroy")
+                instances = []
+                for page in _iter_pages(
+                    client,
+                    "describe_instances",
+                    Filters=[
+                        {
+                            "Name": "instance-state-name",
+                            "Values": [
+                                "pending",
+                                "running",
+                                "stopping",
+                                "stopped",
+                            ],
+                        }
+                    ],
+                ):
+                    for reservation in page.get("Reservations", []) or []:
+                        for item in reservation.get("Instances", []) or []:
+                            instance_id = item.get("InstanceId", "")
+                            tags = item.get("Tags", []) or []
+                            name = _resource_name_from_tags(tags)
+                            rn = _tag_value(tags, "praktika_rn")
+                            if instance_id and (_is_prefix_name(name) or _is_prefix_name(rn)):
+                                instances.append((instance_id, name or rn or instance_id))
+                for instance_id, name in sorted(set(instances), key=lambda x: x[1]):
+                    did_work = True
+                    _confirm_and_run(
+                        f"EC2Instance {name} ({instance_id})",
+                        lambda iid=instance_id: _ignore_missing(
+                            client.terminate_instances,
+                            InstanceIds=[iid],
+                        ),
+                    )
 
             if _wants("LaunchTemplate", "LaunchTemplates"):
-                for c in self.launch_templates:
-                    c.region = self._settings.AWS_REGION
-                    _confirm_and_run(f"LaunchTemplate {c.name}", c.delete)
+                client = aws_client("ec2", region, f"{prefix}-lt-destroy")
+                names = []
+                for page in _iter_pages(client, "describe_launch_templates"):
+                    for item in page.get("LaunchTemplates", []) or []:
+                        name = item.get("LaunchTemplateName", "")
+                        if _is_prefix_name(name):
+                            names.append(name)
+                for name in sorted(set(names)):
+                    did_work = True
+                    _confirm_and_run(
+                        f"LaunchTemplate {name}",
+                        lambda n=name: _ignore_missing(
+                            client.delete_launch_template,
+                            LaunchTemplateName=n,
+                        ),
+                    )
 
             if _wants("SQS", "SQSQueue", "SQSQueues"):
-                for c in self.sqs_queues:
-                    c.region = self._settings.AWS_REGION
-                    _confirm_and_run(f"SQSQueue {c.name}", lambda cfg=c: cfg.shutdown())
+                client = aws_client("sqs", region, f"{prefix}-sqs-destroy")
+                urls = []
+                response = client.list_queues(QueueNamePrefix=prefix_dash)
+                urls.extend(response.get("QueueUrls", []) or [])
+                for url in sorted(set(urls)):
+                    name = url.rstrip("/").split("/")[-1]
+                    did_work = True
+                    _confirm_and_run(
+                        f"SQSQueue {name}",
+                        lambda u=url: _ignore_missing(client.delete_queue, QueueUrl=u),
+                    )
+
+            if _wants(
+                "EventBridgeSchedule",
+                "EventBridgeSchedules",
+                "Schedule",
+                "Schedules",
+                "EventRule",
+                "EventRules",
+            ):
+                client = aws_client("events", region, f"{prefix}-events-destroy")
+                rules = []
+                for page in _iter_pages(client, "list_rules", NamePrefix=prefix_dash):
+                    for item in page.get("Rules", []) or []:
+                        name = item.get("Name", "")
+                        if _is_prefix_name(name):
+                            rules.append(name)
+                for name in sorted(set(rules)):
+                    did_work = True
+
+                    def _delete_rule(rule_name=name):
+                        target_ids = []
+                        for page in _iter_pages(
+                            client,
+                            "list_targets_by_rule",
+                            Rule=rule_name,
+                        ):
+                            for target in page.get("Targets", []) or []:
+                                target_id = target.get("Id", "")
+                                if target_id:
+                                    target_ids.append(target_id)
+                        if target_ids:
+                            _ignore_missing(
+                                client.remove_targets,
+                                Rule=rule_name,
+                                Ids=target_ids,
+                                Force=True,
+                            )
+                        _ignore_missing(client.delete_rule, Name=rule_name, Force=True)
+
+                    _confirm_and_run(f"EventBridgeSchedule {name}", _delete_rule)
 
             if _wants(
                 "RuntimeLambda",
@@ -1124,9 +1333,111 @@ class CloudInfrastructure:
                 "LambdaFunction",
                 "LambdaFunctions",
             ):
-                for c in lambda_targets:
-                    c.region = self._settings.AWS_REGION
-                    _confirm_and_run(f"Lambda {c.name}", c.delete)
+                client = aws_client("lambda", region, f"{prefix}-lambda-destroy")
+                for name in _lambda_names():
+                    if name in protected_lambda_names:
+                        print(f"Keeping webhook/API Lambda: {name}")
+                        continue
+                    did_work = True
+                    _confirm_and_run(
+                        f"Lambda {name}",
+                        lambda n=name: _ignore_missing(
+                            client.delete_function,
+                            FunctionName=n,
+                        ),
+                    )
+
+            if include_all and _wants(
+                "APIGateway",
+                "APIGateways",
+                "API",
+                "APIs",
+                "Webhook",
+                "Webhooks",
+            ):
+                client = aws_client("apigatewayv2", region, f"{prefix}-api-destroy")
+                for lambda_name, api_id in sorted(_api_gateway_names().items()):
+                    did_work = True
+                    _confirm_and_run(
+                        f"APIGateway {lambda_name}-API",
+                        lambda aid=api_id: _ignore_missing(
+                            client.delete_api,
+                            ApiId=aid,
+                        ),
+                    )
+
+            if _wants("ImageBuilder", "ImageBuilders"):
+                client = aws_client("imagebuilder", region, f"{prefix}-ib-destroy")
+
+                def _delete_imagebuilder_resources(
+                    list_op: str,
+                    result_key: str,
+                    arn_arg: str,
+                    delete_op: str,
+                    label: str,
+                    *,
+                    owner_self: bool = False,
+                    ignore_dependency: bool = False,
+                ):
+                    nonlocal did_work
+
+                    request = {"owner": "Self"} if owner_self else {}
+                    targets = []
+                    for page in _iter_pages(client, list_op, **request):
+                        for item in page.get(result_key, []) or []:
+                            name = item.get("name", "")
+                            arn = item.get("arn", "")
+                            if _is_prefix_name(name) and arn:
+                                targets.append((name, arn))
+                    for name, arn in sorted(set(targets), key=lambda x: x[0]):
+                        did_work = True
+                        _confirm_and_run(
+                            f"{label} {name}",
+                            lambda a=arn: _ignore_missing(
+                                getattr(client, delete_op),
+                                **{arn_arg: a},
+                                ignore_dependency=ignore_dependency,
+                            ),
+                        )
+
+                _delete_imagebuilder_resources(
+                    "list_image_pipelines",
+                    "imagePipelineList",
+                    "imagePipelineArn",
+                    "delete_image_pipeline",
+                    "ImageBuilderPipeline",
+                )
+                _delete_imagebuilder_resources(
+                    "list_image_recipes",
+                    "imageRecipeSummaryList",
+                    "imageRecipeArn",
+                    "delete_image_recipe",
+                    "ImageBuilderRecipe",
+                    ignore_dependency=True,
+                )
+                _delete_imagebuilder_resources(
+                    "list_distribution_configurations",
+                    "distributionConfigurationSummaryList",
+                    "distributionConfigurationArn",
+                    "delete_distribution_configuration",
+                    "ImageBuilderDistribution",
+                )
+                _delete_imagebuilder_resources(
+                    "list_infrastructure_configurations",
+                    "infrastructureConfigurationSummaryList",
+                    "infrastructureConfigurationArn",
+                    "delete_infrastructure_configuration",
+                    "ImageBuilderInfrastructure",
+                )
+                _delete_imagebuilder_resources(
+                    "list_components",
+                    "componentVersionList",
+                    "componentBuildVersionArn",
+                    "delete_component",
+                    "ImageBuilderComponent",
+                    owner_self=True,
+                    ignore_dependency=True,
+                )
 
             if _wants(
                 "IAMInstanceProfile",
@@ -1134,22 +1445,202 @@ class CloudInfrastructure:
                 "InstanceProfile",
                 "InstanceProfiles",
             ):
-                for c in iam_instance_profile_targets:
-                    c.region = self._settings.AWS_REGION
-                    _confirm_and_run(f"IAMInstanceProfile {c.name}", c.delete)
+                client = aws_client("iam", region, f"{prefix}-profile-destroy")
+                profiles = []
+                for page in _iter_pages(client, "list_instance_profiles"):
+                    for item in page.get("InstanceProfiles", []) or []:
+                        name = item.get("InstanceProfileName", "")
+                        if _is_prefix_name(name):
+                            profiles.append((name, item.get("Roles", []) or []))
+                profile_targets = {
+                    (n, tuple(r.get("RoleName", "") for r in rs))
+                    for n, rs in profiles
+                }
+                for name, roles in sorted(profile_targets):
+                    if name in protected_role_names:
+                        print(f"Keeping protected IAM instance profile: {name}")
+                        continue
+                    did_work = True
+
+                    def _delete_profile(profile_name=name, role_names=roles):
+                        for role_name in role_names:
+                            if role_name:
+                                _ignore_missing(
+                                    client.remove_role_from_instance_profile,
+                                    InstanceProfileName=profile_name,
+                                    RoleName=role_name,
+                                )
+                        _ignore_missing(
+                            client.delete_instance_profile,
+                            InstanceProfileName=profile_name,
+                        )
+
+                    _confirm_and_run(f"IAMInstanceProfile {name}", _delete_profile)
 
             if _wants("RuntimeIAMRole", "RuntimeIAMRoles", "IAMRole", "IAMRoles"):
-                for c in iam_role_targets:
-                    c.region = self._settings.AWS_REGION
-                    _confirm_and_run(f"IAMRole {c.name}", c.delete)
+                client = aws_client("iam", region, f"{prefix}-role-destroy")
+                role_names = []
+                for page in _iter_pages(client, "list_roles"):
+                    for item in page.get("Roles", []) or []:
+                        name = item.get("RoleName", "")
+                        if _is_prefix_name(name):
+                            role_names.append(name)
+                for name in sorted(set(role_names)):
+                    if name in protected_role_names:
+                        print(f"Keeping protected IAM role: {name}")
+                        continue
+                    did_work = True
 
-            if _wants("ImageBuilder", "ImageBuilders"):
-                for c in image_builder_targets:
-                    c.region = self._settings.AWS_REGION
-                    _confirm_and_run(f"ImageBuilder {c.name}", c.delete)
+                    def _delete_role(role_name=name):
+                        for page in _iter_pages(
+                            client,
+                            "list_attached_role_policies",
+                            RoleName=role_name,
+                        ):
+                            for policy in page.get("AttachedPolicies", []) or []:
+                                policy_arn = policy.get("PolicyArn", "")
+                                if policy_arn:
+                                    _ignore_missing(
+                                        client.detach_role_policy,
+                                        RoleName=role_name,
+                                        PolicyArn=policy_arn,
+                                    )
+                        for page in _iter_pages(
+                            client,
+                            "list_role_policies",
+                            RoleName=role_name,
+                        ):
+                            for policy_name in page.get("PolicyNames", []) or []:
+                                _ignore_missing(
+                                    client.delete_role_policy,
+                                    RoleName=role_name,
+                                    PolicyName=policy_name,
+                                )
+                        _ignore_missing(client.delete_role, RoleName=role_name)
+
+                    _confirm_and_run(f"IAMRole {name}", _delete_role)
+
+            if include_all and _wants(
+                "SSMParameter",
+                "SSMParameters",
+                "SecretParameter",
+                "SecretParameters",
+                "Parameter",
+                "Parameters",
+            ):
+                client = aws_client("ssm", region, f"{prefix}-ssm-destroy")
+                names = []
+                for startswith in (prefix_dash, f"/{prefix_dash}"):
+                    for page in _iter_pages(
+                        client,
+                        "describe_parameters",
+                        ParameterFilters=[
+                            {
+                                "Key": "Name",
+                                "Option": "BeginsWith",
+                                "Values": [startswith],
+                            }
+                        ],
+                    ):
+                        for item in page.get("Parameters", []) or []:
+                            name = item.get("Name", "")
+                            if name.startswith(startswith):
+                                names.append(name)
+                for name in sorted(set(names)):
+                    did_work = True
+                    _confirm_and_run(
+                        f"SSMParameter {name}",
+                        lambda n=name: _ignore_missing(client.delete_parameter, Name=n),
+                    )
+
+            if include_all and _wants("S3", "Storage", "Storages", "Bucket", "Buckets"):
+                client = aws_client("s3", region, f"{prefix}-s3-destroy")
+                response = client.list_buckets()
+                bucket_names = [
+                    b.get("Name", "")
+                    for b in response.get("Buckets", []) or []
+                    if _is_prefix_name(b.get("Name", ""))
+                ]
+                for name in sorted(set(bucket_names)):
+                    did_work = True
+
+                    def _delete_bucket(bucket_name=name):
+                        for page in _iter_pages(
+                            client,
+                            "list_objects_v2",
+                            Bucket=bucket_name,
+                        ):
+                            objects = [
+                                {"Key": obj["Key"]}
+                                for obj in page.get("Contents", []) or []
+                                if obj.get("Key")
+                            ]
+                            if objects:
+                                _ignore_missing(
+                                    client.delete_objects,
+                                    Bucket=bucket_name,
+                                    Delete={"Objects": objects},
+                                )
+                        _ignore_missing(client.delete_bucket, Bucket=bucket_name)
+
+                    _confirm_and_run(f"S3Bucket {name}", _delete_bucket)
+
+            if include_all and _wants(
+                "DedicatedHost",
+                "DedicatedHosts",
+                "Host",
+                "Hosts",
+            ):
+                client = aws_client("ec2", region, f"{prefix}-host-destroy")
+                host_ids = []
+                for page in _iter_pages(client, "describe_hosts"):
+                    for host in page.get("Hosts", []) or []:
+                        tags = host.get("Tags", []) or []
+                        rn = _tag_value(tags, "praktika_rn")
+                        name = _tag_value(tags, "Name")
+                        if _is_prefix_name(rn) or _is_prefix_name(name):
+                            host_id = host.get("HostId", "")
+                            if host_id:
+                                host_ids.append(host_id)
+                for host_id in sorted(set(host_ids)):
+                    did_work = True
+                    _confirm_and_run(
+                        f"DedicatedHost {host_id}",
+                        lambda hid=host_id: _ignore_missing(
+                            client.release_hosts,
+                            HostIds=[hid],
+                            ignore_dependency=True,
+                        ),
+                    )
+
+            if include_all and _wants("VPC", "VPCs"):
+                from .vpc import VPC
+
+                client = aws_client("ec2", region, f"{prefix}-vpc-discovery")
+                names = []
+                response = client.describe_vpcs()
+                for vpc in response.get("Vpcs", []) or []:
+                    name = _resource_name_from_tags(vpc.get("Tags", []) or [])
+                    if _is_prefix_name(name):
+                        names.append(name)
+                for name in sorted(set(names)):
+                    did_work = True
+                    cfg = VPC.Config(name=name, region=region)
+                    _confirm_and_run(f"VPC {name}", cfg.delete)
 
             print("\n" + "=" * 60)
-            print("Runtime destroy completed!")
+            if did_work:
+                print(
+                    "Destroy completed!"
+                    if include_all
+                    else "Runtime destroy completed!"
+                )
+            else:
+                print(
+                    "No project-prefixed resources found to destroy"
+                    if include_all
+                    else "No project-prefixed runtime resources found to destroy"
+                )
             print("=" * 60)
 
         def restart_instances(self):

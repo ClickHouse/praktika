@@ -160,13 +160,19 @@ def create_parser():
     )
     _infra_parser.add_argument(
         "--destroy-runtime",
-        help="Delete recreatable runtime resources. With --all, also deletes all configured lambdas, IAM roles/profiles, and Image Builder configs while still keeping S3, secrets, and parameters",
+        help="Delete project-prefixed recreatable runtime resources while keeping S3, VPC, CIDB, Dedicated Hosts, and GitHub webhook wiring",
+        action="store_true",
+        default=False,
+    )
+    _infra_parser.add_argument(
+        "--destroy-all",
+        help="Delete all project-prefixed managed infrastructure resources. Requires --project.",
         action="store_true",
         default=False,
     )
     _infra_parser.add_argument(
         "--all",
-        help="With --deploy: deploy all configured components. With --destroy-runtime: expand deletion to all configured lambdas, IAM roles/profiles, and Image Builder configs",
+        help="With --deploy: deploy all configured components",
         action="store_true",
         default=False,
     )
@@ -175,7 +181,7 @@ def create_parser():
         help=(
             "Process only specified components (e.g. html ImageBuilder LaunchTemplate AutoScalingGroup Lambda DedicatedHost EC2Instance). "
             "With --deploy: deploys only these components or uploads html report. "
-            "With --destroy-runtime: deletes only the selected execution-plane components."
+            "With --destroy-runtime/--destroy-all: deletes only the selected component types."
         ),
         nargs="+",
         type=str,
@@ -261,9 +267,18 @@ def main(argv=None):
         previous_auto_confirm = UserPrompt.AUTO_CONFIRM
         UserPrompt.AUTO_CONFIRM = bool(getattr(args, "yes", False))
         try:
-            if not args.deploy and not args.destroy_runtime and not args.restart_instances:
+            if (
+                not args.deploy
+                and not args.destroy_runtime
+                and not args.destroy_all
+                and not args.restart_instances
+            ):
                 Utils.raise_with_error(
-                    "infrastructure command requires --deploy, --destroy-runtime, or --restart-instances"
+                    "infrastructure command requires --deploy, --destroy-runtime, --destroy-all, or --restart-instances"
+                )
+            if args.destroy_runtime and args.destroy_all:
+                Utils.raise_with_error(
+                    "Use either --destroy-runtime or --destroy-all, not both"
                 )
 
             if args.deploy:
@@ -278,10 +293,20 @@ def main(argv=None):
             if args.destroy_runtime:
                 from .mangle import _get_infra_config
 
-                _get_infra_config(project).destroy_runtime(
+                if args.all:
+                    Utils.raise_with_error(
+                        "Use --destroy-all instead of --destroy-runtime --all"
+                    )
+                _get_infra_config(project, require_project=True).destroy_runtime(
                     force=True,
                     only=args.only,
-                    all=args.all,
+                )
+
+            if args.destroy_all:
+                from .mangle import _get_infra_config
+
+                _get_infra_config(project, require_project=True).destroy_all(
+                    only=args.only,
                 )
 
             if args.restart_instances:

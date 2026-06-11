@@ -34,7 +34,7 @@ pipeline.
 - [`praktika/infrastructure/`](./praktika/infrastructure/README.md) — config
   components for declaring AWS infrastructure (`VPC`, `Storage`,
   `RunnerPool`, `OrchestratorPool`, `report_page_config`, ...) and the
-  `praktika infrastructure --deploy / --shutdown / --restart-instances`
+  `praktika infrastructure --deploy / --destroy-runtime / --destroy-all / --restart-instances`
   commands.
 - [`praktika/orchestrator/`](./praktika/orchestrator/README.md) — the
   standalone CI engine: webhook receiver, workflow agent, job agent, the

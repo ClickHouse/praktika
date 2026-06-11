@@ -1,10 +1,314 @@
 from types import SimpleNamespace
 
+import pytest
+
 from praktika.__main__ import create_parser
 from praktika.infrastructure.cloud import CloudInfrastructure
-from praktika.infrastructure.native.github_token_minter import GitHubTokenMinter
-from praktika.infrastructure.native.orchestrator_pool import OrchestratorPool
-from praktika.infrastructure.native.runner_pool import RunnerPool
+
+
+class _Paginator:
+    def __init__(self, fn):
+        self._fn = fn
+
+    def paginate(self, **kwargs):
+        return [self._fn(**kwargs)]
+
+
+class _FakeAWS:
+    def __init__(self, calls):
+        self.calls = calls
+        self.clients = {
+            "autoscaling": _FakeAutoscaling(calls),
+            "ec2": _FakeEC2(calls),
+            "sqs": _FakeSQS(calls),
+            "events": _FakeEvents(calls),
+            "lambda": _FakeLambda(calls),
+            "apigatewayv2": _FakeAPIGateway(calls),
+            "imagebuilder": _FakeImageBuilder(calls),
+            "iam": _FakeIAM(calls),
+            "ssm": _FakeSSM(calls),
+            "s3": _FakeS3(calls),
+        }
+
+    def client(self, service, region, name):
+        self.calls.append(f"client:{service}:{name}")
+        return self.clients[service]
+
+
+class _FakeAutoscaling:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def get_paginator(self, op):
+        return _Paginator(getattr(self, op))
+
+    def describe_auto_scaling_groups(self):
+        return {
+            "AutoScalingGroups": [
+                {"AutoScalingGroupName": "cloud-ci-infra-runner"},
+                {"AutoScalingGroupName": "other-runner"},
+            ]
+        }
+
+    def delete_auto_scaling_group(self, AutoScalingGroupName, ForceDelete):
+        self.calls.append(f"asg:{AutoScalingGroupName}")
+
+
+class _FakeEC2:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def get_paginator(self, op):
+        return _Paginator(getattr(self, op))
+
+    def describe_launch_templates(self):
+        return {
+            "LaunchTemplates": [
+                {"LaunchTemplateName": "cloud-ci-infra-runner-lt"},
+                {"LaunchTemplateName": "other-runner-lt"},
+            ]
+        }
+
+    def delete_launch_template(self, LaunchTemplateName):
+        self.calls.append(f"lt:{LaunchTemplateName}")
+
+    def describe_instances(self, **kwargs):
+        self.calls.append("ec2:describe_instances")
+        return {
+            "Reservations": [
+                {
+                    "Instances": [
+                        {
+                            "InstanceId": "i-cidb",
+                            "Tags": [
+                                {"Key": "Name", "Value": "cloud-ci-infra-cidb-01"}
+                            ],
+                        }
+                    ]
+                }
+            ]
+        }
+
+    def terminate_instances(self, InstanceIds):
+        self.calls.append(f"ec2:terminate:{','.join(InstanceIds)}")
+
+    def describe_hosts(self):
+        return {"Hosts": []}
+
+    def describe_vpcs(self):
+        return {"Vpcs": []}
+
+
+class _FakeSQS:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def list_queues(self, QueueNamePrefix):
+        return {
+            "QueueUrls": [
+                f"https://sqs.test/123/{QueueNamePrefix}runner",
+                f"https://sqs.test/123/{QueueNamePrefix}runner-dlq",
+            ]
+        }
+
+    def delete_queue(self, QueueUrl):
+        self.calls.append(f"sqs:{QueueUrl.rsplit('/', 1)[-1]}")
+
+
+class _FakeEvents:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def get_paginator(self, op):
+        return _Paginator(getattr(self, op))
+
+    def list_rules(self, NamePrefix):
+        return {"Rules": [{"Name": f"{NamePrefix}pool-autoscaler-schedule"}]}
+
+    def list_targets_by_rule(self, Rule):
+        return {"Targets": [{"Id": f"{Rule}-target"}]}
+
+    def remove_targets(self, Rule, Ids, Force):
+        self.calls.append(f"event-targets:{Rule}")
+
+    def delete_rule(self, Name, Force):
+        self.calls.append(f"event:{Name}")
+
+
+class _FakeLambda:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def get_paginator(self, op):
+        return _Paginator(getattr(self, op))
+
+    def list_functions(self):
+        return {
+            "Functions": [
+                {"FunctionName": "cloud-ci-infra-pool-autoscaler"},
+                {"FunctionName": "cloud-ci-infra-gh-token"},
+                {"FunctionName": "cloud-ci-infra-workflow-orchestrator"},
+                {"FunctionName": "other-workflow-orchestrator"},
+            ]
+        }
+
+    def get_function(self, FunctionName):
+        return {
+            "Configuration": {
+                "Role": (
+                    "arn:aws:iam::123:role/"
+                    f"{FunctionName.replace('workflow-orchestrator', 'gh-trigger-role')}"
+                )
+            }
+        }
+
+    def delete_function(self, FunctionName):
+        self.calls.append(f"lambda:{FunctionName}")
+
+
+class _FakeAPIGateway:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def get_paginator(self, op):
+        return _Paginator(getattr(self, op))
+
+    def get_apis(self):
+        return {
+            "Items": [
+                {
+                    "Name": "cloud-ci-infra-workflow-orchestrator-API",
+                    "ApiId": "api-1",
+                }
+            ]
+        }
+
+    def delete_api(self, ApiId):
+        self.calls.append(f"api:{ApiId}")
+
+
+class _FakeImageBuilder:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def get_paginator(self, op):
+        return _Paginator(getattr(self, op))
+
+    def list_image_pipelines(self):
+        return {
+            "imagePipelineList": [
+                {"name": "cloud-ci-infra-image", "arn": "arn:pipeline"}
+            ]
+        }
+
+    def delete_image_pipeline(self, imagePipelineArn):
+        self.calls.append(f"ib-pipeline:{imagePipelineArn}")
+
+    def list_image_recipes(self):
+        return {"imageRecipeSummaryList": []}
+
+    def list_distribution_configurations(self):
+        return {"distributionConfigurationSummaryList": []}
+
+    def list_infrastructure_configurations(self):
+        return {"infrastructureConfigurationSummaryList": []}
+
+    def list_components(self, owner):
+        return {"componentVersionList": []}
+
+
+class _FakeIAM:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def get_paginator(self, op):
+        return _Paginator(getattr(self, op))
+
+    def list_instance_profiles(self):
+        return {
+            "InstanceProfiles": [
+                {
+                    "InstanceProfileName": "cloud-ci-infra-runner-profile",
+                    "Roles": [{"RoleName": "cloud-ci-infra-runner-role"}],
+                },
+                {
+                    "InstanceProfileName": "cloud-ci-infra-cidb-profile",
+                    "Roles": [{"RoleName": "cloud-ci-infra-cidb-role"}],
+                },
+            ]
+        }
+
+    def remove_role_from_instance_profile(self, InstanceProfileName, RoleName):
+        self.calls.append(f"profile-remove:{InstanceProfileName}:{RoleName}")
+
+    def delete_instance_profile(self, InstanceProfileName):
+        self.calls.append(f"profile:{InstanceProfileName}")
+
+    def list_roles(self):
+        return {
+            "Roles": [
+                {"RoleName": "cloud-ci-infra-runner-role"},
+                {"RoleName": "cloud-ci-infra-pool-autoscaler-role"},
+                {"RoleName": "cloud-ci-infra-gh-token-role"},
+                {"RoleName": "cloud-ci-infra-gh-trigger-role"},
+                {"RoleName": "cloud-ci-infra-cidb-role"},
+            ]
+        }
+
+    def list_attached_role_policies(self, RoleName):
+        return {"AttachedPolicies": []}
+
+    def list_role_policies(self, RoleName):
+        return {"PolicyNames": []}
+
+    def delete_role(self, RoleName):
+        self.calls.append(f"role:{RoleName}")
+
+
+class _FakeSSM:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def get_paginator(self, op):
+        return _Paginator(getattr(self, op))
+
+    def describe_parameters(self, ParameterFilters):
+        prefix = ParameterFilters[0]["Values"][0]
+        return {"Parameters": [{"Name": f"{prefix}secret"}]}
+
+    def delete_parameter(self, Name):
+        self.calls.append(f"ssm:{Name}")
+
+
+class _FakeS3:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def get_paginator(self, op):
+        return _Paginator(getattr(self, op))
+
+    def list_buckets(self):
+        return {"Buckets": [{"Name": "cloud-ci-infra-artifacts"}]}
+
+    def list_objects_v2(self, Bucket):
+        return {"Contents": []}
+
+    def delete_bucket(self, Bucket):
+        self.calls.append(f"s3:{Bucket}")
+
+
+def _cloud(monkeypatch):
+    calls = []
+    fake = _FakeAWS(calls)
+    monkeypatch.setattr("praktika.infrastructure.cloud.aws_client", fake.client)
+    cloud = CloudInfrastructure.Config(name="cloud_ci_infra")
+    cloud._settings = SimpleNamespace(AWS_REGION="eu-north-1")
+    monkeypatch.setattr(cloud, "_verify_account", lambda: None)
+
+    from praktika.interactive import UserPrompt
+
+    monkeypatch.setattr(UserPrompt, "confirm", staticmethod(lambda _: True))
+    return cloud, calls
 
 
 def test_infrastructure_parser_supports_destroy_runtime():
@@ -13,17 +317,18 @@ def test_infrastructure_parser_supports_destroy_runtime():
 
     assert args.command == "infrastructure"
     assert args.destroy_runtime is True
+    assert args.destroy_all is False
     assert args.deploy is False
     assert args.restart_instances is False
 
 
-def test_infrastructure_parser_supports_destroy_runtime_all():
+def test_infrastructure_parser_supports_destroy_all():
     parser = create_parser()
-    args = parser.parse_args(["infrastructure", "--destroy-runtime", "--all"])
+    args = parser.parse_args(["infrastructure", "--destroy-all", "--project", "cloud_ci_infra"])
 
     assert args.command == "infrastructure"
-    assert args.destroy_runtime is True
-    assert args.all is True
+    assert args.destroy_all is True
+    assert args.project == "cloud_ci_infra"
 
 
 def test_infrastructure_parser_supports_yes():
@@ -35,159 +340,64 @@ def test_infrastructure_parser_supports_yes():
     assert args.yes is True
 
 
-def test_destroy_runtime_keeps_webhook_lambda_and_data_plane(monkeypatch):
-    runner_pool = RunnerPool(
-        name="arm-2xsmall",
-        instance_type="t4g.small",
-        vpc_name="praktika-ci",
-        scaling=RunnerPool.Scaling.Auto,
-        size=0,
-        max_size=1,
-    )
-    orchestrator_pool = OrchestratorPool(
-        instance_type="t4g.small",
-        vpc_name="praktika-ci",
-        scaling=OrchestratorPool.Scaling.Auto,
-        size=0,
-        max_size=1,
-    )
-    token_minter = GitHubTokenMinter()
-
-    cloud = CloudInfrastructure.Config(
-        name="cloud_ci_infra",
-        runner_pools=[runner_pool],
-        orchestrator_pool=orchestrator_pool,
-        github_token_minters=[token_minter],
-    )
-    cloud._settings = SimpleNamespace(AWS_REGION="eu-north-1")
-    monkeypatch.setattr(cloud, "_verify_account", lambda: None)
-
-    from praktika.interactive import UserPrompt
-
-    monkeypatch.setattr(UserPrompt, "confirm", staticmethod(lambda _: True))
-
-    calls = []
-
-    def _record(label):
-        def _fn(*args, **kwargs):
-            calls.append(label)
-        return _fn
-
-    for config in cloud.autoscaling_groups:
-        monkeypatch.setattr(config, "delete", _record(f"asg:{config.name}"))
-    for config in cloud.launch_templates:
-        monkeypatch.setattr(config, "delete", _record(f"lt:{config.name}"))
-    for config in cloud.sqs_queues:
-        monkeypatch.setattr(config, "shutdown", _record(f"queue:{config.name}"))
-    for autoscaler in cloud.pool_autoscalers:
-        monkeypatch.setattr(
-            autoscaler.lambda_config,
-            "delete",
-            _record(f"lambda:{autoscaler.lambda_config.name}"),
-        )
-        monkeypatch.setattr(
-            autoscaler.lambda_role,
-            "delete",
-            _record(f"role:{autoscaler.lambda_role.name}"),
-        )
-    for minter in cloud.github_token_minters:
-        monkeypatch.setattr(
-            minter.lambda_config,
-            "delete",
-            _record(f"lambda:{minter.lambda_config.name}"),
-        )
-        monkeypatch.setattr(
-            minter.lambda_role,
-            "delete",
-            _record(f"role:{minter.lambda_role.name}"),
-        )
-    monkeypatch.setattr(
-        cloud.orchestrator_pool.lambda_config,
-        "delete",
-        _record(f"lambda:{cloud.orchestrator_pool.lambda_config.name}"),
-    )
+def test_destroy_runtime_uses_prefix_but_keeps_webhook_and_does_not_sweep_ec2(monkeypatch):
+    cloud, calls = _cloud(monkeypatch)
 
     cloud.destroy_runtime()
 
-    assert f"asg:{cloud.runner_pools[0].autoscaling_group.name}" in calls
-    assert f"asg:{cloud.orchestrator_pool.autoscaling_group.name}" in calls
-    assert f"lt:{cloud.runner_pools[0].launch_template.name}" in calls
-    assert f"lt:{cloud.orchestrator_pool.launch_template.name}" in calls
-    assert f"queue:{cloud.runner_pools[0].queue.name}" in calls
-    assert f"queue:{cloud.orchestrator_pool.queue.name}" in calls
+    assert "asg:cloud-ci-infra-runner" in calls
+    assert "lt:cloud-ci-infra-runner-lt" in calls
+    assert "sqs:cloud-ci-infra-runner" in calls
+    assert "event:cloud-ci-infra-pool-autoscaler-schedule" in calls
     assert "lambda:cloud-ci-infra-pool-autoscaler" in calls
-    assert "role:cloud-ci-infra-pool-autoscaler-role" in calls
     assert "lambda:cloud-ci-infra-gh-token" in calls
-    assert "role:cloud-ci-infra-gh-token-role" in calls
+    assert "ib-pipeline:arn:pipeline" in calls
+    assert "profile:cloud-ci-infra-runner-profile" in calls
+    assert "role:cloud-ci-infra-runner-role" in calls
     assert "lambda:cloud-ci-infra-workflow-orchestrator" not in calls
+    assert "role:cloud-ci-infra-gh-trigger-role" not in calls
+    assert "profile:cloud-ci-infra-cidb-profile" not in calls
+    assert "role:cloud-ci-infra-cidb-role" not in calls
+    assert "ec2:describe_instances" not in calls
+    assert "api:api-1" not in calls
+    assert "s3:cloud-ci-infra-artifacts" not in calls
 
 
-def test_destroy_runtime_all_deletes_all_control_plane_runtime(monkeypatch):
-    runner_pool = RunnerPool(
-        name="arm-2xsmall",
-        instance_type="t4g.small",
-        vpc_name="praktika-ci",
-        scaling=RunnerPool.Scaling.Auto,
-        size=0,
-        max_size=1,
+def test_destroy_all_expands_to_project_prefixed_stateful_and_webhook_resources(monkeypatch):
+    cloud, calls = _cloud(monkeypatch)
+
+    cloud.destroy_all()
+
+    assert "lambda:cloud-ci-infra-workflow-orchestrator" in calls
+    assert "api:api-1" in calls
+    assert "ec2:describe_instances" in calls
+    assert "ec2:terminate:i-cidb" in calls
+    assert "profile:cloud-ci-infra-cidb-profile" in calls
+    assert "role:cloud-ci-infra-cidb-role" in calls
+    assert "ssm:cloud-ci-infra-secret" in calls
+    assert "ssm:/cloud-ci-infra-secret" in calls
+    assert "s3:cloud-ci-infra-artifacts" in calls
+
+
+def test_infrastructure_main_destroy_requires_project(monkeypatch):
+    from praktika.__main__ import main
+
+    monkeypatch.setattr(
+        "praktika.mangle._get_infra_config",
+        lambda project, require_project=False: (_ for _ in ()).throw(
+            RuntimeError("project required")
+        ),
     )
-    orchestrator_pool = OrchestratorPool(
-        instance_type="t4g.small",
-        vpc_name="praktika-ci",
-        scaling=OrchestratorPool.Scaling.Auto,
-        size=0,
-        max_size=1,
-    )
-    token_minter = GitHubTokenMinter()
 
-    cloud = CloudInfrastructure.Config(
-        name="cloud_ci_infra",
-        runner_pools=[runner_pool],
-        orchestrator_pool=orchestrator_pool,
-        github_token_minters=[token_minter],
-    )
-    cloud._settings = SimpleNamespace(AWS_REGION="eu-north-1")
-    monkeypatch.setattr(cloud, "_verify_account", lambda: None)
+    with pytest.raises(RuntimeError, match="project required"):
+        main(["infrastructure", "--destroy-runtime"])
 
-    from praktika.interactive import UserPrompt
 
-    monkeypatch.setattr(UserPrompt, "confirm", staticmethod(lambda _: True))
+def test_infrastructure_main_rejects_destroy_runtime_all(monkeypatch):
+    from praktika.__main__ import main
 
-    calls = []
-
-    def _record(label):
-        def _fn(*args, **kwargs):
-            calls.append(label)
-        return _fn
-
-    for config in cloud.autoscaling_groups:
-        monkeypatch.setattr(config, "delete", _record(f"asg:{config.name}"))
-    for config in cloud.launch_templates:
-        monkeypatch.setattr(config, "delete", _record(f"lt:{config.name}"))
-    for config in cloud.sqs_queues:
-        monkeypatch.setattr(config, "shutdown", _record(f"queue:{config.name}"))
-    for config in cloud.lambda_functions:
-        monkeypatch.setattr(config, "delete", _record(f"lambda:{config.name}"))
-    for config in cloud.iam_roles:
-        monkeypatch.setattr(config, "delete", _record(f"role:{config.name}"))
-    for config in cloud.iam_instance_profiles:
-        monkeypatch.setattr(config, "delete", _record(f"profile:{config.name}"))
-    for config in cloud.image_builders:
-        monkeypatch.setattr(config, "delete", _record(f"imagebuilder:{config.name}"))
-
-    cloud.destroy_runtime(all=True)
-
-    assert f"lambda:{cloud.orchestrator_pool.lambda_config.name}" in calls
-    assert f"role:{cloud.orchestrator_pool.ec2_role.name}" in calls
-    assert f"profile:{cloud.orchestrator_pool.instance_profile.name}" in calls
-    assert f"role:{cloud.runner_pools[0].ec2_role.name}" in calls
-    assert f"profile:{cloud.runner_pools[0].instance_profile.name}" in calls
-    assert calls.index(f"profile:{cloud.orchestrator_pool.instance_profile.name}") < calls.index(
-        f"role:{cloud.orchestrator_pool.ec2_role.name}"
-    )
-    assert calls.index(f"profile:{cloud.runner_pools[0].instance_profile.name}") < calls.index(
-        f"role:{cloud.runner_pools[0].ec2_role.name}"
-    )
+    with pytest.raises(RuntimeError, match="Use --destroy-all"):
+        main(["infrastructure", "--destroy-runtime", "--all", "--project", "cloud_ci_infra"])
 
 
 def test_infrastructure_main_yes_enables_auto_confirm(monkeypatch):
@@ -201,10 +411,19 @@ def test_infrastructure_main_yes_enables_auto_confirm(monkeypatch):
         def destroy_runtime(self, **kwargs):
             seen["auto_confirm"] = UserPrompt.AUTO_CONFIRM
 
-    monkeypatch.setattr("praktika.mangle._get_infra_config", lambda project: _Config())
+    monkeypatch.setattr(
+        "praktika.mangle._get_infra_config",
+        lambda project, require_project=False: _Config(),
+    )
 
     try:
-        main(["infrastructure", "--destroy-runtime", "--yes"])
+        main([
+            "infrastructure",
+            "--destroy-runtime",
+            "--project",
+            "cloud_ci_infra",
+            "--yes",
+        ])
     finally:
         UserPrompt.AUTO_CONFIRM = previous
 
