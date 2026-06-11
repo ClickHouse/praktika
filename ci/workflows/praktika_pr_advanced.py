@@ -46,11 +46,10 @@ workflow = Workflow.Config(
         Job.Config(
             name="Test",
             runs_on=[RunnerLabels.SMALL_ARM],
-            command=f"cat {Settings.INPUT_DIR}/artifact.txt && python3 ./ci/tests/example_1/test_example_consume_artifact.py",
+            command=f"python3 ./ci/jobs/consume_artifact.py",
             requires=[artifact.name],
             digest_config=Job.CacheDigestConfig(
-                include_paths=["./ci/tests/example_1"],
-                exclude_paths=["./ci/tests/example_1/test_example_produce*"],
+                include_paths=["./ci/jobs/consume_artifact.py"],
             ),
         ),
         # Docker job
