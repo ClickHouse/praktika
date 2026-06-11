@@ -31,7 +31,7 @@ def test_job_runner_check_output_includes_instance_id(monkeypatch):
         def from_fs(job_name):
             return _FakeResult()
 
-        def to_markdown(self):
+        def to_markdown(self, report_url=""):
             return "job markdown"
 
     monkeypatch.setattr("praktika.result.Result", _FakeResult)
@@ -42,3 +42,24 @@ def test_job_runner_check_output_includes_instance_id(monkeypatch):
     assert "runner `i-runner456`" in output["summary"]
     assert "**Runner instance:** `i-runner456`" in output["text"]
     assert "job markdown" in output["text"]
+
+
+def test_job_runner_check_output_includes_report_url(monkeypatch):
+    class _FakeResult:
+        status = "success"
+        duration = 10
+
+        @staticmethod
+        def from_fs(job_name):
+            return _FakeResult()
+
+        def to_markdown(self, report_url=""):
+            return "job markdown"
+
+    monkeypatch.setattr("praktika.result.Result", _FakeResult)
+
+    url = "https://example.com/report?PR=1&sha=abc&name_0=CI&name_1=My+Job"
+    output = _build_check_output("My Job", 0, report_url=url)
+
+    assert output["title"] == "My Job"
+    assert f"[CI Report]({url})" in output["summary"]

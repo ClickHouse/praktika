@@ -70,7 +70,7 @@ def _current_instance_id():
     return (os.environ.get("INSTANCE_ID") or "").strip()
 
 
-def _build_check_output(job_name, rc, instance_id=""):
+def _build_check_output(job_name, rc, instance_id="", report_url=""):
     """Load the job's dumped Result from TEMP_DIR and render it as the
     ``output`` dict for a completion PATCH. Returns None on any failure
     so the caller can fall back to a bodyless completion."""
@@ -78,13 +78,15 @@ def _build_check_output(job_name, rc, instance_id=""):
         from ..result import Result
 
         result = Result.from_fs(job_name)
-        text = result.to_markdown()
+        text = result.to_markdown(report_url=report_url)
         # Check API caps output.text at ~64 KB.
         limit = 60_000
         if len(text) > limit:
             text = text[:limit] + "\n\n_… (truncated)_\n"
         dur = f" in {int(result.duration)}s" if result.duration else ""
         summary = f"**{result.status}**{dur}"
+        if report_url:
+            summary += f" — [CI Report]({report_url})"
         if instance_id:
             summary += f" — runner `{instance_id}`"
             text = f"**Runner instance:** `{instance_id}`" + (
@@ -343,9 +345,16 @@ def run_job(task, gh_token=None, local=False):
             "status": "completed",
             "conclusion": "success" if rc == 0 else "failure",
         }
-        output = _build_check_output(job_name, rc, instance_id=instance_id)
+        try:
+            from ..info import Info
+            report_url = Info().get_job_report_url()
+        except Exception:
+            report_url = ""
+        output = _build_check_output(job_name, rc, instance_id=instance_id, report_url=report_url)
         if output is not None:
             body["output"] = output
+        if report_url:
+            body["details_url"] = report_url
         _patch_check_run(gh_token, repo, check_run_id, body)
 
     # Snapshot whatever the job wrote into environment.json and ship it back

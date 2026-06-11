@@ -397,7 +397,7 @@ class Result(MetaClasses.Serializable):
     def file_name_static(cls, name):
         return f"{Settings.TEMP_DIR}/result_{Utils.normalize_string(name)}.json"
 
-    def to_markdown(self, max_rows: int = 50) -> str:
+    def to_markdown(self, max_rows: int = 50, report_url: str = "") -> str:
         """Render this Result as a Markdown document suitable for posting
         as a GitHub check run's ``output.text``.
 
@@ -417,7 +417,9 @@ class Result(MetaClasses.Serializable):
 
         def _info_cell(s):
             s = _escape(s or "")
-            return s if len(s) <= 120 else s[:117] + "..."
+            if len(s) <= 120:
+                return s
+            return f"[see report]({report_url})" if report_url else "see report"
 
         lines = []
         # GitHub already renders status + duration as the check summary
