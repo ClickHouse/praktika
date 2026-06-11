@@ -7,7 +7,7 @@ from praktika.infrastructure import ImageBuilder, Components, Storage, VPC
 CI_VPC_NAME = "praktika-ci"
 RUNNER_IMAGE_BUILDER_PROFILE_NAME = "runner-profile"
 _PRAKTIKA_BASE_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.0.1-py3-none-any.whl"
-_PRAKTIKA_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1.1-py3-none-any.whl"
+_PRAKTIKA_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1.2-py3-none-any.whl"
 _PRAKTIKA_CONTROLLER_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_controller-0.1.1-py3-none-any.whl"
 _RUNTIME_BASE_VENV = "praktika-runtime"
 
@@ -164,7 +164,7 @@ def _runtime_prebuilt_venvs():
 
 
 def _image_builders():
-    ci_version = "1.0.16"
+    ci_version = "1.0.17"
     base_ci_version = "1.0.15"
 
     return [
@@ -376,6 +376,7 @@ _cidb_cluster = Components.CIDBCluster(
 PROJECTS = [
     CloudInfrastructure.Config(
         name="praktika",
+        min_praktika_version="0.1.2",
         vpcs=[
             VPC.Config(
                 name=CI_VPC_NAME,

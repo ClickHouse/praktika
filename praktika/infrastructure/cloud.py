@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, List, Optional
 
 from ..settings import _Settings
+from ..version import current_praktika_version, version_key
 from .autoscaling_group import AutoScalingGroup
 from .dedicated_host import DedicatedHost
 from .ec2_instance import EC2Instance
@@ -40,6 +41,7 @@ class CloudInfrastructure:
     @dataclass
     class Config:
         name: str
+        min_praktika_version: str = "0.0.0"
         lambda_functions: List["Lambda.Config"] = field(default_factory=list)
         iam_instance_profiles: List["IAMInstanceProfile.Config"] = field(
             default_factory=list
@@ -730,6 +732,36 @@ class CloudInfrastructure:
                 )
             print(f"AWS account verified: {actual} (profile: {profile})")
 
+        def _validate_min_praktika_version(self):
+            current = current_praktika_version()
+            required = str(self.min_praktika_version or "0.0.0")
+            try:
+                required_key = version_key(required)
+                current_key = version_key(current)
+            except (TypeError, ValueError):
+                raise SystemExit(
+                    "Invalid infrastructure config version.\n"
+                    f"Project [{self.name}] sets min_praktika_version="
+                    f"{self.min_praktika_version!r}, but it must be a dotted "
+                    "numeric package version such as '0.1.2'.\n"
+                    f"Running Praktika version is {current}."
+                )
+
+            if required_key <= current_key:
+                return
+
+            raise SystemExit(
+                "Infrastructure config requires a newer Praktika runtime.\n"
+                f"Project: {self.name}\n"
+                f"Config min_praktika_version: {required}\n"
+                f"Running Praktika version: {current}\n"
+                "Newer Praktika versions are expected to support older configs, "
+                "but older Praktika versions cannot safely deploy configs that "
+                "use newer infrastructure fields or semantics.\n"
+                "Use the Praktika checkout/package that matches this config, "
+                "for example: python3 -m praktika infrastructure --deploy ..."
+            )
+
         def deploy(
             self,
             all=False,
@@ -744,6 +776,7 @@ class CloudInfrastructure:
                      If True, deploy everything (validate settings, deploy code, attach IAM policies).
                 only: If set, deploy only selected component types by name.
             """
+            self._validate_min_praktika_version()
             self._verify_account()
 
             only_set = {

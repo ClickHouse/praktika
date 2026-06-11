@@ -25,7 +25,9 @@ python3 -m praktika infrastructure --destroy-runtime
 ## Config components (used in `ci/infrastructure/projects.py`)
 
 - **`CloudInfrastructure.Config`** — top-level container; aggregates all
-  components below into a single deployable unit.
+  components below into a single deployable unit. Set
+  `min_praktika_version` when the config uses infrastructure features that
+  require a newer Praktika runtime.
 - **`VPC.Config`** — a VPC + subnets in declared availability zones. Runner
   and orchestrator pools attach to a VPC by name.
 - **`Storage.Config`** — an S3 bucket for artifacts and the HTML report,

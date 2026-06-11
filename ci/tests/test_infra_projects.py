@@ -23,6 +23,7 @@ from praktika.infrastructure.native.orchestrator_pool import OrchestratorPool
 from praktika.infrastructure.native.runner_pool import RunnerPool
 from praktika.infrastructure.secret_parameter import SecretParameter
 from praktika.infrastructure.sqs_queue import SQSQueue
+from praktika.version import current_praktika_version
 
 
 def _decode_embedded_file(command: str) -> str:
@@ -49,6 +50,59 @@ def test_get_infra_config_requires_project_when_multiple(tmp_path, monkeypatch):
         _get_infra_config()
 
     assert _get_infra_config("beta").name == "beta"
+
+
+def test_deploy_rejects_config_that_requires_newer_praktika(monkeypatch):
+    current_version = current_praktika_version()
+    cloud = CloudInfrastructure.Config(
+        name="future",
+        min_praktika_version="999.0.0",
+    )
+    monkeypatch.setattr(
+        cloud,
+        "_verify_account",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("account check should not run on version mismatch")
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        cloud.deploy()
+
+    message = str(exc.value)
+    assert "requires a newer Praktika runtime" in message
+    assert "Config min_praktika_version: 999.0.0" in message
+    assert f"Running Praktika version: {current_version}" in message
+    assert "python3 -m praktika infrastructure --deploy" in message
+
+
+def test_current_infrastructure_config_imports_all_component_groups(monkeypatch):
+    monkeypatch.setattr(
+        Settings,
+        "CLOUD_INFRASTRUCTURE_CONFIG_PATH",
+        "ci/infrastructure/projects.py",
+    )
+
+    cloud = _get_infra_config("praktika")
+
+    assert cloud.min_praktika_version == current_praktika_version()
+    assert cloud.vpcs
+    assert cloud.storages
+    assert cloud.report_pages
+    assert cloud.image_builders
+    assert cloud.runner_pools
+    assert cloud.github_token_minters
+    assert cloud.orchestrator_pools
+    assert cloud.cidb_cluster
+    assert cloud.lambda_functions
+    assert cloud.iam_roles
+    assert cloud.iam_instance_profiles
+    assert cloud.secret_parameters
+    assert cloud.launch_templates
+    assert cloud.autoscaling_groups
+    assert cloud.sqs_queues
+    assert cloud.pool_autoscalers
+    assert any(pool.capacity_reserve == 2 for pool in cloud.orchestrator_pools)
 
 
 def test_cloud_config_prefixes_embedded_pool_resources():
@@ -578,7 +632,7 @@ def test_non_base_runner_pools_patch_praktika_into_shared_base_venv():
             "amazon-cloudwatch-agent-ctl -a fetch-config"
             in pool.launch_template.user_data
         )
-        assert "praktika-0.1.1-py3-none-any.whl" in pool.launch_template.user_data
+        assert "praktika-0.1.2-py3-none-any.whl" in pool.launch_template.user_data
         assert (
             "systemctl enable --now praktika-controller"
             in pool.launch_template.user_data
@@ -622,7 +676,7 @@ def test_projects_orchestrator_pools_include_default_and_base_image_variants():
         in _orchestrator_pool.launch_template.user_data
     )
     assert (
-        "praktika-0.1.1-py3-none-any.whl"
+        "praktika-0.1.2-py3-none-any.whl"
         in _orchestrator_pool.launch_template.user_data
     )
     assert (
