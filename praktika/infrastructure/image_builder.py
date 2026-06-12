@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 import json
+import re
 import shlex
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
@@ -163,6 +164,17 @@ class ImageBuilder:
                 return version
             return str(self.image_recipe_version or "").strip()
 
+        def _component_resource_name(self, raw_name: Any) -> str:
+            name = re.sub(r"[^-_A-Za-z0-9 ]+", "-", str(raw_name or "").strip())
+            name = re.sub(r"[- ]{2,}", "-", name).strip(" -")
+            if len(name) > 128:
+                name = name[:128].rstrip(" -")
+            if not name:
+                return ""
+            while len(name) < 3:
+                name = f"{name}-x"
+            return name
+
         def _prebuilt_venv_component_specs(self) -> List[Dict[str, Any]]:
             specs: List[Dict[str, Any]] = []
             for venv in self.prebuilt_venvs:
@@ -184,7 +196,9 @@ class ImageBuilder:
                     )
                 specs.append(
                     {
-                        "name": f"{self.name}-{venv.name}-venv",
+                        "name": self._component_resource_name(
+                            f"{self.name}-{venv.name}-venv"
+                        ),
                         "version": self._component_version(venv.version),
                         "platform": "Linux",
                         "description": venv.description
@@ -203,7 +217,7 @@ class ImageBuilder:
             created_arns: List[str] = []
 
             for spec in specs_to_create:
-                name = str(spec.get("name", "")).strip()
+                name = self._component_resource_name(spec.get("name", ""))
                 version = self._component_version(spec.get("version"))
                 platform = self._normalize_component_platform(
                     str(spec.get("platform", "macOS"))

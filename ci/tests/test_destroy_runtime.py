@@ -71,7 +71,10 @@ class _FakeAutoscaling:
     def describe_auto_scaling_groups(self):
         return {
             "AutoScalingGroups": [
-                {"AutoScalingGroupName": "cloud-ci-infra-runner"},
+                {
+                    "AutoScalingGroupName": "cloud-ci-infra-runner",
+                    "Instances": [{"InstanceId": "i-runner"}],
+                },
                 {"AutoScalingGroupName": "other-runner"},
             ]
         }
@@ -127,6 +130,12 @@ class _FakeEC2:
             "Reservations": [
                 {
                     "Instances": [
+                        {
+                            "InstanceId": "i-runner",
+                            "Tags": [
+                                {"Key": "Name", "Value": "cloud-ci-infra-runner"}
+                            ],
+                        },
                         {
                             "InstanceId": "i-cidb",
                             "Tags": [
@@ -573,6 +582,7 @@ def test_destroy_all_expands_to_project_prefixed_stateful_and_webhook_resources(
     assert "lambda:cloud-ci-infra-workflow-orchestrator" in calls
     assert "api:api-1" in calls
     assert "ec2:describe_instances" in calls
+    assert "ec2:terminate:i-runner" not in calls
     assert "ec2:terminate:i-cidb" in calls
     assert "profile:cloud-ci-infra-cidb-profile" in calls
     assert "role:cloud-ci-infra-cidb-role" in calls
@@ -580,6 +590,46 @@ def test_destroy_all_expands_to_project_prefixed_stateful_and_webhook_resources(
     assert "ssm:cloud-ci-infra-secret" in calls
     assert "ssm:/cloud-ci-infra-secret" in calls
     assert "s3:cloud-ci-infra-artifacts" in calls
+
+
+def test_destroy_all_does_not_prompt_for_instances_owned_by_deleted_asgs(monkeypatch):
+    cloud, calls = _cloud(monkeypatch)
+    prompts = []
+
+    from praktika.interactive import UserPrompt
+
+    monkeypatch.setattr(
+        UserPrompt,
+        "confirm",
+        staticmethod(lambda prompt: prompts.append(prompt) or True),
+    )
+
+    cloud.destroy_all()
+
+    assert "Delete 'AutoScalingGroup cloud-ci-infra-runner'?" in prompts
+    assert "Delete 'EC2Instance cloud-ci-infra-runner (i-runner)'?" not in prompts
+    assert "Delete 'EC2Instance cloud-ci-infra-cidb-01 (i-cidb)'?" in prompts
+    assert "ec2:terminate:i-runner" not in calls
+    assert "ec2:terminate:i-cidb" in calls
+
+
+def test_destroy_runtime_batches_sqs_confirmation(monkeypatch):
+    cloud, calls = _cloud(monkeypatch)
+    prompts = []
+
+    from praktika.interactive import UserPrompt
+
+    monkeypatch.setattr(
+        UserPrompt,
+        "confirm",
+        staticmethod(lambda prompt: prompts.append(prompt) or True),
+    )
+
+    cloud.destroy_runtime(only=["SQS"])
+
+    assert prompts == ["Delete all 2 SQS queues?"]
+    assert "sqs:cloud-ci-infra-runner" in calls
+    assert "sqs:cloud-ci-infra-runner-dlq" in calls
 
 
 def test_destroy_runtime_only_images_deletes_amis_without_imagebuilder(monkeypatch):
@@ -608,7 +658,7 @@ def test_destroy_runtime_imagebuilder_fallback_uses_lowercase_next_token(monkeyp
     assert "ib-recipe:arn:recipe" in calls
 
 
-def test_destroy_runtime_imagebuilder_recipe_prompts_include_versions(monkeypatch):
+def test_destroy_runtime_imagebuilder_recipe_prompts_batch_versions(monkeypatch):
     cloud, calls = _cloud(monkeypatch)
     calls.clear()
     prompts = []
@@ -628,12 +678,24 @@ def test_destroy_runtime_imagebuilder_recipe_prompts_include_versions(monkeypatc
     cloud.destroy_runtime(only=["ImageBuilder"])
 
     assert (
-        "Delete 'ImageBuilderRecipe cloud-ci-infra-image-recipe (1.0.0)'?"
+        "Delete all 2 versions of ImageBuilderRecipe cloud-ci-infra-image-recipe?"
         in prompts
     )
     assert (
+        "Delete 'ImageBuilderRecipe cloud-ci-infra-image-recipe (1.0.0)'?"
+        not in prompts
+    )
+    assert (
         "Delete 'ImageBuilderRecipe cloud-ci-infra-image-recipe (1.0.1)'?"
-        in prompts
+        not in prompts
+    )
+    assert (
+        "ib-recipe:arn:aws:imagebuilder:test:123:image-recipe/cloud-ci-infra-image-recipe/1.0.0"
+        in calls
+    )
+    assert (
+        "ib-recipe:arn:aws:imagebuilder:test:123:image-recipe/cloud-ci-infra-image-recipe/1.0.1"
+        in calls
     )
 
 

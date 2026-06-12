@@ -400,6 +400,68 @@ def test_inline_component_can_use_test_phase(monkeypatch):
     assert "test -x /usr/local/bin/praktika-controller" in captured["data"]
 
 
+def test_inline_component_names_are_sanitized_for_image_builder(monkeypatch):
+    builder = ImageBuilder.Config(
+        name="base-runner-image",
+        region="eu-north-1",
+        image_recipe_version="1.2.3",
+        inline_components=[
+            {
+                "name": "praktika.runtime/setup",
+                "platform": "Linux",
+                "commands": ["echo hello"],
+            }
+        ],
+    )
+    captured = {}
+
+    class _Client:
+        def list_components(self, **req):
+            return {"componentVersionList": []}
+
+        def create_component(self, **req):
+            captured.update(req)
+            return {"componentBuildVersionArn": "arn:component/test/1.2.3/1"}
+
+    monkeypatch.setattr(builder, "_client", lambda: _Client())
+
+    builder._ensure_inline_components()
+
+    assert captured["name"] == "praktika-runtime-setup"
+
+
+def test_prebuilt_venv_component_name_sanitizes_dotted_runtime_version(
+    monkeypatch,
+):
+    builder = ImageBuilder.Config(
+        name="silk-ci-arm64-image",
+        region="eu-north-1",
+        image_recipe_version="1.2.3",
+        prebuilt_venvs=[
+            ImageBuilder.PrebuiltVenv(name="silk-praktika-runtime-0.1.1")
+        ],
+    )
+    captured = {}
+
+    class _Client:
+        def list_components(self, **req):
+            return {"componentVersionList": []}
+
+        def create_component(self, **req):
+            captured.update(req)
+            return {"componentBuildVersionArn": "arn:component/test/1.2.3/1"}
+
+    monkeypatch.setattr(builder, "_client", lambda: _Client())
+
+    builder._ensure_inline_components()
+
+    assert (
+        captured["name"]
+        == "silk-ci-arm64-image-silk-praktika-runtime-0-1-1-venv"
+    )
+    assert "/opt/praktika/base-venvs/silk-praktika-runtime-0.1.1" in captured["data"]
+
+
 def test_launch_template_deploy_skips_when_image_builder_has_no_images(monkeypatch):
     lt = LaunchTemplate.Config(
         name="workflow-orchestrator-lt",

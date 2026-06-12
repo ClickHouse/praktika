@@ -1381,8 +1381,30 @@ class CloudInfrastructure:
                 print("=" * 60)
                 if UserPrompt.confirm(f"Delete '{label}'?"):
                     fn()
+                    return True
                 else:
                     print("Skipped.")
+                    return False
+
+            def _confirm_batch_and_run(
+                label: str,
+                item_labels: List[str],
+                fn,
+                prompt_label: Optional[str] = None,
+            ):
+                print("\n" + "=" * 60)
+                print(f"Destroy: {label}")
+                print("=" * 60)
+                for item_label in item_labels:
+                    print(f"  - {item_label}")
+                label_for_prompt = prompt_label or label
+                if UserPrompt.confirm(
+                    f"Delete all {len(item_labels)} {label_for_prompt}?"
+                ):
+                    fn()
+                    return True
+                print("Skipped.")
+                return False
 
             def _api_gateway_names() -> Dict[str, str]:
                 apigw = aws_client("apigatewayv2", region, f"{prefix}-api-discovery")
@@ -1434,18 +1456,23 @@ class CloudInfrastructure:
                 )
 
             did_work = False
+            asg_managed_instance_ids = set()
 
             if _wants("AutoScalingGroup", "AutoScalingGroups", "ASG", "ASGs"):
                 client = aws_client("autoscaling", region, f"{prefix}-asg-destroy")
-                names = []
+                instance_ids_by_asg = {}
                 for page in _iter_pages(client, "describe_auto_scaling_groups"):
                     for item in page.get("AutoScalingGroups", []) or []:
                         name = item.get("AutoScalingGroupName", "")
                         if _is_prefix_name(name):
-                            names.append(name)
-                for name in sorted(set(names)):
+                            instance_ids_by_asg[name] = {
+                                instance.get("InstanceId")
+                                for instance in item.get("Instances", []) or []
+                                if instance.get("InstanceId")
+                            }
+                for name in sorted(instance_ids_by_asg):
                     did_work = True
-                    _confirm_and_run(
+                    deleted = _confirm_and_run(
                         f"AutoScalingGroup {name}",
                         lambda n=name: _ignore_missing(
                             client.delete_auto_scaling_group,
@@ -1453,6 +1480,8 @@ class CloudInfrastructure:
                             ForceDelete=True,
                         ),
                     )
+                    if deleted:
+                        asg_managed_instance_ids.update(instance_ids_by_asg[name])
 
             if include_all and _wants(
                 "EC2Instance", "EC2Instances", "Instance", "Instances"
@@ -1480,7 +1509,11 @@ class CloudInfrastructure:
                             tags = item.get("Tags", []) or []
                             name = _resource_name_from_tags(tags)
                             rn = _tag_value(tags, "praktika_rn")
-                            if instance_id and (_is_prefix_name(name) or _is_prefix_name(rn)):
+                            if (
+                                instance_id
+                                and instance_id not in asg_managed_instance_ids
+                                and (_is_prefix_name(name) or _is_prefix_name(rn))
+                            ):
                                 instances.append((instance_id, name or rn or instance_id))
                 for instance_id, name in sorted(set(instances), key=lambda x: x[1]):
                     did_work = True
@@ -1515,12 +1548,22 @@ class CloudInfrastructure:
                 urls = []
                 response = client.list_queues(QueueNamePrefix=prefix_dash)
                 urls.extend(response.get("QueueUrls", []) or [])
-                for url in sorted(set(urls)):
-                    name = url.rstrip("/").split("/")[-1]
+                queue_items = [
+                    (url.rstrip("/").split("/")[-1], url)
+                    for url in sorted(set(urls))
+                ]
+                if queue_items:
                     did_work = True
-                    _confirm_and_run(
-                        f"SQSQueue {name}",
-                        lambda u=url: _ignore_missing(client.delete_queue, QueueUrl=u),
+
+                    def _delete_sqs_queues():
+                        for _, url in queue_items:
+                            _ignore_missing(client.delete_queue, QueueUrl=url)
+
+                    _confirm_batch_and_run(
+                        "SQSQueues",
+                        [name for name, _ in queue_items],
+                        _delete_sqs_queues,
+                        prompt_label="SQS queues",
                     )
 
             if _wants(
@@ -1684,10 +1727,11 @@ class CloudInfrastructure:
                     *,
                     owner_self: bool = False,
                     ignore_dependency: bool = False,
+                    group_versions: bool = False,
                 ):
                     nonlocal did_work
 
-                    def _item_label(item, name: str) -> str:
+                    def _item_version(item) -> str:
                         version = (
                             item.get("semanticVersion")
                             or item.get("version")
@@ -1696,18 +1740,65 @@ class CloudInfrastructure:
                         arn = item.get("arn", "")
                         if not version and "/" in arn:
                             version = arn.rstrip("/").rsplit("/", 1)[-1]
+                        return version
+
+                    def _item_label(item, name: str) -> str:
+                        version = _item_version(item)
                         if version and version != name:
                             return f"{label} {name} ({version})"
                         return f"{label} {name}"
 
                     request = {"owner": "Self"} if owner_self else {}
                     targets = []
+                    targets_by_name: Dict[str, List[tuple]] = {}
                     for page in _iter_pages(client, list_op, **request):
                         for item in page.get(result_key, []) or []:
                             name = item.get("name", "")
                             arn = item.get("arn", "")
                             if _is_prefix_name(name) and arn:
-                                targets.append((_item_label(item, name), arn))
+                                if group_versions:
+                                    targets_by_name.setdefault(
+                                        f"{label} {name}", []
+                                    ).append((_item_version(item), arn))
+                                else:
+                                    targets.append((_item_label(item, name), arn))
+                    if group_versions:
+                        for target_label, items in sorted(targets_by_name.items()):
+                            unique_items = sorted(set(items), key=lambda x: x[0])
+                            did_work = True
+                            if len(unique_items) == 1:
+                                version, arn = unique_items[0]
+                                item_label = (
+                                    f"{target_label} ({version})"
+                                    if version
+                                    else target_label
+                                )
+                                _confirm_and_run(
+                                    item_label,
+                                    lambda a=arn: _ignore_missing(
+                                        getattr(client, delete_op),
+                                        **{arn_arg: a},
+                                        ignore_dependency=ignore_dependency,
+                                    ),
+                                )
+                                continue
+
+                            def _delete_versions(arns=[arn for _, arn in unique_items]):
+                                for a in arns:
+                                    _ignore_missing(
+                                        getattr(client, delete_op),
+                                        **{arn_arg: a},
+                                        ignore_dependency=ignore_dependency,
+                                    )
+
+                            _confirm_batch_and_run(
+                                target_label,
+                                [version or arn for version, arn in unique_items],
+                                _delete_versions,
+                                prompt_label=f"versions of {target_label}",
+                            )
+                        return
+
                     for target_label, arn in sorted(set(targets), key=lambda x: x[0]):
                         did_work = True
                         _confirm_and_run(
@@ -1722,7 +1813,7 @@ class CloudInfrastructure:
                 def _delete_imagebuilder_component_builds():
                     nonlocal did_work
 
-                    targets = []
+                    targets_by_name: Dict[str, List[tuple]] = {}
                     for page in _iter_pages(client, "list_components", owner="Self"):
                         for component in page.get("componentVersionList", []) or []:
                             name = component.get("name", "")
@@ -1748,22 +1839,40 @@ class CloudInfrastructure:
                                     build_number = build_arn.rstrip("/").rsplit("/", 1)[
                                         -1
                                     ]
-                                    targets.append(
-                                        (
-                                            f"ImageBuilderComponent {name} ({version}/{build_number})",
-                                            build_arn,
-                                        )
+                                    targets_by_name.setdefault(
+                                        f"ImageBuilderComponent {name}", []
+                                    ).append(
+                                        (f"{version}/{build_number}", build_arn)
                                     )
 
-                    for target_label, arn in sorted(set(targets), key=lambda x: x[0]):
+                    for target_label, items in sorted(targets_by_name.items()):
+                        unique_items = sorted(set(items), key=lambda x: x[0])
                         did_work = True
-                        _confirm_and_run(
+                        if len(unique_items) == 1:
+                            version, arn = unique_items[0]
+                            _confirm_and_run(
+                                f"{target_label} ({version})",
+                                lambda a=arn: _ignore_missing(
+                                    client.delete_component,
+                                    componentBuildVersionArn=a,
+                                    ignore_dependency=True,
+                                ),
+                            )
+                            continue
+
+                        def _delete_builds(arns=[arn for _, arn in unique_items]):
+                            for a in arns:
+                                _ignore_missing(
+                                    client.delete_component,
+                                    componentBuildVersionArn=a,
+                                    ignore_dependency=True,
+                                )
+
+                        _confirm_batch_and_run(
                             target_label,
-                            lambda a=arn: _ignore_missing(
-                                client.delete_component,
-                                componentBuildVersionArn=a,
-                                ignore_dependency=True,
-                            ),
+                            [version for version, _ in unique_items],
+                            _delete_builds,
+                            prompt_label=f"versions of {target_label}",
                         )
 
                 _delete_imagebuilder_resources(
@@ -1780,6 +1889,7 @@ class CloudInfrastructure:
                     "delete_image_recipe",
                     "ImageBuilderRecipe",
                     ignore_dependency=True,
+                    group_versions=True,
                 )
                 _delete_imagebuilder_resources(
                     "list_distribution_configurations",

@@ -29,6 +29,8 @@ class InitAnswers:
     availability_zone: str
     aws_account_id: str
     aws_profile: str
+    is_oss: bool = False
+    image_base: str = "awslinux"
 
     @property
     def project_slug(self) -> str:
@@ -40,7 +42,19 @@ class InitAnswers:
 
     @property
     def artifact_bucket(self) -> str:
-        return f"{self.project_slug}-artifacts"
+        return f"{self.project_slug}-{self.artifact_storage_name}"
+
+    @property
+    def artifact_storage_name(self) -> str:
+        if self.is_oss:
+            return f"artifacts-{self.aws_region}"
+        return "artifacts"
+
+    @property
+    def image_builder_factory(self) -> str:
+        if self.image_base == "ubuntu":
+            return "create_ubuntu_image_builder_config"
+        return "create_awslinux_image_builder_config"
 
     @property
     def gh_auth_lambda_name(self) -> str:
@@ -148,6 +162,34 @@ def _validate_bucket_name(value: str) -> bool:
     return bool(
         re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{1,61}[a-z0-9])?", value.strip())
     )
+
+
+def _normalize_image_base(value: str) -> str:
+    normalized = value.strip().lower().replace("_", "-").replace(" ", "-")
+    aliases = {
+        "ubuntu": "ubuntu",
+        "awslinux": "awslinux",
+        "aws-linux": "awslinux",
+        "amazonlinux": "awslinux",
+        "amazon-linux": "awslinux",
+    }
+    return aliases.get(normalized, "")
+
+
+def _validate_image_base(value: str) -> bool:
+    return bool(_normalize_image_base(value))
+
+
+def _prompt_image_base() -> str:
+    image_base = UserPrompt.get_string(
+        "Image base for CI runners (ubuntu or awslinux)",
+        validator=_validate_image_base,
+        default="awslinux",
+    )
+    normalized = _normalize_image_base(image_base)
+    if not normalized:
+        raise ValueError(f"Invalid image base [{image_base}]")
+    return normalized
 
 
 def detect_aws_profiles() -> Set[str]:
@@ -312,7 +354,14 @@ def _prompt_aws_account_id(profile: str = "") -> str:
             print("ERROR: Invalid AWS account ID.")
 
 
-def _prompt_for_answers(root: Path) -> InitAnswers:
+def _prompt_for_answers(
+    root: Path, components: Optional[List[str]] = None
+) -> InitAnswers:
+    selected_components = set(
+        components
+        if components is not None
+        else ("settings", "workflows", "infrastructure")
+    )
     repo_name = root.name
     default_branch = detect_default_branch(root)
     project_name = repo_name
@@ -332,6 +381,14 @@ def _prompt_for_answers(root: Path) -> InitAnswers:
     ).strip()
     aws_profile = _prompt_aws_profile(default="default")
     aws_account_id = _prompt_aws_account_id(profile=aws_profile)
+    is_oss = False
+    if selected_components & {"settings", "infrastructure"}:
+        is_oss = UserPrompt.confirm(
+            "Is this an OSS project that should use public artifact storage?"
+        )
+    image_base = "awslinux"
+    if "infrastructure" in selected_components:
+        image_base = _prompt_image_base()
     return InitAnswers(
         project_name=project_name,
         main_branch=main_branch,
@@ -339,10 +396,17 @@ def _prompt_for_answers(root: Path) -> InitAnswers:
         availability_zone=availability_zone,
         aws_account_id=aws_account_id,
         aws_profile=aws_profile,
+        is_oss=is_oss,
+        image_base=image_base,
     )
 
 
 def _settings_template(answers: InitAnswers) -> str:
+    artifact_bucket_expr = (
+        'f"{PROJECT_SLUG}-artifacts-{AWS_REGION}"'
+        if answers.is_oss
+        else 'f"{PROJECT_SLUG}-artifacts"'
+    )
     return textwrap.dedent(
         f"""\
         class RunnerLabels:
@@ -362,7 +426,7 @@ def _settings_template(answers: InitAnswers) -> str:
         AWS_ACCOUNT_ID = "{answers.aws_account_id}"
         AWS_PROFILE = "{answers.aws_profile}"
 
-        S3_ARTIFACT_BUCKET = f"{{PROJECT_SLUG}}-artifacts"
+        S3_ARTIFACT_BUCKET = {artifact_bucket_expr}
         S3_REPORT_BUCKET = S3_ARTIFACT_BUCKET
         CACHE_S3_PATH = f"{{S3_ARTIFACT_BUCKET}}/ci_cache"
         S3_BUCKET_TO_HTTP_ENDPOINT = {{
@@ -456,14 +520,14 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                 ),
             ]
             return [
-                Components.create_awslinux_image_builder_config(
+                Components.{answers.image_builder_factory}(
                     name="ci-arm64-image",
                     version=image_recipe_version,
                     controller_package=_PRAKTIKA_CONTROLLER_WHL,
                     prebuilt_venvs=prebuilt_venvs,
                     instance_types=["t4g.small"],
                 ),
-                Components.create_awslinux_image_builder_config(
+                Components.{answers.image_builder_factory}(
                     name="ci-x86_64-image",
                     version=image_recipe_version,
                     controller_package=_PRAKTIKA_CONTROLLER_WHL,
@@ -492,9 +556,9 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                 ],
                 storages=[
                     Storage.Config(
-                        name="artifacts",
+                        name="{answers.artifact_storage_name}",
                         retention_days=30,
-                        public=False,
+                        public={answers.is_oss},
                     ),
                 ],
                 report_pages=[Components.report_page_config],
@@ -662,7 +726,7 @@ def run_init_interactive(root: Optional[Path] = None) -> List[Path]:
     if not components:
         print("Initialization cancelled: no project files selected.")
         return []
-    answers = _prompt_for_answers(repo_root)
+    answers = _prompt_for_answers(repo_root, components)
     written = scaffold_project(repo_root, answers, components)
     print_scaffold_summary(written, repo_root, answers)
     return written
