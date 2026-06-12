@@ -11,7 +11,7 @@ from ci.infrastructure.projects import (
 )
 from praktika.mangle import _get_infra_config
 from praktika.settings import Settings
-from praktika.infrastructure import ImageBuilder, Storage, VPC
+from praktika.infrastructure import Components, ImageBuilder, Storage, VPC
 from praktika.infrastructure.autoscaling_group import AutoScalingGroup
 from praktika.infrastructure.cloud import CloudInfrastructure
 from praktika.infrastructure.iam_instance_profile import IAMInstanceProfile
@@ -606,6 +606,58 @@ def test_cloud_project_namespace_keeps_image_builder_venv_paths_project_local():
         "test -x /opt/praktika/base-venvs/praktika-runtime-0.1.2/bin/python",
         "/opt/praktika/base-venvs/praktika-runtime-0.1.2/bin/python -m pip show praktika",
     ]
+
+
+def test_cloud_project_namespace_does_not_rewrite_controller_local_paths():
+    builder = Components.create_ubuntu_image_builder_config(
+        name="ci-arm64-image",
+        version="1.0.0",
+        controller_package=(
+            "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/"
+            "packages/praktika_controller-0.1.1-py3-none-any.whl"
+        ),
+        prebuilt_venvs=[
+            Components.create_praktika_venv_config("praktika-runtime-0.1.2", "0.1.2")
+        ],
+        instance_types=["t4g.small"],
+    )
+
+    cloud = CloudInfrastructure.Config(
+        name="silk",
+        storages=[Storage.Config(name="artifacts-eu-north-1", retention_days=30)],
+        image_builders=[builder],
+    )
+    builder = cloud.image_builders[0]
+    runtime_component = next(
+        component
+        for component in builder.inline_components
+        if component["description"]
+        == "Install Praktika controller runtime dependencies into the image"
+    )
+    controller_component = next(
+        component
+        for component in builder.inline_components
+        if component["description"] == "Bake the Praktika controller service into the image"
+    )
+    runtime_commands = "\n".join(runtime_component["commands"])
+    commands = "\n".join(controller_component["commands"])
+    unit = _decode_embedded_file(
+        next(
+            cmd
+            for cmd in controller_component["commands"]
+            if "/etc/systemd/system/praktika-controller.service" in cmd
+        )
+    )
+
+    assert runtime_component["name"] == "silk-praktika-controller-ubuntu-runtime"
+    assert "https://praktika-artifacts-eu-north-1.s3.amazonaws.com" in runtime_commands
+    assert "praktika-silk-artifacts-eu-north-1" not in runtime_commands
+    assert controller_component["name"] == "silk-praktika-controller"
+    assert "/usr/local/bin/praktika-controller-start" in commands
+    assert "/etc/systemd/system/praktika-controller.service" in commands
+    assert "ExecStart=/usr/local/bin/praktika-controller-start" in unit
+    assert "silk-praktika-controller-start" not in commands
+    assert "silk-praktika-controller.service" not in commands
 
 
 def test_cloud_deploy_runs_lambdas_before_image_backed_compute(monkeypatch):

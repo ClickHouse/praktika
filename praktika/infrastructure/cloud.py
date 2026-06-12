@@ -450,9 +450,7 @@ class CloudInfrastructure:
                 config.security_group_names = [self._prefixed(name) for name in config.security_group_names]
                 for component in config.inline_components:
                     if component.get("name"):
-                        old_name = component["name"]
                         component["name"] = self._prefixed(component["name"])
-                        self._record_rename(replacements, old_name, component["name"])
             for config in self.dedicated_hosts:
                 old = config.name
                 config.name = self._prefixed(config.name)
@@ -697,10 +695,6 @@ class CloudInfrastructure:
                 config.tags = self._replace_recursive(config.tags, replacements)
             for config in self.ec2_instances:
                 config.user_data = self._replace_recursive(getattr(config, "user_data", ""), replacements)
-            for config in self.image_builders:
-                config.inline_components = self._replace_recursive(
-                    config.inline_components, replacements
-                )
 
             for pool in self.runner_pools:
                 pool.launch_template.tags["praktika_project_slug"] = self.name
