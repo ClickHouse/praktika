@@ -211,6 +211,45 @@ def test_infrastructure_deploy_validation_rejects_prefixed_resource_names(capsys
     )
 
 
+def test_infrastructure_deploy_validation_accepts_base_venv_name(monkeypatch):
+    cloud = CloudInfrastructure.Config(
+        name="silk",
+        image_builders=[
+            ImageBuilder.Config(
+                name="ci-image",
+                prebuilt_venvs=[ImageBuilder.PrebuiltVenv(name="praktika-runtime")],
+            )
+        ],
+    )
+
+    monkeypatch.setattr(Settings, "PRAKTIKA_BASE_VENV", "praktika-runtime")
+
+    Validator.validate_infrastructure_deploy(cloud)
+
+
+def test_infrastructure_deploy_validation_rejects_missing_base_venv(
+    monkeypatch, capsys
+):
+    cloud = CloudInfrastructure.Config(
+        name="silk",
+        image_builders=[
+            ImageBuilder.Config(
+                name="ci-image",
+                prebuilt_venvs=[ImageBuilder.PrebuiltVenv(name="other-runtime")],
+            )
+        ],
+    )
+
+    monkeypatch.setattr(Settings, "PRAKTIKA_BASE_VENV", "praktika-runtime")
+
+    with pytest.raises(SystemExit):
+        Validator.validate_infrastructure_deploy(cloud)
+
+    out = capsys.readouterr().out
+    assert "Setting PRAKTIKA_BASE_VENV [praktika-runtime]" in out
+    assert "silk-other-runtime" in out
+
+
 def test_cloud_config_prefixes_embedded_pool_resources():
     cloud = CloudInfrastructure.Config(
         name="sandbox",
@@ -273,6 +312,7 @@ def test_cloud_config_prefixes_embedded_pool_resources():
         stmt.get("Sid") != "SecretsManagerRead"
         for stmt in runner.ec2_role.inline_policies["RunnerAccess"]["Statement"]
     )
+    assert "praktika-configure-cloudwatch-agent" in runner.launch_template.user_data
     assert (
         "amazon-cloudwatch-agent-ctl -a fetch-config"
         in runner.launch_template.user_data
@@ -305,6 +345,9 @@ def test_cloud_config_prefixes_embedded_pool_resources():
         for stmt in orchestrator.ec2_role.inline_policies["WorkflowOrchestratorAccess"][
             "Statement"
         ]
+    )
+    assert (
+        "praktika-configure-cloudwatch-agent" in orchestrator.launch_template.user_data
     )
     assert (
         "amazon-cloudwatch-agent-ctl -a fetch-config"
@@ -608,6 +651,13 @@ def test_controller_image_builders_are_declared():
             for cmd in runtime_component["commands"]
         )
         assert builder.prebuilt_venvs[0].name == "praktika-runtime"
+        assert {
+            "boto3",
+            "PyJWT",
+            "cryptography",
+            "requests",
+            "pytest>=7.0.0",
+        }.issubset(builder.prebuilt_venvs[0].packages)
         assert (
             _IMAGE_BUILDERS_BY_NAME[name]
             .prebuilt_venvs[0]
@@ -634,11 +684,11 @@ def test_controller_image_builders_are_declared():
                 and "printf" in cmd
             )
         )
-        cloudwatch = _decode_embedded_file(
+        cloudwatch_configure = _decode_embedded_file(
             next(
                 cmd
                 for cmd in agent_component["commands"]
-                if "/etc/praktika/amazon-cloudwatch-agent.json" in cmd
+                if "/usr/local/bin/praktika-configure-cloudwatch-agent" in cmd
                 and "printf" in cmd
             )
         )
@@ -652,8 +702,15 @@ def test_controller_image_builders_are_declared():
         assert "StandardOutput=append:/var/log/praktika-controller.log" in unit
         assert "StandardError=append:/var/log/praktika-controller.log" in unit
         assert "EnvironmentFile=-/etc/praktika/praktika-controller.env" not in unit
-        assert '"file_path": "/var/log/praktika-controller.log"' in cloudwatch
-        assert '"log_group_name": "/praktika/controller"' in cloudwatch
+        assert (
+            "latest/meta-data/tags/instance/praktika_project_slug"
+            in cloudwatch_configure
+        )
+        assert '"file_path": "/var/log/praktika-controller.log"' in cloudwatch_configure
+        assert (
+            '"log_group_name": "/${PRAKTIKA_PROJECT_SLUG}/praktika-controller"'
+            in cloudwatch_configure
+        )
 
     assert [
         lt.name for lt in _IMAGE_BUILDERS_BY_NAME["ci-arm64-image"].launch_templates
@@ -710,6 +767,7 @@ def test_base_runner_pool_uses_base_image_without_bootstrap_user_data():
     pool = next(pool for pool in _runner_pools if pool.name == "arm-2xsmall-base")
 
     assert pool.image_builder is _IMAGE_BUILDERS_BY_NAME["ci-arm64-image"]
+    assert "praktika-configure-cloudwatch-agent" in pool.launch_template.user_data
     assert (
         "amazon-cloudwatch-agent-ctl -a fetch-config" in pool.launch_template.user_data
     )
@@ -733,6 +791,7 @@ def test_non_base_runner_pools_patch_praktika_into_shared_base_venv():
             "/opt/praktika/base-venvs/praktika-runtime/bin/python -m pip install --force-reinstall"
             in pool.launch_template.user_data
         )
+        assert "praktika-configure-cloudwatch-agent" in pool.launch_template.user_data
         assert (
             "amazon-cloudwatch-agent-ctl -a fetch-config"
             in pool.launch_template.user_data
@@ -769,6 +828,10 @@ def test_projects_orchestrator_pools_include_default_and_base_image_variants():
         .endswith("/praktika-0.0.1-py3-none-any.whl")
     )
     assert (
+        "praktika-configure-cloudwatch-agent"
+        in _orchestrator_pool.launch_template.user_data
+    )
+    assert (
         "amazon-cloudwatch-agent-ctl -a fetch-config"
         in _orchestrator_pool.launch_template.user_data
     )
@@ -800,6 +863,10 @@ def test_projects_orchestrator_pools_include_default_and_base_image_variants():
     assert (
         _orchestrator_pool_base.image_builder
         is _IMAGE_BUILDERS_BY_NAME["ci-arm64-image"]
+    )
+    assert (
+        "praktika-configure-cloudwatch-agent"
+        in _orchestrator_pool_base.launch_template.user_data
     )
     assert (
         "amazon-cloudwatch-agent-ctl -a fetch-config"

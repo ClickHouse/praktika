@@ -1,3 +1,4 @@
+import base64
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +20,11 @@ from praktika.project_init import (
 )
 from praktika.settings import Settings
 from praktika.version import current_praktika_version
+
+
+def _decode_embedded_file(command: str) -> str:
+    payload = command.split("'")[3]
+    return base64.b64decode(payload).decode("utf-8")
 
 
 def test_init_parser_supports_command():
@@ -267,16 +273,11 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     assert "event=Workflow.Event.PUSH" in main_ci_workflow_text
     assert 'branches=["main"]' in main_ci_workflow_text
     assert "from ci.settings.settings import PROJECT_NAME, PROJECT_SLUG" in infra_text
-    assert (
-        "from praktika.infrastructure import Components, ImageBuilder, Storage, VPC"
-        in infra_text
-    )
+    assert "from praktika.infrastructure import Components, Storage, VPC" in infra_text
     assert f'min_praktika_version="{current_praktika_version()}"' in infra_text
     assert "# until published in pip" in infra_text
-    assert (
-        f"https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/"
-        f"praktika-{current_praktika_version()}-py3-none-any.whl"
-    ) in infra_text
+    assert "Components.praktika_venv_config(" in infra_text
+    assert f'"{current_praktika_version()}"' in infra_text
     assert (
         "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/"
         "praktika_controller-0.1.1-py3-none-any.whl"
@@ -291,18 +292,12 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     assert "CI_VPC_NAME" not in infra_text
     assert "region=CI_REGION" not in infra_text
     assert "capacity_reserve=1" in infra_text
-    assert "def _controller_image_component(name: str):" in infra_text
-    assert infra_text.count("def _controller_image_component(name: str):") == 1
-    assert "latest/meta-data/placement/region" in infra_text
-    assert "latest/meta-data/instance-id" in infra_text
-    assert "latest/meta-data/tags/instance/praktika_role" in infra_text
-    assert "latest/meta-data/tags/instance/praktika_queue" in infra_text
-    assert "latest/meta-data/tags/instance/praktika_project_slug" in infra_text
-    assert 'export AWS_DEFAULT_REGION="$REGION"' in infra_text
-    assert 'export INSTANCE_ID="$INSTANCE_ID"' in infra_text
-    assert "export PRAKTIKA_CONTROLLER_QUEUE" in infra_text
+    assert "def _controller_image_component(name: str):" not in infra_text
+    assert "Components.image_builder_config(" in infra_text
+    assert infra_text.count("Components.image_builder_config(") == 2
+    assert "project_slug=" not in infra_text
     assert "SQS_QUEUE_NAME" not in infra_text
-    assert "ImageBuilder.Config(" in infra_text
+    assert "ImageBuilder.Config(" not in infra_text
     assert 'name="ci-arm64-image"' in infra_text
     assert 'name="ci-x86_64-image"' in infra_text
     assert "ami_name=" not in infra_text
@@ -313,8 +308,8 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     assert "image_builders=_IMAGE_BUILDERS" in infra_text
     assert 'image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"]' in infra_text
     assert 'image_builder=_IMAGE_BUILDERS_BY_NAME["ci-x86_64-image"]' in infra_text
-    assert "/etc/systemd/system/praktika-controller.service" in infra_text
-    assert '"log_group_name": f"/praktika/{PROJECT_SLUG}/controller"' in infra_text
+    assert "/etc/systemd/system/praktika-controller.service" not in infra_text
+    assert '"log_group_name"' not in infra_text
     assert '"/praktika/controller"' not in infra_text
     assert 'name="artifacts"' in infra_text
     assert "public=False" in infra_text
@@ -428,7 +423,7 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
         "amd-medium": 50,
     }
     assert set(builders_by_arch) == {"arm64", "x86_64"}
-    assert all(len(builder.inline_components) == 1 for builder in cloud.image_builders)
+    assert all(len(builder.inline_components) == 3 for builder in cloud.image_builders)
     project_slug = tmp_path.name.lower().replace("_", "-")
     assert {
         arch: builder.instance_profile_name
@@ -447,6 +442,46 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
         "arm64": [f"{project_slug}-vpc-sg"],
         "x86_64": [f"{project_slug}-vpc-sg"],
     }
+    for builder in cloud.image_builders:
+        assert [component["name"] for component in builder.inline_components] == [
+            f"{project_slug}-praktika-controller-setup",
+            f"{project_slug}-praktika-controller-runtime",
+            f"{project_slug}-praktika-controller",
+        ]
+        agent_component = next(
+            component
+            for component in builder.inline_components
+            if component["name"] == f"{project_slug}-praktika-controller"
+        )
+        cloudwatch_configure = _decode_embedded_file(
+            next(
+                cmd
+                for cmd in agent_component["commands"]
+                if "/usr/local/bin/praktika-configure-cloudwatch-agent" in cmd
+                and "printf" in cmd
+            )
+        )
+        assert (
+            "latest/meta-data/tags/instance/praktika_project_slug"
+            in cloudwatch_configure
+        )
+        assert (
+            '"log_group_name": "/${PRAKTIKA_PROJECT_SLUG}/praktika-controller"'
+            in cloudwatch_configure
+        )
+        assert builder.prebuilt_venvs[0].name == f"{project_slug}-praktika-runtime"
+        assert {
+            "boto3",
+            "PyJWT",
+            "cryptography",
+            "requests",
+            "pytest>=7.0.0",
+        }.issubset(builder.prebuilt_venvs[0].packages)
+        assert (
+            builder.prebuilt_venvs[0]
+            .packages[-1]
+            .endswith(f"/praktika-{current_praktika_version()}-py3-none-any.whl")
+        )
     assert cloud.orchestrator_pool.vpc_name == f"{project_slug}-vpc"
     assert cloud.orchestrator_pool.launch_template.vpc_name == f"{project_slug}-vpc"
     assert cloud.orchestrator_pool.autoscaling_group.vpc_name == f"{project_slug}-vpc"

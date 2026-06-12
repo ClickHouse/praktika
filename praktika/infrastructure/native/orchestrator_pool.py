@@ -27,6 +27,7 @@ _DEFAULT_PRAKTIKA_CONTROLLER_USER_DATA = "\n".join(
         "set -xeuo pipefail",
         "",
         "# Add any host customization you need above this line.",
+        "/usr/local/bin/praktika-configure-cloudwatch-agent",
         "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/praktika/amazon-cloudwatch-agent.json -s",
         "systemctl enable --now praktika-controller",
         "",

@@ -10,8 +10,7 @@ CI_CONFIG_RUNS_ON = [RunnerLabels.SMALL_ARM]
 AWS_REGION = "eu-north-1"
 AWS_ACCOUNT_ID = "420943511422"
 AWS_PROFILE = "Box"
-#TODO: make it default
-CLOUD_INFRASTRUCTURE_CONFIG_PATH = "./ci/infrastructure/projects.py"
+
 S3_ARTIFACT_BUCKET = "praktika-artifacts-eu-north-1"
 S3_REPORT_BUCKET = S3_ARTIFACT_BUCKET
 

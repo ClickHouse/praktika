@@ -87,6 +87,24 @@ class Validator:
                 "infrastructure/settings S3 configuration",
             )
 
+        image_builders = getattr(cloud, "image_builders", []) or []
+        if Settings.PRAKTIKA_BASE_VENV and image_builders:
+            venv_names = {
+                venv.name
+                for builder in image_builders
+                for venv in getattr(builder, "prebuilt_venvs", []) or []
+                if getattr(venv, "name", "")
+            }
+            expected = Settings.PRAKTIKA_BASE_VENV
+            cls.evaluate_check_simple(
+                any(
+                    name == expected or name.endswith(f"-{expected}")
+                    for name in venv_names
+                ),
+                f"Setting PRAKTIKA_BASE_VENV [{expected}] must match one of "
+                f"ImageBuilder prebuilt venv names [{', '.join(sorted(venv_names))}]",
+            )
+
     @classmethod
     def validate(cls):
         print("---Start validating Pipeline and settings---")
