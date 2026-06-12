@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import importlib.util
 import json
 import logging
@@ -10,6 +11,29 @@ import sys
 import threading
 import time
 from pathlib import Path
+
+FIRST_BOOT_RESERVED_CAPACITY_LOG_INTERVAL_S = 60 * 60
+
+
+class LogRateLimiter:
+    def __init__(
+        self,
+        interval_s: int | float,
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        self._interval_s = max(0, interval_s)
+        self._clock = clock
+        self._last_log_at: float | None = None
+
+    def should_log(self) -> bool:
+        now = self._clock()
+        if (
+            self._last_log_at is None
+            or now - self._last_log_at >= self._interval_s
+        ):
+            self._last_log_at = now
+            return True
+        return False
 
 
 def resolve_praktika_base_venv(clone_dir: str | os.PathLike[str], log) -> str:
@@ -122,6 +146,7 @@ def try_scale_in_if_idle(
     region: str,
     instance_id: str,
     has_received_message: bool = True,
+    reserved_capacity_log_limiter: LogRateLimiter | None = None,
     log,
 ) -> bool:
     if not region or not instance_id:
@@ -138,11 +163,15 @@ def try_scale_in_if_idle(
             int(instance_tag("praktika_capacity_reserve", token=token) or "0"),
         )
         if capacity_reserve and not has_received_message:
-            log.info(
-                "Queue %s is idle, preserving reserved instance %s until first job",
-                queue_name,
-                instance_id,
-            )
+            if (
+                reserved_capacity_log_limiter is None
+                or reserved_capacity_log_limiter.should_log()
+            ):
+                log.info(
+                    "Queue %s is idle, preserving reserved instance %s until first job",
+                    queue_name,
+                    instance_id,
+                )
             return False
         attrs = sqs.get_queue_attributes(
             QueueUrl=queue_url,

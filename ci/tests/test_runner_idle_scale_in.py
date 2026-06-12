@@ -148,3 +148,68 @@ def test_try_scale_in_if_idle_preserves_new_capacity_reserve_instance(monkeypatc
     )
     assert calls["terminate"] == 0
     assert calls["shutdown"] == 0
+
+
+def test_try_scale_in_if_idle_throttles_capacity_reserve_preserve_log(monkeypatch):
+    monkeypatch.setattr(common, "imds_token", lambda: "token")
+    tags = {
+        "praktika_scaling": "auto",
+        "praktika_asg": "arm-2xsmall",
+        "praktika_capacity_reserve": "2",
+    }
+    monkeypatch.setattr(
+        common, "instance_tag", lambda name, token=None: tags.get(name, "")
+    )
+    monkeypatch.setattr(
+        "boto3.client",
+        lambda service_name, region_name=None: (_ for _ in ()).throw(
+            AssertionError("boto3 client should not be created")
+        ),
+    )
+
+    now = [1000.0]
+    limiter = common.LogRateLimiter(60 * 60, clock=lambda: now[0])
+
+    class _Log:
+        def __init__(self):
+            self.messages = []
+
+        def info(self, *args, **kwargs):
+            self.messages.append(args)
+
+        def exception(self, *args, **kwargs):
+            raise AssertionError("exception log should not be called")
+
+    log = _Log()
+
+    for _ in range(2):
+        assert (
+            common.try_scale_in_if_idle(
+                sqs=None,
+                queue_url="queue-url",
+                queue_name="arm-2xsmall",
+                region="eu-north-1",
+                instance_id="i-123",
+                has_received_message=False,
+                reserved_capacity_log_limiter=limiter,
+                log=log,
+            )
+            is False
+        )
+    assert len(log.messages) == 1
+
+    now[0] += 60 * 60
+    assert (
+        common.try_scale_in_if_idle(
+            sqs=None,
+            queue_url="queue-url",
+            queue_name="arm-2xsmall",
+            region="eu-north-1",
+            instance_id="i-123",
+            has_received_message=False,
+            reserved_capacity_log_limiter=limiter,
+            log=log,
+        )
+        is False
+    )
+    assert len(log.messages) == 2

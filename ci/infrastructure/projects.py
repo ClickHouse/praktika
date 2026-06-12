@@ -41,7 +41,7 @@ def _runtime_prebuilt_venvs():
 
 def _image_builders():
     ci_version = "1.0.0"
-    ubuntu_ci_version = "1.0.1"
+    ubuntu_ci_version = "1.0.2"
 
     return [
         _create_awslinux_image_builder_config(
@@ -142,11 +142,11 @@ _runner_pools = [
                 "#!/usr/bin/env bash",
                 "set -xeuo pipefail",
                 "",
-                "# Update the controller if changed (to test new version w/o image rebuild)",
-                f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages",
                 "# Add any host customization you need above this line.",
                 "/usr/local/bin/praktika-configure-cloudwatch-agent",
                 "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/praktika/amazon-cloudwatch-agent.json -s",
+                "# Update the controller if changed (to test new version w/o image rebuild)",
+                f"python3.12 -m pip install --ignore-installed {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages",
                 (
                     f"/opt/praktika/base-venvs/{_RUNTIME_BASE_VENV}/bin/python "
                     f"-m pip install --force-reinstall {_PRAKTIKA_WHL}"

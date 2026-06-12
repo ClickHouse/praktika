@@ -9,7 +9,9 @@ import subprocess
 
 from praktika_controller.common import (
     CancelWatchdog,
+    FIRST_BOOT_RESERVED_CAPACITY_LOG_INTERVAL_S,
     Heartbeat,
+    LogRateLimiter,
     VisibilityHeartbeat,
     clone_repo,
     configure_logging,
@@ -259,6 +261,11 @@ def poll():
     log.info("Role=%s polling %s (visibility_timeout=%ss)", role, queue_url, visibility)
 
     has_received_message = False
+    # SQS long polling is capped at 20s; keep polling responsive and throttle
+    # the pre-first-job reserved-capacity idle log separately.
+    reserved_capacity_log_limiter = LogRateLimiter(
+        FIRST_BOOT_RESERVED_CAPACITY_LOG_INTERVAL_S
+    )
     while True:
         resp = sqs.receive_message(
             QueueUrl=queue_url,
@@ -274,6 +281,7 @@ def poll():
                 region=REGION,
                 instance_id=INSTANCE_ID,
                 has_received_message=has_received_message,
+                reserved_capacity_log_limiter=reserved_capacity_log_limiter,
                 log=log,
             ):
                 return

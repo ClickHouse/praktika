@@ -100,6 +100,10 @@ pipeline.
 **Observability**
 - **Log export for orchestrator and runners** — live tail and persisted
   archive, accessible without SSM
+- **Infra watch agent** — continuously monitor SQS queues, runner and
+  orchestrator pools, Lambda functions, CI DB, and other managed services;
+  log abnormal state, health regressions, and infrastructure problems for
+  follow-up
 - **CI DB provisioning** — bring the ClickHouse cluster and schema under
   praktika-managed infrastructure (today only the writer side ships with
   praktika; the cluster is provisioned out-of-band)

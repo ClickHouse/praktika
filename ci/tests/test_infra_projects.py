@@ -782,13 +782,23 @@ def test_ubuntu_runner_pool_uses_ubuntu_image_builder():
 
     assert pool.image_builder is builder
     assert builder.ami_name == "ci-ubuntu-x86_64-{{ imagebuilder:buildDate }}"
-    assert builder.image_recipe_version == "1.0.1"
+    assert builder.image_recipe_version == "1.0.2"
+    assert builder.image_tests_enabled is True
+    assert builder.image_tests_timeout_minutes == 60
     assert builder.instance_types == ["t3.small"]
     assert [component["name"] for component in builder.inline_components] == [
         "praktika-controller-ubuntu-setup",
         "praktika-controller-ubuntu-runtime",
         "praktika-controller",
+        "praktika-controller-ubuntu-image-test",
     ]
+    test_component = builder.inline_components[3]
+    test_commands = "\n".join(test_component["commands"])
+    assert test_component["phase"] == "test"
+    assert "python3.12 -m pip show praktika-controller" in test_commands
+    assert "docker buildx version" in test_commands
+    assert "amazon-cloudwatch-agent-ctl" in test_commands
+    assert "/opt/praktika/base-venvs/praktika-runtime/bin/python" in test_commands
     assert builder.parent_image_resolver is not None
     assert "apt-get install --yes --no-install-recommends" in setup_commands
     assert "amazoncloudwatch-agent/ubuntu/${deb_arch}" in setup_commands
@@ -800,6 +810,8 @@ def test_ubuntu_runner_pool_uses_ubuntu_image_builder():
     assert "insecure-registries" not in setup_commands
     assert "dnf install" not in setup_commands
     assert any("--break-system-packages" in command for command in runtime_commands)
+    assert any("--ignore-installed" in command for command in runtime_commands)
+    assert not any("--force-reinstall" in command for command in runtime_commands)
     assert [lt.name for lt in builder.launch_templates] == [
         "amd-2xsmall-ubuntu-lt"
     ]
@@ -910,6 +922,21 @@ def test_non_base_runner_pools_patch_praktika_into_shared_base_venv():
             "systemctl enable --now praktika-controller"
             in pool.launch_template.user_data
         )
+
+    ubuntu = next(pool for pool in _runner_pools if pool.name == "amd-2xsmall-ubuntu")
+    ubuntu_user_data = ubuntu.launch_template.user_data
+    assert (
+        ubuntu_user_data.index("praktika-configure-cloudwatch-agent")
+        < ubuntu_user_data.index("praktika_controller-0.1.1-py3-none-any.whl")
+    )
+    assert (
+        "python3.12 -m pip install --ignore-installed"
+        in ubuntu.launch_template.user_data
+    )
+    assert (
+        "python3.12 -m pip install --force-reinstall"
+        not in ubuntu.launch_template.user_data
+    )
 
 
 def test_shared_arm64_images_are_used_by_runner_and_orchestrator_pools():

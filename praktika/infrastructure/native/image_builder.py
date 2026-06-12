@@ -107,8 +107,12 @@ def _controller_runtime_component(
     *,
     controller_package: str,
     break_system_packages: bool = False,
+    controller_install_option: str = "--force-reinstall",
 ):
     pip_args = " --break-system-packages" if break_system_packages else ""
+    controller_pip_args = (
+        f" {controller_install_option}" if controller_install_option else ""
+    )
     return {
         "name": name,
         "platform": "Linux",
@@ -116,7 +120,7 @@ def _controller_runtime_component(
         "commands": [
             "mkdir -p /opt/praktika /opt/praktika/work",
             f"python3.12 -m pip install boto3 pyjwt cryptography requests{pip_args}",
-            f"python3.12 -m pip install --force-reinstall {controller_package} --break-system-packages",
+            f"python3.12 -m pip install{controller_pip_args} {controller_package}{pip_args}",
             "ln -sf /usr/bin/python3.12 /usr/local/bin/python3",
         ],
     }
@@ -214,6 +218,56 @@ WantedBy=multi-user.target
     }
 
 
+def _image_test_component(
+    name: str,
+    *,
+    with_docker: bool,
+    prebuilt_venvs: List[ImageBuilder.PrebuiltVenv],
+):
+    commands = [
+        "test -x /usr/local/bin/praktika-controller",
+        "test -x /usr/local/bin/praktika-controller-start",
+        "test -x /usr/local/bin/praktika-configure-cloudwatch-agent",
+        "bash -n /usr/local/bin/praktika-controller-start",
+        "bash -n /usr/local/bin/praktika-configure-cloudwatch-agent",
+        "systemctl cat praktika-controller",
+        "test -x /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl",
+        "aws --version",
+        "git --version",
+        "gh --version",
+        "jq --version",
+        "python3.12 --version",
+        "python3.12 -m pip --version",
+        "python3.12 -m pip show praktika-controller",
+        'python3.12 -c "import boto3, jwt, cryptography, requests"',
+    ]
+    if with_docker:
+        commands.extend(
+            [
+                "docker --version",
+                "docker buildx version",
+                "systemctl is-enabled docker",
+                "test -s /etc/docker/daemon.json",
+            ]
+        )
+    for venv in prebuilt_venvs:
+        path = venv.path or f"/opt/praktika/base-venvs/{venv.name}"
+        commands.extend(
+            [
+                f"test -x {path}/bin/python",
+                f"{path}/bin/python -m pip show praktika",
+                f'{path}/bin/python -c "import boto3, jwt, cryptography, requests, pytest"',
+            ]
+        )
+    return {
+        "name": name,
+        "platform": "Linux",
+        "phase": "test",
+        "description": "Validate the baked Praktika runner image",
+        "commands": commands,
+    }
+
+
 def create_praktika_venv_config(
     name: str, praktika_version: str
 ) -> ImageBuilder.PrebuiltVenv:
@@ -284,14 +338,22 @@ def create_ubuntu_image_builder_config(
         name=name,
         image_recipe_version=version,
         parent_image_resolver=parent_image_resolver,
+        image_tests_enabled=True,
+        image_tests_timeout_minutes=60,
         inline_components=[
             _ubuntu_setup_component("praktika-controller-ubuntu-setup", with_docker=True),
             _controller_runtime_component(
                 "praktika-controller-ubuntu-runtime",
                 controller_package=controller_package,
                 break_system_packages=True,
+                controller_install_option="--ignore-installed",
             ),
             _praktika_controller_component("praktika-controller"),
+            _image_test_component(
+                "praktika-controller-ubuntu-image-test",
+                with_docker=True,
+                prebuilt_venvs=list(prebuilt_venvs or []),
+            ),
             *(components or []),
         ],
         prebuilt_venvs=list(prebuilt_venvs or []),

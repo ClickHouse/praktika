@@ -343,6 +343,63 @@ def test_image_builder_pipeline_update_is_skipped_when_unchanged(monkeypatch):
     assert update_called["value"] is False
 
 
+def test_image_builder_pipeline_can_enable_image_tests(monkeypatch):
+    builder = ImageBuilder.Config(
+        name="orchestrator-arm64-image",
+        region="eu-north-1",
+        enabled=True,
+        image_tests_enabled=True,
+        image_tests_timeout_minutes=90,
+    )
+    captured = {}
+
+    class _Client:
+        def create_image_pipeline(self, **req):
+            captured.update(req)
+            return {"imagePipelineArn": "arn:pipeline"}
+
+    monkeypatch.setattr(builder, "_client", lambda: _Client())
+
+    arn = builder._get_or_create_pipeline_arn("arn:recipe", "arn:infra", "arn:dist")
+
+    assert arn == "arn:pipeline"
+    assert captured["imageTestsConfiguration"] == {
+        "imageTestsEnabled": True,
+        "timeoutMinutes": 90,
+    }
+
+
+def test_inline_component_can_use_test_phase(monkeypatch):
+    builder = ImageBuilder.Config(
+        name="base-runner-x86_64-image",
+        region="eu-north-1",
+        image_recipe_version="1.2.3",
+        inline_components=[
+            {
+                "name": "praktika-base-runner-image-test",
+                "platform": "Linux",
+                "phase": "test",
+                "commands": ["test -x /usr/local/bin/praktika-controller"],
+            }
+        ],
+    )
+    captured = {}
+
+    class _Client:
+        def list_components(self, **req):
+            return {"componentVersionList": []}
+
+        def create_component(self, **req):
+            captured.update(req)
+            return {"componentBuildVersionArn": "arn:component/test/1.2.3/1"}
+
+    monkeypatch.setattr(builder, "_client", lambda: _Client())
+
+    assert builder._ensure_inline_components() == ["arn:component/test/1.2.3/1"]
+    assert "  - name: test" in captured["data"]
+    assert "test -x /usr/local/bin/praktika-controller" in captured["data"]
+
+
 def test_launch_template_deploy_skips_when_image_builder_has_no_images(monkeypatch):
     lt = LaunchTemplate.Config(
         name="workflow-orchestrator-lt",

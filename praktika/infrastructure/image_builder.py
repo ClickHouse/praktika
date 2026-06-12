@@ -50,6 +50,8 @@ class ImageBuilder:
 
         enabled: bool = True
         schedule_expression: str = ""
+        image_tests_enabled: Optional[bool] = None
+        image_tests_timeout_minutes: int = 60
 
         recipe: Dict[str, Any] = field(default_factory=dict)
         infrastructure_configuration: Dict[str, Any] = field(default_factory=dict)
@@ -131,14 +133,20 @@ class ImageBuilder:
             arn_name = name.replace("_", "-")
             return f"arn:aws:imagebuilder:{self.region}:{self._account_id()}:{resource_type}/{arn_name}"
 
-        def _inline_component_document(self, commands: List[str]) -> str:
+        def _inline_component_document(
+            self,
+            commands: List[str],
+            *,
+            phase: str = "build",
+        ) -> str:
             escaped = [c.replace('"', '\\"') for c in (commands or [])]
+            component_phase = (phase or "build").strip() or "build"
             lines = [
                 "name: InlineInstall",
                 "description: Inline install commands",
                 "schemaVersion: 1.0",
                 "phases:",
-                "  - name: build",
+                f"  - name: {component_phase}",
                 "    steps:",
                 "      - name: install",
                 "        action: ExecuteBash",
@@ -207,6 +215,7 @@ class ImageBuilder:
                     commands = [str(x) for x in spec.get("commands") if str(x).strip()]
                 elif spec.get("script"):
                     commands = self._split_commands(str(spec.get("script")))
+                phase = str(spec.get("phase", "build")).strip() or "build"
 
                 if not name or not version:
                     raise ValueError(
@@ -248,7 +257,7 @@ class ImageBuilder:
 
                 data = spec.get("data")
                 if not data:
-                    data = self._inline_component_document(commands)
+                    data = self._inline_component_document(commands, phase=phase)
 
                 req: Dict[str, Any] = {
                     "name": name,
@@ -746,6 +755,11 @@ class ImageBuilder:
                     "scheduleExpression": self.schedule_expression,
                     "pipelineExecutionStartCondition": "EXPRESSION_MATCH_ONLY",
                 }
+            if self.image_tests_enabled is not None:
+                req["imageTestsConfiguration"] = {
+                    "imageTestsEnabled": bool(self.image_tests_enabled),
+                    "timeoutMinutes": self.image_tests_timeout_minutes,
+                }
 
             try:
                 resp = client.create_image_pipeline(**req)
@@ -766,6 +780,10 @@ class ImageBuilder:
                 }
                 if "schedule" in req:
                     update_req["schedule"] = req["schedule"]
+                if "imageTestsConfiguration" in req:
+                    update_req["imageTestsConfiguration"] = req[
+                        "imageTestsConfiguration"
+                    ]
                 current = client.get_image_pipeline(imagePipelineArn=arn).get(
                     "imagePipeline", {}
                 )
@@ -781,6 +799,10 @@ class ImageBuilder:
                 }
                 if current.get("schedule"):
                     current_req["schedule"] = current.get("schedule")
+                if "imageTestsConfiguration" in req:
+                    current_req["imageTestsConfiguration"] = current.get(
+                        "imageTestsConfiguration"
+                    )
                 desired_req = {
                     "imageRecipeArn": recipe_arn,
                     "infrastructureConfigurationArn": infra_arn,
@@ -789,9 +811,14 @@ class ImageBuilder:
                 }
                 if "schedule" in req:
                     desired_req["schedule"] = req["schedule"]
+                if "imageTestsConfiguration" in req:
+                    desired_req["imageTestsConfiguration"] = req[
+                        "imageTestsConfiguration"
+                    ]
                 if self._same_config(current_req, desired_req):
                     return arn
                 client.update_image_pipeline(**update_req)
+                self.ext["image_pipeline_updated"] = True
                 return arn
 
         def fetch(self):
@@ -945,6 +972,8 @@ class ImageBuilder:
             pipeline_arn = self._get_or_create_pipeline_arn(
                 recipe_arn, infra_arn, dist_arn
             )
+            if self.ext.pop("image_pipeline_updated", False):
+                changed = True
             if self.ext.get("image_pipeline_arn") != pipeline_arn:
                 changed = True
 
