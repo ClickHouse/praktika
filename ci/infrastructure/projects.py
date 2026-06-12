@@ -39,8 +39,20 @@ def _runtime_prebuilt_venvs():
     ]
 
 
+def _custom_image_tests():
+    return [
+        Components.create_image_test_component(
+            name="praktika-project-image-test",
+            commands=[
+                "test -d /opt/praktika/work",
+                "test -w /opt/praktika/work",
+            ],
+        ),
+    ]
+
+
 def _image_builders():
-    ci_version = "1.0.0"
+    ci_version = "1.0.2"
     ubuntu_ci_version = "1.0.2"
 
     return [
@@ -63,6 +75,7 @@ def _image_builders():
             version=ubuntu_ci_version,
             controller_package=_PRAKTIKA_CONTROLLER_WHL,
             prebuilt_venvs=_runtime_prebuilt_venvs(),
+            components=_custom_image_tests(),
             instance_types=["t3.small"],
         ),
     ]

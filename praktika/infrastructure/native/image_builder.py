@@ -268,6 +268,22 @@ def _image_test_component(
     }
 
 
+def create_image_test_component(
+    name: str,
+    commands: List[str],
+    *,
+    description: str = "Validate custom image requirements",
+    platform: str = "Linux",
+) -> Dict[str, Any]:
+    return {
+        "name": name,
+        "platform": platform,
+        "phase": "test",
+        "description": description,
+        "commands": [str(command) for command in commands if str(command).strip()],
+    }
+
+
 def create_praktika_venv_config(
     name: str, praktika_version: str
 ) -> ImageBuilder.PrebuiltVenv:

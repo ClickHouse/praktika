@@ -3,6 +3,7 @@ from .configs import lambda_gh_trigger_config, report_page_config
 from .github_token_minter import GitHubTokenMinter
 from .image_builder import (
     create_awslinux_image_builder_config,
+    create_image_test_component,
     create_praktika_venv_config,
     create_ubuntu_image_builder_config,
 )
@@ -27,4 +28,5 @@ class Components:
     create_ubuntu_image_builder_config = staticmethod(
         create_ubuntu_image_builder_config
     )
+    create_image_test_component = staticmethod(create_image_test_component)
     create_praktika_venv_config = staticmethod(create_praktika_venv_config)

@@ -519,12 +519,22 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                     "{current_praktika_version()}",
                 ),
             ]
+            custom_image_tests = [
+                Components.create_image_test_component(
+                    name="project-image-test",
+                    commands=[
+                        "test -d /opt/praktika/work",
+                        "test -w /opt/praktika/work",
+                    ],
+                ),
+            ]
             return [
                 Components.{answers.image_builder_factory}(
                     name="ci-arm64-image",
                     version=image_recipe_version,
                     controller_package=_PRAKTIKA_CONTROLLER_WHL,
                     prebuilt_venvs=prebuilt_venvs,
+                    components=custom_image_tests,
                     instance_types=["t4g.small"],
                 ),
                 Components.{answers.image_builder_factory}(
@@ -532,6 +542,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                     version=image_recipe_version,
                     controller_package=_PRAKTIKA_CONTROLLER_WHL,
                     prebuilt_venvs=prebuilt_venvs,
+                    components=custom_image_tests,
                     instance_types=["t3.small"],
                 ),
             ]

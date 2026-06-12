@@ -281,6 +281,9 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     assert f'min_praktika_version="{current_praktika_version()}"' in infra_text
     assert "# until published in pip" in infra_text
     assert "Components.create_praktika_venv_config(" in infra_text
+    assert "Components.create_image_test_component(" in infra_text
+    assert 'name="project-image-test"' in infra_text
+    assert "components=custom_image_tests" in infra_text
     assert "PRAKTIKA_BASE_VENV," in infra_text
     assert "_RUNTIME_BASE_VENV" not in infra_text
     assert f'"{current_praktika_version()}"' in infra_text
@@ -431,7 +434,7 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
         "amd-medium": 50,
     }
     assert set(builders_by_arch) == {"arm64", "x86_64"}
-    assert all(len(builder.inline_components) == 3 for builder in cloud.image_builders)
+    assert all(len(builder.inline_components) == 4 for builder in cloud.image_builders)
     project_slug = tmp_path.name.lower().replace("_", "-")
     assert {
         arch: builder.instance_profile_name
@@ -455,6 +458,13 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
             f"{project_slug}-praktika-controller-setup",
             f"{project_slug}-praktika-controller-runtime",
             f"{project_slug}-praktika-controller",
+            f"{project_slug}-project-image-test",
+        ]
+        project_test_component = builder.inline_components[3]
+        assert project_test_component["phase"] == "test"
+        assert project_test_component["commands"] == [
+            "test -d /opt/praktika/work",
+            "test -w /opt/praktika/work",
         ]
         agent_component = next(
             component
@@ -479,7 +489,7 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
         )
         assert (
             builder.prebuilt_venvs[0].name
-            == f"{project_slug}-praktika-runtime-{current_praktika_version()}"
+            == f"praktika-runtime-{current_praktika_version()}"
         )
         assert {
             "boto3",
@@ -572,6 +582,7 @@ def test_run_init_interactive_supports_oss_storage_and_ubuntu_images(
     )
     assert "Components.create_ubuntu_image_builder_config(" in infra_text
     assert infra_text.count("Components.create_ubuntu_image_builder_config(") == 2
+    assert "Components.create_image_test_component(" in infra_text
     assert "Components.create_awslinux_image_builder_config(" not in infra_text
     assert 'name="artifacts-eu-north-1"' in infra_text
     assert "public=True" in infra_text
@@ -613,7 +624,41 @@ def test_run_init_interactive_supports_oss_storage_and_ubuntu_images(
         f"{project_slug}-praktika-controller-ubuntu-setup",
         f"{project_slug}-praktika-controller-ubuntu-runtime",
         f"{project_slug}-praktika-controller-ubuntu-image-test",
+        f"{project_slug}-project-image-test",
     }
+
+    captured_component_names = []
+
+    class _Client:
+        def list_components(self, **req):
+            return {"componentVersionList": []}
+
+        def create_component(self, **req):
+            captured_component_names.append(req["name"])
+            return {
+                "componentBuildVersionArn": (
+                    f"arn:component/{req['name']}/{req['semanticVersion']}/1"
+                )
+            }
+
+    for builder in cloud.image_builders:
+        monkeypatch.setattr(builder, "_client", lambda: _Client())
+        builder._ensure_inline_components()
+
+    assert all("." not in name for name in captured_component_names)
+    assert f"{project_slug}-project-image-test" in captured_component_names
+    assert {
+        (
+            f"{project_slug}-ci-arm64-image-"
+            f"praktika-runtime-"
+            f"{current_praktika_version().replace('.', '-')}-venv"
+        ),
+        (
+            f"{project_slug}-ci-x86_64-image-"
+            f"praktika-runtime-"
+            f"{current_praktika_version().replace('.', '-')}-venv"
+        ),
+    }.issubset(captured_component_names)
 
 
 def test_run_init_interactive_auto_creates_missing_settings_and_workflow(

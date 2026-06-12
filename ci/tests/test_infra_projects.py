@@ -265,7 +265,7 @@ def test_infrastructure_deploy_validation_rejects_missing_base_venv(
 
     out = capsys.readouterr().out
     assert "Setting PRAKTIKA_BASE_VENV [praktika-runtime]" in out
-    assert "silk-other-runtime" in out
+    assert "other-runtime" in out
 
 
 def test_cloud_config_prefixes_embedded_pool_resources():
@@ -508,7 +508,9 @@ def test_cloud_config_prefixes_all_top_level_resource_types():
                     {
                         "name": "builder-setup",
                         "platform": "Linux",
-                        "commands": ["echo hi"],
+                        "commands": [
+                            "test -x /opt/praktika/base-venvs/runtime/bin/python"
+                        ],
                     }
                 ],
                 prebuilt_venvs=[
@@ -567,7 +569,43 @@ def test_cloud_config_prefixes_all_top_level_resource_types():
     assert builder.vpc_name == "prefix-check-ci"
     assert builder.security_group_names == ["prefix-check-ci-sg"]
     assert builder.inline_components[0]["name"] == "prefix-check-builder-setup"
-    assert builder.prebuilt_venvs[0].name == "prefix-check-runtime"
+    assert builder.inline_components[0]["commands"] == [
+        "test -x /opt/praktika/base-venvs/runtime/bin/python"
+    ]
+    assert builder.prebuilt_venvs[0].name == "runtime"
+
+
+def test_cloud_project_namespace_keeps_image_builder_venv_paths_project_local():
+    cloud = CloudInfrastructure.Config(
+        name="silk",
+        image_builders=[
+            ImageBuilder.Config(
+                name="ci-ubuntu-x86_64-image",
+                inline_components=[
+                    {
+                        "name": "praktika-controller-ubuntu-image-test",
+                        "platform": "Linux",
+                        "phase": "test",
+                        "commands": [
+                            "test -x /opt/praktika/base-venvs/praktika-runtime-0.1.2/bin/python",
+                            "/opt/praktika/base-venvs/praktika-runtime-0.1.2/bin/python -m pip show praktika",
+                        ],
+                    }
+                ],
+                prebuilt_venvs=[
+                    ImageBuilder.PrebuiltVenv(name="praktika-runtime-0.1.2")
+                ],
+            )
+        ],
+    )
+
+    builder = cloud.image_builders[0]
+
+    assert builder.prebuilt_venvs[0].name == "praktika-runtime-0.1.2"
+    assert builder.inline_components[0]["commands"] == [
+        "test -x /opt/praktika/base-venvs/praktika-runtime-0.1.2/bin/python",
+        "/opt/praktika/base-venvs/praktika-runtime-0.1.2/bin/python -m pip show praktika",
+    ]
 
 
 def test_cloud_deploy_runs_lambdas_before_image_backed_compute(monkeypatch):
@@ -791,6 +829,7 @@ def test_ubuntu_runner_pool_uses_ubuntu_image_builder():
         "praktika-controller-ubuntu-runtime",
         "praktika-controller",
         "praktika-controller-ubuntu-image-test",
+        "praktika-project-image-test",
     ]
     test_component = builder.inline_components[3]
     test_commands = "\n".join(test_component["commands"])
@@ -799,6 +838,12 @@ def test_ubuntu_runner_pool_uses_ubuntu_image_builder():
     assert "docker buildx version" in test_commands
     assert "amazon-cloudwatch-agent-ctl" in test_commands
     assert "/opt/praktika/base-venvs/praktika-runtime/bin/python" in test_commands
+    custom_test_component = builder.inline_components[4]
+    assert custom_test_component["phase"] == "test"
+    assert custom_test_component["commands"] == [
+        "test -d /opt/praktika/work",
+        "test -w /opt/praktika/work",
+    ]
     assert builder.parent_image_resolver is not None
     assert "apt-get install --yes --no-install-recommends" in setup_commands
     assert "amazoncloudwatch-agent/ubuntu/${deb_arch}" in setup_commands
@@ -900,7 +945,11 @@ def test_base_runner_pool_uses_base_image_without_bootstrap_user_data():
 
 
 def test_non_base_runner_pools_patch_praktika_into_shared_base_venv():
-    for pool_name in ["arm-2xsmall", "amd-2xsmall", "amd-2xsmall-ubuntu"]:
+    for pool_name in [
+        "arm-2xsmall",
+        "amd-2xsmall",
+        "amd-2xsmall-ubuntu",
+    ]:
         pool = next(pool for pool in _runner_pools if pool.name == pool_name)
 
         assert (

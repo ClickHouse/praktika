@@ -2,6 +2,11 @@ import pytest
 
 from praktika.infrastructure.image_builder import ImageBuilder
 from praktika.infrastructure.launch_template import LaunchTemplate
+from praktika.infrastructure.native.image_builder import (
+    create_image_test_component,
+    create_praktika_venv_config,
+    create_ubuntu_image_builder_config,
+)
 from praktika.infrastructure.native.orchestrator_pool import OrchestratorPool
 from praktika.infrastructure.native.runner_pool import RunnerPool
 
@@ -460,6 +465,66 @@ def test_prebuilt_venv_component_name_sanitizes_dotted_runtime_version(
         == "silk-ci-arm64-image-silk-praktika-runtime-0-1-1-venv"
     )
     assert "/opt/praktika/base-venvs/silk-praktika-runtime-0.1.1" in captured["data"]
+
+
+def test_create_image_test_component_builds_test_phase_component():
+    component = create_image_test_component(
+        name="project-image-test",
+        commands=["test -d /opt/praktika/work", "", "python3.12 --version"],
+        description="Project-specific image checks",
+    )
+
+    assert component == {
+        "name": "project-image-test",
+        "platform": "Linux",
+        "phase": "test",
+        "description": "Project-specific image checks",
+        "commands": ["test -d /opt/praktika/work", "python3.12 --version"],
+    }
+
+
+def test_ubuntu_image_builder_factory_uses_valid_component_names(monkeypatch):
+    builder = create_ubuntu_image_builder_config(
+        name="silk-ci-arm64-image",
+        version="1.2.3",
+        controller_package="praktika-controller",
+        prebuilt_venvs=[create_praktika_venv_config("praktika-runtime-0.1.2", "0.1.2")],
+        components=[
+            create_image_test_component(
+                name="project.image/test",
+                commands=["test -d /opt/praktika/work"],
+            )
+        ],
+        instance_types=["t4g.small"],
+    )
+    captured_names = []
+
+    class _Client:
+        def list_components(self, **req):
+            return {"componentVersionList": []}
+
+        def create_component(self, **req):
+            captured_names.append(req["name"])
+            return {
+                "componentBuildVersionArn": (
+                    f"arn:component/{req['name']}/{req['semanticVersion']}/1"
+                )
+            }
+
+    monkeypatch.setattr(builder, "_client", lambda: _Client())
+
+    builder._ensure_inline_components()
+
+    assert captured_names == [
+        "praktika-controller-ubuntu-setup",
+        "praktika-controller-ubuntu-runtime",
+        "praktika-controller",
+        "praktika-controller-ubuntu-image-test",
+        "project-image-test",
+        "silk-ci-arm64-image-praktika-runtime-0-1-2-venv",
+    ]
+    assert all("." not in name for name in captured_names)
+    assert builder.image_tests_enabled is True
 
 
 def test_launch_template_deploy_skips_when_image_builder_has_no_images(monkeypatch):
