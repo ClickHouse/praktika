@@ -8,26 +8,59 @@ _PRAKTIKA_CONTROLLER_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.c
 _RUNTIME_BASE_VENV = "praktika-runtime"
 
 
+def _component_factory(*names):
+    for name in names:
+        factory = getattr(Components, name, None)
+        if factory:
+            return factory
+    raise AttributeError(f"Components has none of these factories: {names}")
+
+
+_create_praktika_venv_config = _component_factory(
+    "create_praktika_venv_config",
+    "praktika_venv_config",
+)
+_create_awslinux_image_builder_config = _component_factory(
+    "create_awslinux_image_builder_config",
+    "image_builder_config",
+)
+_create_ubuntu_image_builder_config = _component_factory(
+    "create_ubuntu_image_builder_config",
+    "ubuntu_image_builder_config",
+)
+
+
 def _runtime_prebuilt_venvs():
     return [
-        Components.praktika_venv_config(_RUNTIME_BASE_VENV, _PRAKTIKA_BASE_VERSION),
+        _create_praktika_venv_config(
+            _RUNTIME_BASE_VENV,
+            _PRAKTIKA_BASE_VERSION,
+        ),
     ]
 
 
 def _image_builders():
     ci_version = "1.0.0"
+    ubuntu_ci_version = "1.0.1"
 
     return [
-        Components.image_builder_config(
+        _create_awslinux_image_builder_config(
             name="ci-arm64-image",
             version=ci_version,
             controller_package=_PRAKTIKA_CONTROLLER_WHL,
             prebuilt_venvs=_runtime_prebuilt_venvs(),
             instance_types=["t4g.small"],
         ),
-        Components.image_builder_config(
+        _create_awslinux_image_builder_config(
             name="ci-x86_64-image",
             version=ci_version,
+            controller_package=_PRAKTIKA_CONTROLLER_WHL,
+            prebuilt_venvs=_runtime_prebuilt_venvs(),
+            instance_types=["t3.small"],
+        ),
+        _create_ubuntu_image_builder_config(
+            name="ci-ubuntu-x86_64-image",
+            version=ubuntu_ci_version,
             controller_package=_PRAKTIKA_CONTROLLER_WHL,
             prebuilt_venvs=_runtime_prebuilt_venvs(),
             instance_types=["t3.small"],
@@ -37,7 +70,6 @@ def _image_builders():
 
 _IMAGE_BUILDERS = _image_builders()
 _IMAGE_BUILDERS_BY_NAME = {builder.name: builder for builder in _IMAGE_BUILDERS}
-_gh_token_minter = Components.GitHubTokenMinter()
 
 _runner_pools = [
     Components.RunnerPool(
@@ -85,6 +117,32 @@ _runner_pools = [
                 "set -xeuo pipefail",
                 "",
                 "# Update the controller if changed (to test new version w/o inage rebuild)",
+                f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages",
+                "# Add any host customization you need above this line.",
+                "/usr/local/bin/praktika-configure-cloudwatch-agent",
+                "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/praktika/amazon-cloudwatch-agent.json -s",
+                (
+                    f"/opt/praktika/base-venvs/{_RUNTIME_BASE_VENV}/bin/python "
+                    f"-m pip install --force-reinstall {_PRAKTIKA_WHL}"
+                ),
+                "systemctl enable --now praktika-controller",
+                "",
+            ]
+        ),
+    ),
+    Components.RunnerPool(
+        name="amd-2xsmall-ubuntu",
+        instance_type="t3.small",
+        scaling=Components.RunnerPool.Scaling.Auto,
+        size=0,
+        max_size=10,
+        image_builder=_IMAGE_BUILDERS_BY_NAME["ci-ubuntu-x86_64-image"],
+        user_data="\n".join(
+            [
+                "#!/usr/bin/env bash",
+                "set -xeuo pipefail",
+                "",
+                "# Update the controller if changed (to test new version w/o image rebuild)",
                 f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages",
                 "# Add any host customization you need above this line.",
                 "/usr/local/bin/praktika-configure-cloudwatch-agent",
@@ -161,7 +219,7 @@ PROJECTS = [
             Components.report_page_config,
         ],
         image_builders=_IMAGE_BUILDERS,
-        github_token_minters=[_gh_token_minter],
+        github_token_minters=[Components.GitHubTokenMinter()],
         orchestrator_pools=[_orchestrator_pool, _orchestrator_pool_base],
         runner_pools=_runner_pools,
         cidb_cluster=_cidb_cluster,

@@ -43,14 +43,79 @@ def _setup_component(name: str, *, with_docker: bool):
     }
 
 
-def _controller_runtime_component(name: str, *, controller_package: str):
+def _ubuntu_setup_component(name: str, *, with_docker: bool):
+    commands = [
+        "export DEBIAN_FRONTEND=noninteractive",
+        "apt-get update",
+        "DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends apt-transport-https at atop binfmt-support build-essential ca-certificates curl git gnupg jq lsb-release moreutils pigz python3-dev python3-pip python3.12 python3.12-venv qemu-user-static ripgrep unzip wget zstd",
+        "ln -sf /usr/bin/python3.12 /usr/local/bin/python3",
+        "mkdir -p -m 755 /etc/apt/keyrings /etc/apt/sources.list.d",
+        "out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg && cat $out > /etc/apt/keyrings/githubcli-archive-keyring.gpg && rm -f $out",
+        "chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg",
+        "echo \"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\" > /etc/apt/sources.list.d/github-cli.list",
+        "apt-get update",
+        "DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends gh",
+        "cd /tmp && curl -fsSL \"https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip\" -o awscliv2.zip && unzip -q awscliv2.zip && ./aws/install && rm -rf awscliv2.zip aws",
+        "deb_arch=$(dpkg --print-architecture); wget --directory-prefix=/tmp \"https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/${deb_arch}/latest/amazon-cloudwatch-agent.deb\" \"https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/${deb_arch}/latest/amazon-cloudwatch-agent.deb.sig\"",
+        "gpg --recv-key --keyserver keyserver.ubuntu.com D58167303B789C72",
+        "gpg --verify /tmp/amazon-cloudwatch-agent.deb.sig",
+        "dpkg -i /tmp/amazon-cloudwatch-agent.deb || DEBIAN_FRONTEND=noninteractive apt-get install -f --yes --no-install-recommends",
+        "rm -f /tmp/amazon-cloudwatch-agent.deb /tmp/amazon-cloudwatch-agent.deb.sig",
+        "systemctl enable amazon-cloudwatch-agent.service || true",
+        "echo 'vm.max_map_count = 2097152' > /etc/sysctl.d/01-increase-map-counts.conf",
+        "echo 'vm.mmap_rnd_bits=28' > /etc/sysctl.d/02-vm-mmap_rnd_bits.conf",
+        "echo 'kernel.yama.ptrace_scope=0' > /etc/sysctl.d/10-ptrace.conf",
+        "echo 'kernel.dmesg_restrict = 0' > /etc/sysctl.d/10-dmesg.conf",
+        "echo 'kernel.core_pattern = core.%e.%p-%P' > /etc/sysctl.d/99-core-dumps.conf",
+        "echo 'fs.suid_dumpable = 1' >> /etc/sysctl.d/99-core-dumps.conf",
+        "echo 'kernel.perf_event_paranoid = 1' > /etc/sysctl.d/99-perf.conf",
+        "echo 'kernel.task_delayacct=1' > /etc/sysctl.d/99-task-delayacct.conf",
+        "echo 'net.ipv4.ip_local_port_range = 40000 65535' > /etc/sysctl.d/99-ip-local-port-range.conf",
+        "printf '%s\n' '* soft nofile 1048576' '* hard nofile 1048576' >> /etc/security/limits.conf",
+    ]
+    if with_docker:
+        commands.extend(
+            [
+                "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg",
+                "echo \"deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable\" > /etc/apt/sources.list.d/docker.list",
+                "apt-get update",
+                "DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends docker-ce docker-buildx-plugin docker-ce-cli containerd.io",
+                "mkdir -p /etc/docker",
+                "printf '%s\n' '{' '  \"ipv6\": true,' '  \"fixed-cidr-v6\": \"2001:db8:1::/64\",' '  \"log-driver\": \"json-file\",' '  \"log-opts\": {' '    \"max-file\": \"5\",' '    \"max-size\": \"1000m\"' '  }' '}' > /etc/docker/daemon.json",
+                "usermod -aG docker ubuntu || true",
+                "systemctl enable docker || true",
+                "systemctl restart docker || true",
+                "sudo -u ubuntu docker buildx version",
+                "sudo -u ubuntu docker buildx rm default-builder || true",
+                "sudo -u ubuntu docker buildx create --use --name default-builder",
+            ]
+        )
+    return {
+        "name": name,
+        "platform": "Linux",
+        "description": (
+            "Install Ubuntu system packages, GitHub CLI, CloudWatch agent, and Docker"
+            if with_docker
+            else "Install Ubuntu system packages, GitHub CLI, and CloudWatch agent"
+        ),
+        "commands": commands,
+    }
+
+
+def _controller_runtime_component(
+    name: str,
+    *,
+    controller_package: str,
+    break_system_packages: bool = False,
+):
+    pip_args = " --break-system-packages" if break_system_packages else ""
     return {
         "name": name,
         "platform": "Linux",
         "description": "Install Praktika controller runtime dependencies into the image",
         "commands": [
             "mkdir -p /opt/praktika /opt/praktika/work",
-            "python3.12 -m pip install boto3 pyjwt cryptography requests",
+            f"python3.12 -m pip install boto3 pyjwt cryptography requests{pip_args}",
             f"python3.12 -m pip install --force-reinstall {controller_package} --break-system-packages",
             "ln -sf /usr/bin/python3.12 /usr/local/bin/python3",
         ],
@@ -149,7 +214,9 @@ WantedBy=multi-user.target
     }
 
 
-def praktika_venv_config(name: str, praktika_version: str) -> ImageBuilder.PrebuiltVenv:
+def create_praktika_venv_config(
+    name: str, praktika_version: str
+) -> ImageBuilder.PrebuiltVenv:
     return ImageBuilder.PrebuiltVenv(
         name=name,
         packages=[
@@ -167,7 +234,7 @@ def praktika_venv_config(name: str, praktika_version: str) -> ImageBuilder.Prebu
     )
 
 
-def image_builder_config(
+def create_awslinux_image_builder_config(
     *,
     name: str,
     version: str,
@@ -184,6 +251,45 @@ def image_builder_config(
             _controller_runtime_component(
                 "praktika-controller-runtime",
                 controller_package=controller_package,
+            ),
+            _praktika_controller_component("praktika-controller"),
+            *(components or []),
+        ],
+        prebuilt_venvs=list(prebuilt_venvs or []),
+        instance_types=instance_types,
+    )
+
+
+def create_ubuntu_image_builder_config(
+    *,
+    name: str,
+    version: str,
+    instance_types: List[str],
+    components: Optional[List[Dict[str, Any]]] = None,
+    prebuilt_venvs: Optional[List[ImageBuilder.PrebuiltVenv]] = None,
+    controller_package: str = "praktika-controller",
+) -> ImageBuilder.Config:
+    family = (instance_types[0] if instance_types else "").split(".")[0]
+    is_arm = family.endswith("g")
+    if is_arm:
+        from .configs import resolve_ubuntu_24_04_arm64_ami
+
+        parent_image_resolver = resolve_ubuntu_24_04_arm64_ami
+    else:
+        from .configs import resolve_ubuntu_24_04_x86_64_ami
+
+        parent_image_resolver = resolve_ubuntu_24_04_x86_64_ami
+
+    return ImageBuilder.Config(
+        name=name,
+        image_recipe_version=version,
+        parent_image_resolver=parent_image_resolver,
+        inline_components=[
+            _ubuntu_setup_component("praktika-controller-ubuntu-setup", with_docker=True),
+            _controller_runtime_component(
+                "praktika-controller-ubuntu-runtime",
+                controller_package=controller_package,
+                break_system_packages=True,
             ),
             _praktika_controller_component("praktika-controller"),
             *(components or []),

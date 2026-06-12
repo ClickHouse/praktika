@@ -47,7 +47,9 @@ pipeline.
 - Declarative jobs and pipelines in plain Python
 - Declarative CI infrastructure configuration and deployment
 - Built-in CI cache with awareness of successful jobs and reusable artifacts
-- Versioned runtimes via named base virtual environments, with `praktika_bootstrap` selecting the workflow or job runtime and optionally overlaying Praktika from checked-out source
+- Starter hello-world setup with `praktika init`, which scaffolds
+  `ci/workflows/` and `ci/infrastructure/projects.py` for a new project
+- Versioned runtimes via named base virtual environments, with `praktika_controller` selecting the workflow or job runtime and optionally overlaying Praktika from checked-out source
 - HTML CI report page with per-workflow, per-job, and per-test drill-down
 - Consistent test Docker image versioning: images rebuild automatically when inputs change, and versions stay pinned to code state across branches
 - CI DB integration: job results, test results, timings, and related metadata are written automatically
@@ -92,6 +94,9 @@ pipeline.
   table the webhook lambda consumes, so the lambda knows which branches to
   accept, which schedules to fire, and which events to drop without each
   workflow encoding that in the lambda by hand
+- **Remove AWS CLI dependency from CI runtime** — Praktika runtime code should
+  use boto3 APIs directly instead of shelling out to `aws`
+
 **Observability**
 - **Log export for orchestrator and runners** — live tail and persisted
   archive, accessible without SSM
@@ -110,8 +115,3 @@ pipeline.
   so they are hidden by default and revealed only when the user clicks something like
   "show infra results"; if any hook result is failed the report page must still surface
   a Warning note regardless of the toggle state
-
-**Project ergonomics**
-- **`praktika init`** — scaffold a new project with a starter
-  `ci/workflows/` and `ci/infrastructure/projects.py` so adopters do not have to copy
-  them by hand

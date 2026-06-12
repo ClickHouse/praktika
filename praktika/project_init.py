@@ -450,20 +450,20 @@ def _infrastructure_template(answers: InitAnswers) -> str:
         def _image_builders():
             image_recipe_version = "1.0.0"
             prebuilt_venvs = [
-                Components.praktika_venv_config(
+                Components.create_praktika_venv_config(
                     PRAKTIKA_BASE_VENV,
                     "{current_praktika_version()}",
                 ),
             ]
             return [
-                Components.image_builder_config(
+                Components.create_awslinux_image_builder_config(
                     name="ci-arm64-image",
                     version=image_recipe_version,
                     controller_package=_PRAKTIKA_CONTROLLER_WHL,
                     prebuilt_venvs=prebuilt_venvs,
                     instance_types=["t4g.small"],
                 ),
-                Components.image_builder_config(
+                Components.create_awslinux_image_builder_config(
                     name="ci-x86_64-image",
                     version=image_recipe_version,
                     controller_package=_PRAKTIKA_CONTROLLER_WHL,

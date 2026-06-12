@@ -9,24 +9,37 @@ from praktika.settings import Settings
 # SSM paths AWS maintains with the latest AL2023 AMI IDs per region
 _AL2023_ARM64_SSM_PATH = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-arm64"
 _AL2023_X86_64_SSM_PATH = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64"
+_UBUNTU_24_04_ARM64_SSM_PATH = "/aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id"
+_UBUNTU_24_04_X86_64_SSM_PATH = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
+
+
+def _resolve_ssm_ami(region: str, path: str, label: str) -> str:
+    from praktika.infrastructure._utils import aws_client
+
+    ssm = aws_client("ssm", region, "ami-lookup")
+    value = ssm.get_parameter(Name=path)["Parameter"]["Value"]
+    print(f"Resolved {label} AMI for {region}: {value}")
+    return value
 
 
 def resolve_al2023_arm64_ami(region: str) -> str:
     """Resolve the latest AL2023 ARM64 AMI ID for the given region via AWS SSM."""
-    from praktika.infrastructure._utils import aws_client
-    ssm = aws_client("ssm", region, "ami-lookup")
-    value = ssm.get_parameter(Name=_AL2023_ARM64_SSM_PATH)["Parameter"]["Value"]
-    print(f"Resolved AL2023 ARM64 AMI for {region}: {value}")
-    return value
+    return _resolve_ssm_ami(region, _AL2023_ARM64_SSM_PATH, "AL2023 ARM64")
 
 
 def resolve_al2023_x86_64_ami(region: str) -> str:
     """Resolve the latest AL2023 x86_64 AMI ID for the given region via AWS SSM."""
-    from praktika.infrastructure._utils import aws_client
-    ssm = aws_client("ssm", region, "ami-lookup")
-    value = ssm.get_parameter(Name=_AL2023_X86_64_SSM_PATH)["Parameter"]["Value"]
-    print(f"Resolved AL2023 x86_64 AMI for {region}: {value}")
-    return value
+    return _resolve_ssm_ami(region, _AL2023_X86_64_SSM_PATH, "AL2023 x86_64")
+
+
+def resolve_ubuntu_24_04_arm64_ami(region: str) -> str:
+    """Resolve the latest Ubuntu 24.04 ARM64 AMI ID for the given region via AWS SSM."""
+    return _resolve_ssm_ami(region, _UBUNTU_24_04_ARM64_SSM_PATH, "Ubuntu 24.04 ARM64")
+
+
+def resolve_ubuntu_24_04_x86_64_ami(region: str) -> str:
+    """Resolve the latest Ubuntu 24.04 x86_64 AMI ID for the given region via AWS SSM."""
+    return _resolve_ssm_ami(region, _UBUNTU_24_04_X86_64_SSM_PATH, "Ubuntu 24.04 x86_64")
 
 ORCHESTRATOR_ROLE_NAME = "workflow-orchestrator-role"
 ORCHESTRATOR_INSTANCE_PROFILE_NAME = "workflow-orchestrator-profile"

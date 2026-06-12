@@ -19,7 +19,7 @@ workflow = Workflow.Config(
     jobs=[
         Job.Config(
             name="Version Check",
-            runs_on=[RunnerLabels.SMALL_ARM],
+            runs_on=[RunnerLabels.SMALL_AMD_UBUNTU],
             command=(
                 "python3 -c \"import importlib.metadata as m; "
                 f"praktika=m.version('praktika'); "

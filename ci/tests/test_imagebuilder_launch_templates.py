@@ -213,6 +213,36 @@ def test_image_builder_distribution_reuses_cached_launch_template_id(monkeypatch
     ]
 
 
+def test_image_builder_uses_parent_image_resolver(monkeypatch):
+    builder = ImageBuilder.Config(
+        name="ubuntu-runner-image",
+        region="eu-north-1",
+        image_recipe_version="1.0.0",
+        instance_types=["t3.small"],
+        parent_image_resolver=lambda region: f"ami-for-{region}",
+    )
+    captured = {}
+
+    class _Client:
+        def list_image_recipes(self, **kwargs):
+            return {"imageRecipeSummaryList": []}
+
+        def create_image_recipe(self, **req):
+            captured.update(req)
+            return {
+                "imageRecipeArn": "arn:aws:imagebuilder:eu-north-1:123456789012:image-recipe/ubuntu-runner-image-recipe/1.0.0"
+            }
+
+    monkeypatch.setattr(builder, "_client", lambda: _Client())
+    monkeypatch.setattr(builder, "_ensure_inline_components", lambda: [])
+
+    arn = builder._get_or_create_recipe_arn()
+
+    assert arn.endswith("/ubuntu-runner-image-recipe/1.0.0")
+    assert builder.parent_image == "ami-for-eu-north-1"
+    assert captured["parentImage"] == "ami-for-eu-north-1"
+
+
 def test_image_builder_delete_skips_dependent_components(monkeypatch):
     builder = ImageBuilder.Config(
         name="controller-image",
@@ -481,7 +511,7 @@ def test_image_builder_reuses_existing_inline_component_when_create_conflicts(
     assert arns == ["arn:component:praktika-base-runner-runtime/1.0.0/1"]
 
 
-def test_image_builder_deploy_starts_build_when_pipeline_changed(monkeypatch):
+def test_image_builder_deploy_starts_build_when_pipeline_changed(monkeypatch, capsys):
     builder = ImageBuilder.Config(
         name="orchestrator-arm64-image",
         region="eu-north-1",
@@ -511,7 +541,12 @@ def test_image_builder_deploy_starts_build_when_pipeline_changed(monkeypatch):
     class _Client:
         def start_image_pipeline_execution(self, imagePipelineArn):
             started["arn"] = imagePipelineArn
-            return {"imageBuildVersionArn": "arn:build:new"}
+            return {
+                "imageBuildVersionArn": (
+                    "arn:aws:imagebuilder:eu-north-1:123456789012:image/"
+                    "orchestrator-arm64-image-recipe/1.0.0/7"
+                )
+            }
 
     monkeypatch.setattr(builder, "_client", lambda: _Client())
 
@@ -519,7 +554,20 @@ def test_image_builder_deploy_starts_build_when_pipeline_changed(monkeypatch):
 
     assert result is builder
     assert started["arn"] == "arn:pipeline:new"
-    assert builder.ext["last_started_build_arn"] == "arn:build:new"
+    assert builder.ext["last_started_build_arn"].endswith(
+        "/orchestrator-arm64-image-recipe/1.0.0/7"
+    )
+    assert (
+        builder.ext["cloudwatch_log_group_name"]
+        == "/aws/imagebuilder/orchestrator-arm64-image-recipe"
+    )
+    assert builder.ext["cloudwatch_log_stream_name"] == "1.0.0/7"
+    output = capsys.readouterr().out
+    assert (
+        "Image Builder CloudWatch logs: log group "
+        "'/aws/imagebuilder/orchestrator-arm64-image-recipe', "
+        "log stream '1.0.0/7'"
+    ) in output
 
 
 def test_image_builder_deploy_skips_build_when_unchanged(monkeypatch):

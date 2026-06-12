@@ -5,7 +5,6 @@ import pytest
 
 from ci.infrastructure.projects import (
     _IMAGE_BUILDERS_BY_NAME,
-    _gh_token_minter,
     _orchestrator_pool,
     _orchestrator_pool_base,
     _runner_pools,
@@ -25,6 +24,7 @@ from praktika.infrastructure.secret_parameter import SecretParameter
 from praktika.infrastructure.sqs_queue import SQSQueue
 from praktika.validator import Validator
 from praktika.version import current_praktika_version
+from ci.settings.settings import RunnerLabels
 
 
 def _decode_embedded_file(command: str) -> str:
@@ -110,6 +110,7 @@ def test_current_infrastructure_config_imports_all_component_groups(monkeypatch)
     } == {
         "praktika-ci-arm64-image": "praktika-arm-2xsmall-profile",
         "praktika-ci-x86_64-image": "praktika-amd-2xsmall-profile",
+        "praktika-ci-ubuntu-x86_64-image": "praktika-amd-2xsmall-ubuntu-profile",
     }
     assert {builder.vpc_name for builder in image_builders.values()} == {"praktika-vpc"}
     assert {
@@ -117,6 +118,23 @@ def test_current_infrastructure_config_imports_all_component_groups(monkeypatch)
     } == {("praktika-vpc-sg",)}
     assert cloud.cidb_cluster.vpc_name == "praktika-vpc"
     assert cloud.cidb_cluster.security_group_names == ["praktika-vpc-sg"]
+
+
+def test_project_component_factory_accepts_previous_factory_names(monkeypatch):
+    from ci.infrastructure import projects
+
+    class _OldComponents:
+        image_builder_config = object()
+
+    monkeypatch.setattr(projects, "Components", _OldComponents)
+
+    assert (
+        projects._component_factory(
+            "create_awslinux_image_builder_config",
+            "image_builder_config",
+        )
+        is _OldComponents.image_builder_config
+    )
 
 
 def test_infrastructure_deploy_validation_accepts_matching_s3_settings(monkeypatch):
@@ -666,14 +684,14 @@ def test_cloud_deploy_prints_deferred_asg_warning_at_end(monkeypatch, capsys):
 
 
 def test_controller_image_builders_are_declared():
-    for name, arch, instance_type in [
-        ("ci-arm64-image", "arm64", "t4g.small"),
-        ("ci-x86_64-image", "x86_64", "t3.small"),
+    for name, ami_name, instance_type in [
+        ("ci-arm64-image", "ci-arm64-{{ imagebuilder:buildDate }}", "t4g.small"),
+        ("ci-x86_64-image", "ci-x86_64-{{ imagebuilder:buildDate }}", "t3.small"),
     ]:
         builder = _IMAGE_BUILDERS_BY_NAME[name]
 
         assert builder.ami_launch_permission == {}
-        assert builder.ami_name == f"ci-{arch}-{{{{ imagebuilder:buildDate }}}}"
+        assert builder.ami_name == ami_name
         assert builder.instance_types == [instance_type]
         assert [component["name"] for component in builder.inline_components] == [
             "praktika-controller-setup",
@@ -755,6 +773,39 @@ def test_controller_image_builders_are_declared():
             in cloudwatch_configure
         )
 
+
+def test_ubuntu_runner_pool_uses_ubuntu_image_builder():
+    builder = _IMAGE_BUILDERS_BY_NAME["ci-ubuntu-x86_64-image"]
+    pool = next(pool for pool in _runner_pools if pool.name == "amd-2xsmall-ubuntu")
+    setup_commands = "\n".join(builder.inline_components[0]["commands"])
+    runtime_commands = builder.inline_components[1]["commands"]
+
+    assert pool.image_builder is builder
+    assert builder.ami_name == "ci-ubuntu-x86_64-{{ imagebuilder:buildDate }}"
+    assert builder.image_recipe_version == "1.0.1"
+    assert builder.instance_types == ["t3.small"]
+    assert [component["name"] for component in builder.inline_components] == [
+        "praktika-controller-ubuntu-setup",
+        "praktika-controller-ubuntu-runtime",
+        "praktika-controller",
+    ]
+    assert builder.parent_image_resolver is not None
+    assert "apt-get install --yes --no-install-recommends" in setup_commands
+    assert "amazoncloudwatch-agent/ubuntu/${deb_arch}" in setup_commands
+    assert "gpg --verify /tmp/amazon-cloudwatch-agent.deb.sig" in setup_commands
+    assert "awscli-exe-linux-$(uname -m).zip" in setup_commands
+    assert "download.docker.com/linux/ubuntu" in setup_commands
+    assert "docker-ce docker-buildx-plugin docker-ce-cli containerd.io" in setup_commands
+    assert "registry-mirrors" not in setup_commands
+    assert "insecure-registries" not in setup_commands
+    assert "dnf install" not in setup_commands
+    assert any("--break-system-packages" in command for command in runtime_commands)
+    assert [lt.name for lt in builder.launch_templates] == [
+        "amd-2xsmall-ubuntu-lt"
+    ]
+
+
+def test_project_image_builders_register_expected_launch_templates():
     assert [
         lt.name for lt in _IMAGE_BUILDERS_BY_NAME["ci-arm64-image"].launch_templates
     ] == [
@@ -766,12 +817,26 @@ def test_controller_image_builders_are_declared():
     assert [
         lt.name for lt in _IMAGE_BUILDERS_BY_NAME["ci-x86_64-image"].launch_templates
     ] == ["amd-2xsmall-lt"]
+    assert [
+        lt.name
+        for lt in _IMAGE_BUILDERS_BY_NAME[
+            "ci-ubuntu-x86_64-image"
+        ].launch_templates
+    ] == ["amd-2xsmall-ubuntu-lt"]
+
+
+def test_advanced_workflow_version_check_runs_on_ubuntu_pool():
+    from ci.workflows.praktika_pr_advanced import workflow
+
+    version_check = next(job for job in workflow.jobs if job.name == "Version Check")
+    assert version_check.runs_on == [RunnerLabels.SMALL_AMD_UBUNTU]
 
 
 def test_all_image_builders_stay_private():
     for name in [
         "ci-arm64-image",
         "ci-x86_64-image",
+        "ci-ubuntu-x86_64-image",
     ]:
         assert _IMAGE_BUILDERS_BY_NAME[name].ami_launch_permission == {}
 
@@ -783,12 +848,13 @@ def test_project_image_builders_rely_on_settings_region_defaults():
 
 
 def test_project_github_token_minter_uses_defaults_and_project_repo_scope():
-    assert _gh_token_minter.name == "gh-token"
-    assert _gh_token_minter.role_name == "gh-token-role"
-    assert _gh_token_minter.secret_name == "gh-app"
-    assert _gh_token_minter.repositories == ["praktika"]
-
     cloud = _get_infra_config("praktika")
+    gh_token_minter = cloud.github_token_minters[0]
+    assert gh_token_minter.name == "praktika-gh-token"
+    assert gh_token_minter.role_name == "praktika-gh-token-role"
+    assert gh_token_minter.secret_name == "praktika-gh-app"
+    assert gh_token_minter.repositories == ["praktika"]
+
     runner = next(pool for pool in cloud.runner_pools if pool.name == "arm-2xsmall")
     orchestrator = cloud.orchestrator_pool
     runner_invoke = runner.ec2_role.inline_policies["GitHubTokenMinterInvoke"][
@@ -822,7 +888,7 @@ def test_base_runner_pool_uses_base_image_without_bootstrap_user_data():
 
 
 def test_non_base_runner_pools_patch_praktika_into_shared_base_venv():
-    for pool_name in ["arm-2xsmall", "amd-2xsmall"]:
+    for pool_name in ["arm-2xsmall", "amd-2xsmall", "amd-2xsmall-ubuntu"]:
         pool = next(pool for pool in _runner_pools if pool.name == pool_name)
 
         assert (

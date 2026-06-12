@@ -4,6 +4,7 @@ class RunnerLabels:
     SMALL_ARM = "arm-2xsmall"
     SMALL_ARM_BASE = "arm-2xsmall-base"
     SMALL_AMD = "amd-2xsmall"
+    SMALL_AMD_UBUNTU = "amd-2xsmall-ubuntu"
 
 CI_CONFIG_RUNS_ON = [RunnerLabels.SMALL_ARM]
 

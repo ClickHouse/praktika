@@ -280,7 +280,7 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     assert "from praktika.infrastructure import Components, Storage, VPC" in infra_text
     assert f'min_praktika_version="{current_praktika_version()}"' in infra_text
     assert "# until published in pip" in infra_text
-    assert "Components.praktika_venv_config(" in infra_text
+    assert "Components.create_praktika_venv_config(" in infra_text
     assert "PRAKTIKA_BASE_VENV," in infra_text
     assert "_RUNTIME_BASE_VENV" not in infra_text
     assert f'"{current_praktika_version()}"' in infra_text
@@ -299,8 +299,8 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     assert "region=CI_REGION" not in infra_text
     assert "capacity_reserve=1" in infra_text
     assert "def _controller_image_component(name: str):" not in infra_text
-    assert "Components.image_builder_config(" in infra_text
-    assert infra_text.count("Components.image_builder_config(") == 2
+    assert "Components.create_awslinux_image_builder_config(" in infra_text
+    assert infra_text.count("Components.create_awslinux_image_builder_config(") == 2
     assert "project_slug=" not in infra_text
     assert "SQS_QUEUE_NAME" not in infra_text
     assert "ImageBuilder.Config(" not in infra_text

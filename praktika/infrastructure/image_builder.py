@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 import json
 import shlex
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from ._utils import aws_client
 
@@ -26,6 +26,7 @@ class ImageBuilder:
 
         image_recipe_version: str = "1.0.0"
         parent_image: str = ""  # AMI id or Image Builder managed image ARN
+        parent_image_resolver: Optional[Callable[[str], str]] = None
         components: List[str] = field(default_factory=list)  # list of component ARNs
         inline_components: List[Dict[str, Any]] = field(default_factory=list)
         prebuilt_venvs: List["ImageBuilder.PrebuiltVenv"] = field(default_factory=list)
@@ -319,6 +320,19 @@ class ImageBuilder:
         def _same_config(self, current: Dict[str, Any], desired: Dict[str, Any]) -> bool:
             return self._canonicalize(current) == self._canonicalize(desired)
 
+        def _cloudwatch_log_group_name(self) -> str:
+            if not self.image_recipe_name:
+                return ""
+            return f"/aws/imagebuilder/{self.image_recipe_name}"
+
+        def _cloudwatch_log_stream_name(self, image_build_version_arn: str = "") -> str:
+            parts = [part for part in (image_build_version_arn or "").split("/") if part]
+            if len(parts) >= 2:
+                return "/".join(parts[-2:])
+            if self.image_recipe_version:
+                return f"{self.image_recipe_version}/1"
+            return ""
+
         def _get_or_create_recipe_arn(self) -> str:
             client = self._client()
 
@@ -337,20 +351,27 @@ class ImageBuilder:
                     f"image_recipe_name must be set for ImageBuilder '{self.name}'"
                 )
             if not self.parent_image:
-                if not self.instance_types:
-                    raise ValueError(
-                        f"parent_image or instance_types must be set for ImageBuilder '{self.name}'"
-                    )
-                family = (self.instance_types[0] or "").split(".")[0]
-                is_arm = family.endswith("g")
-                if is_arm:
-                    from .native.configs import resolve_al2023_arm64_ami
-
-                    self.parent_image = resolve_al2023_arm64_ami(self.region)
+                if self.parent_image_resolver:
+                    self.parent_image = self.parent_image_resolver(self.region)
+                    if not self.parent_image:
+                        raise Exception(
+                            f"parent_image_resolver returned empty AMI for ImageBuilder '{self.name}'"
+                        )
                 else:
-                    from .native.configs import resolve_al2023_x86_64_ami
+                    if not self.instance_types:
+                        raise ValueError(
+                            f"parent_image or instance_types must be set for ImageBuilder '{self.name}'"
+                        )
+                    family = (self.instance_types[0] or "").split(".")[0]
+                    is_arm = family.endswith("g")
+                    if is_arm:
+                        from .native.configs import resolve_al2023_arm64_ami
 
-                    self.parent_image = resolve_al2023_x86_64_ami(self.region)
+                        self.parent_image = resolve_al2023_arm64_ami(self.region)
+                    else:
+                        from .native.configs import resolve_al2023_x86_64_ami
+
+                        self.parent_image = resolve_al2023_x86_64_ami(self.region)
 
             token: str = ""
             while True:
@@ -883,6 +904,12 @@ class ImageBuilder:
                 raise
 
             execution_arn = resp.get("imageBuildVersionArn", "")
+            log_group_name = self._cloudwatch_log_group_name()
+            log_stream_name = self._cloudwatch_log_stream_name(execution_arn)
+            if log_group_name:
+                self.ext["cloudwatch_log_group_name"] = log_group_name
+            if log_stream_name:
+                self.ext["cloudwatch_log_stream_name"] = log_stream_name
             if execution_arn:
                 self.ext["last_started_build_arn"] = execution_arn
                 print(
@@ -892,6 +919,11 @@ class ImageBuilder:
             else:
                 print(
                     f"Started Image Builder build for '{self.image_pipeline_name}'"
+                )
+            if log_group_name and log_stream_name:
+                print(
+                    "Image Builder CloudWatch logs: "
+                    f"log group '{log_group_name}', log stream '{log_stream_name}'"
                 )
 
         def deploy(self):
