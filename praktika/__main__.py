@@ -160,7 +160,7 @@ def create_parser():
     )
     _infra_parser.add_argument(
         "--destroy-runtime",
-        help="Delete project-prefixed recreatable runtime resources while keeping S3, VPC, CIDB, Dedicated Hosts, and GitHub webhook wiring",
+        help="Delete project-prefixed recreatable runtime resources while keeping S3, CIDB/EC2, Dedicated Hosts, secrets/params, and GitHub API Gateway wiring",
         action="store_true",
         default=False,
     )
@@ -179,7 +179,7 @@ def create_parser():
     _infra_parser.add_argument(
         "--only",
         help=(
-            "Process only specified components (e.g. html ImageBuilder LaunchTemplate AutoScalingGroup Lambda DedicatedHost EC2Instance). "
+            "Process only specified components (e.g. html ImageBuilder AMI VPC LaunchTemplate AutoScalingGroup Lambda DedicatedHost EC2Instance). "
             "With --deploy: deploys only these components or uploads html report. "
             "With --destroy-runtime/--destroy-all: deletes only the selected component types."
         ),

@@ -372,7 +372,7 @@ def _settings_template(answers: InitAnswers) -> str:
         USE_CUSTOM_GH_AUTH = True
         GH_AUTH_LAMBDA_NAME = f"{{PROJECT_SLUG}}-gh-token"
         GH_AUTH_LAMBDA_REGION = AWS_REGION
-        PRAKTIKA_BASE_VENV = "praktika-runtime"
+        PRAKTIKA_BASE_VENV = "praktika-runtime-{current_praktika_version()}"
 
         """
     )
@@ -438,12 +438,10 @@ def _main_ci_workflow_template(answers: InitAnswers) -> str:
 def _infrastructure_template(answers: InitAnswers) -> str:
     return textwrap.dedent(
         f"""\
-        from ci.settings.settings import PROJECT_NAME, PROJECT_SLUG
+        from ci.settings.settings import PROJECT_NAME, PROJECT_SLUG, PRAKTIKA_BASE_VENV
         from praktika.infrastructure import Components, Storage, VPC
         from praktika.infrastructure.cloud import CloudInfrastructure
 
-
-        _RUNTIME_BASE_VENV = "praktika-runtime"
 
         # until published in pip
         _PRAKTIKA_CONTROLLER_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_controller-0.1.1-py3-none-any.whl"
@@ -453,7 +451,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
             image_recipe_version = "1.0.0"
             prebuilt_venvs = [
                 Components.praktika_venv_config(
-                    _RUNTIME_BASE_VENV,
+                    PRAKTIKA_BASE_VENV,
                     "{current_praktika_version()}",
                 ),
             ]

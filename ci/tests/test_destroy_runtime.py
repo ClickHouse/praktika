@@ -98,6 +98,29 @@ class _FakeEC2:
     def delete_launch_template(self, LaunchTemplateName):
         self.calls.append(f"lt:{LaunchTemplateName}")
 
+    def describe_images(self, **kwargs):
+        return {
+            "Images": [
+                {
+                    "ImageId": "ami-runtime",
+                    "Name": "cloud-ci-infra-runner-20240101",
+                    "BlockDeviceMappings": [
+                        {"Ebs": {"SnapshotId": "snap-runtime"}}
+                    ],
+                },
+                {
+                    "ImageId": "ami-other",
+                    "Name": "other-runner-20240101",
+                },
+            ]
+        }
+
+    def deregister_image(self, ImageId):
+        self.calls.append(f"ami:{ImageId}")
+
+    def delete_snapshot(self, SnapshotId):
+        self.calls.append(f"snapshot:{SnapshotId}")
+
     def describe_instances(self, **kwargs):
         self.calls.append("ec2:describe_instances")
         return {
@@ -119,10 +142,87 @@ class _FakeEC2:
         self.calls.append(f"ec2:terminate:{','.join(InstanceIds)}")
 
     def describe_hosts(self):
-        return {"Hosts": []}
+        return {
+            "Hosts": [
+                {
+                    "HostId": "h-runtime",
+                    "Tags": [{"Key": "Name", "Value": "cloud-ci-infra-host"}],
+                }
+            ]
+        }
 
-    def describe_vpcs(self):
-        return {"Vpcs": []}
+    def release_hosts(self, HostIds):
+        self.calls.append(f"host:{','.join(HostIds)}")
+
+    def describe_vpcs(self, **kwargs):
+        return {
+            "Vpcs": [
+                {
+                    "VpcId": "vpc-runtime",
+                    "Tags": [{"Key": "Name", "Value": "cloud-ci-infra-vpc"}],
+                },
+                {
+                    "VpcId": "vpc-other",
+                    "Tags": [{"Key": "Name", "Value": "other-vpc"}],
+                },
+            ]
+        }
+
+    def describe_tags(self, Filters):
+        resource_types = next(
+            (f["Values"] for f in Filters if f["Name"] == "resource-type"),
+            [],
+        )
+        names = next((f["Values"] for f in Filters if f["Name"] == "tag:Name"), [])
+        if resource_types == ["vpc"] and names == ["cloud-ci-infra-vpc"]:
+            return {"Tags": [{"ResourceId": "vpc-runtime"}]}
+        return {"Tags": []}
+
+    def describe_subnets(self, Filters):
+        return {"Subnets": [{"SubnetId": "subnet-runtime"}]}
+
+    def delete_subnet(self, SubnetId):
+        self.calls.append(f"subnet:{SubnetId}")
+
+    def describe_route_tables(self, Filters):
+        return {
+            "RouteTables": [
+                {
+                    "RouteTableId": "rtb-runtime",
+                    "Associations": [{"Main": False}],
+                },
+                {
+                    "RouteTableId": "rtb-main",
+                    "Associations": [{"Main": True}],
+                },
+            ]
+        }
+
+    def delete_route_table(self, RouteTableId):
+        self.calls.append(f"rt:{RouteTableId}")
+
+    def describe_internet_gateways(self, Filters):
+        return {"InternetGateways": [{"InternetGatewayId": "igw-runtime"}]}
+
+    def detach_internet_gateway(self, InternetGatewayId, VpcId):
+        self.calls.append(f"igw-detach:{InternetGatewayId}:{VpcId}")
+
+    def delete_internet_gateway(self, InternetGatewayId):
+        self.calls.append(f"igw:{InternetGatewayId}")
+
+    def describe_security_groups(self, Filters):
+        return {
+            "SecurityGroups": [
+                {"GroupId": "sg-default", "GroupName": "default"},
+                {"GroupId": "sg-runtime", "GroupName": "cloud-ci-infra-vpc-sg"},
+            ]
+        }
+
+    def delete_security_group(self, GroupId):
+        self.calls.append(f"sg:{GroupId}")
+
+    def delete_vpc(self, VpcId):
+        self.calls.append(f"vpc:{VpcId}")
 
 
 class _FakeSQS:
@@ -396,6 +496,7 @@ def _cloud(monkeypatch):
     calls = []
     fake = _FakeAWS(calls)
     monkeypatch.setattr("praktika.infrastructure.cloud.aws_client", fake.client)
+    monkeypatch.setattr("praktika.infrastructure.vpc.aws_client", fake.client)
     cloud = CloudInfrastructure.Config(name="cloud_ci_infra")
     cloud._settings = SimpleNamespace(AWS_REGION="eu-north-1")
     monkeypatch.setattr(cloud, "_verify_account", lambda: None)
@@ -435,7 +536,7 @@ def test_infrastructure_parser_supports_yes():
     assert args.yes is True
 
 
-def test_destroy_runtime_uses_prefix_but_keeps_webhook_and_does_not_sweep_ec2(monkeypatch):
+def test_destroy_runtime_removes_recreatable_resources_but_keeps_stateful_ones(monkeypatch):
     cloud, calls = _cloud(monkeypatch)
 
     cloud.destroy_runtime()
@@ -446,15 +547,21 @@ def test_destroy_runtime_uses_prefix_but_keeps_webhook_and_does_not_sweep_ec2(mo
     assert "event:cloud-ci-infra-pool-autoscaler-schedule" in calls
     assert "lambda:cloud-ci-infra-pool-autoscaler" in calls
     assert "lambda:cloud-ci-infra-gh-token" in calls
+    assert "lambda:cloud-ci-infra-workflow-orchestrator" in calls
     assert "ib-pipeline:arn:pipeline" in calls
+    assert "ami:ami-runtime" in calls
+    assert "snapshot:snap-runtime" in calls
     assert "profile:cloud-ci-infra-runner-profile" in calls
     assert "role:cloud-ci-infra-runner-role" in calls
-    assert "lambda:cloud-ci-infra-workflow-orchestrator" not in calls
+    assert "vpc:vpc-runtime" in calls
     assert "role:cloud-ci-infra-gh-trigger-role" not in calls
     assert "profile:cloud-ci-infra-cidb-profile" not in calls
     assert "role:cloud-ci-infra-cidb-role" not in calls
     assert "ec2:describe_instances" not in calls
     assert "api:api-1" not in calls
+    assert "host:h-runtime" not in calls
+    assert "ssm:cloud-ci-infra-secret" not in calls
+    assert "ssm:/cloud-ci-infra-secret" not in calls
     assert "s3:cloud-ci-infra-artifacts" not in calls
 
 
@@ -469,9 +576,21 @@ def test_destroy_all_expands_to_project_prefixed_stateful_and_webhook_resources(
     assert "ec2:terminate:i-cidb" in calls
     assert "profile:cloud-ci-infra-cidb-profile" in calls
     assert "role:cloud-ci-infra-cidb-role" in calls
+    assert "host:h-runtime" in calls
     assert "ssm:cloud-ci-infra-secret" in calls
     assert "ssm:/cloud-ci-infra-secret" in calls
     assert "s3:cloud-ci-infra-artifacts" in calls
+
+
+def test_destroy_runtime_only_images_deletes_amis_without_imagebuilder(monkeypatch):
+    cloud, calls = _cloud(monkeypatch)
+
+    cloud.destroy_runtime(only=["Images"])
+
+    assert "ami:ami-runtime" in calls
+    assert "snapshot:snap-runtime" in calls
+    assert "ib-pipeline:arn:pipeline" not in calls
+    assert "asg:cloud-ci-infra-runner" not in calls
 
 
 def test_destroy_runtime_imagebuilder_fallback_uses_lowercase_next_token(monkeypatch):

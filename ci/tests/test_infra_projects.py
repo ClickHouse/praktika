@@ -622,6 +622,49 @@ def test_cloud_deploy_runs_lambdas_before_image_backed_compute(monkeypatch):
     ]
 
 
+def test_cloud_deploy_prints_deferred_asg_warning_at_end(monkeypatch, capsys):
+    cloud = CloudInfrastructure.Config(
+        name="praktika",
+        autoscaling_groups=[
+            AutoScalingGroup.Config(
+                name="workflow-orchestrator",
+                vpc_name="ci",
+                min_size=0,
+                max_size=1,
+                desired_capacity=0,
+                launch_template_name="workflow-orchestrator-lt",
+            )
+        ],
+    )
+    cloud._settings = SimpleNamespace(AWS_REGION="eu-north-1", EVENT_FEED_S3_PATH="")
+    monkeypatch.setattr(cloud, "_verify_account", lambda: None)
+
+    def _defer_asg():
+        cloud.autoscaling_groups[0].ext.update(
+            {
+                "deferred_missing_launch_template": True,
+                "deployment_warning": (
+                    "Launch Template is not available yet for ASG "
+                    "'praktika-workflow-orchestrator'; skipping until the launch template exists"
+                ),
+            }
+        )
+
+    monkeypatch.setattr(cloud.autoscaling_groups[0], "deploy", _defer_asg)
+
+    cloud.deploy(only=["ASG"])
+
+    output = capsys.readouterr().out.rstrip()
+    assert "WARNING: Infrastructure deployment completed with warnings" in output
+    assert (
+        "WARNING: Launch Template is not available yet for ASG "
+        "'praktika-workflow-orchestrator'; skipping until the launch template exists"
+    ) in output
+    assert output.endswith(
+        "WARNING: Rerun is required after the missing launch template exists."
+    )
+
+
 def test_controller_image_builders_are_declared():
     for name, arch, instance_type in [
         ("ci-arm64-image", "arm64", "t4g.small"),

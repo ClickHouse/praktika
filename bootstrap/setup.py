@@ -5,6 +5,12 @@ setup(
     name="praktika-controller",
     version="0.1.1",
     description="Thin controller launcher for versioned Praktika workloads",
+    url="https://github.com/ClickHouse/praktika",
+    project_urls={
+        "Homepage": "https://github.com/ClickHouse/praktika",
+        "Repository": "https://github.com/ClickHouse/praktika",
+        "Issues": "https://github.com/ClickHouse/praktika/issues",
+    },
     packages=find_packages(where="src", include=["praktika_controller*"]),
     package_dir={"": "src"},
     install_requires=[

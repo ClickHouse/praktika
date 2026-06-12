@@ -255,7 +255,8 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     assert f'PROJECT_SLUG = "{project_slug}"' in settings_text
     assert 'GH_AUTH_LAMBDA_NAME = f"{PROJECT_SLUG}-gh-token"' in settings_text
     assert 'S3_ARTIFACT_BUCKET = f"{PROJECT_SLUG}-artifacts"' in settings_text
-    assert 'PRAKTIKA_BASE_VENV = "praktika-runtime"' in settings_text
+    expected_base_venv = f"praktika-runtime-{current_praktika_version()}"
+    assert f'PRAKTIKA_BASE_VENV = "{expected_base_venv}"' in settings_text
     assert (
         'CLOUD_INFRASTRUCTURE_CONFIG_PATH = "./ci/infrastructure/projects.py"'
         not in settings_text
@@ -272,11 +273,16 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     assert 'name="Main CI"' in main_ci_workflow_text
     assert "event=Workflow.Event.PUSH" in main_ci_workflow_text
     assert 'branches=["main"]' in main_ci_workflow_text
-    assert "from ci.settings.settings import PROJECT_NAME, PROJECT_SLUG" in infra_text
+    assert (
+        "from ci.settings.settings import PROJECT_NAME, PROJECT_SLUG, PRAKTIKA_BASE_VENV"
+        in infra_text
+    )
     assert "from praktika.infrastructure import Components, Storage, VPC" in infra_text
     assert f'min_praktika_version="{current_praktika_version()}"' in infra_text
     assert "# until published in pip" in infra_text
     assert "Components.praktika_venv_config(" in infra_text
+    assert "PRAKTIKA_BASE_VENV," in infra_text
+    assert "_RUNTIME_BASE_VENV" not in infra_text
     assert f'"{current_praktika_version()}"' in infra_text
     assert (
         "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/"
@@ -469,7 +475,10 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
             '"log_group_name": "/${PRAKTIKA_PROJECT_SLUG}/praktika-controller"'
             in cloudwatch_configure
         )
-        assert builder.prebuilt_venvs[0].name == f"{project_slug}-praktika-runtime"
+        assert (
+            builder.prebuilt_venvs[0].name
+            == f"{project_slug}-praktika-runtime-{current_praktika_version()}"
+        )
         assert {
             "boto3",
             "PyJWT",

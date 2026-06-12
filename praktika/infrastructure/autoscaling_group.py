@@ -245,6 +245,9 @@ class AutoScalingGroup:
             import boto3
             from botocore.config import Config
 
+            self.ext.pop("deferred_missing_launch_template", None)
+            self.ext.pop("deployment_warning", None)
+
             subnet_ids = self._resolve_subnet_ids()
 
             # Reduce AWS API retries to avoid long "hangs" on transient/opaque InternalFailure.
@@ -270,6 +273,16 @@ class AutoScalingGroup:
                     "launch template" in message
                     and "does not exist" in message
                 )
+
+            def _defer_missing_launch_template():
+                warning = (
+                    f"Launch Template is not available yet for ASG '{self.name}'; "
+                    "skipping until the launch template exists"
+                )
+                self.ext["deferred_missing_launch_template"] = True
+                self.ext["deployment_warning"] = warning
+                print(f"WARNING: {warning}")
+                return self
 
             # Try to fetch existing ASG first
             exists = False
@@ -308,11 +321,7 @@ class AutoScalingGroup:
                     asg_client.update_auto_scaling_group(**req)
                 except Exception as e:
                     if _is_missing_launch_template_error(e):
-                        self.ext["deferred_missing_launch_template"] = True
-                        print(
-                            f"Launch Template is not available yet for ASG '{self.name}'; skipping until the launch template exists"
-                        )
-                        return self
+                        return _defer_missing_launch_template()
                     raise
                 print(f"Successfully updated ASG: {self.name}")
             else:
@@ -338,11 +347,7 @@ class AutoScalingGroup:
                     asg_client.create_auto_scaling_group(**req)
                 except Exception as e:
                     if _is_missing_launch_template_error(e):
-                        self.ext["deferred_missing_launch_template"] = True
-                        print(
-                            f"Launch Template is not available yet for ASG '{self.name}'; skipping until the launch template exists"
-                        )
-                        return self
+                        return _defer_missing_launch_template()
                     raise
                 print(f"Successfully created ASG: {self.name}")
 

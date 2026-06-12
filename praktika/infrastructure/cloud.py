@@ -926,6 +926,34 @@ class CloudInfrastructure:
                 "for example: python3 -m praktika infrastructure --deploy ..."
             )
 
+        def _deployment_warnings(self, autoscaling_groups=None) -> List[str]:
+            warnings = []
+            for asg_config in autoscaling_groups or []:
+                if not asg_config.ext.get("deferred_missing_launch_template"):
+                    continue
+                warning = asg_config.ext.get("deployment_warning")
+                if not warning:
+                    warning = (
+                        f"Launch Template is not available yet for ASG "
+                        f"'{asg_config.name}'; skipping until the launch template exists"
+                    )
+                warnings.append(warning)
+            return warnings
+
+        def _print_deployment_warnings(self, autoscaling_groups=None):
+            warnings = self._deployment_warnings(autoscaling_groups)
+            if not warnings:
+                return
+
+            print("\n" + "=" * 60)
+            print("WARNING: Infrastructure deployment completed with warnings")
+            print("=" * 60)
+            for warning in warnings:
+                print(f"WARNING: {warning}")
+            print(
+                "WARNING: Rerun is required after the missing launch template exists."
+            )
+
         def deploy(
             self,
             all=False,
@@ -1179,6 +1207,7 @@ class CloudInfrastructure:
                     lt_config.deploy()
 
             # Deploy all ASGs after Launch Templates.
+            deployed_asg_configs = []
             if _wants("AutoScalingGroup", "AutoScalingGroups", "ASG", "ASGs"):
                 for asg_config in self.autoscaling_groups:
                     asg_config.region = self._settings.AWS_REGION
@@ -1187,6 +1216,9 @@ class CloudInfrastructure:
                     print(f"Deploying Auto Scaling Group: {asg_config.name}")
                     print("=" * 60)
                     asg_config.deploy()
+                    deployed_asg_configs.append(asg_config)
+
+            self._print_deployment_warnings(deployed_asg_configs)
 
         def destroy_runtime(
             self,
@@ -1194,9 +1226,9 @@ class CloudInfrastructure:
             only: Optional[List[str]] = None,
         ):
             """
-            Delete project-prefixed execution-plane resources that can be safely
-            recreated. Preserve shared/data-plane resources and scarce capacity
-            allocations.
+            Delete project-prefixed execution-plane resources that can be
+            recreated by deploy. Preserve stateful resources and scarce
+            capacity allocations.
 
             Args:
                 force: If True, forcefully terminate instances without stopping first.
@@ -1373,14 +1405,14 @@ class CloudInfrastructure:
                             names.append(name)
                 return sorted(set(names))
 
-            def _protected_runtime_lambda_names() -> set:
+            def _api_gateway_lambda_names() -> set:
                 return set(_api_gateway_names().keys())
 
-            protected_lambda_names = set() if include_all else _protected_runtime_lambda_names()
+            api_gateway_lambda_names = set() if include_all else _api_gateway_lambda_names()
             protected_role_names = set()
-            if protected_lambda_names:
+            if api_gateway_lambda_names:
                 lambda_client = aws_client("lambda", region, f"{prefix}-lambda-protect")
-                for lambda_name in protected_lambda_names:
+                for lambda_name in api_gateway_lambda_names:
                     try:
                         role_arn = lambda_client.get_function(
                             FunctionName=lambda_name
@@ -1541,9 +1573,6 @@ class CloudInfrastructure:
             ):
                 client = aws_client("lambda", region, f"{prefix}-lambda-destroy")
                 for name in _lambda_names():
-                    if name in protected_lambda_names:
-                        print(f"Keeping webhook/API Lambda: {name}")
-                        continue
                     did_work = True
                     _confirm_and_run(
                         f"Lambda {name}",
@@ -1572,7 +1601,78 @@ class CloudInfrastructure:
                         ),
                     )
 
-            if _wants("ImageBuilder", "ImageBuilders"):
+            def _delete_project_amis():
+                nonlocal did_work
+
+                ec2 = aws_client("ec2", region, f"{prefix}-ami-destroy")
+                targets = []
+                for page in _iter_pages(
+                    ec2,
+                    "describe_images",
+                    Owners=["self"],
+                    Filters=[{"Name": "name", "Values": [f"{prefix_dash}*"]}],
+                ):
+                    for image in page.get("Images", []) or []:
+                        image_id = image.get("ImageId", "")
+                        name = image.get("Name", "")
+                        tags = image.get("Tags", []) or []
+                        tag_name = _resource_name_from_tags(tags)
+                        rn = _tag_value(tags, "praktika_rn")
+                        if not image_id or not (
+                            _is_prefix_name(name)
+                            or _is_prefix_name(tag_name)
+                            or _is_prefix_name(rn)
+                        ):
+                            continue
+                        snapshot_ids = []
+                        for mapping in image.get("BlockDeviceMappings", []) or []:
+                            snapshot_id = (
+                                mapping.get("Ebs", {}) or {}
+                            ).get("SnapshotId", "")
+                            if snapshot_id:
+                                snapshot_ids.append(snapshot_id)
+                        targets.append(
+                            (
+                                f"AMI {name or tag_name or rn or image_id}",
+                                image_id,
+                                tuple(sorted(set(snapshot_ids))),
+                            )
+                        )
+
+                for target_label, image_id, snapshot_ids in sorted(
+                    set(targets), key=lambda x: x[0]
+                ):
+                    did_work = True
+
+                    def _delete_image(
+                        iid=image_id,
+                        sids=snapshot_ids,
+                    ):
+                        _ignore_missing(
+                            ec2.deregister_image,
+                            ImageId=iid,
+                            ignore_dependency=True,
+                        )
+                        for snapshot_id in sids:
+                            _ignore_missing(
+                                ec2.delete_snapshot,
+                                SnapshotId=snapshot_id,
+                                ignore_dependency=True,
+                            )
+
+                    _confirm_and_run(target_label, _delete_image)
+
+            imagebuilder_wanted = _wants("ImageBuilder", "ImageBuilders")
+            ami_wanted = imagebuilder_wanted or _wants(
+                "AMI",
+                "AMIs",
+                "Image",
+                "Images",
+                "EC2Image",
+                "EC2Images",
+            )
+
+            if imagebuilder_wanted:
                 client = aws_client("imagebuilder", region, f"{prefix}-ib-destroy")
 
                 def _delete_imagebuilder_resources(
@@ -1696,6 +1796,9 @@ class CloudInfrastructure:
                     "ImageBuilderInfrastructure",
                 )
                 _delete_imagebuilder_component_builds()
+
+            if ami_wanted:
+                _delete_project_amis()
 
             if _wants(
                 "IAMInstanceProfile",
@@ -1871,7 +1974,7 @@ class CloudInfrastructure:
                         ),
                     )
 
-            if include_all and _wants("VPC", "VPCs"):
+            if _wants("VPC", "VPCs"):
                 from .vpc import VPC
 
                 client = aws_client("ec2", region, f"{prefix}-vpc-discovery")
@@ -1884,7 +1987,13 @@ class CloudInfrastructure:
                 for name in sorted(set(names)):
                     did_work = True
                     cfg = VPC.Config(name=name, region=region)
-                    _confirm_and_run(f"VPC {name}", cfg.delete)
+                    _confirm_and_run(
+                        f"VPC {name}",
+                        lambda c=cfg: _ignore_missing(
+                            c.delete,
+                            ignore_dependency=True,
+                        ),
+                    )
 
             print("\n" + "=" * 60)
             if did_work:

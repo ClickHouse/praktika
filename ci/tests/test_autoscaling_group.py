@@ -62,7 +62,7 @@ def test_asg_deploy_skips_update_when_config_and_tags_match(monkeypatch):
     assert client.tagged is False
 
 
-def test_asg_deploy_skips_create_when_launch_template_is_missing(monkeypatch):
+def test_asg_deploy_skips_create_when_launch_template_is_missing(monkeypatch, capsys):
     config = AutoScalingGroup.Config(
         name="praktika-workflow-orchestrator",
         region="eu-north-1",
@@ -101,3 +101,9 @@ def test_asg_deploy_skips_create_when_launch_template_is_missing(monkeypatch):
 
     assert result is config
     assert config.ext["deferred_missing_launch_template"] is True
+    assert (
+        config.ext["deployment_warning"]
+        == "Launch Template is not available yet for ASG "
+        "'praktika-workflow-orchestrator'; skipping until the launch template exists"
+    )
+    assert "WARNING: Launch Template is not available yet" in capsys.readouterr().out

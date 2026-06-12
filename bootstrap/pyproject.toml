@@ -14,6 +14,11 @@ dependencies = [
     "requests>=2.25.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/ClickHouse/praktika"
+Repository = "https://github.com/ClickHouse/praktika"
+Issues = "https://github.com/ClickHouse/praktika/issues"
+
 [project.scripts]
 praktika-controller = "praktika_controller.main:main"
 
