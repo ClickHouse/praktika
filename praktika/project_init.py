@@ -445,7 +445,6 @@ def _infrastructure_template(answers: InitAnswers) -> str:
         from praktika.infrastructure.cloud import CloudInfrastructure
 
 
-        CI_VPC_NAME = f"{{PROJECT_SLUG}}-ci"
         _RUNTIME_BASE_VENV = "praktika-runtime"
 
         # until published in pip
@@ -556,37 +555,19 @@ def _infrastructure_template(answers: InitAnswers) -> str:
             return [
                 ImageBuilder.Config(
                     name="ci-arm64-image",
-                    image_recipe_name="ci-arm64-image-recipe",
                     image_recipe_version=image_recipe_version,
                     inline_components=[
                         _controller_image_component("controller-image"),
                     ],
-                    infrastructure_configuration_name="ci-arm64-imagebuilder-infra",
-                    instance_profile_name="arm-small-profile",
                     instance_types=["t4g.small"],
-                    vpc_name=CI_VPC_NAME,
-                    security_group_names=[f"{{CI_VPC_NAME}}-sg"],
-                    distribution_configuration_name="ci-arm64-imagebuilder-dist",
-                    ami_name="ci-arm64-{{{{ imagebuilder:buildDate }}}}",
-                    ami_tags={{"praktika_resource_tag": "controller", "arch": "arm64"}},
-                    image_pipeline_name="ci-arm64-imagebuilder-pipeline",
                 ),
                 ImageBuilder.Config(
                     name="ci-x86_64-image",
-                    image_recipe_name="ci-x86_64-image-recipe",
                     image_recipe_version=image_recipe_version,
                     inline_components=[
                         _controller_image_component("controller-image"),
                     ],
-                    infrastructure_configuration_name="ci-x86_64-imagebuilder-infra",
-                    instance_profile_name="amd-small-profile",
                     instance_types=["t3.small"],
-                    vpc_name=CI_VPC_NAME,
-                    security_group_names=[f"{{CI_VPC_NAME}}-sg"],
-                    distribution_configuration_name="ci-x86_64-imagebuilder-dist",
-                    ami_name="ci-x86_64-{{{{ imagebuilder:buildDate }}}}",
-                    ami_tags={{"praktika_resource_tag": "controller", "arch": "x86_64"}},
-                    image_pipeline_name="ci-x86_64-imagebuilder-pipeline",
                 ),
             ]
 
@@ -603,7 +584,6 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                 min_praktika_version="{current_praktika_version()}",
                 vpcs=[
                     VPC.Config(
-                        name=CI_VPC_NAME,
                         subnets=[
                             VPC.Subnet(availability_zone="{answers.availability_zone}"),
                         ],
@@ -621,7 +601,6 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                 github_token_minters=[_GH_TOKEN_MINTER],
                 orchestrator_pool=Components.OrchestratorPool(
                     instance_type="t4g.small",
-                    vpc_name=CI_VPC_NAME,
                     scaling=Components.OrchestratorPool.Scaling.Auto,
                     size=0,
                     max_size=50,
@@ -632,7 +611,6 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                     Components.RunnerPool(
                         name="arm-small",
                         instance_type="t4g.small",
-                        vpc_name=CI_VPC_NAME,
                         scaling=Components.RunnerPool.Scaling.Auto,
                         size=0,
                         max_size=50,
@@ -641,7 +619,6 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                     Components.RunnerPool(
                         name="amd-small",
                         instance_type="t3.small",
-                        vpc_name=CI_VPC_NAME,
                         scaling=Components.RunnerPool.Scaling.Auto,
                         size=0,
                         max_size=50,
@@ -650,7 +627,6 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                     Components.RunnerPool(
                         name="arm-medium",
                         instance_type="c7g.4xlarge",
-                        vpc_name=CI_VPC_NAME,
                         scaling=Components.RunnerPool.Scaling.Auto,
                         size=0,
                         max_size=50,
@@ -660,7 +636,6 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                     Components.RunnerPool(
                         name="amd-medium",
                         instance_type="c7a.4xlarge",
-                        vpc_name=CI_VPC_NAME,
                         scaling=Components.RunnerPool.Scaling.Auto,
                         size=0,
                         max_size=50,

@@ -104,6 +104,19 @@ def test_current_infrastructure_config_imports_all_component_groups(monkeypatch)
     assert cloud.sqs_queues
     assert cloud.pool_autoscalers
     assert any(pool.capacity_reserve == 2 for pool in cloud.orchestrator_pools)
+    image_builders = {builder.name: builder for builder in cloud.image_builders}
+    assert {
+        name: builder.instance_profile_name for name, builder in image_builders.items()
+    } == {
+        "praktika-ci-arm64-image": "praktika-arm-2xsmall-profile",
+        "praktika-ci-x86_64-image": "praktika-amd-2xsmall-profile",
+    }
+    assert {builder.vpc_name for builder in image_builders.values()} == {"praktika-vpc"}
+    assert {
+        tuple(builder.security_group_names) for builder in image_builders.values()
+    } == {("praktika-vpc-sg",)}
+    assert cloud.cidb_cluster.vpc_name == "praktika-vpc"
+    assert cloud.cidb_cluster.security_group_names == ["praktika-vpc-sg"]
 
 
 def test_infrastructure_deploy_validation_accepts_matching_s3_settings(monkeypatch):
@@ -177,15 +190,43 @@ def test_infrastructure_deploy_validation_rejects_storage_bucket_mismatch(
     assert "silk-artifacts-eu-north-1" in out
 
 
+def test_infrastructure_deploy_validation_rejects_prefixed_resource_names(capsys):
+    cloud = CloudInfrastructure.Config(
+        name="silk",
+        vpcs=[
+            VPC.Config(
+                name="silk-ci",
+                subnets=[VPC.Subnet(availability_zone="eu-north-1a")],
+            )
+        ],
+    )
+
+    with pytest.raises(SystemExit):
+        Validator.validate_infrastructure_deploy(cloud)
+
+    out = capsys.readouterr().out
+    assert (
+        "Infrastructure vpcs item name [silk-ci] already includes project prefix [silk]"
+        in out
+    )
+
+
 def test_cloud_config_prefixes_embedded_pool_resources():
     cloud = CloudInfrastructure.Config(
         name="sandbox",
         image_builders=[],
+        vpcs=[
+            VPC.Config(
+                name="praktika-ci",
+                subnets=[
+                    VPC.Subnet(availability_zone="eu-north-1a"),
+                ],
+            )
+        ],
         runner_pools=[
             RunnerPool(
                 name="arm-2xsmall",
                 instance_type="t4g.small",
-                vpc_name="praktika-ci",
                 scaling=RunnerPool.Scaling.Auto,
                 size=0,
                 max_size=1,
@@ -193,7 +234,6 @@ def test_cloud_config_prefixes_embedded_pool_resources():
         ],
         orchestrator_pool=OrchestratorPool(
             instance_type="t4g.small",
-            vpc_name="praktika-ci",
             scaling=OrchestratorPool.Scaling.Auto,
             size=0,
             max_size=1,
@@ -202,7 +242,6 @@ def test_cloud_config_prefixes_embedded_pool_resources():
             OrchestratorPool(
                 name="workflow-orchestrator-base",
                 instance_type="t4g.small",
-                vpc_name="praktika-ci",
                 scaling=OrchestratorPool.Scaling.Auto,
                 size=0,
                 max_size=1,
@@ -401,11 +440,6 @@ def test_cloud_config_prefixes_all_top_level_resource_types():
         image_builders=[
             ImageBuilder.Config(
                 name="builder",
-                image_recipe_name="builder-recipe",
-                infrastructure_configuration_name="builder-infra",
-                distribution_configuration_name="builder-dist",
-                image_pipeline_name="builder-pipeline",
-                ami_name="builder-{{ imagebuilder:buildDate }}",
                 instance_profile_name="worker-profile",
                 vpc_name="ci",
                 security_group_names=["ci-sg"],
@@ -458,9 +492,15 @@ def test_cloud_config_prefixes_all_top_level_resource_types():
     }
     assert builder.name == "prefix-check-builder"
     assert builder.image_recipe_name == "prefix-check-builder-recipe"
-    assert builder.infrastructure_configuration_name == "prefix-check-builder-infra"
-    assert builder.distribution_configuration_name == "prefix-check-builder-dist"
-    assert builder.image_pipeline_name == "prefix-check-builder-pipeline"
+    assert (
+        builder.infrastructure_configuration_name
+        == "prefix-check-builder-imagebuilder-infra"
+    )
+    assert (
+        builder.distribution_configuration_name
+        == "prefix-check-builder-imagebuilder-dist"
+    )
+    assert builder.image_pipeline_name == "prefix-check-builder-imagebuilder-pipeline"
     assert builder.ami_name == "prefix-check-builder-{{ imagebuilder:buildDate }}"
     assert builder.instance_profile_name == "prefix-check-worker-profile"
     assert builder.vpc_name == "prefix-check-ci"
@@ -485,7 +525,6 @@ def test_cloud_deploy_runs_lambdas_before_image_backed_compute(monkeypatch):
         image_builders=[
             ImageBuilder.Config(
                 name="builder",
-                image_pipeline_name="builder-pipeline",
             )
         ],
         launch_templates=[
@@ -540,28 +579,25 @@ def test_cloud_deploy_runs_lambdas_before_image_backed_compute(monkeypatch):
     ]
 
 
-def test_shared_controller_image_builders_are_declared():
+def test_controller_image_builders_are_declared():
     for name, arch, instance_type in [
-        ("praktika-base-ci-arm64-image", "arm64", "t4g.small"),
-        ("praktika-base-ci-x86_64-image", "x86_64", "t3.small"),
+        ("ci-arm64-image", "arm64", "t4g.small"),
+        ("ci-x86_64-image", "x86_64", "t3.small"),
     ]:
         builder = _IMAGE_BUILDERS_BY_NAME[name]
 
         assert builder.ami_launch_permission == {}
-        assert builder.ami_tags == {
-            "praktika_resource_tag": "base_controller",
-            "arch": arch,
-        }
+        assert builder.ami_name == f"ci-{arch}-{{{{ imagebuilder:buildDate }}}}"
         assert builder.instance_types == [instance_type]
         assert [component["name"] for component in builder.inline_components] == [
-            "praktika-base-controller-setup",
-            "praktika-base-controller-runtime",
-            "praktika-base-controller",
+            "praktika-controller-setup",
+            "praktika-controller-runtime",
+            "praktika-controller",
         ]
         runtime_component = next(
             component
             for component in builder.inline_components
-            if component["name"] == "praktika-base-controller-runtime"
+            if component["name"] == "praktika-controller-runtime"
         )
         assert any(
             "amazon-cloudwatch-agent" in cmd
@@ -581,7 +617,7 @@ def test_shared_controller_image_builders_are_declared():
         agent_component = next(
             component
             for component in builder.inline_components
-            if component["name"] == "praktika-base-controller"
+            if component["name"] == "praktika-controller"
         )
         launcher = _decode_embedded_file(
             next(
@@ -620,25 +656,22 @@ def test_shared_controller_image_builders_are_declared():
         assert '"log_group_name": "/praktika/controller"' in cloudwatch
 
     assert [
-        lt.name
-        for lt in _IMAGE_BUILDERS_BY_NAME[
-            "praktika-base-ci-arm64-image"
-        ].launch_templates
+        lt.name for lt in _IMAGE_BUILDERS_BY_NAME["ci-arm64-image"].launch_templates
     ] == [
+        "arm-2xsmall-lt",
         "arm-2xsmall-base-lt",
+        "workflow-orchestrator-lt",
         "workflow-orchestrator-base-lt",
     ]
-    assert (
-        _IMAGE_BUILDERS_BY_NAME["praktika-base-ci-x86_64-image"].launch_templates == []
-    )
+    assert [
+        lt.name for lt in _IMAGE_BUILDERS_BY_NAME["ci-x86_64-image"].launch_templates
+    ] == ["amd-2xsmall-lt"]
 
 
 def test_all_image_builders_stay_private():
     for name in [
-        "praktika-ci-arm64-image",
-        "praktika-ci-x86_64-image",
-        "praktika-base-ci-arm64-image",
-        "praktika-base-ci-x86_64-image",
+        "ci-arm64-image",
+        "ci-x86_64-image",
     ]:
         assert _IMAGE_BUILDERS_BY_NAME[name].ami_launch_permission == {}
 
@@ -676,7 +709,7 @@ def test_project_github_token_minter_uses_defaults_and_project_repo_scope():
 def test_base_runner_pool_uses_base_image_without_bootstrap_user_data():
     pool = next(pool for pool in _runner_pools if pool.name == "arm-2xsmall-base")
 
-    assert pool.image_builder is _IMAGE_BUILDERS_BY_NAME["praktika-base-ci-arm64-image"]
+    assert pool.image_builder is _IMAGE_BUILDERS_BY_NAME["ci-arm64-image"]
     assert (
         "amazon-cloudwatch-agent-ctl -a fetch-config" in pool.launch_template.user_data
     )
@@ -712,16 +745,15 @@ def test_non_base_runner_pools_patch_praktika_into_shared_base_venv():
 
 
 def test_shared_arm64_images_are_used_by_runner_and_orchestrator_pools():
-    builder = _IMAGE_BUILDERS_BY_NAME["praktika-base-ci-arm64-image"]
+    builder = _IMAGE_BUILDERS_BY_NAME["ci-arm64-image"]
 
     assert builder.ami_launch_permission == {}
-    assert builder.ami_tags == {
-        "praktika_resource_tag": "base_controller",
-        "arch": "arm64",
-    }
+    assert builder.ami_name == "ci-arm64-{{ imagebuilder:buildDate }}"
     assert builder.instance_types == ["t4g.small"]
     assert [lt.name for lt in builder.launch_templates] == [
+        "arm-2xsmall-lt",
         "arm-2xsmall-base-lt",
+        "workflow-orchestrator-lt",
         "workflow-orchestrator-base-lt",
     ]
 
@@ -730,10 +762,7 @@ def test_projects_orchestrator_pools_include_default_and_base_image_variants():
     assert _orchestrator_pool.name == "workflow-orchestrator"
     assert _orchestrator_pool.queue.name == "workflow-orchestrator"
     assert _orchestrator_pool.lambda_config.name == "workflow-orchestrator"
-    assert (
-        _orchestrator_pool.image_builder
-        is _IMAGE_BUILDERS_BY_NAME["praktika-ci-arm64-image"]
-    )
+    assert _orchestrator_pool.image_builder is _IMAGE_BUILDERS_BY_NAME["ci-arm64-image"]
     assert (
         _orchestrator_pool.image_builder.prebuilt_venvs[0]
         .packages[-1]
@@ -770,7 +799,7 @@ def test_projects_orchestrator_pools_include_default_and_base_image_variants():
     )
     assert (
         _orchestrator_pool_base.image_builder
-        is _IMAGE_BUILDERS_BY_NAME["praktika-base-ci-arm64-image"]
+        is _IMAGE_BUILDERS_BY_NAME["ci-arm64-image"]
     )
     assert (
         "amazon-cloudwatch-agent-ctl -a fetch-config"

@@ -266,6 +266,52 @@ class _FakeImageBuilderWithoutPaginator(_FakeImageBuilder):
         }
 
 
+class _FakeImageBuilderWithRecipeVersions(_FakeImageBuilder):
+    def list_image_recipes(self):
+        return {
+            "imageRecipeSummaryList": [
+                {
+                    "name": "cloud-ci-infra-image-recipe",
+                    "arn": "arn:aws:imagebuilder:test:123:image-recipe/cloud-ci-infra-image-recipe/1.0.0",
+                    "semanticVersion": "1.0.0",
+                },
+                {
+                    "name": "cloud-ci-infra-image-recipe",
+                    "arn": "arn:aws:imagebuilder:test:123:image-recipe/cloud-ci-infra-image-recipe/1.0.1",
+                    "semanticVersion": "1.0.1",
+                },
+            ]
+        }
+
+
+class _FakeImageBuilderWithComponentBuilds(_FakeImageBuilder):
+    def list_components(self, owner):
+        return {
+            "componentVersionList": [
+                {
+                    "name": "cloud-ci-infra-praktika-runtime-venv",
+                    "arn": "arn:aws:imagebuilder:test:123:component/cloud-ci-infra-praktika-runtime-venv/1.0.0",
+                    "version": "1.0.0",
+                }
+            ]
+        }
+
+    def list_component_build_versions(self, componentVersionArn):
+        self.calls.append(f"ib-component-version:{componentVersionArn}")
+        return {
+            "componentSummaryList": [
+                {
+                    "name": "cloud-ci-infra-praktika-runtime-venv",
+                    "arn": f"{componentVersionArn}/1",
+                    "version": "1.0.0",
+                }
+            ]
+        }
+
+    def delete_component(self, componentBuildVersionArn):
+        self.calls.append(f"ib-component:{componentBuildVersionArn}")
+
+
 class _FakeIAM:
     def __init__(self, calls):
         self.calls = calls
@@ -441,6 +487,66 @@ def test_destroy_runtime_imagebuilder_fallback_uses_lowercase_next_token(monkeyp
     assert "ib-recipe-request:" in calls
     assert "ib-recipe-request:nextToken" in calls
     assert "ib-recipe:arn:recipe" in calls
+
+
+def test_destroy_runtime_imagebuilder_recipe_prompts_include_versions(monkeypatch):
+    cloud, calls = _cloud(monkeypatch)
+    calls.clear()
+    prompts = []
+
+    fake = _FakeAWS(calls)
+    fake.clients["imagebuilder"] = _FakeImageBuilderWithRecipeVersions(calls)
+    monkeypatch.setattr("praktika.infrastructure.cloud.aws_client", fake.client)
+
+    from praktika.interactive import UserPrompt
+
+    monkeypatch.setattr(
+        UserPrompt,
+        "confirm",
+        staticmethod(lambda prompt: prompts.append(prompt) or True),
+    )
+
+    cloud.destroy_runtime(only=["ImageBuilder"])
+
+    assert (
+        "Delete 'ImageBuilderRecipe cloud-ci-infra-image-recipe (1.0.0)'?"
+        in prompts
+    )
+    assert (
+        "Delete 'ImageBuilderRecipe cloud-ci-infra-image-recipe (1.0.1)'?"
+        in prompts
+    )
+
+
+def test_destroy_runtime_imagebuilder_deletes_component_build_versions(monkeypatch):
+    cloud, calls = _cloud(monkeypatch)
+    calls.clear()
+    prompts = []
+
+    fake = _FakeAWS(calls)
+    fake.clients["imagebuilder"] = _FakeImageBuilderWithComponentBuilds(calls)
+    monkeypatch.setattr("praktika.infrastructure.cloud.aws_client", fake.client)
+
+    from praktika.interactive import UserPrompt
+
+    monkeypatch.setattr(
+        UserPrompt,
+        "confirm",
+        staticmethod(lambda prompt: prompts.append(prompt) or True),
+    )
+
+    cloud.destroy_runtime(only=["ImageBuilder"])
+
+    component_version_arn = (
+        "arn:aws:imagebuilder:test:123:component/"
+        "cloud-ci-infra-praktika-runtime-venv/1.0.0"
+    )
+    assert f"ib-component-version:{component_version_arn}" in calls
+    assert f"ib-component:{component_version_arn}/1" in calls
+    assert (
+        "Delete 'ImageBuilderComponent cloud-ci-infra-praktika-runtime-venv (1.0.0/1)'?"
+        in prompts
+    )
 
 
 def test_infrastructure_main_destroy_requires_project(monkeypatch):

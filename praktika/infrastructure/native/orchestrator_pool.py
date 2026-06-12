@@ -70,14 +70,10 @@ class OrchestratorPool:
         Disabled = "disabled"
         Auto = "auto"
 
-    # TODO: ami_id, security_group_ids, vpc_name, iam_instance_profile_name are
-    #  infrastructure-level constants shared across all pools — find a way to
-    #  propagate them automatically (e.g. from CloudInfrastructure.Config) so
-    #  callers don't have to repeat them per pool.
-    vpc_name: str
     instance_type: str
     size: int
     max_size: int
+    vpc_name: str = ""
     name: str = "workflow-orchestrator"
     scaling: str = Scaling.Disabled
     ami_id: str = ""  # resolved at deploy time via SSM if empty
@@ -120,7 +116,11 @@ class OrchestratorPool:
     def __post_init__(self):
         if not self.user_data:
             self.user_data = _DEFAULT_PRAKTIKA_CONTROLLER_USER_DATA
-        if not self.security_group_ids and not self.security_group_names:
+        if (
+            self.vpc_name
+            and not self.security_group_ids
+            and not self.security_group_names
+        ):
             self.security_group_names = [f"{self.vpc_name}-sg"]
         assert self.scaling in (self.Scaling.Disabled, self.Scaling.Auto), (
             f"OrchestratorPool scaling={self.scaling!r} is not supported; "

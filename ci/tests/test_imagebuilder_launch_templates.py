@@ -9,7 +9,6 @@ from praktika.infrastructure.native.runner_pool import RunnerPool
 def test_runner_pool_registers_launch_template_with_image_builder():
     builder = ImageBuilder.Config(
         name="runner-arm64-image",
-        image_pipeline_name="runner-arm64-imagebuilder-pipeline",
     )
 
     pool = RunnerPool(
@@ -30,7 +29,6 @@ def test_runner_pool_registers_launch_template_with_image_builder():
 def test_orchestrator_pool_registers_launch_template_with_image_builder():
     builder = ImageBuilder.Config(
         name="orchestrator-arm64-image",
-        image_pipeline_name="orchestrator-arm64-imagebuilder-pipeline",
     )
 
     pool = OrchestratorPool(
@@ -45,10 +43,10 @@ def test_orchestrator_pool_registers_launch_template_with_image_builder():
     assert pool.launch_template.image_builder is builder
     assert pool.autoscaling_group.launch_template_version == "$Default"
 
+
 def test_launch_template_resolves_latest_ami_from_image_builder(monkeypatch):
     builder = ImageBuilder.Config(
         name="orchestrator-arm64-image",
-        image_pipeline_name="praktika-orchestrator-arm64-imagebuilder-pipeline",
     )
 
     def _resolve_latest_ami_id():
@@ -73,8 +71,6 @@ def test_image_builder_distribution_includes_launch_templates(monkeypatch):
     builder = ImageBuilder.Config(
         name="orchestrator-arm64-image",
         region="eu-north-1",
-        distribution_configuration_name="praktika-orchestrator-dist",
-        ami_name="praktika-orchestrator-{{ imagebuilder:buildDate }}",
         ami_launch_permission={"userGroups": ["all"]},
         regions=["eu-north-1"],
     )
@@ -99,7 +95,7 @@ def test_image_builder_distribution_includes_launch_templates(monkeypatch):
         def create_distribution_configuration(self, **req):
             captured.update(req)
             return {
-                "distributionConfigurationArn": "arn:aws:imagebuilder:eu-north-1:123456789012:distribution-configuration/praktika-orchestrator-dist"
+                "distributionConfigurationArn": "arn:aws:imagebuilder:eu-north-1:123456789012:distribution-configuration/orchestrator-arm64-imagebuilder-dist"
             }
 
         def update_distribution_configuration(self, **req):
@@ -110,7 +106,7 @@ def test_image_builder_distribution_includes_launch_templates(monkeypatch):
 
     arn = builder._get_or_create_distribution_configuration_arn()
 
-    assert arn.endswith("/praktika-orchestrator-dist")
+    assert arn.endswith("/orchestrator-arm64-imagebuilder-dist")
     assert captured["distributions"][0]["launchTemplateConfigurations"] == [
         {
             "launchTemplateId": "lt-0123456789abcdef0",
@@ -120,14 +116,17 @@ def test_image_builder_distribution_includes_launch_templates(monkeypatch):
     assert captured["distributions"][0]["amiDistributionConfiguration"][
         "launchPermission"
     ] == {"userGroups": ["all"]}
+    assert (
+        captured["distributions"][0]["amiDistributionConfiguration"]["name"]
+        == "orchestrator-arm64-{{ imagebuilder:buildDate }}"
+    )
+    assert "amiTags" not in captured["distributions"][0]["amiDistributionConfiguration"]
 
 
 def test_image_builder_distribution_skips_missing_launch_templates(monkeypatch):
     builder = ImageBuilder.Config(
         name="orchestrator-arm64-image",
         region="eu-north-1",
-        distribution_configuration_name="praktika-orchestrator-dist",
-        ami_name="praktika-orchestrator-{{ imagebuilder:buildDate }}",
         regions=["eu-north-1"],
     )
 
@@ -150,7 +149,7 @@ def test_image_builder_distribution_skips_missing_launch_templates(monkeypatch):
         def create_distribution_configuration(self, **req):
             captured.update(req)
             return {
-                "distributionConfigurationArn": "arn:aws:imagebuilder:eu-north-1:123456789012:distribution-configuration/praktika-orchestrator-dist"
+                "distributionConfigurationArn": "arn:aws:imagebuilder:eu-north-1:123456789012:distribution-configuration/orchestrator-arm64-imagebuilder-dist"
             }
 
         def update_distribution_configuration(self, **req):
@@ -161,7 +160,7 @@ def test_image_builder_distribution_skips_missing_launch_templates(monkeypatch):
 
     arn = builder._get_or_create_distribution_configuration_arn()
 
-    assert arn.endswith("/praktika-orchestrator-dist")
+    assert arn.endswith("/orchestrator-arm64-imagebuilder-dist")
     assert "launchTemplateConfigurations" not in captured["distributions"][0]
 
 
@@ -169,8 +168,6 @@ def test_image_builder_distribution_reuses_cached_launch_template_id(monkeypatch
     builder = ImageBuilder.Config(
         name="orchestrator-arm64-image",
         region="eu-north-1",
-        distribution_configuration_name="praktika-orchestrator-dist",
-        ami_name="praktika-orchestrator-{{ imagebuilder:buildDate }}",
         regions=["eu-north-1"],
     )
 
@@ -184,7 +181,9 @@ def test_image_builder_distribution_reuses_cached_launch_template_id(monkeypatch
     pool.launch_template.ext["launch_template_id"] = "lt-cached0123456789"
 
     def _fetch():
-        raise AssertionError("fetch should not be called when launch_template_id is cached")
+        raise AssertionError(
+            "fetch should not be called when launch_template_id is cached"
+        )
 
     monkeypatch.setattr(pool.launch_template, "fetch", _fetch)
 
@@ -194,7 +193,7 @@ def test_image_builder_distribution_reuses_cached_launch_template_id(monkeypatch
         def create_distribution_configuration(self, **req):
             captured.update(req)
             return {
-                "distributionConfigurationArn": "arn:aws:imagebuilder:eu-north-1:123456789012:distribution-configuration/praktika-orchestrator-dist"
+                "distributionConfigurationArn": "arn:aws:imagebuilder:eu-north-1:123456789012:distribution-configuration/orchestrator-arm64-imagebuilder-dist"
             }
 
         def update_distribution_configuration(self, **req):
@@ -205,7 +204,7 @@ def test_image_builder_distribution_reuses_cached_launch_template_id(monkeypatch
 
     arn = builder._get_or_create_distribution_configuration_arn()
 
-    assert arn.endswith("/praktika-orchestrator-dist")
+    assert arn.endswith("/orchestrator-arm64-imagebuilder-dist")
     assert captured["distributions"][0]["launchTemplateConfigurations"] == [
         {
             "launchTemplateId": "lt-cached0123456789",
@@ -270,7 +269,6 @@ def test_image_builder_pipeline_update_is_skipped_when_unchanged(monkeypatch):
     builder = ImageBuilder.Config(
         name="orchestrator-arm64-image",
         region="eu-north-1",
-        image_pipeline_name="praktika-orchestrator-arm64-imagebuilder-pipeline",
         enabled=True,
         schedule_expression="rate(1 minute)",
     )
@@ -311,7 +309,7 @@ def test_image_builder_pipeline_update_is_skipped_when_unchanged(monkeypatch):
 
     arn = builder._get_or_create_pipeline_arn("arn:recipe", "arn:infra", "arn:dist")
 
-    assert arn == "arn:image-pipeline:praktika-orchestrator-arm64-imagebuilder-pipeline"
+    assert arn == "arn:image-pipeline:orchestrator-arm64-imagebuilder-pipeline"
     assert update_called["value"] is False
 
 
@@ -322,7 +320,6 @@ def test_launch_template_deploy_skips_when_image_builder_has_no_images(monkeypat
         instance_type="t4g.small",
         image_builder=ImageBuilder.Config(
             name="ci-arm64-image",
-            image_pipeline_name="ci-arm64-imagebuilder-pipeline",
         ),
     )
 
@@ -363,7 +360,6 @@ def test_image_builder_resolves_latest_ready_ami_not_latest_pending(monkeypatch)
     builder = ImageBuilder.Config(
         name="ci-arm64-image",
         region="eu-north-1",
-        image_pipeline_name="ci-arm64-imagebuilder-pipeline",
     )
 
     class _Client:
@@ -412,7 +408,6 @@ def test_launch_template_deploy_fails_when_latest_builds_have_no_ready_ami(monke
         instance_type="t4g.small",
         image_builder=ImageBuilder.Config(
             name="ci-arm64-image",
-            image_pipeline_name="ci-arm64-imagebuilder-pipeline",
         ),
     )
 
@@ -490,7 +485,6 @@ def test_image_builder_deploy_starts_build_when_pipeline_changed(monkeypatch):
     builder = ImageBuilder.Config(
         name="orchestrator-arm64-image",
         region="eu-north-1",
-        image_pipeline_name="praktika-orchestrator-arm64-imagebuilder-pipeline",
         enabled=True,
     )
 
@@ -532,7 +526,6 @@ def test_image_builder_deploy_skips_build_when_unchanged(monkeypatch):
     builder = ImageBuilder.Config(
         name="orchestrator-arm64-image",
         region="eu-north-1",
-        image_pipeline_name="praktika-orchestrator-arm64-imagebuilder-pipeline",
         enabled=True,
     )
     builder.ext["image_recipe_arn"] = "arn:recipe:same"

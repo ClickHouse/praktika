@@ -44,7 +44,7 @@ class CIDBCluster:
         )
     """
 
-    vpc_name: str
+    vpc_name: str = ""
     instance_type: str = "t4g.large"
     size: int = 1
     ami_id: str = ""  # resolved at deploy time via SSM if empty
@@ -70,7 +70,11 @@ class CIDBCluster:
             raise NotImplementedError(
                 f"CIDBCluster.size={self.size} is not yet supported; only size=1 is implemented."
             )
-        if not self.security_group_ids and not self.security_group_names:
+        if (
+            self.vpc_name
+            and not self.security_group_ids
+            and not self.security_group_names
+        ):
             self.security_group_names = [f"{self.vpc_name}-sg"]
 
         self.admin_password_secret = SecretParameter.Config(

@@ -100,7 +100,7 @@ class VPC:
             )
         """
 
-        name: str
+        name: str = ""
         cidr: str = "10.0.0.0/16"
         region: str = ""
         subnets: List["VPC.Subnet"] = field(default_factory=list)

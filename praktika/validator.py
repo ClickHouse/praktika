@@ -20,6 +20,29 @@ class Validator:
     def validate_infrastructure_deploy(cls, cloud):
         print("---Start validating Infrastructure and settings---")
 
+        project_prefix = re.sub(
+            r"-{2,}",
+            "-",
+            re.sub(r"[^a-z0-9]+", "-", (cloud.name or "").lower()),
+        ).strip("-")
+        for group, names in getattr(cloud, "_pre_namespace_names", {}).items():
+            for name in names:
+                normalized = re.sub(
+                    r"-{2,}",
+                    "-",
+                    re.sub(r"[^a-z0-9]+", "-", str(name).lstrip("/").lower()),
+                ).strip("-")
+                cls.evaluate_check_simple(
+                    not project_prefix
+                    or (
+                        normalized != project_prefix
+                        and not normalized.startswith(f"{project_prefix}-")
+                    ),
+                    f"Infrastructure {group} item name [{name}] already includes "
+                    f"project prefix [{project_prefix}]. Use project-local names; "
+                    "CloudInfrastructure.Config adds the project prefix automatically.",
+                )
+
         storage_names = {storage.name for storage in getattr(cloud, "storages", [])}
 
         def _check_setting_bucket(setting_name: str, setting_value: str):

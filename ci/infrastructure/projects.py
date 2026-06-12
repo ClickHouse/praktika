@@ -4,8 +4,6 @@ from praktika.infrastructure.cloud import CloudInfrastructure
 from praktika.infrastructure import ImageBuilder, Components, Storage, VPC
 
 
-CI_VPC_NAME = "praktika-ci"
-RUNNER_IMAGE_BUILDER_PROFILE_NAME = "runner-profile"
 _PRAKTIKA_BASE_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.0.1-py3-none-any.whl"
 _PRAKTIKA_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1.2-py3-none-any.whl"
 _PRAKTIKA_CONTROLLER_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_controller-0.1.1-py3-none-any.whl"
@@ -163,13 +161,11 @@ def _runtime_prebuilt_venvs():
 
 
 def _image_builders():
-    ci_version = "1.0.18"
-    base_ci_version = "1.0.15"
+    ci_version = "1.0.0"
 
     return [
         ImageBuilder.Config(
-            name="praktika-ci-arm64-image",
-            image_recipe_name="praktika-ci-arm64-image-recipe",
+            name="ci-arm64-image",
             image_recipe_version=ci_version,
             inline_components=[
                 _setup_component(
@@ -180,42 +176,10 @@ def _image_builders():
                 _praktika_controller_component("praktika-controller"),
             ],
             prebuilt_venvs=_runtime_prebuilt_venvs(),
-            infrastructure_configuration_name="praktika-ci-arm64-imagebuilder-infra",
-            instance_profile_name=RUNNER_IMAGE_BUILDER_PROFILE_NAME,
             instance_types=["t4g.small"],
-            vpc_name=CI_VPC_NAME,
-            security_group_names=[f"{CI_VPC_NAME}-sg"],
-            distribution_configuration_name="praktika-ci-arm64-imagebuilder-dist",
-            ami_name="praktika-ci-arm64-{{ imagebuilder:buildDate }}",
-            ami_tags={"praktika_resource_tag": "controller", "arch": "arm64"},
-            image_pipeline_name="praktika-ci-arm64-imagebuilder-pipeline",
         ),
         ImageBuilder.Config(
-            name="praktika-base-ci-arm64-image",
-            image_recipe_name="praktika-base-ci-arm64-image-recipe",
-            image_recipe_version=base_ci_version,
-            inline_components=[
-                _setup_component(
-                    "praktika-base-controller-setup",
-                    with_docker=True,
-                ),
-                _controller_runtime_component("praktika-base-controller-runtime"),
-                _praktika_controller_component("praktika-base-controller"),
-            ],
-            prebuilt_venvs=_runtime_prebuilt_venvs(),
-            infrastructure_configuration_name="praktika-base-ci-arm64-imagebuilder-infra",
-            instance_profile_name=RUNNER_IMAGE_BUILDER_PROFILE_NAME,
-            instance_types=["t4g.small"],
-            vpc_name=CI_VPC_NAME,
-            security_group_names=[f"{CI_VPC_NAME}-sg"],
-            distribution_configuration_name="praktika-base-ci-arm64-imagebuilder-dist",
-            ami_name="praktika-base-ci-arm64-{{ imagebuilder:buildDate }}",
-            ami_tags={"praktika_resource_tag": "base_controller", "arch": "arm64"},
-            image_pipeline_name="praktika-base-ci-arm64-imagebuilder-pipeline",
-        ),
-        ImageBuilder.Config(
-            name="praktika-ci-x86_64-image",
-            image_recipe_name="praktika-ci-x86_64-image-recipe",
+            name="ci-x86_64-image",
             image_recipe_version=ci_version,
             inline_components=[
                 _setup_component(
@@ -226,38 +190,7 @@ def _image_builders():
                 _praktika_controller_component("praktika-controller"),
             ],
             prebuilt_venvs=_runtime_prebuilt_venvs(),
-            infrastructure_configuration_name="praktika-ci-x86_64-imagebuilder-infra",
-            instance_profile_name=RUNNER_IMAGE_BUILDER_PROFILE_NAME,
             instance_types=["t3.small"],
-            vpc_name=CI_VPC_NAME,
-            security_group_names=[f"{CI_VPC_NAME}-sg"],
-            distribution_configuration_name="praktika-ci-x86_64-imagebuilder-dist",
-            ami_name="praktika-ci-x86_64-{{ imagebuilder:buildDate }}",
-            ami_tags={"praktika_resource_tag": "controller", "arch": "x86_64"},
-            image_pipeline_name="praktika-ci-x86_64-imagebuilder-pipeline",
-        ),
-        ImageBuilder.Config(
-            name="praktika-base-ci-x86_64-image",
-            image_recipe_name="praktika-base-ci-x86_64-image-recipe",
-            image_recipe_version=base_ci_version,
-            inline_components=[
-                _setup_component(
-                    "praktika-base-controller-setup",
-                    with_docker=True,
-                ),
-                _controller_runtime_component("praktika-base-controller-runtime"),
-                _praktika_controller_component("praktika-base-controller"),
-            ],
-            prebuilt_venvs=_runtime_prebuilt_venvs(),
-            infrastructure_configuration_name="praktika-base-ci-x86_64-imagebuilder-infra",
-            instance_profile_name=RUNNER_IMAGE_BUILDER_PROFILE_NAME,
-            instance_types=["t3.small"],
-            vpc_name=CI_VPC_NAME,
-            security_group_names=[f"{CI_VPC_NAME}-sg"],
-            distribution_configuration_name="praktika-base-ci-x86_64-imagebuilder-dist",
-            ami_name="praktika-base-ci-x86_64-{{ imagebuilder:buildDate }}",
-            ami_tags={"praktika_resource_tag": "base_controller", "arch": "x86_64"},
-            image_pipeline_name="praktika-base-ci-x86_64-imagebuilder-pipeline",
         ),
     ]
 
@@ -270,11 +203,10 @@ _runner_pools = [
     Components.RunnerPool(
         name="arm-2xsmall",
         instance_type="t4g.small",
-        vpc_name=CI_VPC_NAME,
         scaling=Components.RunnerPool.Scaling.Auto,
         size=0,
         max_size=10,
-        image_builder=_IMAGE_BUILDERS_BY_NAME["praktika-ci-arm64-image"],
+        image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
         user_data="\n".join(
             [
                 "#!/usr/bin/env bash",
@@ -294,20 +226,18 @@ _runner_pools = [
     Components.RunnerPool(
         name="arm-2xsmall-base",
         instance_type="t4g.small",
-        vpc_name=CI_VPC_NAME,
         scaling=Components.RunnerPool.Scaling.Auto,
         size=0,
         max_size=10,
-        image_builder=_IMAGE_BUILDERS_BY_NAME["praktika-base-ci-arm64-image"],
+        image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
     ),
     Components.RunnerPool(
         name="amd-2xsmall",
         instance_type="t3.small",
-        vpc_name=CI_VPC_NAME,
         scaling=Components.RunnerPool.Scaling.Auto,
         size=0,
         max_size=10,
-        image_builder=_IMAGE_BUILDERS_BY_NAME["praktika-ci-x86_64-image"],
+        image_builder=_IMAGE_BUILDERS_BY_NAME["ci-x86_64-image"],
         user_data="\n".join(
             [
                 "#!/usr/bin/env bash",
@@ -331,12 +261,11 @@ _runner_pools = [
 _orchestrator_pool = Components.OrchestratorPool(
     name="workflow-orchestrator",
     instance_type="t4g.small",
-    vpc_name=CI_VPC_NAME,
     scaling=Components.OrchestratorPool.Scaling.Auto,
     size=0,
     max_size=10,
     capacity_reserve=2,
-    image_builder=_IMAGE_BUILDERS_BY_NAME["praktika-ci-arm64-image"],
+    image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
     user_data="\n".join(
         [
             "#!/usr/bin/env bash",
@@ -359,16 +288,14 @@ _orchestrator_pool = Components.OrchestratorPool(
 _orchestrator_pool_base = Components.OrchestratorPool(
     name="workflow-orchestrator-base",
     instance_type="t4g.small",
-    vpc_name=CI_VPC_NAME,
     scaling=Components.OrchestratorPool.Scaling.Auto,
     size=0,
     max_size=10,
     capacity_reserve=2,
-    image_builder=_IMAGE_BUILDERS_BY_NAME["praktika-base-ci-arm64-image"],
+    image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
 )
 
 _cidb_cluster = Components.CIDBCluster(
-    vpc_name=CI_VPC_NAME,
     instance_type="t4g.large",
     size=1,
 )
@@ -379,16 +306,13 @@ PROJECTS = [
         min_praktika_version="0.1.2",
         vpcs=[
             VPC.Config(
-                name=CI_VPC_NAME,
                 subnets=[
                     VPC.Subnet(availability_zone="eu-north-1a"),
                 ],
             )
         ],
         storages=[
-            Storage.Config(
-                name="praktika-artifacts-eu-north-1", retention_days=90, public=True
-            ),
+            Storage.Config(name="artifacts-eu-north-1", retention_days=90, public=True),
         ],
         report_pages=[
             Components.report_page_config,

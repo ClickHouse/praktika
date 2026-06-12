@@ -24,7 +24,6 @@ class ImageBuilder:
         name: str
         region: str = ""
 
-        image_recipe_name: str = ""
         image_recipe_version: str = "1.0.0"
         parent_image: str = ""  # AMI id or Image Builder managed image ARN
         components: List[str] = field(default_factory=list)  # list of component ARNs
@@ -33,7 +32,6 @@ class ImageBuilder:
         working_directory: str = ""
         block_device_mappings: List[Dict[str, Any]] = field(default_factory=list)
 
-        infrastructure_configuration_name: str = ""
         instance_profile_name: str = ""
         instance_types: List[str] = field(default_factory=list)
         subnet_id: str = ""
@@ -44,15 +42,11 @@ class ImageBuilder:
         terminate_instance_on_failure: bool = True
         sns_topic_arn: str = ""
 
-        distribution_configuration_name: str = ""
-        ami_name: str = ""
-        ami_tags: Dict[str, str] = field(default_factory=dict)
         ami_launch_permission: Dict[str, Any] = field(default_factory=dict)
         regions: List[str] = field(default_factory=list)
         launch_templates: List["LaunchTemplate.Config"] = field(default_factory=list)
         set_launch_template_default_version: bool = True
 
-        image_pipeline_name: str = ""
         enabled: bool = True
         schedule_expression: str = ""
 
@@ -62,6 +56,31 @@ class ImageBuilder:
         pipeline: Dict[str, Any] = field(default_factory=dict)
 
         ext: Dict[str, Any] = field(default_factory=dict)
+
+        image_recipe_name: str = field(init=False, default="")
+        infrastructure_configuration_name: str = field(init=False, default="")
+        distribution_configuration_name: str = field(init=False, default="")
+        ami_name: str = field(init=False, default="")
+        image_pipeline_name: str = field(init=False, default="")
+
+        def __post_init__(self):
+            self.refresh_derived_names()
+
+        def refresh_derived_names(self):
+            base = (
+                self.name[: -len("-image")]
+                if self.name.endswith("-image")
+                else self.name
+            )
+            self.image_recipe_name = f"{self.name}-recipe" if self.name else ""
+            self.infrastructure_configuration_name = (
+                f"{base}-imagebuilder-infra" if base else ""
+            )
+            self.distribution_configuration_name = (
+                f"{base}-imagebuilder-dist" if base else ""
+            )
+            self.ami_name = f"{base}-{{{{ imagebuilder:buildDate }}}}" if base else ""
+            self.image_pipeline_name = f"{base}-imagebuilder-pipeline" if base else ""
 
         def _client(self):
             import boto3
@@ -612,7 +631,6 @@ class ImageBuilder:
                     "region": r,
                     "amiDistributionConfiguration": {
                         "name": self.ami_name,
-                        "amiTags": dict(self.ami_tags or {}),
                     },
                 }
                 if self.ami_launch_permission:

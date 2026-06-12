@@ -68,6 +68,9 @@ class CloudInfrastructure:
         orchestrator_pools: List["OrchestratorPool"] = field(default_factory=list)
         cidb_cluster: Optional["CIDBCluster"] = None
         _settings: Optional[_Settings] = None
+        _pre_namespace_names: Dict[str, List[str]] = field(
+            default_factory=dict, init=False, repr=False
+        )
 
         def _clone_owned_configs(self):
             # Cloud configs are often composed from module-level shared objects
@@ -161,6 +164,156 @@ class CloudInfrastructure:
             if old and new and old != new:
                 replacements[old] = new
 
+        def _capture_pre_namespace_names(self):
+            self._pre_namespace_names = {}
+            for attr in (
+                "vpcs",
+                "storages",
+                "report_pages",
+                "image_builders",
+                "launch_templates",
+                "autoscaling_groups",
+                "sqs_queues",
+                "iam_roles",
+                "iam_instance_profiles",
+                "secret_parameters",
+                "lambda_functions",
+                "dedicated_hosts",
+                "ec2_instances",
+                "runner_pools",
+                "orchestrator_pools",
+                "github_token_minters",
+                "pool_autoscalers",
+            ):
+                names = [
+                    item.name
+                    for item in getattr(self, attr, []) or []
+                    if getattr(item, "name", "")
+                ]
+                if names:
+                    self._pre_namespace_names[attr] = names
+
+        def _apply_vpc_defaults(self):
+            if len(self.vpcs) == 1 and not self.vpcs[0].name:
+                self.vpcs[0].name = "vpc"
+            default_vpc_name = self.vpcs[0].name if len(self.vpcs) == 1 else ""
+            if not default_vpc_name:
+                return
+
+            def _apply_pool_defaults(pool):
+                if not pool.vpc_name:
+                    pool.vpc_name = default_vpc_name
+                if (
+                    not pool.security_group_ids
+                    and not pool.security_group_names
+                    and pool.vpc_name
+                ):
+                    pool.security_group_names = [f"{pool.vpc_name}-sg"]
+
+                launch_template = getattr(pool, "launch_template", None)
+                if launch_template:
+                    if not getattr(launch_template, "vpc_name", ""):
+                        launch_template.vpc_name = pool.vpc_name
+                    if (
+                        not getattr(launch_template, "security_group_ids", [])
+                        and not getattr(launch_template, "security_group_names", [])
+                    ):
+                        launch_template.security_group_names = list(
+                            pool.security_group_names
+                        )
+
+                autoscaling_group = getattr(pool, "autoscaling_group", None)
+                if autoscaling_group and not getattr(
+                    autoscaling_group, "vpc_name", ""
+                ):
+                    autoscaling_group.vpc_name = pool.vpc_name
+
+            for pool in self.runner_pools:
+                _apply_pool_defaults(pool)
+            for pool in self.orchestrator_pools:
+                _apply_pool_defaults(pool)
+
+            if self.cidb_cluster:
+                cluster = self.cidb_cluster
+                if not cluster.vpc_name:
+                    cluster.vpc_name = default_vpc_name
+                if (
+                    not cluster.security_group_ids
+                    and not cluster.security_group_names
+                    and cluster.vpc_name
+                ):
+                    cluster.security_group_names = [f"{cluster.vpc_name}-sg"]
+
+        def _apply_image_builder_defaults(self):
+            default_vpc_name = self.vpcs[0].name if len(self.vpcs) == 1 else ""
+
+            def _is_arm_instance_type(instance_type: str):
+                family = (instance_type or "").split(".")[0]
+                if not family:
+                    return None
+                return family.endswith("g")
+
+            def _builder_is_arm(builder):
+                if not builder.instance_types:
+                    return None
+                return _is_arm_instance_type(builder.instance_types[0])
+
+            def _consumer_launch_templates(builder):
+                seen = set()
+
+                def _add(launch_template):
+                    if not launch_template or id(launch_template) in seen:
+                        return []
+                    seen.add(id(launch_template))
+                    return [launch_template]
+
+                for pool in self.runner_pools:
+                    if getattr(pool, "image_builder", None) is builder:
+                        yield from _add(getattr(pool, "launch_template", None))
+                for pool in self.orchestrator_pools:
+                    if getattr(pool, "image_builder", None) is builder:
+                        yield from _add(getattr(pool, "launch_template", None))
+                for launch_template in self.launch_templates:
+                    if getattr(launch_template, "image_builder", None) is builder:
+                        yield from _add(launch_template)
+                for launch_template in builder.launch_templates:
+                    yield from _add(launch_template)
+
+            def _matching_runner_launch_templates(builder):
+                builder_is_arm = _builder_is_arm(builder)
+                if builder_is_arm is None:
+                    return
+                for pool in self.runner_pools:
+                    if _is_arm_instance_type(pool.instance_type) == builder_is_arm:
+                        yield pool.launch_template
+                for pool in self.orchestrator_pools:
+                    if _is_arm_instance_type(pool.instance_type) == builder_is_arm:
+                        yield pool.launch_template
+
+            for builder in self.image_builders:
+                if not builder.vpc_name and default_vpc_name:
+                    builder.vpc_name = default_vpc_name
+                if (
+                    not builder.security_group_ids
+                    and not builder.security_group_names
+                    and builder.vpc_name
+                ):
+                    builder.security_group_names = [f"{builder.vpc_name}-sg"]
+                if not builder.instance_profile_name:
+                    for launch_template in _consumer_launch_templates(builder):
+                        if getattr(launch_template, "iam_instance_profile_name", ""):
+                            builder.instance_profile_name = (
+                                launch_template.iam_instance_profile_name
+                            )
+                            break
+                if not builder.instance_profile_name:
+                    for launch_template in _matching_runner_launch_templates(builder):
+                        if getattr(launch_template, "iam_instance_profile_name", ""):
+                            builder.instance_profile_name = (
+                                launch_template.iam_instance_profile_name
+                            )
+                            break
+
         def _apply_project_namespace(self):
             # Centralize namespacing here instead of forcing ci/infrastructure/projects.py
             # to hand-prefix every queue, LT, IAM role, lambda, bucket, etc.
@@ -171,6 +324,9 @@ class CloudInfrastructure:
             # created by higher-level native components such as RunnerPool,
             # OrchestratorPool, PoolAutoscaler, GitHubTokenMinter, and CIDB.
             self._clone_owned_configs()
+            self._capture_pre_namespace_names()
+            self._apply_vpc_defaults()
+            self._apply_image_builder_defaults()
 
             replacements = {}
 
@@ -261,30 +417,37 @@ class CloudInfrastructure:
                 }
 
             for config in self.image_builders:
+                old_derived_names = {
+                    attr: getattr(config, attr, "")
+                    for attr in (
+                        "image_recipe_name",
+                        "infrastructure_configuration_name",
+                        "distribution_configuration_name",
+                        "ami_name",
+                        "image_pipeline_name",
+                    )
+                }
                 old = config.name
                 config.name = self._prefixed(config.name)
                 self._record_rename(replacements, old, config.name)
-                for attr in (
-                    "image_recipe_name",
-                    "infrastructure_configuration_name",
-                    "instance_profile_name",
-                    "distribution_configuration_name",
-                    "image_pipeline_name",
-                ):
-                    value = getattr(config, attr, "")
-                    if value:
-                        new_value = self._prefixed(value)
-                        setattr(config, attr, new_value)
-                        self._record_rename(replacements, value, new_value)
+                config.refresh_derived_names()
+                for attr, old_value in old_derived_names.items():
+                    new_value = getattr(config, attr, "")
+                    if old_value and new_value:
+                        self._record_rename(replacements, old_value, new_value)
+                if config.instance_profile_name:
+                    old_profile = config.instance_profile_name
+                    config.instance_profile_name = self._prefixed(
+                        config.instance_profile_name
+                    )
+                    self._record_rename(
+                        replacements, old_profile, config.instance_profile_name
+                    )
                 if config.vpc_name:
                     old_vpc = config.vpc_name
                     config.vpc_name = self._prefixed(config.vpc_name)
                     self._record_rename(replacements, old_vpc, config.vpc_name)
                 config.security_group_names = [self._prefixed(name) for name in config.security_group_names]
-                if config.ami_name:
-                    old_ami_name = config.ami_name
-                    config.ami_name = self._prefixed(config.ami_name)
-                    self._record_rename(replacements, old_ami_name, config.ami_name)
                 for component in config.inline_components:
                     if component.get("name"):
                         old_name = component["name"]
@@ -1424,6 +1587,19 @@ class CloudInfrastructure:
                 ):
                     nonlocal did_work
 
+                    def _item_label(item, name: str) -> str:
+                        version = (
+                            item.get("semanticVersion")
+                            or item.get("version")
+                            or ""
+                        )
+                        arn = item.get("arn", "")
+                        if not version and "/" in arn:
+                            version = arn.rstrip("/").rsplit("/", 1)[-1]
+                        if version and version != name:
+                            return f"{label} {name} ({version})"
+                        return f"{label} {name}"
+
                     request = {"owner": "Self"} if owner_self else {}
                     targets = []
                     for page in _iter_pages(client, list_op, **request):
@@ -1431,15 +1607,62 @@ class CloudInfrastructure:
                             name = item.get("name", "")
                             arn = item.get("arn", "")
                             if _is_prefix_name(name) and arn:
-                                targets.append((name, arn))
-                    for name, arn in sorted(set(targets), key=lambda x: x[0]):
+                                targets.append((_item_label(item, name), arn))
+                    for target_label, arn in sorted(set(targets), key=lambda x: x[0]):
                         did_work = True
                         _confirm_and_run(
-                            f"{label} {name}",
+                            target_label,
                             lambda a=arn: _ignore_missing(
                                 getattr(client, delete_op),
                                 **{arn_arg: a},
                                 ignore_dependency=ignore_dependency,
+                            ),
+                        )
+
+                def _delete_imagebuilder_component_builds():
+                    nonlocal did_work
+
+                    targets = []
+                    for page in _iter_pages(client, "list_components", owner="Self"):
+                        for component in page.get("componentVersionList", []) or []:
+                            name = component.get("name", "")
+                            component_version_arn = component.get("arn", "")
+                            if not _is_prefix_name(name) or not component_version_arn:
+                                continue
+                            for build_page in _iter_pages(
+                                client,
+                                "list_component_build_versions",
+                                componentVersionArn=component_version_arn,
+                            ):
+                                for build in (
+                                    build_page.get("componentSummaryList", []) or []
+                                ):
+                                    build_arn = build.get("arn", "")
+                                    if not build_arn:
+                                        continue
+                                    version = (
+                                        build.get("version")
+                                        or component.get("version")
+                                        or build_arn.rstrip("/").rsplit("/", 2)[-2]
+                                    )
+                                    build_number = build_arn.rstrip("/").rsplit("/", 1)[
+                                        -1
+                                    ]
+                                    targets.append(
+                                        (
+                                            f"ImageBuilderComponent {name} ({version}/{build_number})",
+                                            build_arn,
+                                        )
+                                    )
+
+                    for target_label, arn in sorted(set(targets), key=lambda x: x[0]):
+                        did_work = True
+                        _confirm_and_run(
+                            target_label,
+                            lambda a=arn: _ignore_missing(
+                                client.delete_component,
+                                componentBuildVersionArn=a,
+                                ignore_dependency=True,
                             ),
                         )
 
@@ -1472,15 +1695,7 @@ class CloudInfrastructure:
                     "delete_infrastructure_configuration",
                     "ImageBuilderInfrastructure",
                 )
-                _delete_imagebuilder_resources(
-                    "list_components",
-                    "componentVersionList",
-                    "componentBuildVersionArn",
-                    "delete_component",
-                    "ImageBuilderComponent",
-                    owner_self=True,
-                    ignore_dependency=True,
-                )
+                _delete_imagebuilder_component_builds()
 
             if _wants(
                 "IAMInstanceProfile",

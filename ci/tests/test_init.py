@@ -288,7 +288,7 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     assert 'secret_name="gh-app"' not in infra_text
     assert 'PROJECT_NAME = "' not in infra_text
     assert 'name="praktika-ci"' not in infra_text
-    assert 'CI_VPC_NAME = f"{PROJECT_SLUG}-ci"' in infra_text
+    assert "CI_VPC_NAME" not in infra_text
     assert "region=CI_REGION" not in infra_text
     assert "capacity_reserve=1" in infra_text
     assert "def _controller_image_component(name: str):" in infra_text
@@ -305,8 +305,11 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     assert "ImageBuilder.Config(" in infra_text
     assert 'name="ci-arm64-image"' in infra_text
     assert 'name="ci-x86_64-image"' in infra_text
-    assert 'ami_name="ci-arm64-{{ imagebuilder:buildDate }}"' in infra_text
-    assert 'ami_name="ci-x86_64-{{ imagebuilder:buildDate }}"' in infra_text
+    assert "ami_name=" not in infra_text
+    assert "image_pipeline_name=" not in infra_text
+    assert "instance_profile_name=" not in infra_text
+    assert "security_group_names=" not in infra_text
+    assert "vpc_name=" not in infra_text
     assert "image_builders=_IMAGE_BUILDERS" in infra_text
     assert 'image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"]' in infra_text
     assert 'image_builder=_IMAGE_BUILDERS_BY_NAME["ci-x86_64-image"]' in infra_text
@@ -393,8 +396,12 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
         for module_name, previous_module in previous_modules.items():
             if previous_module is not missing_module:
                 sys.modules[module_name] = previous_module
+
+    def _builder_arch(builder):
+        return "arm64" if builder.instance_types[0].startswith("t4g.") else "x86_64"
+
     builders_by_arch = {
-        builder.ami_tags["arch"]: builder for builder in cloud.image_builders
+        _builder_arch(builder): builder for builder in cloud.image_builders
     }
 
     assert {workflow.name for workflow in workflows} == {
@@ -422,13 +429,40 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
     }
     assert set(builders_by_arch) == {"arm64", "x86_64"}
     assert all(len(builder.inline_components) == 1 for builder in cloud.image_builders)
+    project_slug = tmp_path.name.lower().replace("_", "-")
+    assert {
+        arch: builder.instance_profile_name
+        for arch, builder in builders_by_arch.items()
+    } == {
+        "arm64": f"{project_slug}-arm-small-profile",
+        "x86_64": f"{project_slug}-amd-small-profile",
+    }
+    assert {arch: builder.vpc_name for arch, builder in builders_by_arch.items()} == {
+        "arm64": f"{project_slug}-vpc",
+        "x86_64": f"{project_slug}-vpc",
+    }
+    assert {
+        arch: builder.security_group_names for arch, builder in builders_by_arch.items()
+    } == {
+        "arm64": [f"{project_slug}-vpc-sg"],
+        "x86_64": [f"{project_slug}-vpc-sg"],
+    }
+    assert cloud.orchestrator_pool.vpc_name == f"{project_slug}-vpc"
+    assert cloud.orchestrator_pool.launch_template.vpc_name == f"{project_slug}-vpc"
+    assert cloud.orchestrator_pool.autoscaling_group.vpc_name == f"{project_slug}-vpc"
+    assert {pool.name: pool.vpc_name for pool in cloud.runner_pools} == {
+        "arm-small": f"{project_slug}-vpc",
+        "amd-small": f"{project_slug}-vpc",
+        "arm-medium": f"{project_slug}-vpc",
+        "amd-medium": f"{project_slug}-vpc",
+    }
     assert cloud.orchestrator_pool.image_builder is builders_by_arch["arm64"]
     assert (
         cloud.orchestrator_pool.launch_template.image_builder
         is builders_by_arch["arm64"]
     )
     assert {
-        pool.name: pool.image_builder.ami_tags["arch"] for pool in cloud.runner_pools
+        pool.name: _builder_arch(pool.image_builder) for pool in cloud.runner_pools
     } == {
         "arm-small": "arm64",
         "amd-small": "x86_64",
@@ -436,7 +470,7 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
         "amd-medium": "x86_64",
     }
     assert {
-        pool.name: pool.launch_template.image_builder.ami_tags["arch"]
+        pool.name: _builder_arch(pool.launch_template.image_builder)
         for pool in cloud.runner_pools
     } == {
         "arm-small": "arm64",
