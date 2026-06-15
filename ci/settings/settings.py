@@ -26,6 +26,13 @@ DOCKER_BUILD_AMD_RUNS_ON = [RunnerLabels.SMALL_AMD]
 SECRET_DOCKER_REGISTRY = "praktika-docker-registry-connection"
 USE_CUSTOM_GH_AUTH = True
 
+# Runner controller heartbeat write interval, in seconds.
+HEARTBEAT_INTERVAL_S = 30
+# Maximum time a dispatched job may stay QUEUED before a runner heartbeat.
+RUNNER_PICKUP_TIMEOUT_S = 3600
+# Maximum time a RUNNING job may go without a fresh heartbeat.
+HEARTBEAT_TIMEOUT_S = 300
+
 PRAKTIKA_BASE_VENV = "praktika-runtime"
 GH_AUTH_LAMBDA_NAME = "praktika-gh-token"
 GH_AUTH_LAMBDA_REGION = AWS_REGION

@@ -163,84 +163,86 @@ def handle_task(task, log, queue_name: str):
     repo = task.get("repo", "")
     pr_number = task.get("pr_number")
     head_sha = task.get("head_sha", "")
-
-    gh_token = get_github_token(REGION)
-    subprocess.run(
-        ["gh", "auth", "login", "--with-token"],
-        input=gh_token,
-        text=True,
-        check=True,
-    )
-
-    clone_dir, actual_sha = clone_repo(
-        repo,
-        head_sha,
-        pr_number,
-        gh_token,
-        work_dir=WORK_DIR,
-        log=log,
-    )
-
-    base_venv, venv_dir = _resolve_runtime(clone_dir, log)
-
-    task_file = os.path.join(clone_dir, "ci", "tmp", "task.json")
-    os.makedirs(os.path.dirname(task_file), exist_ok=True)
-    with open(task_file, "w", encoding="utf-8") as f:
-        json.dump(task, f, indent=2)
-
     cancel_s3_bucket = task.get("cancel_s3_bucket", "")
     cancel_s3_key = task.get("cancel_s3_key", "")
     heartbeat_s3_bucket = task.get("heartbeat_s3_bucket", "")
     heartbeat_s3_key = task.get("heartbeat_s3_key", "")
     heartbeat_interval_s = task.get("heartbeat_interval_s", 30)
 
-    log.info("Running job %r for PR#%s in %s", job_name, pr_number, venv_dir)
     import boto3
 
     s3 = boto3.client("s3", region_name=REGION)
-    proc = subprocess.Popen(
-        praktika_command(venv_dir, "orchestrate", "job", task_file, "--ci"),
-        cwd=clone_dir,
-        env=_praktika_env(venv_dir, queue_name),
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-
-    cm_cancel = CancelWatchdog(s3, cancel_s3_bucket, cancel_s3_key, proc, log=log)
     cm_heartbeat = (
         Heartbeat(
             s3,
             heartbeat_s3_bucket,
             heartbeat_s3_key,
             heartbeat_interval_s,
+            fields={"instance_id": INSTANCE_ID},
             log=log,
         )
         if heartbeat_s3_bucket and heartbeat_s3_key
         else None
     )
-    with cm_cancel:
-        if cm_heartbeat is not None:
-            cm_heartbeat.start()
-        try:
+    if cm_heartbeat is not None:
+        cm_heartbeat.start()
+
+    try:
+        gh_token = get_github_token(REGION)
+        subprocess.run(
+            ["gh", "auth", "login", "--with-token"],
+            input=gh_token,
+            text=True,
+            check=True,
+        )
+
+        clone_dir, actual_sha = clone_repo(
+            repo,
+            head_sha,
+            pr_number,
+            gh_token,
+            work_dir=WORK_DIR,
+            log=log,
+        )
+
+        base_venv, venv_dir = _resolve_runtime(clone_dir, log)
+
+        task_file = os.path.join(clone_dir, "ci", "tmp", "task.json")
+        os.makedirs(os.path.dirname(task_file), exist_ok=True)
+        with open(task_file, "w", encoding="utf-8") as f:
+            json.dump(task, f, indent=2)
+
+        log.info("Running job %r for PR#%s in %s", job_name, pr_number, venv_dir)
+
+        proc = subprocess.Popen(
+            praktika_command(venv_dir, "orchestrate", "job", task_file, "--ci"),
+            cwd=clone_dir,
+            env=_praktika_env(venv_dir, queue_name),
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        cm_cancel = CancelWatchdog(s3, cancel_s3_bucket, cancel_s3_key, proc, log=log)
+        with cm_cancel:
             _, stderr_output = proc.communicate()
-        finally:
-            if cm_heartbeat is not None:
-                cm_heartbeat.stop()
-    rc = proc.returncode
+        rc = proc.returncode
 
-    if rc != 0 and stderr_output:
-        log.error(stderr_output.rstrip())
+        if rc != 0 and stderr_output:
+            log.error(stderr_output.rstrip())
 
-    return {
-        "status": "ok" if rc == 0 else "error",
-        "pr": pr_number,
-        "sha": actual_sha,
-        "job": job_name,
-        "base_venv": base_venv,
-        "venv": str(venv_dir),
-        "rc": rc,
-        "stderr": stderr_output.strip()[:500] if stderr_output else "",
-    }
+        return {
+            "status": "ok" if rc == 0 else "error",
+            "pr": pr_number,
+            "sha": actual_sha,
+            "job": job_name,
+            "base_venv": base_venv,
+            "venv": str(venv_dir),
+            "rc": rc,
+            "stderr": stderr_output.strip()[:500] if stderr_output else "",
+        }
+    finally:
+        if cm_heartbeat is not None:
+            cm_heartbeat.stop()
 
 
 def poll():

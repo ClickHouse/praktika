@@ -303,14 +303,24 @@ class CancelWatchdog:
 
 
 class Heartbeat:
-    """Periodically write {ts, status} to the per-job S3 heartbeat key."""
+    """Periodically write a per-job liveness payload to S3."""
 
-    def __init__(self, s3_client, bucket, key, interval, status="running", log=None):
+    def __init__(
+        self,
+        s3_client,
+        bucket,
+        key,
+        interval,
+        status="running",
+        fields=None,
+        log=None,
+    ):
         self._s3 = s3_client
         self._bucket = bucket
         self._key = key
         self._interval = max(1, int(interval or 30))
         self._status = status
+        self._fields = dict(fields or {})
         self._stop = threading.Event()
         self._thread = None
         self._log = log or logging.getLogger(__name__)
@@ -334,10 +344,12 @@ class Heartbeat:
 
     def _beat(self):
         try:
+            body = {"ts": time.time(), "status": self._status}
+            body.update(self._fields)
             self._s3.put_object(
                 Bucket=self._bucket,
                 Key=self._key,
-                Body=json.dumps({"ts": time.time(), "status": self._status}).encode(),
+                Body=json.dumps(body).encode(),
                 ContentType="application/json",
             )
         except Exception as e:

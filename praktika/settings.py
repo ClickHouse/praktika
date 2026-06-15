@@ -41,6 +41,16 @@ class _Settings:
     ######################################
     MAX_RETRIES_S3 = 3
     MAX_RETRIES_GH = 3
+    # Runner controller heartbeat write interval, in seconds. Each runner
+    # writes heartbeat.json for its current job at this cadence.
+    HEARTBEAT_INTERVAL_S = 30
+    # Maximum time, in seconds, a dispatched job may stay QUEUED without any
+    # runner heartbeat. This covers SQS wait time, ASG scale-out, EC2 boot,
+    # controller startup, and the runner's first task pickup.
+    RUNNER_PICKUP_TIMEOUT_S = 3600
+    # Maximum time, in seconds, a RUNNING job may go without a fresh heartbeat
+    # after the first heartbeat has been observed.
+    HEARTBEAT_TIMEOUT_S = 300
 
     ######################################
     #   S3 (artifact storage) settings   #
@@ -162,6 +172,9 @@ _USER_DEFINED_SETTINGS = [
     "PYTHON_PACKET_MANAGER",
     "MAX_RETRIES_S3",
     "MAX_RETRIES_GH",
+    "HEARTBEAT_INTERVAL_S",
+    "RUNNER_PICKUP_TIMEOUT_S",
+    "HEARTBEAT_TIMEOUT_S",
     "VALIDATE_FILE_PATHS",
     "SECRET_DOCKER_REGISTRY",
     "READY_FOR_MERGE_CUSTOM_STATUS_NAME",

@@ -52,8 +52,8 @@ def _custom_image_tests():
 
 
 def _image_builders():
-    ci_version = "1.0.3"
-    ubuntu_ci_version = "1.0.3"
+    ci_version = "1.0.4"
+    ubuntu_ci_version = "1.0.4"
 
     return [
         _create_awslinux_image_builder_config(

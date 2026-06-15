@@ -295,6 +295,7 @@ def create_praktika_venv_config(
             "cryptography",
             "requests",
             "pytest>=7.0.0",
+            "pytest-reportlog>=0.4.0",
             f"{PRAKTIKA_PACKAGE_BASE_URL}/praktika-{praktika_version}-py3-none-any.whl",
         ],
         description=(

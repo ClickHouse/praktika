@@ -178,24 +178,26 @@ killing the job subprocess on first hit.
 
 **Heartbeat** — written by the runner-side `Heartbeat` thread every
 `heartbeat_interval_s` (default 30 s). The orchestrator runs
-`WorkflowState.sweep_liveness` once per `wait()` cycle and marks RUNNING jobs
-dead under two rules:
+`WorkflowState.sweep_liveness` once per `wait()` cycle and marks in-flight jobs
+dead under two separate timeout rules:
 
-- **Pickup grace expired** (default 300 s): no heartbeat ever observed and
-  `now - kicked_at > PICKUP_GRACE_S` → covers empty runner pools and agent
-  crashes before the first heartbeat.
-- **Dead threshold** (default 90 s = 3× interval): heartbeat seen but
-  `now - last_heartbeat_ts > DEAD_THRESHOLD_S` → runner died mid-job.
+- **Runner pickup timeout** (default 3600 s): job is still `QUEUED`, no
+  heartbeat ever observed, and `now - kicked_at > RUNNER_PICKUP_TIMEOUT_S` →
+  covers queue/ASG/boot delays or a pool that never picks the job up.
+- **Heartbeat timeout** (default 300 s): job is `RUNNING` and
+  `now - last_heartbeat_ts > HEARTBEAT_TIMEOUT_S` → runner died mid-job.
 
 Either path completes the per-job check as `failure` and advances the DAG so
 downstream jobs cascade-cancel and `Finish Workflow` (always_run) still fires.
 
 **Final state** — written by `orchestrator/job_runner.py` after `Runner.run`
-returns and the per-job check is PATCHed. The orchestrator's
-`WorkflowState.sweep_completions` polls the key every `wait()` cycle and calls
-`JobState.finish` on hit. Because `final.json` is durable on S3, an
-orchestrator that died after dispatch picks the result up on restart — no
-in-flight messages get lost the way an SQS `job_completion` would.
+returns. The runner includes `rc`, `environment`, and optional check
+`output`/`details_url`; the orchestrator owns the GitHub Checks lifecycle and
+completes the per-job check from this payload. `WorkflowState.sweep_completions`
+polls the key every `wait()` cycle and calls `JobState.finish` on hit. Because
+`final.json` is durable on S3, an orchestrator that died after dispatch picks
+the result up on restart — no in-flight messages get lost the way an SQS
+`job_completion` would.
 
 ## Cancel semantics {#cancel-semantics}
 

@@ -24,7 +24,7 @@ def test_orchestrator_check_output_includes_instance_id(monkeypatch):
 
 def test_job_runner_check_output_includes_instance_id(monkeypatch):
     class _FakeResult:
-        status = "success"
+        status = "OK"
         duration = 42
 
         @staticmethod
@@ -38,7 +38,7 @@ def test_job_runner_check_output_includes_instance_id(monkeypatch):
 
     output = _build_check_output("unit test", 0, instance_id="i-runner456")
 
-    assert output["title"] == "unit test"
+    assert output["title"] == "OK"
     assert "runner `i-runner456`" in output["summary"]
     assert "**Runner instance:** `i-runner456`" in output["text"]
     assert "job markdown" in output["text"]
@@ -46,7 +46,7 @@ def test_job_runner_check_output_includes_instance_id(monkeypatch):
 
 def test_job_runner_check_output_includes_report_url(monkeypatch):
     class _FakeResult:
-        status = "success"
+        status = "OK"
         duration = 10
 
         @staticmethod
@@ -61,7 +61,7 @@ def test_job_runner_check_output_includes_report_url(monkeypatch):
     url = "https://example.com/report?PR=1&sha=abc&name_0=CI&name_1=My+Job"
     output = _build_check_output("My Job", 0, report_url=url)
 
-    assert output["title"] == "My Job"
+    assert output["title"] == "OK"
     assert f"[CI Report]({url})" in output["summary"]
 
 
@@ -93,6 +93,7 @@ def test_check_output_rc0_ok_shows_ok_status(monkeypatch):
     )
     output = _build_check_output("My Job", rc=0)
     assert "**OK**" in output["summary"]
+    assert output["title"] == "OK"
     assert "ERROR" not in output["summary"]
     assert "rc=" not in output["text"]
 
@@ -105,6 +106,7 @@ def test_check_output_rc_nonzero_ok_result_shows_error(monkeypatch):
     )
     output = _build_check_output("My Job", rc=137)
     assert "**ERROR**" in output["summary"]
+    assert output["title"] == "ERROR"
     assert "rc=137" in output["text"]
     assert "OOM or disk-full" in output["text"]
 
@@ -115,6 +117,7 @@ def test_check_output_rc_nonzero_fail_result_shows_fail_status(monkeypatch):
         "praktika.result.Result", type("R", (), {"from_fs": staticmethod(lambda _: _make_fake_result("FAIL", False))})
     )
     output = _build_check_output("My Job", rc=1)
-    assert "**FAIL**" in output["summary"]
+    assert "**FAILED**" in output["summary"]
+    assert output["title"] == "FAILED"
     assert "ERROR" not in output["summary"]
     assert "rc=" not in output["text"]
