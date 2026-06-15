@@ -872,7 +872,7 @@ def test_ubuntu_runner_pool_uses_ubuntu_image_builder():
 
     assert pool.image_builder is builder
     assert builder.ami_name == "ci-ubuntu-x86_64-{{ imagebuilder:buildDate }}"
-    assert builder.image_recipe_version == "1.0.2"
+    assert builder.image_recipe_version == "1.0.3"
     assert builder.image_tests_enabled is True
     assert builder.image_tests_timeout_minutes == 60
     assert builder.instance_types == ["t3.small"]

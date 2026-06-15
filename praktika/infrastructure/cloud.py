@@ -146,9 +146,12 @@ class CloudInfrastructure:
                 ):
                     if not old:
                         continue
-                    # Avoid prefixing a resource reference that has already
-                    # been rewritten once during this namespace pass.
-                    pattern = rf"(?<!{re.escape(project_prefix)}){re.escape(old)}"
+                    # Only replace the name when it sits at a token boundary —
+                    # not preceded or followed by [a-zA-Z0-9-].  This prevents
+                    # "artifacts-eu-north-1" from matching inside
+                    # "praktika-artifacts-eu-north-1" and corrupting URLs or
+                    # other cross-project references embedded in user_data.
+                    pattern = rf"(?<![a-zA-Z0-9-]){re.escape(old)}(?![a-zA-Z0-9-])"
                     result = re.sub(pattern, new, result)
                 return result
             if isinstance(value, list):

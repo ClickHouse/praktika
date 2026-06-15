@@ -41,7 +41,14 @@ class LaunchTemplate:
         tenancy: str = ""  # e.g. "host"
         host_id: str = ""
 
-        # Block device mappings (passed through as LaunchTemplateData.BlockDeviceMappings).
+        # Root EBS volume override. The root device name is resolved from the
+        # selected AMI at deploy time so Ubuntu (/dev/sda1) and AL2023
+        # (/dev/xvda) both get the requested size.
+        root_volume_size_gb: int = 0
+        root_volume_type: str = "gp3"
+        root_volume_delete_on_termination: bool = True
+
+        # Extra block device mappings (passed through as LaunchTemplateData.BlockDeviceMappings).
         # Example: [{"DeviceName": "/dev/xvda",
         #            "Ebs": {"VolumeSize": 30, "VolumeType": "gp3",
         #                    "DeleteOnTermination": True}}]
@@ -199,6 +206,23 @@ class LaunchTemplate:
                 )
             return image_id
 
+        def _resolve_root_device_name(self, image_id: str) -> str:
+            cache_key = f"root_device_name:{image_id}"
+            if self.ext.get(cache_key):
+                return self.ext[cache_key]
+
+            ec2 = aws_client("ec2", self.region, self.name)
+            resp = ec2.describe_images(ImageIds=[image_id])
+            images = resp.get("Images", []) or []
+            root = (images[0] if images else {}).get("RootDeviceName", "")
+            if not root:
+                raise Exception(
+                    f"Failed to resolve root device name for Launch Template "
+                    f"'{self.name}' image_id={image_id}"
+                )
+            self.ext[cache_key] = root
+            return root
+
         def _build_launch_template_data(self) -> Dict[str, Any]:
             if self.data:
                 return self.data
@@ -262,8 +286,28 @@ class LaunchTemplate:
                     self.user_data.encode("utf-8")
                 ).decode("utf-8")
 
+            block_device_mappings = []
+            if self.root_volume_size_gb:
+                ebs = {
+                    "VolumeSize": int(self.root_volume_size_gb),
+                    "DeleteOnTermination": bool(
+                        self.root_volume_delete_on_termination
+                    ),
+                }
+                if self.root_volume_type:
+                    ebs["VolumeType"] = self.root_volume_type
+                block_device_mappings.append(
+                    {
+                        "DeviceName": self._resolve_root_device_name(
+                            resolved_image_id
+                        ),
+                        "Ebs": ebs,
+                    }
+                )
             if self.block_device_mappings:
-                lt_data["BlockDeviceMappings"] = self.block_device_mappings
+                block_device_mappings.extend(self.block_device_mappings)
+            if block_device_mappings:
+                lt_data["BlockDeviceMappings"] = block_device_mappings
 
             if self.tenancy:
                 lt_data.setdefault("Placement", {})
@@ -324,6 +368,11 @@ class LaunchTemplate:
                     # own pool/asg/scaling metadata without extra config files.
                     out["MetadataOptions"] = desired.get("MetadataOptions", {})
                     out["_current_MetadataOptions"] = current.get("MetadataOptions", {})
+                if "BlockDeviceMappings" in desired:
+                    out["BlockDeviceMappings"] = desired.get("BlockDeviceMappings", [])
+                    out["_current_BlockDeviceMappings"] = current.get(
+                        "BlockDeviceMappings", []
+                    )
                 desired_tags = []
                 for spec in desired.get("TagSpecifications", []) or []:
                     if spec.get("ResourceType") != "instance":

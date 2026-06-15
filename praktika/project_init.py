@@ -429,6 +429,7 @@ def _settings_template(answers: InitAnswers) -> str:
         S3_ARTIFACT_BUCKET = {artifact_bucket_expr}
         S3_REPORT_BUCKET = S3_ARTIFACT_BUCKET
         CACHE_S3_PATH = f"{{S3_ARTIFACT_BUCKET}}/ci_cache"
+        ENABLE_SUBMODULE_CACHE = True
         S3_BUCKET_TO_HTTP_ENDPOINT = {{
             S3_REPORT_BUCKET: f"{{S3_REPORT_BUCKET}}.s3.amazonaws.com",
         }}
@@ -462,6 +463,7 @@ def _pull_request_workflow_template(answers: InitAnswers) -> str:
                         command={command!r},
                     ),
                 ],
+                enable_cache=True,
                 enable_report=True,
                 enable_gh_summary_comment=True,
                 enable_exit_code_result=True,
@@ -491,6 +493,7 @@ def _main_ci_workflow_template(answers: InitAnswers) -> str:
                         command={command!r},
                     ),
                 ],
+                enable_cache=True,
                 enable_report=True,
                 enable_exit_code_result=True,
             )
@@ -580,24 +583,27 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                     scaling=Components.OrchestratorPool.Scaling.Auto,
                     size=0,
                     max_size=50,
+                    volume_size_gb=100,
                     capacity_reserve=1,
                     image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
                 ),
                 runner_pools=[
                     Components.RunnerPool(
                         name="arm-small",
-                        instance_type="t4g.small",
+                        instance_type="t4g.medium",
                         scaling=Components.RunnerPool.Scaling.Auto,
                         size=0,
                         max_size=50,
+                        volume_size_gb=100,
                         image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
                     ),
                     Components.RunnerPool(
                         name="amd-small",
-                        instance_type="t3.small",
+                        instance_type="t3.medium",
                         scaling=Components.RunnerPool.Scaling.Auto,
                         size=0,
                         max_size=50,
+                        volume_size_gb=100,
                         image_builder=_IMAGE_BUILDERS_BY_NAME["ci-x86_64-image"],
                     ),
                     Components.RunnerPool(
@@ -606,7 +612,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                         scaling=Components.RunnerPool.Scaling.Auto,
                         size=0,
                         max_size=50,
-                        volume_size_gb=30,
+                        volume_size_gb=100,
                         image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
                     ),
                     Components.RunnerPool(
@@ -615,7 +621,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                         scaling=Components.RunnerPool.Scaling.Auto,
                         size=0,
                         max_size=50,
-                        volume_size_gb=30,
+                        volume_size_gb=100,
                         image_builder=_IMAGE_BUILDERS_BY_NAME["ci-x86_64-image"],
                     ),
                 ],

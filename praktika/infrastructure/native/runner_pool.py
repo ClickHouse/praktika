@@ -199,16 +199,8 @@ class RunnerPool:
             iam_instance_profile_name=self.instance_profile.name,
             set_default_version_to_latest=True,
             user_data=self.user_data,
-            block_device_mappings=[
-                {
-                    "DeviceName": "/dev/xvda",
-                    "Ebs": {
-                        "VolumeSize": self.volume_size_gb,
-                        "VolumeType": "gp3",
-                        "DeleteOnTermination": True,
-                    },
-                },
-            ],
+            root_volume_size_gb=self.volume_size_gb,
+            root_volume_type="gp3",
             tags=runtime_tags,
             praktika_resource_tag="runner",
         )

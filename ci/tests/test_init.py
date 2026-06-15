@@ -255,6 +255,7 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     assert f'PROJECT_SLUG = "{project_slug}"' in settings_text
     assert 'GH_AUTH_LAMBDA_NAME = f"{PROJECT_SLUG}-gh-token"' in settings_text
     assert 'S3_ARTIFACT_BUCKET = f"{PROJECT_SLUG}-artifacts"' in settings_text
+    assert "ENABLE_SUBMODULE_CACHE = True" in settings_text
     expected_base_venv = f"praktika-runtime-{current_praktika_version()}"
     assert f'PRAKTIKA_BASE_VENV = "{expected_base_venv}"' in settings_text
     assert (
@@ -268,11 +269,13 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     assert 'MEDIUM_AMD = "amd-medium"' in settings_text
     assert 'name="Pull Request CI"' in pr_workflow_text
     assert 'base_branches=["main"]' in pr_workflow_text
+    assert "enable_cache=True" in pr_workflow_text
     assert "enable_gh_summary_comment=True" in pr_workflow_text
     assert "enable_gh_summary_comment=True" not in main_ci_workflow_text
     assert 'name="Main CI"' in main_ci_workflow_text
     assert "event=Workflow.Event.PUSH" in main_ci_workflow_text
     assert 'branches=["main"]' in main_ci_workflow_text
+    assert "enable_cache=True" in main_ci_workflow_text
     assert (
         "from ci.settings.settings import PROJECT_NAME, PROJECT_SLUG, PRAKTIKA_BASE_VENV"
         in infra_text
@@ -324,14 +327,17 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     assert 'name="artifacts"' in infra_text
     assert "public=False" in infra_text
     assert 'name="arm-small"' in infra_text
+    assert 'instance_type="t4g.medium"' in infra_text
     assert 'name="amd-small"' in infra_text
+    assert 'instance_type="t3.medium"' in infra_text
     assert 'name="arm-medium"' in infra_text
     assert 'instance_type="c7g.4xlarge"' in infra_text
     assert 'name="amd-medium"' in infra_text
     assert 'instance_type="c7a.4xlarge"' in infra_text
     assert "max_size=50" in infra_text
     assert infra_text.count("max_size=50") == 5
-    assert "volume_size_gb=30" in infra_text
+    assert "volume_size_gb=100" in infra_text
+    assert infra_text.count("volume_size_gb=100") == 5
 
     compile(settings_text, str(settings_path), "exec")
     compile(pr_workflow_text, str(pr_workflow_path), "exec")
@@ -415,6 +421,7 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
         "Main CI",
     }
     workflows_by_name = {workflow.name: workflow for workflow in workflows}
+    assert all(workflow.enable_cache for workflow in workflows)
     assert (
         workflows_by_name["Pull Request CI"].jobs[0].command
         == "python3 -c 'print(\"hello from praktika\")'"
@@ -427,11 +434,24 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
     assert cloud.min_praktika_version == current_praktika_version()
     assert cloud.orchestrator_pool.capacity_reserve == 1
     assert cloud.orchestrator_pool.max_size == 50
+    assert cloud.orchestrator_pool.volume_size_gb == 100
     assert {pool.name: pool.max_size for pool in cloud.runner_pools} == {
         "arm-small": 50,
         "amd-small": 50,
         "arm-medium": 50,
         "amd-medium": 50,
+    }
+    assert {pool.name: pool.instance_type for pool in cloud.runner_pools} == {
+        "arm-small": "t4g.medium",
+        "amd-small": "t3.medium",
+        "arm-medium": "c7g.4xlarge",
+        "amd-medium": "c7a.4xlarge",
+    }
+    assert {pool.name: pool.volume_size_gb for pool in cloud.runner_pools} == {
+        "arm-small": 100,
+        "amd-small": 100,
+        "arm-medium": 100,
+        "amd-medium": 100,
     }
     assert set(builders_by_arch) == {"arm64", "x86_64"}
     assert all(len(builder.inline_components) == 4 for builder in cloud.image_builders)

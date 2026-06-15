@@ -84,7 +84,15 @@ def _build_check_output(job_name, rc, instance_id="", report_url=""):
         if len(text) > limit:
             text = text[:limit] + "\n\n_… (truncated)_\n"
         dur = f" in {int(result.duration)}s" if result.duration else ""
-        summary = f"**{result.status}**{dur}"
+        if rc != 0 and result.is_ok():
+            # The runner process crashed after writing an OK result to disk —
+            # OOM, disk-full, SIGKILL, etc. Report ERROR so the summary matches
+            # the failure conclusion and the cause is clearly not the job logic.
+            displayed_status = "ERROR"
+            text = f"Runner process exited with rc={rc} after reporting OK — likely OOM or disk-full.\n\n{text}"
+        else:
+            displayed_status = result.status
+        summary = f"**{displayed_status}**{dur}"
         if report_url:
             summary += f" — [CI Report]({report_url})"
         if instance_id:

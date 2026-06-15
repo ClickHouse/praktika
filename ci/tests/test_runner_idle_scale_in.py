@@ -2,7 +2,7 @@ from praktika_controller import common
 from praktika.infrastructure.native.runner_pool import RunnerPool
 
 
-def test_runner_pool_stamps_idle_scale_tags():
+def test_runner_pool_stamps_idle_scale_tags(monkeypatch):
     pool = RunnerPool(
         name="arm-2xsmall",
         ami_id="ami-1234567890abcdef0",
@@ -12,6 +12,17 @@ def test_runner_pool_stamps_idle_scale_tags():
         scaling=RunnerPool.Scaling.Auto,
         size=0,
         max_size=1,
+    )
+    pool.launch_template.region = "eu-north-1"
+
+    class _Client:
+        def describe_images(self, ImageIds):
+            assert ImageIds == ["ami-1234567890abcdef0"]
+            return {"Images": [{"RootDeviceName": "/dev/xvda"}]}
+
+    monkeypatch.setattr(
+        "praktika.infrastructure.launch_template.aws_client",
+        lambda *args, **kwargs: _Client(),
     )
 
     lt_data = pool.launch_template._build_launch_template_data()

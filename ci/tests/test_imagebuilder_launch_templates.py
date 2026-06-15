@@ -657,6 +657,98 @@ def test_launch_template_deploy_fails_when_latest_builds_have_no_ready_ami(monke
     )
 
 
+def test_launch_template_root_volume_uses_ami_root_device(monkeypatch):
+    lt = LaunchTemplate.Config(
+        name="runner-lt",
+        region="eu-north-1",
+        image_id="ami-ubuntu",
+        instance_type="t4g.medium",
+        root_volume_size_gb=100,
+    )
+
+    class _Client:
+        def describe_images(self, ImageIds):
+            assert ImageIds == ["ami-ubuntu"]
+            return {"Images": [{"RootDeviceName": "/dev/sda1"}]}
+
+    monkeypatch.setattr(
+        "praktika.infrastructure.launch_template.aws_client",
+        lambda *args, **kwargs: _Client(),
+    )
+
+    data = lt._build_launch_template_data()
+
+    assert data["BlockDeviceMappings"] == [
+        {
+            "DeviceName": "/dev/sda1",
+            "Ebs": {
+                "VolumeSize": 100,
+                "VolumeType": "gp3",
+                "DeleteOnTermination": True,
+            },
+        }
+    ]
+
+
+def test_launch_template_diff_includes_block_device_mappings():
+    lt = LaunchTemplate.Config(
+        name="runner-lt",
+        region="eu-north-1",
+        image_id="ami-ubuntu",
+        instance_type="t4g.medium",
+        root_volume_size_gb=100,
+    )
+
+    class _Client:
+        def describe_launch_template_versions(self, **req):
+            assert req == {"LaunchTemplateId": "lt-123", "Versions": ["$Latest"]}
+            return {
+                "LaunchTemplateVersions": [
+                    {
+                        "LaunchTemplateData": {
+                            "ImageId": "ami-ubuntu",
+                            "InstanceType": "t4g.medium",
+                            "MetadataOptions": {
+                                "HttpTokens": "required",
+                                "InstanceMetadataTags": "enabled",
+                            },
+                            "BlockDeviceMappings": [
+                                {
+                                    "DeviceName": "/dev/xvda",
+                                    "Ebs": {
+                                        "VolumeSize": 100,
+                                        "VolumeType": "gp3",
+                                        "DeleteOnTermination": True,
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+
+    desired = {
+        "ImageId": "ami-ubuntu",
+        "InstanceType": "t4g.medium",
+        "MetadataOptions": {
+            "HttpTokens": "required",
+            "InstanceMetadataTags": "enabled",
+        },
+        "BlockDeviceMappings": [
+            {
+                "DeviceName": "/dev/sda1",
+                "Ebs": {
+                    "VolumeSize": 100,
+                    "VolumeType": "gp3",
+                    "DeleteOnTermination": True,
+                },
+            }
+        ],
+    }
+
+    assert not lt._is_current_version_up_to_date(_Client(), "lt-123", desired)
+
+
 def test_image_builder_reuses_existing_inline_component_when_create_conflicts(
     monkeypatch,
 ):
