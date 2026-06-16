@@ -20,6 +20,23 @@ def _is_local_run():
         return False
 
 
+def _is_default_local_workflow(py_file: Path, workflow_name: str) -> bool:
+    configured = Settings.DEFAULT_LOCAL_TEST_WORKFLOW
+    if not configured:
+        return False
+    configured_values = {
+        configured,
+        Path(configured).name,
+        Path(configured).stem,
+    }
+    workflow_values = {
+        workflow_name,
+        py_file.name,
+        py_file.stem,
+    }
+    return bool(configured_values & workflow_values)
+
+
 def _get_workflows(
     name=None,
     file=None,
@@ -59,10 +76,6 @@ def _get_workflows(
                     continue
             if file and str(file) not in str(py_file):
                 continue
-        elif py_file.name != Settings.DEFAULT_LOCAL_TEST_WORKFLOW:
-            if not _is_local_run():
-                print(f"Skip [{py_file.name}]")
-            continue
         module_name = py_file.name.removeprefix(".py")
         spec = importlib.util.spec_from_file_location(
             module_name, f"{Settings.WORKFLOWS_DIRECTORY}/{module_name}"
@@ -72,7 +85,11 @@ def _get_workflows(
         assert spec.loader
         spec.loader.exec_module(foo)
         try:
+            matched_default_workflow = False
             for workflow in foo.WORKFLOWS:
+                if default and not _is_default_local_workflow(py_file, workflow.name):
+                    continue
+                matched_default_workflow = True
                 if name:
                     if name == workflow.name:
                         print(f"Read workflow [{name}] config from [{module_name}]")
@@ -87,6 +104,8 @@ def _get_workflows(
                     )
                 if isinstance(_file_names_out, list):
                     _file_names_out.append(py_file.name.removeprefix(".py"))
+            if default and not matched_default_workflow and not _is_local_run():
+                print(f"Skip [{py_file.name}]")
         except Exception as e:
             pass
             # print(
@@ -166,8 +185,14 @@ def _get_infra_projects():
     return None
 
 
-def _get_infra_config(project_name=None):
+def _get_infra_config(project_name=None, require_project: bool = False):
     projects = _get_infra_projects()
+    if require_project and not project_name:
+        names = ", ".join(sorted(project.name for project in projects))
+        Utils.raise_with_error(
+            f"Infrastructure destroy requires --project NAME. Available projects: {names}"
+        )
+
     if len(projects) == 1:
         only = projects[0]
         if project_name and project_name != only.name:
@@ -205,6 +230,10 @@ def _update_workflow_artifacts(workflow):
     for artifact in workflow.artifacts:
         if artifact.name in artifact_job:
             artifact._provided_by = artifact_job[artifact.name]
+
+
+def _native_job_runs_on(workflow):
+    return copy.deepcopy(workflow.native_job_runs_on or Settings.CI_CONFIG_RUNS_ON)
 
 
 def _update_workflow_with_native_jobs(workflow):
@@ -270,6 +299,7 @@ def _update_workflow_with_native_jobs(workflow):
                 f"Enable native job [{_workflow_config_job.name}] for [{workflow.name}]"
             )
         aux_job = copy.deepcopy(_workflow_config_job)
+        aux_job.runs_on = _native_job_runs_on(workflow)
         workflow.jobs.insert(0, aux_job)
         for job in workflow.jobs[1:]:
             job.run_after.append(aux_job.name)
@@ -285,6 +315,7 @@ def _update_workflow_with_native_jobs(workflow):
         if not _is_local_run():
             print(f"Enable native job [{_final_job.name}] for [{workflow.name}]")
         aux_job = copy.deepcopy(_final_job)
+        aux_job.runs_on = _native_job_runs_on(workflow)
         for job in workflow.jobs:
             aux_job.run_after.append(job.name)
         workflow.jobs.append(aux_job)

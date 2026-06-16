@@ -233,10 +233,14 @@ def _prepare_submodule_cache(workflow_config: RunConfig) -> Result:
             info = f"cache hit: {cache_hash}"
         else:
             print(f"Submodule cache miss, creating: {s3_path}")
+            # Remove stale .git/modules state left over from a previous run on
+            # the same work directory; config.lock files in there cause
+            # git submodule init to fail with exit 128.
+            Shell.check("rm -rf .git/modules", verbose=True)
             Shell.check("git submodule sync", verbose=True, strict=True)
             Shell.check("git submodule init", verbose=True, strict=True)
             Shell.check(
-                "git submodule update --depth=1 --single-branch --jobs 64",
+                "git submodule update --depth=1 --single-branch --jobs 8",
                 verbose=True,
                 strict=True,
                 retries=3,
@@ -255,10 +259,10 @@ def _prepare_submodule_cache(workflow_config: RunConfig) -> Result:
         workflow_config.dump()
         status = Result.Status.OK
     except Exception as e:
-        print(f"WARNING: Submodule cache failed: {e}")
+        print(f"ERROR: Submodule cache failed: {e}")
         traceback.print_exc()
         info = f"{e}\n{traceback.format_exc()}"
-        status = Result.Status.OK  # non-fatal, jobs fall back to GitHub clone
+        status = Result.Status.FAIL
 
     return Result.create_from(
         name="Submodule Cache",
@@ -615,7 +619,7 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
             )
         )
 
-    if results[-1].is_ok() and workflow.enable_cache and Settings.ENABLE_SUBMODULE_CACHE:
+    if results[-1].is_ok() and Settings.ENABLE_SUBMODULE_CACHE:
         result = _prepare_submodule_cache(workflow_config)
         results.append(result)
 

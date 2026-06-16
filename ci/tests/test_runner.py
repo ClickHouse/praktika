@@ -12,8 +12,6 @@ live paths — and the ``native_jobs`` subprocess Config Workflow spawns
 redirects ``Settings.TEMP_DIR`` to ``./ci/tmp/_test_runner`` (so test
 state never collides with the outer praktika job's ``./ci/tmp``) and
 points ``Settings.SECRET_CI_DB_*`` at non-existent dummy secrets.
-``Shell.check`` is patched so the destructive ``git clean -ffd`` issued
-by ``Runner._pre_run`` against a dirty working tree is a no-op.
 """
 import os
 import shutil
@@ -28,7 +26,6 @@ _DUMMY_DB_CONNECTION = "DUMMY_TEST_CI_DB_CONNECTION_NONEXISTENT"
 class TestRunner(unittest.TestCase):
     def setUp(self):
         from praktika.settings import Settings
-        from praktika.utils import Shell
 
         # Subprocesses spawned by Runner.run inherit these and run
         # ``ci/settings/_test_overrides.py`` on praktika.settings import.
@@ -42,18 +39,6 @@ class TestRunner(unittest.TestCase):
         Settings.INPUT_DIR = _TEST_TEMP_DIR
         Settings.SECRET_CI_DB_CONNECTION = _DUMMY_DB_CONNECTION
 
-        # Stash and patch Shell.check so the test never invokes
-        # `git clean -ffd` against the developer's working tree.
-        self._orig_shell_check = Shell.check
-
-        def _safe_check(command, *args, **kwargs):
-            if "git clean" in command:
-                print(f"TEST: skipping destructive command [{command}]")
-                return True
-            return self._orig_shell_check(command, *args, **kwargs)
-
-        Shell.check = staticmethod(_safe_check)
-
         # Start from a clean tmp dir so prior runs don't leak state.
         # Settings.TEMP_DIR is now the test-only override, so this
         # cannot touch the outer praktika job's ./ci/tmp.
@@ -61,9 +46,6 @@ class TestRunner(unittest.TestCase):
             shutil.rmtree(Settings.TEMP_DIR)
 
     def tearDown(self):
-        from praktika.utils import Shell
-
-        Shell.check = self._orig_shell_check
         os.environ.pop("PRAKTIKA_TEST_ACTIVE", None)
         os.environ.pop("PRAKTIKA_LOCAL_RUN", None)
 

@@ -41,7 +41,14 @@ class LaunchTemplate:
         tenancy: str = ""  # e.g. "host"
         host_id: str = ""
 
-        # Block device mappings (passed through as LaunchTemplateData.BlockDeviceMappings).
+        # Root EBS volume override. The root device name is resolved from the
+        # selected AMI at deploy time so Ubuntu (/dev/sda1) and AL2023
+        # (/dev/xvda) both get the requested size.
+        root_volume_size_gb: int = 0
+        root_volume_type: str = "gp3"
+        root_volume_delete_on_termination: bool = True
+
+        # Extra block device mappings (passed through as LaunchTemplateData.BlockDeviceMappings).
         # Example: [{"DeviceName": "/dev/xvda",
         #            "Ebs": {"VolumeSize": 30, "VolumeType": "gp3",
         #                    "DeleteOnTermination": True}}]
@@ -100,6 +107,40 @@ class LaunchTemplate:
             return self.ext["launch_template_id"]
 
         def _resolve_image_id(self) -> str:
+            def _resolve_ready_ami_from_pipeline(client, pipeline_arn: str, label: str) -> str:
+                resp = client.list_image_pipeline_images(
+                    imagePipelineArn=pipeline_arn,
+                    maxResults=25,
+                )
+                images = resp.get("imageSummaryList", []) or []
+                if not images:
+                    raise Exception(
+                        f"No ready AMI found for Image Builder pipeline '{label}'. "
+                        "Rerun deploy after the image is ready."
+                    )
+
+                images.sort(key=lambda s: s.get("dateCreated", "") or "", reverse=True)
+                for summary in images:
+                    image_arn = summary.get("arn", "")
+                    if not image_arn:
+                        continue
+
+                    image_resp = client.get_image(imageBuildVersionArn=image_arn)
+                    image = image_resp.get("image") or {}
+
+                    for output in image.get("outputResources", {}).get("amis", []) or []:
+                        if output.get("region") == self.region and output.get("image"):
+                            return output["image"]
+
+                    for output in image.get("outputResources", {}).get("amis", []) or []:
+                        if output.get("image"):
+                            return output["image"]
+
+                raise Exception(
+                    f"No ready AMI found for Image Builder pipeline '{label}'. "
+                    "Rerun deploy after the image is ready."
+                )
+
             if self.image_id:
                 return self.image_id
 
@@ -129,39 +170,12 @@ class LaunchTemplate:
                         f"Failed to resolve Image Builder pipeline ARN for '{self.image_builder_pipeline_name}'"
                     )
 
-                resp = client.list_image_pipeline_images(
-                    imagePipelineArn=pipeline_arn,
-                    maxResults=25,
+                self.image_id = _resolve_ready_ami_from_pipeline(
+                    client,
+                    pipeline_arn,
+                    self.image_builder_pipeline_name,
                 )
-                images = resp.get("imageSummaryList", []) or []
-                if not images:
-                    raise Exception(
-                        f"No images found for Image Builder pipeline '{self.image_builder_pipeline_name}'"
-                    )
-
-                images.sort(key=lambda s: s.get("dateCreated", "") or "", reverse=True)
-                image_arn = images[0].get("arn", "")
-                if not image_arn:
-                    raise Exception(
-                        f"Failed to resolve latest image ARN for pipeline '{self.image_builder_pipeline_name}'"
-                    )
-
-                image_resp = client.get_image(imageBuildVersionArn=image_arn)
-                image = image_resp.get("image") or {}
-
-                for output in image.get("outputResources", {}).get("amis", []) or []:
-                    if output.get("region") == self.region and output.get("image"):
-                        self.image_id = output["image"]
-                        return self.image_id
-
-                for output in image.get("outputResources", {}).get("amis", []) or []:
-                    if output.get("image"):
-                        self.image_id = output["image"]
-                        return self.image_id
-
-                raise Exception(
-                    f"Failed to resolve AMI id for pipeline '{self.image_builder_pipeline_name}'"
-                )
+                return self.image_id
 
             # Detect architecture from instance type: Graviton families end in 'g'
             # (t4g, m6g, c6g, r6g, ...). Everything else is x86_64.
@@ -174,6 +188,40 @@ class LaunchTemplate:
                 from .native.configs import resolve_al2023_x86_64_ami
                 self.image_id = resolve_al2023_x86_64_ami(self.region)
             return self.image_id
+
+        def _current_launch_template_image_id(self, ec2, lt_id: str) -> str:
+            resp = ec2.describe_launch_template_versions(
+                LaunchTemplateId=lt_id,
+                Versions=["$Latest"],
+            )
+            versions = resp.get("LaunchTemplateVersions", [])
+            if not versions:
+                raise Exception(
+                    f"Launch Template '{self.name}' has no latest version to reuse"
+                )
+            image_id = versions[0].get("LaunchTemplateData", {}).get("ImageId", "")
+            if not image_id:
+                raise Exception(
+                    f"Launch Template '{self.name}' latest version has no ImageId"
+                )
+            return image_id
+
+        def _resolve_root_device_name(self, image_id: str) -> str:
+            cache_key = f"root_device_name:{image_id}"
+            if self.ext.get(cache_key):
+                return self.ext[cache_key]
+
+            ec2 = aws_client("ec2", self.region, self.name)
+            resp = ec2.describe_images(ImageIds=[image_id])
+            images = resp.get("Images", []) or []
+            root = (images[0] if images else {}).get("RootDeviceName", "")
+            if not root:
+                raise Exception(
+                    f"Failed to resolve root device name for Launch Template "
+                    f"'{self.name}' image_id={image_id}"
+                )
+            self.ext[cache_key] = root
+            return root
 
         def _build_launch_template_data(self) -> Dict[str, Any]:
             if self.data:
@@ -238,8 +286,28 @@ class LaunchTemplate:
                     self.user_data.encode("utf-8")
                 ).decode("utf-8")
 
+            block_device_mappings = []
+            if self.root_volume_size_gb:
+                ebs = {
+                    "VolumeSize": int(self.root_volume_size_gb),
+                    "DeleteOnTermination": bool(
+                        self.root_volume_delete_on_termination
+                    ),
+                }
+                if self.root_volume_type:
+                    ebs["VolumeType"] = self.root_volume_type
+                block_device_mappings.append(
+                    {
+                        "DeviceName": self._resolve_root_device_name(
+                            resolved_image_id
+                        ),
+                        "Ebs": ebs,
+                    }
+                )
             if self.block_device_mappings:
-                lt_data["BlockDeviceMappings"] = self.block_device_mappings
+                block_device_mappings.extend(self.block_device_mappings)
+            if block_device_mappings:
+                lt_data["BlockDeviceMappings"] = block_device_mappings
 
             if self.tenancy:
                 lt_data.setdefault("Placement", {})
@@ -300,6 +368,11 @@ class LaunchTemplate:
                     # own pool/asg/scaling metadata without extra config files.
                     out["MetadataOptions"] = desired.get("MetadataOptions", {})
                     out["_current_MetadataOptions"] = current.get("MetadataOptions", {})
+                if "BlockDeviceMappings" in desired:
+                    out["BlockDeviceMappings"] = desired.get("BlockDeviceMappings", [])
+                    out["_current_BlockDeviceMappings"] = current.get(
+                        "BlockDeviceMappings", []
+                    )
                 desired_tags = []
                 for spec in desired.get("TagSpecifications", []) or []:
                     if spec.get("ResourceType") != "instance":
@@ -341,8 +414,6 @@ class LaunchTemplate:
             """
             import boto3
 
-            launch_template_data = self._build_launch_template_data()
-
             ec2 = aws_client("ec2", self.region, self.name)
 
             # Determine if LT exists
@@ -356,6 +427,22 @@ class LaunchTemplate:
             except Exception:
                 print(
                     f"Launch Template {self.name} does not exist yet, will create new"
+                )
+
+            try:
+                launch_template_data = self._build_launch_template_data()
+            except Exception as e:
+                message = str(e)
+                missing_pipeline_image = (
+                    "No ready AMI found for Image Builder pipeline" in message
+                    or "Image Builder pipeline" in message and "not found" in message
+                )
+                if not missing_pipeline_image:
+                    raise
+                raise SystemExit(
+                    f"Image Builder output is not ready yet for Launch Template '{self.name}'. "
+                    "This can happen on the first deploy while Image Builder is still "
+                    "building the first AMI. Rerun deploy after the image is ready."
                 )
 
             if not exists:

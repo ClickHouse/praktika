@@ -21,11 +21,12 @@ class PoolAutoscaler:
         name: str
         queue_name: str = ""
         asg_name: str = ""
+        capacity_reserve: int = 0
 
-    name: str = "praktika-pool-autoscaler"
+    name: str = "pool-autoscaler"
     interval_seconds: int = 60
     pools: List[Pool] = field(default_factory=list)
-    lambda_role_name: str = "praktika-pool-autoscaler-role"
+    lambda_role_name: str = "pool-autoscaler-role"
     timeout_ms: int = 30 * 1000
     memory_size_mb: int = 128
 
@@ -35,6 +36,12 @@ class PoolAutoscaler:
     def __post_init__(self):
         if not self.pools:
             raise ValueError("PoolAutoscaler requires at least one pool")
+        for pool in self.pools:
+            pool.capacity_reserve = int(pool.capacity_reserve)
+            if pool.capacity_reserve < 0:
+                raise ValueError(
+                    f"PoolAutoscaler pool {pool.name!r} has negative capacity_reserve"
+                )
 
         pool_config_json = json.dumps(
             [asdict(pool) for pool in self.pools],
@@ -43,7 +50,7 @@ class PoolAutoscaler:
         )
         queue_arns = sorted(
             {
-                f"arn:aws:sqs:*:*:{pool.queue_name or f'praktika-{pool.name}'}"
+                f"arn:aws:sqs:*:*:{pool.queue_name or pool.name}"
                 for pool in self.pools
                 if (pool.queue_name or pool.name)
             }
@@ -98,9 +105,9 @@ class PoolAutoscaler:
         cls,
         pools,
         *,
-        name: str = "praktika-pool-autoscaler",
+        name: str = "pool-autoscaler",
         interval_seconds: int = 60,
-        lambda_role_name: str = "praktika-pool-autoscaler-role",
+        lambda_role_name: str = "pool-autoscaler-role",
         timeout_ms: int = 30 * 1000,
         memory_size_mb: int = 128,
     ):
@@ -109,6 +116,7 @@ class PoolAutoscaler:
                 name=getattr(pool, "name", ""),
                 queue_name=getattr(getattr(pool, "queue", None), "name", ""),
                 asg_name=getattr(getattr(pool, "autoscaling_group", None), "name", ""),
+                capacity_reserve=getattr(pool, "capacity_reserve", 0),
             )
             for pool in pools
             if getattr(pool, "scaling", "") == "auto"

@@ -1,9 +1,11 @@
 import copy
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ..settings import _Settings
+from ..version import current_praktika_version, version_key
+from ._utils import aws_client
 from .autoscaling_group import AutoScalingGroup
 from .dedicated_host import DedicatedHost
 from .ec2_instance import EC2Instance
@@ -40,6 +42,7 @@ class CloudInfrastructure:
     @dataclass
     class Config:
         name: str
+        min_praktika_version: str = "0.0.0"
         lambda_functions: List["Lambda.Config"] = field(default_factory=list)
         iam_instance_profiles: List["IAMInstanceProfile.Config"] = field(
             default_factory=list
@@ -62,12 +65,16 @@ class CloudInfrastructure:
         pool_autoscalers: List["PoolAutoscaler"] = field(default_factory=list)
         pool_autoscaler_interval_seconds: int = 60
         orchestrator_pool: Optional["OrchestratorPool"] = None
+        orchestrator_pools: List["OrchestratorPool"] = field(default_factory=list)
         cidb_cluster: Optional["CIDBCluster"] = None
         _settings: Optional[_Settings] = None
+        _pre_namespace_names: Dict[str, List[str]] = field(
+            default_factory=dict, init=False, repr=False
+        )
 
         def _clone_owned_configs(self):
             # Cloud configs are often composed from module-level shared objects
-            # in ci/infra/cloud.py. Namespace application mutates names deeply,
+            # in ci/infrastructure/projects.py. Namespace application mutates names deeply,
             # so we must detach from those shared objects first; otherwise one
             # project would rewrite another project's config in place.
             cloned = copy.deepcopy(
@@ -89,6 +96,7 @@ class CloudInfrastructure:
                     "github_token_minters": self.github_token_minters,
                     "pool_autoscalers": self.pool_autoscalers,
                     "orchestrator_pool": self.orchestrator_pool,
+                    "orchestrator_pools": self.orchestrator_pools,
                     "cidb_cluster": self.cidb_cluster,
                 }
             )
@@ -132,8 +140,19 @@ class CloudInfrastructure:
             # consistent with the generated AWS names.
             if isinstance(value, str):
                 result = value
-                for old, new in replacements.items():
-                    result = result.replace(old, new)
+                project_prefix = f"{self._project_prefix()}-"
+                for old, new in sorted(
+                    replacements.items(), key=lambda item: len(item[0]), reverse=True
+                ):
+                    if not old:
+                        continue
+                    # Only replace the name when it sits at a token boundary —
+                    # not preceded or followed by [a-zA-Z0-9-].  This prevents
+                    # "artifacts-eu-north-1" from matching inside
+                    # "praktika-artifacts-eu-north-1" and corrupting URLs or
+                    # other cross-project references embedded in user_data.
+                    pattern = rf"(?<![a-zA-Z0-9-]){re.escape(old)}(?![a-zA-Z0-9-])"
+                    result = re.sub(pattern, new, result)
                 return result
             if isinstance(value, list):
                 return [self._replace_recursive(item, replacements) for item in value]
@@ -148,8 +167,158 @@ class CloudInfrastructure:
             if old and new and old != new:
                 replacements[old] = new
 
+        def _capture_pre_namespace_names(self):
+            self._pre_namespace_names = {}
+            for attr in (
+                "vpcs",
+                "storages",
+                "report_pages",
+                "image_builders",
+                "launch_templates",
+                "autoscaling_groups",
+                "sqs_queues",
+                "iam_roles",
+                "iam_instance_profiles",
+                "secret_parameters",
+                "lambda_functions",
+                "dedicated_hosts",
+                "ec2_instances",
+                "runner_pools",
+                "orchestrator_pools",
+                "github_token_minters",
+                "pool_autoscalers",
+            ):
+                names = [
+                    item.name
+                    for item in getattr(self, attr, []) or []
+                    if getattr(item, "name", "")
+                ]
+                if names:
+                    self._pre_namespace_names[attr] = names
+
+        def _apply_vpc_defaults(self):
+            if len(self.vpcs) == 1 and not self.vpcs[0].name:
+                self.vpcs[0].name = "vpc"
+            default_vpc_name = self.vpcs[0].name if len(self.vpcs) == 1 else ""
+            if not default_vpc_name:
+                return
+
+            def _apply_pool_defaults(pool):
+                if not pool.vpc_name:
+                    pool.vpc_name = default_vpc_name
+                if (
+                    not pool.security_group_ids
+                    and not pool.security_group_names
+                    and pool.vpc_name
+                ):
+                    pool.security_group_names = [f"{pool.vpc_name}-sg"]
+
+                launch_template = getattr(pool, "launch_template", None)
+                if launch_template:
+                    if not getattr(launch_template, "vpc_name", ""):
+                        launch_template.vpc_name = pool.vpc_name
+                    if (
+                        not getattr(launch_template, "security_group_ids", [])
+                        and not getattr(launch_template, "security_group_names", [])
+                    ):
+                        launch_template.security_group_names = list(
+                            pool.security_group_names
+                        )
+
+                autoscaling_group = getattr(pool, "autoscaling_group", None)
+                if autoscaling_group and not getattr(
+                    autoscaling_group, "vpc_name", ""
+                ):
+                    autoscaling_group.vpc_name = pool.vpc_name
+
+            for pool in self.runner_pools:
+                _apply_pool_defaults(pool)
+            for pool in self.orchestrator_pools:
+                _apply_pool_defaults(pool)
+
+            if self.cidb_cluster:
+                cluster = self.cidb_cluster
+                if not cluster.vpc_name:
+                    cluster.vpc_name = default_vpc_name
+                if (
+                    not cluster.security_group_ids
+                    and not cluster.security_group_names
+                    and cluster.vpc_name
+                ):
+                    cluster.security_group_names = [f"{cluster.vpc_name}-sg"]
+
+        def _apply_image_builder_defaults(self):
+            default_vpc_name = self.vpcs[0].name if len(self.vpcs) == 1 else ""
+
+            def _is_arm_instance_type(instance_type: str):
+                family = (instance_type or "").split(".")[0]
+                if not family:
+                    return None
+                return family.endswith("g")
+
+            def _builder_is_arm(builder):
+                if not builder.instance_types:
+                    return None
+                return _is_arm_instance_type(builder.instance_types[0])
+
+            def _consumer_launch_templates(builder):
+                seen = set()
+
+                def _add(launch_template):
+                    if not launch_template or id(launch_template) in seen:
+                        return []
+                    seen.add(id(launch_template))
+                    return [launch_template]
+
+                for pool in self.runner_pools:
+                    if getattr(pool, "image_builder", None) is builder:
+                        yield from _add(getattr(pool, "launch_template", None))
+                for pool in self.orchestrator_pools:
+                    if getattr(pool, "image_builder", None) is builder:
+                        yield from _add(getattr(pool, "launch_template", None))
+                for launch_template in self.launch_templates:
+                    if getattr(launch_template, "image_builder", None) is builder:
+                        yield from _add(launch_template)
+                for launch_template in builder.launch_templates:
+                    yield from _add(launch_template)
+
+            def _matching_runner_launch_templates(builder):
+                builder_is_arm = _builder_is_arm(builder)
+                if builder_is_arm is None:
+                    return
+                for pool in self.runner_pools:
+                    if _is_arm_instance_type(pool.instance_type) == builder_is_arm:
+                        yield pool.launch_template
+                for pool in self.orchestrator_pools:
+                    if _is_arm_instance_type(pool.instance_type) == builder_is_arm:
+                        yield pool.launch_template
+
+            for builder in self.image_builders:
+                if not builder.vpc_name and default_vpc_name:
+                    builder.vpc_name = default_vpc_name
+                if (
+                    not builder.security_group_ids
+                    and not builder.security_group_names
+                    and builder.vpc_name
+                ):
+                    builder.security_group_names = [f"{builder.vpc_name}-sg"]
+                if not builder.instance_profile_name:
+                    for launch_template in _consumer_launch_templates(builder):
+                        if getattr(launch_template, "iam_instance_profile_name", ""):
+                            builder.instance_profile_name = (
+                                launch_template.iam_instance_profile_name
+                            )
+                            break
+                if not builder.instance_profile_name:
+                    for launch_template in _matching_runner_launch_templates(builder):
+                        if getattr(launch_template, "iam_instance_profile_name", ""):
+                            builder.instance_profile_name = (
+                                launch_template.iam_instance_profile_name
+                            )
+                            break
+
         def _apply_project_namespace(self):
-            # Centralize namespacing here instead of forcing ci/infra/cloud.py
+            # Centralize namespacing here instead of forcing ci/infrastructure/projects.py
             # to hand-prefix every queue, LT, IAM role, lambda, bucket, etc.
             #
             # This keeps project configs declarative and makes "one config vs
@@ -158,6 +327,9 @@ class CloudInfrastructure:
             # created by higher-level native components such as RunnerPool,
             # OrchestratorPool, PoolAutoscaler, GitHubTokenMinter, and CIDB.
             self._clone_owned_configs()
+            self._capture_pre_namespace_names()
+            self._apply_vpc_defaults()
+            self._apply_image_builder_defaults()
 
             replacements = {}
 
@@ -248,44 +420,40 @@ class CloudInfrastructure:
                 }
 
             for config in self.image_builders:
+                old_derived_names = {
+                    attr: getattr(config, attr, "")
+                    for attr in (
+                        "image_recipe_name",
+                        "infrastructure_configuration_name",
+                        "distribution_configuration_name",
+                        "ami_name",
+                        "image_pipeline_name",
+                    )
+                }
                 old = config.name
                 config.name = self._prefixed(config.name)
                 self._record_rename(replacements, old, config.name)
-                for attr in (
-                    "image_recipe_name",
-                    "infrastructure_configuration_name",
-                    "instance_profile_name",
-                    "distribution_configuration_name",
-                    "image_pipeline_name",
-                ):
-                    value = getattr(config, attr, "")
-                    if value:
-                        new_value = self._prefixed(value)
-                        setattr(config, attr, new_value)
-                        self._record_rename(replacements, value, new_value)
+                config.refresh_derived_names()
+                for attr, old_value in old_derived_names.items():
+                    new_value = getattr(config, attr, "")
+                    if old_value and new_value:
+                        self._record_rename(replacements, old_value, new_value)
+                if config.instance_profile_name:
+                    old_profile = config.instance_profile_name
+                    config.instance_profile_name = self._prefixed(
+                        config.instance_profile_name
+                    )
+                    self._record_rename(
+                        replacements, old_profile, config.instance_profile_name
+                    )
                 if config.vpc_name:
                     old_vpc = config.vpc_name
                     config.vpc_name = self._prefixed(config.vpc_name)
                     self._record_rename(replacements, old_vpc, config.vpc_name)
                 config.security_group_names = [self._prefixed(name) for name in config.security_group_names]
-                if config.ami_name:
-                    old_ami_name = config.ami_name
-                    config.ami_name = self._prefixed(config.ami_name)
-                    self._record_rename(replacements, old_ami_name, config.ami_name)
                 for component in config.inline_components:
                     if component.get("name"):
-                        old_name = component["name"]
                         component["name"] = self._prefixed(component["name"])
-                        self._record_rename(replacements, old_name, component["name"])
-                for venv in config.prebuilt_venvs:
-                    old_name = venv.name
-                    venv.name = self._prefixed(venv.name)
-                    self._record_rename(replacements, old_name, venv.name)
-                    if venv.path:
-                        old_path = venv.path
-                        venv.path = venv.path.replace(old_name, venv.name)
-                        self._record_rename(replacements, old_path, venv.path)
-
             for config in self.dedicated_hosts:
                 old = config.name
                 config.name = self._prefixed(config.name)
@@ -305,14 +473,6 @@ class CloudInfrastructure:
                     old_vpc = pool.vpc_name
                     pool.vpc_name = self._prefixed(pool.vpc_name)
                     self._record_rename(replacements, old_vpc, pool.vpc_name)
-                if pool.iam_instance_profile_name:
-                    old_profile = pool.iam_instance_profile_name
-                    pool.iam_instance_profile_name = self._prefixed(pool.iam_instance_profile_name)
-                    self._record_rename(replacements, old_profile, pool.iam_instance_profile_name)
-                if pool.ec2_role_name:
-                    old_role = pool.ec2_role_name
-                    pool.ec2_role_name = self._prefixed(pool.ec2_role_name)
-                    self._record_rename(replacements, old_role, pool.ec2_role_name)
                 pool.security_group_names = [self._prefixed(name) for name in pool.security_group_names]
                 old_role_name = pool.ec2_role.name
                 pool.ec2_role.name = self._prefixed(pool.ec2_role.name)
@@ -326,18 +486,47 @@ class CloudInfrastructure:
                 old_lt = pool.launch_template.name
                 pool.launch_template.name = self._prefixed(pool.launch_template.name)
                 self._record_rename(replacements, old_lt, pool.launch_template.name)
+                if getattr(pool.launch_template, "vpc_name", ""):
+                    old_lt_vpc = pool.launch_template.vpc_name
+                    pool.launch_template.vpc_name = self._prefixed(
+                        pool.launch_template.vpc_name
+                    )
+                    self._record_rename(
+                        replacements, old_lt_vpc, pool.launch_template.vpc_name
+                    )
+                if getattr(pool.launch_template, "iam_instance_profile_name", ""):
+                    old_lt_profile = pool.launch_template.iam_instance_profile_name
+                    pool.launch_template.iam_instance_profile_name = self._prefixed(
+                        pool.launch_template.iam_instance_profile_name
+                    )
+                    self._record_rename(
+                        replacements,
+                        old_lt_profile,
+                        pool.launch_template.iam_instance_profile_name,
+                    )
+                pool.launch_template.security_group_names = [
+                    self._prefixed(name)
+                    for name in pool.launch_template.security_group_names
+                ]
                 old_queue = pool.queue.name
                 pool.queue.name = self._prefixed(pool.queue.name)
                 self._record_rename(replacements, old_queue, pool.queue.name)
                 old_asg = pool.autoscaling_group.name
                 pool.autoscaling_group.name = self._prefixed(pool.autoscaling_group.name)
                 self._record_rename(replacements, old_asg, pool.autoscaling_group.name)
+                if getattr(pool.autoscaling_group, "vpc_name", ""):
+                    old_asg_vpc = pool.autoscaling_group.vpc_name
+                    pool.autoscaling_group.vpc_name = self._prefixed(
+                        pool.autoscaling_group.vpc_name
+                    )
+                    self._record_rename(
+                        replacements, old_asg_vpc, pool.autoscaling_group.vpc_name
+                    )
                 old_lt_ref = pool.autoscaling_group.launch_template_name
                 pool.autoscaling_group.launch_template_name = self._prefixed(pool.autoscaling_group.launch_template_name)
                 self._record_rename(replacements, old_lt_ref, pool.autoscaling_group.launch_template_name)
 
-            if self.orchestrator_pool:
-                pool = self.orchestrator_pool
+            for pool in self.orchestrator_pools:
                 if pool.vpc_name:
                     old_vpc = pool.vpc_name
                     pool.vpc_name = self._prefixed(pool.vpc_name)
@@ -363,12 +552,42 @@ class CloudInfrastructure:
                 old_lt = pool.launch_template.name
                 pool.launch_template.name = self._prefixed(pool.launch_template.name)
                 self._record_rename(replacements, old_lt, pool.launch_template.name)
+                if getattr(pool.launch_template, "vpc_name", ""):
+                    old_lt_vpc = pool.launch_template.vpc_name
+                    pool.launch_template.vpc_name = self._prefixed(
+                        pool.launch_template.vpc_name
+                    )
+                    self._record_rename(
+                        replacements, old_lt_vpc, pool.launch_template.vpc_name
+                    )
+                if getattr(pool.launch_template, "iam_instance_profile_name", ""):
+                    old_lt_profile = pool.launch_template.iam_instance_profile_name
+                    pool.launch_template.iam_instance_profile_name = self._prefixed(
+                        pool.launch_template.iam_instance_profile_name
+                    )
+                    self._record_rename(
+                        replacements,
+                        old_lt_profile,
+                        pool.launch_template.iam_instance_profile_name,
+                    )
+                pool.launch_template.security_group_names = [
+                    self._prefixed(name)
+                    for name in pool.launch_template.security_group_names
+                ]
                 old_queue = pool.queue.name
                 pool.queue.name = self._prefixed(pool.queue.name)
                 self._record_rename(replacements, old_queue, pool.queue.name)
                 old_asg = pool.autoscaling_group.name
                 pool.autoscaling_group.name = self._prefixed(pool.autoscaling_group.name)
                 self._record_rename(replacements, old_asg, pool.autoscaling_group.name)
+                if getattr(pool.autoscaling_group, "vpc_name", ""):
+                    old_asg_vpc = pool.autoscaling_group.vpc_name
+                    pool.autoscaling_group.vpc_name = self._prefixed(
+                        pool.autoscaling_group.vpc_name
+                    )
+                    self._record_rename(
+                        replacements, old_asg_vpc, pool.autoscaling_group.vpc_name
+                    )
                 old_lt_ref = pool.autoscaling_group.launch_template_name
                 pool.autoscaling_group.launch_template_name = self._prefixed(pool.autoscaling_group.launch_template_name)
                 self._record_rename(replacements, old_lt_ref, pool.autoscaling_group.launch_template_name)
@@ -481,13 +700,16 @@ class CloudInfrastructure:
                 config.user_data = self._replace_recursive(getattr(config, "user_data", ""), replacements)
 
             for pool in self.runner_pools:
+                pool.launch_template.tags["praktika_project_slug"] = self.name
+                pool.autoscaling_group.tags["praktika_project_slug"] = self.name
                 pool.ec2_role.inline_policies = self._replace_recursive(pool.ec2_role.inline_policies, replacements)
                 pool.launch_template.tags = self._replace_recursive(pool.launch_template.tags, replacements)
                 pool.launch_template.user_data = self._replace_recursive(pool.launch_template.user_data, replacements)
                 pool.autoscaling_group.tags = self._replace_recursive(pool.autoscaling_group.tags, replacements)
 
-            if self.orchestrator_pool:
-                pool = self.orchestrator_pool
+            for pool in self.orchestrator_pools:
+                pool.launch_template.tags["praktika_project_slug"] = self.name
+                pool.autoscaling_group.tags["praktika_project_slug"] = self.name
                 pool.ec2_role.inline_policies = self._replace_recursive(pool.ec2_role.inline_policies, replacements)
                 pool.lambda_role.inline_policies = self._replace_recursive(pool.lambda_role.inline_policies, replacements)
                 pool.lambda_config.environments = self._replace_recursive(pool.lambda_config.environments, replacements)
@@ -511,6 +733,17 @@ class CloudInfrastructure:
                     instance.user_data = self._replace_recursive(getattr(instance, "user_data", ""), replacements)
 
         def __post_init__(self):
+            if self.orchestrator_pool:
+                if not self.orchestrator_pools:
+                    self.orchestrator_pools = [self.orchestrator_pool]
+                elif all(pool.name != self.orchestrator_pool.name for pool in self.orchestrator_pools):
+                    self.orchestrator_pools.insert(0, self.orchestrator_pool)
+            self.orchestrator_pool = (
+                self.orchestrator_pools[0] if self.orchestrator_pools else None
+            )
+            for token_minter in self.github_token_minters:
+                token_minter.apply_defaults(default_repository=self.name)
+
             # 1. Namespace all resources for this project.
             # 2. Materialize implicit child components from the high-level
             #    native components (pools, token minters, CIDB, autoscaler).
@@ -519,8 +752,12 @@ class CloudInfrastructure:
             # namespacing so their names and cross-references land in the same
             # project namespace as the rest of the config.
             self._apply_project_namespace()
+            self.orchestrator_pool = (
+                self.orchestrator_pools[0] if self.orchestrator_pools else None
+            )
             seen_role_names: set = {r.name for r in self.iam_roles}
             seen_profile_names: set = {p.name for p in self.iam_instance_profiles}
+            seen_secret_names: set = {s.name for s in self.secret_parameters}
 
             def _add_role(role):
                 if role.name not in seen_role_names:
@@ -532,17 +769,22 @@ class CloudInfrastructure:
                     self.iam_instance_profiles.append(profile)
                     seen_profile_names.add(profile.name)
 
+            def _add_secret(secret):
+                if secret.name not in seen_secret_names:
+                    self.secret_parameters.append(secret)
+                    seen_secret_names.add(secret.name)
+
             implicit_autoscaler_sources = []
-            if self.orchestrator_pool:
-                self.secret_parameters.append(self.orchestrator_pool.webhook_secret)
-                _add_role(self.orchestrator_pool.ec2_role)
-                _add_role(self.orchestrator_pool.lambda_role)
-                _add_profile(self.orchestrator_pool.instance_profile)
-                self.lambda_functions.append(self.orchestrator_pool.lambda_config)
-                self.sqs_queues.append(self.orchestrator_pool.queue)
-                self.launch_templates.append(self.orchestrator_pool.launch_template)
-                self.autoscaling_groups.append(self.orchestrator_pool.autoscaling_group)
-                implicit_autoscaler_sources.append(self.orchestrator_pool)
+            for pool in self.orchestrator_pools:
+                _add_secret(pool.webhook_secret)
+                _add_role(pool.ec2_role)
+                _add_role(pool.lambda_role)
+                _add_profile(pool.instance_profile)
+                self.lambda_functions.append(pool.lambda_config)
+                self.sqs_queues.append(pool.queue)
+                self.launch_templates.append(pool.launch_template)
+                self.autoscaling_groups.append(pool.autoscaling_group)
+                implicit_autoscaler_sources.append(pool)
             for pool in self.runner_pools:
                 _add_role(pool.ec2_role)
                 _add_profile(pool.instance_profile)
@@ -579,8 +821,8 @@ class CloudInfrastructure:
             for token_minter in self.github_token_minters:
                 _add_role(token_minter.lambda_role)
                 self.lambda_functions.append(token_minter.lambda_config)
-                if self.orchestrator_pool:
-                    token_minter.grant_invoke(self.orchestrator_pool.ec2_role)
+                for pool in self.orchestrator_pools:
+                    token_minter.grant_invoke(pool.ec2_role)
                 for pool in self.runner_pools:
                     token_minter.grant_invoke(pool.ec2_role)
             for autoscaler in self.pool_autoscalers:
@@ -646,6 +888,64 @@ class CloudInfrastructure:
                 )
             print(f"AWS account verified: {actual} (profile: {profile})")
 
+        def _validate_min_praktika_version(self):
+            current = current_praktika_version()
+            required = str(self.min_praktika_version or "0.0.0")
+            try:
+                required_key = version_key(required)
+                current_key = version_key(current)
+            except (TypeError, ValueError):
+                raise SystemExit(
+                    "Invalid infrastructure config version.\n"
+                    f"Project [{self.name}] sets min_praktika_version="
+                    f"{self.min_praktika_version!r}, but it must be a dotted "
+                    "numeric package version such as '0.1.2'.\n"
+                    f"Running Praktika version is {current}."
+                )
+
+            if required_key <= current_key:
+                return
+
+            raise SystemExit(
+                "Infrastructure config requires a newer Praktika runtime.\n"
+                f"Project: {self.name}\n"
+                f"Config min_praktika_version: {required}\n"
+                f"Running Praktika version: {current}\n"
+                "Newer Praktika versions are expected to support older configs, "
+                "but older Praktika versions cannot safely deploy configs that "
+                "use newer infrastructure fields or semantics.\n"
+                "Use the Praktika checkout/package that matches this config, "
+                "for example: python3 -m praktika infrastructure --deploy ..."
+            )
+
+        def _deployment_warnings(self, autoscaling_groups=None) -> List[str]:
+            warnings = []
+            for asg_config in autoscaling_groups or []:
+                if not asg_config.ext.get("deferred_missing_launch_template"):
+                    continue
+                warning = asg_config.ext.get("deployment_warning")
+                if not warning:
+                    warning = (
+                        f"Launch Template is not available yet for ASG "
+                        f"'{asg_config.name}'; skipping until the launch template exists"
+                    )
+                warnings.append(warning)
+            return warnings
+
+        def _print_deployment_warnings(self, autoscaling_groups=None):
+            warnings = self._deployment_warnings(autoscaling_groups)
+            if not warnings:
+                return
+
+            print("\n" + "=" * 60)
+            print("WARNING: Infrastructure deployment completed with warnings")
+            print("=" * 60)
+            for warning in warnings:
+                print(f"WARNING: {warning}")
+            print(
+                "WARNING: Rerun is required after the missing launch template exists."
+            )
+
         def deploy(
             self,
             all=False,
@@ -660,6 +960,7 @@ class CloudInfrastructure:
                      If True, deploy everything (validate settings, deploy code, attach IAM policies).
                 only: If set, deploy only selected component types by name.
             """
+            self._validate_min_praktika_version()
             self._verify_account()
 
             only_set = {
@@ -765,38 +1066,6 @@ class CloudInfrastructure:
                     print("=" * 60)
                     vpc_config.deploy()
 
-            # Deploy all Launch Templates
-            if _wants("LaunchTemplate", "LaunchTemplates"):
-                for lt_config in self.launch_templates:
-                    lt_config.region = self._settings.AWS_REGION
-
-                    print("\n" + "=" * 60)
-                    print(f"Deploying Launch Template: {lt_config.name}")
-                    print("=" * 60)
-                    lt_config.deploy()
-
-            # Deploy Image Builder pipelines after LaunchTemplates so
-            # distribution settings can reference LT ids for automatic
-            # Image Builder-managed AMI propagation.
-            if _wants("ImageBuilder", "ImageBuilders"):
-                for ib_config in self.image_builders:
-                    ib_config.region = self._settings.AWS_REGION
-
-                    print("\n" + "=" * 60)
-                    print(f"Deploying Image Builder: {ib_config.name}")
-                    print("=" * 60)
-                    ib_config.deploy()
-
-            # Deploy all ASGs
-            if _wants("AutoScalingGroup", "AutoScalingGroups", "ASG", "ASGs"):
-                for asg_config in self.autoscaling_groups:
-                    asg_config.region = self._settings.AWS_REGION
-
-                    print("\n" + "=" * 60)
-                    print(f"Deploying Auto Scaling Group: {asg_config.name}")
-                    print("=" * 60)
-                    asg_config.deploy()
-
             # Deploy secret parameters (before Lambdas that reference them)
             if _wants("SecretParameter", "SecretParameters", "Secret", "Secrets"):
                 for secret_config in self.secret_parameters:
@@ -846,7 +1115,9 @@ class CloudInfrastructure:
                     print("=" * 60)
                     sqs_config.deploy()
 
-            # Deploy all Lambdas (code only or with configuration)
+            # Deploy all Lambdas before image-backed compute so webhook/API
+            # entrypoints are recreated even while Image Builder pipelines are
+            # still producing their first ready AMIs.
             if _wants("Lambda", "Lambdas", "LambdaFunction", "LambdaFunctions"):
                 for lambda_config in self.lambda_functions:
                     # Always set region if available (needed even for code-only deploys)
@@ -904,23 +1175,82 @@ class CloudInfrastructure:
                 print("Lambda deployment completed!")
                 print("=" * 60)
 
+            # Deploy Image Builder pipelines after Lambdas. The webhook/API
+            # surface should be available even if compute images are still
+            # building.
+            if _wants("ImageBuilder", "ImageBuilders"):
+                for ib_config in self.image_builders:
+                    ib_config.region = self._settings.AWS_REGION
+
+                    print("\n" + "=" * 60)
+                    print(f"Deploying Image Builder: {ib_config.name}")
+                    print("=" * 60)
+                    ib_config.deploy()
+
+            # Deploy all Launch Templates after ImageBuilders so image-builder
+            # backed templates can resolve their latest AMI ids.
+            if _wants("LaunchTemplate", "LaunchTemplates"):
+                for lt_config in self.launch_templates:
+                    lt_config.region = self._settings.AWS_REGION
+
+                    print("\n" + "=" * 60)
+                    print(f"Deploying Launch Template: {lt_config.name}")
+                    print("=" * 60)
+                    lt_config.deploy()
+
+            # Deploy all ASGs after Launch Templates.
+            deployed_asg_configs = []
+            if _wants("AutoScalingGroup", "AutoScalingGroups", "ASG", "ASGs"):
+                for asg_config in self.autoscaling_groups:
+                    asg_config.region = self._settings.AWS_REGION
+
+                    print("\n" + "=" * 60)
+                    print(f"Deploying Auto Scaling Group: {asg_config.name}")
+                    print("=" * 60)
+                    asg_config.deploy()
+                    deployed_asg_configs.append(asg_config)
+
+            self._print_deployment_warnings(deployed_asg_configs)
+
         def destroy_runtime(
             self,
             force: bool = True,
             only: Optional[List[str]] = None,
         ):
             """
-            Delete the execution-plane resources that can be safely recreated.
-            Preserve shared/data-plane resources and scarce capacity allocations.
+            Delete project-prefixed execution-plane resources that can be
+            recreated by deploy. Preserve stateful resources and scarce
+            capacity allocations.
 
             Args:
                 force: If True, forcefully terminate instances without stopping first.
                 only: If set, destroy only selected runtime component types by name.
             """
             self._verify_account()
+            self._destroy_by_prefix(include_all=False, force=force, only=only)
 
+        def destroy_all(self, only: Optional[List[str]] = None):
+            """
+            Delete all project-prefixed managed infrastructure resources.
+
+            This intentionally discovers resources from AWS by project slug
+            prefix instead of trusting the current config object graph.
+            """
+            self._verify_account()
+            self._destroy_by_prefix(include_all=True, force=True, only=only)
+
+        def _destroy_by_prefix(
+            self,
+            *,
+            include_all: bool,
+            force: bool,
+            only: Optional[List[str]],
+        ):
             from ..interactive import UserPrompt
 
+            region = self._settings.AWS_REGION
+            prefix = self._project_prefix()
+            prefix_dash = f"{prefix}-"
             only_set = {
                 s.strip().lower()
                 for s in (only or [])
@@ -933,57 +1263,340 @@ class CloudInfrastructure:
                 keys = {type_name.lower(), *{a.lower() for a in aliases if a}}
                 return bool(keys & only_set)
 
+            def _iter_pages(client, operation: str, **kwargs):
+                paginator = getattr(client, "get_paginator", None)
+                if paginator:
+                    try:
+                        for page in paginator(operation).paginate(**kwargs):
+                            yield page
+                        return
+                    except Exception as e:
+                        if e.__class__.__name__ != "OperationNotPageableError":
+                            raise
+
+                def _operation_input_members():
+                    meta = getattr(client, "meta", None)
+                    mapping = getattr(meta, "method_to_api_mapping", {}) or {}
+                    operation_name = mapping.get(operation)
+                    service_model = getattr(meta, "service_model", None)
+                    if not operation_name or service_model is None:
+                        return set()
+                    try:
+                        operation_model = service_model.operation_model(operation_name)
+                    except Exception:
+                        return set()
+                    input_shape = getattr(operation_model, "input_shape", None)
+                    return set(getattr(input_shape, "members", {}) or {})
+
+                def _request_token_key() -> str:
+                    input_members = _operation_input_members()
+                    for candidate in (
+                        "NextToken",
+                        "nextToken",
+                        "Marker",
+                        "marker",
+                        "ContinuationToken",
+                    ):
+                        if candidate in input_members:
+                            return candidate
+                    return "NextToken"
+
+                def _response_token(page) -> str:
+                    for candidate in (
+                        "NextToken",
+                        "nextToken",
+                        "NextMarker",
+                        "nextMarker",
+                        "Marker",
+                        "marker",
+                        "NextContinuationToken",
+                    ):
+                        token = page.get(candidate)
+                        if token:
+                            return token
+                    return ""
+
+                method = getattr(client, operation)
+                token = ""
+                token_key = _request_token_key()
+                while True:
+                    request = dict(kwargs)
+                    if token:
+                        request[token_key] = token
+                    page = method(**request)
+                    yield page
+                    token = _response_token(page)
+                    if not token:
+                        break
+
+            def _resource_name_from_tags(tags) -> str:
+                for tag in tags or []:
+                    if tag.get("Key") == "Name":
+                        return tag.get("Value", "")
+                return ""
+
+            def _tag_value(tags, key: str) -> str:
+                for tag in tags or []:
+                    if tag.get("Key") == key:
+                        return tag.get("Value", "")
+                return ""
+
+            def _is_prefix_name(name: str) -> bool:
+                return bool(name and name.startswith(prefix_dash))
+
+            def _ignore_missing(fn, *args, ignore_dependency: bool = False, **kwargs):
+                try:
+                    return fn(*args, **kwargs)
+                except Exception as e:
+                    message = str(e).lower()
+                    missing = (
+                        "not found" in message
+                        or "does not exist" in message
+                        or "nonexistent" in message
+                        or e.__class__.__name__
+                        in {
+                            "NoSuchEntityException",
+                            "ResourceNotFoundException",
+                            "QueueDoesNotExist",
+                            "ParameterNotFound",
+                        }
+                    )
+                    dependency = "dependency" in message or "in use" in message
+                    if missing or (ignore_dependency and dependency):
+                        print(f"Skipped missing/dependent resource: {e}")
+                        return None
+                    raise
+
             def _confirm_and_run(label: str, fn):
                 print("\n" + "=" * 60)
-                print(f"Shutdown: {label}")
+                print(f"Destroy: {label}")
                 print("=" * 60)
                 if UserPrompt.confirm(f"Delete '{label}'?"):
                     fn()
+                    return True
                 else:
                     print("Skipped.")
+                    return False
 
-            runtime_lambdas = []
-            runtime_lambda_roles = []
-            for autoscaler in self.pool_autoscalers:
-                runtime_lambdas.append(autoscaler.lambda_config)
-                runtime_lambda_roles.append(autoscaler.lambda_role)
-            for token_minter in self.github_token_minters:
-                runtime_lambdas.append(token_minter.lambda_config)
-                runtime_lambda_roles.append(token_minter.lambda_role)
+            def _confirm_batch_and_run(
+                label: str,
+                item_labels: List[str],
+                fn,
+                prompt_label: Optional[str] = None,
+            ):
+                print("\n" + "=" * 60)
+                print(f"Destroy: {label}")
+                print("=" * 60)
+                for item_label in item_labels:
+                    print(f"  - {item_label}")
+                label_for_prompt = prompt_label or label
+                if UserPrompt.confirm(
+                    f"Delete all {len(item_labels)} {label_for_prompt}?"
+                ):
+                    fn()
+                    return True
+                print("Skipped.")
+                return False
 
-            any_work = any([
-                self.sqs_queues,
-                self.launch_templates,
-                self.autoscaling_groups,
-                self.ec2_instances,
-                runtime_lambdas,
-                runtime_lambda_roles,
-            ])
-            if not any_work:
-                print("No runtime resources configured to destroy")
-                return
+            def _api_gateway_names() -> Dict[str, str]:
+                apigw = aws_client("apigatewayv2", region, f"{prefix}-api-discovery")
+                api_by_lambda: Dict[str, str] = {}
+                for page in _iter_pages(apigw, "get_apis"):
+                    for api in page.get("Items", []) or []:
+                        name = api.get("Name", "")
+                        api_id = api.get("ApiId", "")
+                        if _is_prefix_name(name) and name.endswith("-API") and api_id:
+                            api_by_lambda[name[:-4]] = api_id
+                return api_by_lambda
 
-            # Tear down compute first so ENIs/instances are released before
-            # launch templates and queues disappear.
+            def _lambda_names() -> List[str]:
+                client = aws_client("lambda", region, f"{prefix}-lambda-discovery")
+                names = []
+                for page in _iter_pages(client, "list_functions"):
+                    for item in page.get("Functions", []) or []:
+                        name = item.get("FunctionName", "")
+                        if _is_prefix_name(name):
+                            names.append(name)
+                return sorted(set(names))
+
+            def _api_gateway_lambda_names() -> set:
+                return set(_api_gateway_names().keys())
+
+            api_gateway_lambda_names = set() if include_all else _api_gateway_lambda_names()
+            protected_role_names = set()
+            if api_gateway_lambda_names:
+                lambda_client = aws_client("lambda", region, f"{prefix}-lambda-protect")
+                for lambda_name in api_gateway_lambda_names:
+                    try:
+                        role_arn = lambda_client.get_function(
+                            FunctionName=lambda_name
+                        )["Configuration"].get("Role", "")
+                    except Exception as e:
+                        print(
+                            f"Warning: failed to resolve role for protected Lambda {lambda_name}: {e}"
+                        )
+                        continue
+                    role_name = role_arn.split("/")[-1] if role_arn else ""
+                    if role_name:
+                        protected_role_names.add(role_name)
+            if not include_all:
+                protected_role_names.update(
+                    {
+                        f"{prefix_dash}cidb-role",
+                        f"{prefix_dash}cidb-profile",
+                    }
+                )
+
+            did_work = False
+            asg_managed_instance_ids = set()
+
             if _wants("AutoScalingGroup", "AutoScalingGroups", "ASG", "ASGs"):
-                for c in self.autoscaling_groups:
-                    c.region = self._settings.AWS_REGION
-                    _confirm_and_run(f"AutoScalingGroup {c.name}", c.delete)
+                client = aws_client("autoscaling", region, f"{prefix}-asg-destroy")
+                instance_ids_by_asg = {}
+                for page in _iter_pages(client, "describe_auto_scaling_groups"):
+                    for item in page.get("AutoScalingGroups", []) or []:
+                        name = item.get("AutoScalingGroupName", "")
+                        if _is_prefix_name(name):
+                            instance_ids_by_asg[name] = {
+                                instance.get("InstanceId")
+                                for instance in item.get("Instances", []) or []
+                                if instance.get("InstanceId")
+                            }
+                for name in sorted(instance_ids_by_asg):
+                    did_work = True
+                    deleted = _confirm_and_run(
+                        f"AutoScalingGroup {name}",
+                        lambda n=name: _ignore_missing(
+                            client.delete_auto_scaling_group,
+                            AutoScalingGroupName=n,
+                            ForceDelete=True,
+                        ),
+                    )
+                    if deleted:
+                        asg_managed_instance_ids.update(instance_ids_by_asg[name])
 
-            if _wants("EC2Instance", "EC2Instances", "Instance", "Instances"):
-                for c in self.ec2_instances:
-                    c.region = self._settings.AWS_REGION
-                    _confirm_and_run(f"EC2Instance {c.name}", lambda cfg=c: cfg.shutdown(force=force))
+            if include_all and _wants(
+                "EC2Instance", "EC2Instances", "Instance", "Instances"
+            ):
+                client = aws_client("ec2", region, f"{prefix}-ec2-destroy")
+                instances = []
+                for page in _iter_pages(
+                    client,
+                    "describe_instances",
+                    Filters=[
+                        {
+                            "Name": "instance-state-name",
+                            "Values": [
+                                "pending",
+                                "running",
+                                "stopping",
+                                "stopped",
+                            ],
+                        }
+                    ],
+                ):
+                    for reservation in page.get("Reservations", []) or []:
+                        for item in reservation.get("Instances", []) or []:
+                            instance_id = item.get("InstanceId", "")
+                            tags = item.get("Tags", []) or []
+                            name = _resource_name_from_tags(tags)
+                            rn = _tag_value(tags, "praktika_rn")
+                            if (
+                                instance_id
+                                and instance_id not in asg_managed_instance_ids
+                                and (_is_prefix_name(name) or _is_prefix_name(rn))
+                            ):
+                                instances.append((instance_id, name or rn or instance_id))
+                for instance_id, name in sorted(set(instances), key=lambda x: x[1]):
+                    did_work = True
+                    _confirm_and_run(
+                        f"EC2Instance {name} ({instance_id})",
+                        lambda iid=instance_id: _ignore_missing(
+                            client.terminate_instances,
+                            InstanceIds=[iid],
+                        ),
+                    )
 
             if _wants("LaunchTemplate", "LaunchTemplates"):
-                for c in self.launch_templates:
-                    c.region = self._settings.AWS_REGION
-                    _confirm_and_run(f"LaunchTemplate {c.name}", c.delete)
+                client = aws_client("ec2", region, f"{prefix}-lt-destroy")
+                names = []
+                for page in _iter_pages(client, "describe_launch_templates"):
+                    for item in page.get("LaunchTemplates", []) or []:
+                        name = item.get("LaunchTemplateName", "")
+                        if _is_prefix_name(name):
+                            names.append(name)
+                for name in sorted(set(names)):
+                    did_work = True
+                    _confirm_and_run(
+                        f"LaunchTemplate {name}",
+                        lambda n=name: _ignore_missing(
+                            client.delete_launch_template,
+                            LaunchTemplateName=n,
+                        ),
+                    )
 
             if _wants("SQS", "SQSQueue", "SQSQueues"):
-                for c in self.sqs_queues:
-                    c.region = self._settings.AWS_REGION
-                    _confirm_and_run(f"SQSQueue {c.name}", lambda cfg=c: cfg.shutdown())
+                client = aws_client("sqs", region, f"{prefix}-sqs-destroy")
+                urls = []
+                response = client.list_queues(QueueNamePrefix=prefix_dash)
+                urls.extend(response.get("QueueUrls", []) or [])
+                queue_items = [
+                    (url.rstrip("/").split("/")[-1], url)
+                    for url in sorted(set(urls))
+                ]
+                if queue_items:
+                    did_work = True
+
+                    def _delete_sqs_queues():
+                        for _, url in queue_items:
+                            _ignore_missing(client.delete_queue, QueueUrl=url)
+
+                    _confirm_batch_and_run(
+                        "SQSQueues",
+                        [name for name, _ in queue_items],
+                        _delete_sqs_queues,
+                        prompt_label="SQS queues",
+                    )
+
+            if _wants(
+                "EventBridgeSchedule",
+                "EventBridgeSchedules",
+                "Schedule",
+                "Schedules",
+                "EventRule",
+                "EventRules",
+            ):
+                client = aws_client("events", region, f"{prefix}-events-destroy")
+                rules = []
+                for page in _iter_pages(client, "list_rules", NamePrefix=prefix_dash):
+                    for item in page.get("Rules", []) or []:
+                        name = item.get("Name", "")
+                        if _is_prefix_name(name):
+                            rules.append(name)
+                for name in sorted(set(rules)):
+                    did_work = True
+
+                    def _delete_rule(rule_name=name):
+                        target_ids = []
+                        for page in _iter_pages(
+                            client,
+                            "list_targets_by_rule",
+                            Rule=rule_name,
+                        ):
+                            for target in page.get("Targets", []) or []:
+                                target_id = target.get("Id", "")
+                                if target_id:
+                                    target_ids.append(target_id)
+                        if target_ids:
+                            _ignore_missing(
+                                client.remove_targets,
+                                Rule=rule_name,
+                                Ids=target_ids,
+                                Force=True,
+                            )
+                        _ignore_missing(client.delete_rule, Name=rule_name, Force=True)
+
+                    _confirm_and_run(f"EventBridgeSchedule {name}", _delete_rule)
 
             if _wants(
                 "RuntimeLambda",
@@ -993,17 +1606,510 @@ class CloudInfrastructure:
                 "LambdaFunction",
                 "LambdaFunctions",
             ):
-                for c in runtime_lambdas:
-                    c.region = self._settings.AWS_REGION
-                    _confirm_and_run(f"Lambda {c.name}", c.delete)
+                client = aws_client("lambda", region, f"{prefix}-lambda-destroy")
+                for name in _lambda_names():
+                    did_work = True
+                    _confirm_and_run(
+                        f"Lambda {name}",
+                        lambda n=name: _ignore_missing(
+                            client.delete_function,
+                            FunctionName=n,
+                        ),
+                    )
+
+            if include_all and _wants(
+                "APIGateway",
+                "APIGateways",
+                "API",
+                "APIs",
+                "Webhook",
+                "Webhooks",
+            ):
+                client = aws_client("apigatewayv2", region, f"{prefix}-api-destroy")
+                for lambda_name, api_id in sorted(_api_gateway_names().items()):
+                    did_work = True
+                    _confirm_and_run(
+                        f"APIGateway {lambda_name}-API",
+                        lambda aid=api_id: _ignore_missing(
+                            client.delete_api,
+                            ApiId=aid,
+                        ),
+                    )
+
+            def _delete_project_amis():
+                nonlocal did_work
+
+                ec2 = aws_client("ec2", region, f"{prefix}-ami-destroy")
+                targets = []
+                for page in _iter_pages(
+                    ec2,
+                    "describe_images",
+                    Owners=["self"],
+                    Filters=[{"Name": "name", "Values": [f"{prefix_dash}*"]}],
+                ):
+                    for image in page.get("Images", []) or []:
+                        image_id = image.get("ImageId", "")
+                        name = image.get("Name", "")
+                        tags = image.get("Tags", []) or []
+                        tag_name = _resource_name_from_tags(tags)
+                        rn = _tag_value(tags, "praktika_rn")
+                        if not image_id or not (
+                            _is_prefix_name(name)
+                            or _is_prefix_name(tag_name)
+                            or _is_prefix_name(rn)
+                        ):
+                            continue
+                        snapshot_ids = []
+                        for mapping in image.get("BlockDeviceMappings", []) or []:
+                            snapshot_id = (
+                                mapping.get("Ebs", {}) or {}
+                            ).get("SnapshotId", "")
+                            if snapshot_id:
+                                snapshot_ids.append(snapshot_id)
+                        targets.append(
+                            (
+                                f"AMI {name or tag_name or rn or image_id}",
+                                image_id,
+                                tuple(sorted(set(snapshot_ids))),
+                            )
+                        )
+
+                for target_label, image_id, snapshot_ids in sorted(
+                    set(targets), key=lambda x: x[0]
+                ):
+                    did_work = True
+
+                    def _delete_image(
+                        iid=image_id,
+                        sids=snapshot_ids,
+                    ):
+                        _ignore_missing(
+                            ec2.deregister_image,
+                            ImageId=iid,
+                            ignore_dependency=True,
+                        )
+                        for snapshot_id in sids:
+                            _ignore_missing(
+                                ec2.delete_snapshot,
+                                SnapshotId=snapshot_id,
+                                ignore_dependency=True,
+                            )
+
+                    _confirm_and_run(target_label, _delete_image)
+
+            imagebuilder_wanted = _wants("ImageBuilder", "ImageBuilders")
+            ami_wanted = imagebuilder_wanted or _wants(
+                "AMI",
+                "AMIs",
+                "Image",
+                "Images",
+                "EC2Image",
+                "EC2Images",
+            )
+
+            if imagebuilder_wanted:
+                client = aws_client("imagebuilder", region, f"{prefix}-ib-destroy")
+
+                def _delete_imagebuilder_resources(
+                    list_op: str,
+                    result_key: str,
+                    arn_arg: str,
+                    delete_op: str,
+                    label: str,
+                    *,
+                    owner_self: bool = False,
+                    ignore_dependency: bool = False,
+                    group_versions: bool = False,
+                ):
+                    nonlocal did_work
+
+                    def _item_version(item) -> str:
+                        version = (
+                            item.get("semanticVersion")
+                            or item.get("version")
+                            or ""
+                        )
+                        arn = item.get("arn", "")
+                        if not version and "/" in arn:
+                            version = arn.rstrip("/").rsplit("/", 1)[-1]
+                        return version
+
+                    def _item_label(item, name: str) -> str:
+                        version = _item_version(item)
+                        if version and version != name:
+                            return f"{label} {name} ({version})"
+                        return f"{label} {name}"
+
+                    request = {"owner": "Self"} if owner_self else {}
+                    targets = []
+                    targets_by_name: Dict[str, List[tuple]] = {}
+                    for page in _iter_pages(client, list_op, **request):
+                        for item in page.get(result_key, []) or []:
+                            name = item.get("name", "")
+                            arn = item.get("arn", "")
+                            if _is_prefix_name(name) and arn:
+                                if group_versions:
+                                    targets_by_name.setdefault(
+                                        f"{label} {name}", []
+                                    ).append((_item_version(item), arn))
+                                else:
+                                    targets.append((_item_label(item, name), arn))
+                    if group_versions:
+                        for target_label, items in sorted(targets_by_name.items()):
+                            unique_items = sorted(set(items), key=lambda x: x[0])
+                            did_work = True
+                            if len(unique_items) == 1:
+                                version, arn = unique_items[0]
+                                item_label = (
+                                    f"{target_label} ({version})"
+                                    if version
+                                    else target_label
+                                )
+                                _confirm_and_run(
+                                    item_label,
+                                    lambda a=arn: _ignore_missing(
+                                        getattr(client, delete_op),
+                                        **{arn_arg: a},
+                                        ignore_dependency=ignore_dependency,
+                                    ),
+                                )
+                                continue
+
+                            def _delete_versions(arns=[arn for _, arn in unique_items]):
+                                for a in arns:
+                                    _ignore_missing(
+                                        getattr(client, delete_op),
+                                        **{arn_arg: a},
+                                        ignore_dependency=ignore_dependency,
+                                    )
+
+                            _confirm_batch_and_run(
+                                target_label,
+                                [version or arn for version, arn in unique_items],
+                                _delete_versions,
+                                prompt_label=f"versions of {target_label}",
+                            )
+                        return
+
+                    for target_label, arn in sorted(set(targets), key=lambda x: x[0]):
+                        did_work = True
+                        _confirm_and_run(
+                            target_label,
+                            lambda a=arn: _ignore_missing(
+                                getattr(client, delete_op),
+                                **{arn_arg: a},
+                                ignore_dependency=ignore_dependency,
+                            ),
+                        )
+
+                def _delete_imagebuilder_component_builds():
+                    nonlocal did_work
+
+                    targets_by_name: Dict[str, List[tuple]] = {}
+                    for page in _iter_pages(client, "list_components", owner="Self"):
+                        for component in page.get("componentVersionList", []) or []:
+                            name = component.get("name", "")
+                            component_version_arn = component.get("arn", "")
+                            if not _is_prefix_name(name) or not component_version_arn:
+                                continue
+                            for build_page in _iter_pages(
+                                client,
+                                "list_component_build_versions",
+                                componentVersionArn=component_version_arn,
+                            ):
+                                for build in (
+                                    build_page.get("componentSummaryList", []) or []
+                                ):
+                                    build_arn = build.get("arn", "")
+                                    if not build_arn:
+                                        continue
+                                    version = (
+                                        build.get("version")
+                                        or component.get("version")
+                                        or build_arn.rstrip("/").rsplit("/", 2)[-2]
+                                    )
+                                    build_number = build_arn.rstrip("/").rsplit("/", 1)[
+                                        -1
+                                    ]
+                                    targets_by_name.setdefault(
+                                        f"ImageBuilderComponent {name}", []
+                                    ).append(
+                                        (f"{version}/{build_number}", build_arn)
+                                    )
+
+                    for target_label, items in sorted(targets_by_name.items()):
+                        unique_items = sorted(set(items), key=lambda x: x[0])
+                        did_work = True
+                        if len(unique_items) == 1:
+                            version, arn = unique_items[0]
+                            _confirm_and_run(
+                                f"{target_label} ({version})",
+                                lambda a=arn: _ignore_missing(
+                                    client.delete_component,
+                                    componentBuildVersionArn=a,
+                                    ignore_dependency=True,
+                                ),
+                            )
+                            continue
+
+                        def _delete_builds(arns=[arn for _, arn in unique_items]):
+                            for a in arns:
+                                _ignore_missing(
+                                    client.delete_component,
+                                    componentBuildVersionArn=a,
+                                    ignore_dependency=True,
+                                )
+
+                        _confirm_batch_and_run(
+                            target_label,
+                            [version for version, _ in unique_items],
+                            _delete_builds,
+                            prompt_label=f"versions of {target_label}",
+                        )
+
+                _delete_imagebuilder_resources(
+                    "list_image_pipelines",
+                    "imagePipelineList",
+                    "imagePipelineArn",
+                    "delete_image_pipeline",
+                    "ImageBuilderPipeline",
+                )
+                _delete_imagebuilder_resources(
+                    "list_image_recipes",
+                    "imageRecipeSummaryList",
+                    "imageRecipeArn",
+                    "delete_image_recipe",
+                    "ImageBuilderRecipe",
+                    ignore_dependency=True,
+                    group_versions=True,
+                )
+                _delete_imagebuilder_resources(
+                    "list_distribution_configurations",
+                    "distributionConfigurationSummaryList",
+                    "distributionConfigurationArn",
+                    "delete_distribution_configuration",
+                    "ImageBuilderDistribution",
+                )
+                _delete_imagebuilder_resources(
+                    "list_infrastructure_configurations",
+                    "infrastructureConfigurationSummaryList",
+                    "infrastructureConfigurationArn",
+                    "delete_infrastructure_configuration",
+                    "ImageBuilderInfrastructure",
+                )
+                _delete_imagebuilder_component_builds()
+
+            if ami_wanted:
+                _delete_project_amis()
+
+            if _wants(
+                "IAMInstanceProfile",
+                "IAMInstanceProfiles",
+                "InstanceProfile",
+                "InstanceProfiles",
+            ):
+                client = aws_client("iam", region, f"{prefix}-profile-destroy")
+                profiles = []
+                for page in _iter_pages(client, "list_instance_profiles"):
+                    for item in page.get("InstanceProfiles", []) or []:
+                        name = item.get("InstanceProfileName", "")
+                        if _is_prefix_name(name):
+                            profiles.append((name, item.get("Roles", []) or []))
+                profile_targets = {
+                    (n, tuple(r.get("RoleName", "") for r in rs))
+                    for n, rs in profiles
+                }
+                for name, roles in sorted(profile_targets):
+                    if name in protected_role_names:
+                        print(f"Keeping protected IAM instance profile: {name}")
+                        continue
+                    did_work = True
+
+                    def _delete_profile(profile_name=name, role_names=roles):
+                        for role_name in role_names:
+                            if role_name:
+                                _ignore_missing(
+                                    client.remove_role_from_instance_profile,
+                                    InstanceProfileName=profile_name,
+                                    RoleName=role_name,
+                                )
+                        _ignore_missing(
+                            client.delete_instance_profile,
+                            InstanceProfileName=profile_name,
+                        )
+
+                    _confirm_and_run(f"IAMInstanceProfile {name}", _delete_profile)
 
             if _wants("RuntimeIAMRole", "RuntimeIAMRoles", "IAMRole", "IAMRoles"):
-                for c in runtime_lambda_roles:
-                    c.region = self._settings.AWS_REGION
-                    _confirm_and_run(f"IAMRole {c.name}", c.delete)
+                client = aws_client("iam", region, f"{prefix}-role-destroy")
+                role_names = []
+                for page in _iter_pages(client, "list_roles"):
+                    for item in page.get("Roles", []) or []:
+                        name = item.get("RoleName", "")
+                        if _is_prefix_name(name):
+                            role_names.append(name)
+                for name in sorted(set(role_names)):
+                    if name in protected_role_names:
+                        print(f"Keeping protected IAM role: {name}")
+                        continue
+                    did_work = True
+
+                    def _delete_role(role_name=name):
+                        for page in _iter_pages(
+                            client,
+                            "list_attached_role_policies",
+                            RoleName=role_name,
+                        ):
+                            for policy in page.get("AttachedPolicies", []) or []:
+                                policy_arn = policy.get("PolicyArn", "")
+                                if policy_arn:
+                                    _ignore_missing(
+                                        client.detach_role_policy,
+                                        RoleName=role_name,
+                                        PolicyArn=policy_arn,
+                                    )
+                        for page in _iter_pages(
+                            client,
+                            "list_role_policies",
+                            RoleName=role_name,
+                        ):
+                            for policy_name in page.get("PolicyNames", []) or []:
+                                _ignore_missing(
+                                    client.delete_role_policy,
+                                    RoleName=role_name,
+                                    PolicyName=policy_name,
+                                )
+                        _ignore_missing(client.delete_role, RoleName=role_name)
+
+                    _confirm_and_run(f"IAMRole {name}", _delete_role)
+
+            if include_all and _wants(
+                "SSMParameter",
+                "SSMParameters",
+                "SecretParameter",
+                "SecretParameters",
+                "Parameter",
+                "Parameters",
+            ):
+                client = aws_client("ssm", region, f"{prefix}-ssm-destroy")
+                names = []
+                for startswith in (prefix_dash, f"/{prefix_dash}"):
+                    for page in _iter_pages(
+                        client,
+                        "describe_parameters",
+                        ParameterFilters=[
+                            {
+                                "Key": "Name",
+                                "Option": "BeginsWith",
+                                "Values": [startswith],
+                            }
+                        ],
+                    ):
+                        for item in page.get("Parameters", []) or []:
+                            name = item.get("Name", "")
+                            if name.startswith(startswith):
+                                names.append(name)
+                for name in sorted(set(names)):
+                    did_work = True
+                    _confirm_and_run(
+                        f"SSMParameter {name}",
+                        lambda n=name: _ignore_missing(client.delete_parameter, Name=n),
+                    )
+
+            if include_all and _wants("S3", "Storage", "Storages", "Bucket", "Buckets"):
+                client = aws_client("s3", region, f"{prefix}-s3-destroy")
+                response = client.list_buckets()
+                bucket_names = [
+                    b.get("Name", "")
+                    for b in response.get("Buckets", []) or []
+                    if _is_prefix_name(b.get("Name", ""))
+                ]
+                for name in sorted(set(bucket_names)):
+                    did_work = True
+
+                    def _delete_bucket(bucket_name=name):
+                        for page in _iter_pages(
+                            client,
+                            "list_objects_v2",
+                            Bucket=bucket_name,
+                        ):
+                            objects = [
+                                {"Key": obj["Key"]}
+                                for obj in page.get("Contents", []) or []
+                                if obj.get("Key")
+                            ]
+                            if objects:
+                                _ignore_missing(
+                                    client.delete_objects,
+                                    Bucket=bucket_name,
+                                    Delete={"Objects": objects},
+                                )
+                        _ignore_missing(client.delete_bucket, Bucket=bucket_name)
+
+                    _confirm_and_run(f"S3Bucket {name}", _delete_bucket)
+
+            if include_all and _wants(
+                "DedicatedHost",
+                "DedicatedHosts",
+                "Host",
+                "Hosts",
+            ):
+                client = aws_client("ec2", region, f"{prefix}-host-destroy")
+                host_ids = []
+                for page in _iter_pages(client, "describe_hosts"):
+                    for host in page.get("Hosts", []) or []:
+                        tags = host.get("Tags", []) or []
+                        rn = _tag_value(tags, "praktika_rn")
+                        name = _tag_value(tags, "Name")
+                        if _is_prefix_name(rn) or _is_prefix_name(name):
+                            host_id = host.get("HostId", "")
+                            if host_id:
+                                host_ids.append(host_id)
+                for host_id in sorted(set(host_ids)):
+                    did_work = True
+                    _confirm_and_run(
+                        f"DedicatedHost {host_id}",
+                        lambda hid=host_id: _ignore_missing(
+                            client.release_hosts,
+                            HostIds=[hid],
+                            ignore_dependency=True,
+                        ),
+                    )
+
+            if _wants("VPC", "VPCs"):
+                from .vpc import VPC
+
+                client = aws_client("ec2", region, f"{prefix}-vpc-discovery")
+                names = []
+                response = client.describe_vpcs()
+                for vpc in response.get("Vpcs", []) or []:
+                    name = _resource_name_from_tags(vpc.get("Tags", []) or [])
+                    if _is_prefix_name(name):
+                        names.append(name)
+                for name in sorted(set(names)):
+                    did_work = True
+                    cfg = VPC.Config(name=name, region=region)
+                    _confirm_and_run(
+                        f"VPC {name}",
+                        lambda c=cfg: _ignore_missing(
+                            c.delete,
+                            ignore_dependency=True,
+                        ),
+                    )
 
             print("\n" + "=" * 60)
-            print("Runtime destroy completed!")
+            if did_work:
+                print(
+                    "Destroy completed!"
+                    if include_all
+                    else "Runtime destroy completed!"
+                )
+            else:
+                print(
+                    "No project-prefixed resources found to destroy"
+                    if include_all
+                    else "No project-prefixed runtime resources found to destroy"
+                )
             print("=" * 60)
 
         def restart_instances(self):

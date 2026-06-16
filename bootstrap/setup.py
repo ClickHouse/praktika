@@ -2,10 +2,16 @@ from setuptools import find_packages, setup
 
 
 setup(
-    name="praktika-bootstrap",
-    version="0.1.0",
-    description="Thin bootstrap launcher for versioned Praktika workloads",
-    packages=find_packages(where="src", include=["praktika_bootstrap*"]),
+    name="praktika-controller",
+    version="0.1.1",
+    description="Thin controller launcher for versioned Praktika workloads",
+    url="https://github.com/ClickHouse/praktika",
+    project_urls={
+        "Homepage": "https://github.com/ClickHouse/praktika",
+        "Repository": "https://github.com/ClickHouse/praktika",
+        "Issues": "https://github.com/ClickHouse/praktika/issues",
+    },
+    packages=find_packages(where="src", include=["praktika_controller*"]),
     package_dir={"": "src"},
     install_requires=[
         "boto3>=1.18.0",
@@ -15,7 +21,7 @@ setup(
     ],
     entry_points={
         "console_scripts": [
-            "praktika_bootstrap=praktika_bootstrap.main:main",
+            "praktika-controller=praktika_controller.main:main",
         ],
     },
 )

@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "praktika-bootstrap"
-version = "0.1.0"
-description = "Thin bootstrap agents for launching versioned Praktika workloads"
+name = "praktika-controller"
+version = "0.1.1"
+description = "Thin controller for launching versioned Praktika workloads"
 requires-python = ">=3.10"
 dependencies = [
     "boto3>=1.18.0",
@@ -14,9 +14,14 @@ dependencies = [
     "requests>=2.25.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/ClickHouse/praktika"
+Repository = "https://github.com/ClickHouse/praktika"
+Issues = "https://github.com/ClickHouse/praktika/issues"
+
 [project.scripts]
-praktika_bootstrap = "praktika_bootstrap.main:main"
+praktika-controller = "praktika_controller.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["praktika_bootstrap*"]
+include = ["praktika_controller*"]

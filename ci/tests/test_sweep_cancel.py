@@ -3,10 +3,10 @@ cancel-signal detector (phase 2b).
 
 Two channels, both written by the lambda:
   - ``runs/<run_id>/cancel-request`` — manual UI Cancel button.
-  - ``pr/<pr>/cancel-before`` carrying ``{ts}`` — fan-out cancel on a
-    new push. Older runs (``event_ts < cancel-before-ts``) self-cancel;
-    the freshly enqueued run (``event_ts == cancel-before-ts``) stays
-    alive (strict less-than).
+  - ``pr/<pr>/cancel-before-<scope>`` carrying ``{ts}`` — fan-out cancel on
+    a new push. Older runs in the same orchestrator scope
+    (``event_ts < cancel-before-ts``) self-cancel; the freshly enqueued run
+    (``event_ts == cancel-before-ts``) stays alive (strict less-than).
 """
 import io
 import json
@@ -41,7 +41,13 @@ class _FakeS3:
 
 
 def _make_state(
-    fake_s3, *, run_id="run42", pr_number=1, event_ts=1000.0, has_running=True
+    fake_s3,
+    *,
+    run_id="run42",
+    pr_number=1,
+    event_ts=1000.0,
+    has_running=True,
+    cancel_scope="default",
 ):
     state = WorkflowState.__new__(WorkflowState)
     state.jobs = {}
@@ -52,7 +58,7 @@ def _make_state(
     state._runs_s3_prefix = f"runs/{run_id}"
     state._cancel_request_s3_key = f"runs/{run_id}/cancel-request"
     state._pr_cancel_before_s3_key = (
-        f"pr/{pr_number}/cancel-before" if pr_number else None
+        f"pr/{pr_number}/cancel-before-{cancel_scope}" if pr_number else None
     )
     state._event_ts = event_ts
     state._pr_number = pr_number
@@ -99,7 +105,11 @@ def test_cancel_request_marks_cancelled():
 def test_cancel_before_newer_than_event_ts_marks_cancelled():
     """Older run (event_ts=1000) sees cancel-before=2000 → cancel."""
     s3 = _FakeS3()
-    s3.put("test-bucket", "pr/1/cancel-before", json.dumps({"ts": 2000.0}).encode())
+    s3.put(
+        "test-bucket",
+        "pr/1/cancel-before-default",
+        json.dumps({"ts": 2000.0}).encode(),
+    )
     state = _make_state(s3, event_ts=1000.0)
     state.sweep_cancel()
     assert state.cancelled is True
@@ -113,7 +123,11 @@ def test_cancel_before_equal_to_event_ts_does_not_cancel():
     self-cancelling.
     """
     s3 = _FakeS3()
-    s3.put("test-bucket", "pr/1/cancel-before", json.dumps({"ts": 2000.0}).encode())
+    s3.put(
+        "test-bucket",
+        "pr/1/cancel-before-default",
+        json.dumps({"ts": 2000.0}).encode(),
+    )
     state = _make_state(s3, event_ts=2000.0)
     state.sweep_cancel()
     assert state.cancelled is False
@@ -122,7 +136,11 @@ def test_cancel_before_equal_to_event_ts_does_not_cancel():
 def test_cancel_before_older_than_event_ts_does_not_cancel():
     """Newer run sees a stale cancel-before (from before this run) — no-op."""
     s3 = _FakeS3()
-    s3.put("test-bucket", "pr/1/cancel-before", json.dumps({"ts": 500.0}).encode())
+    s3.put(
+        "test-bucket",
+        "pr/1/cancel-before-default",
+        json.dumps({"ts": 500.0}).encode(),
+    )
     state = _make_state(s3, event_ts=1000.0)
     state.sweep_cancel()
     assert state.cancelled is False
@@ -135,8 +153,24 @@ def test_zero_event_ts_skips_cancel_before():
     unset event_ts as "infinitely old".
     """
     s3 = _FakeS3()
-    s3.put("test-bucket", "pr/1/cancel-before", json.dumps({"ts": 2000.0}).encode())
+    s3.put(
+        "test-bucket",
+        "pr/1/cancel-before-default",
+        json.dumps({"ts": 2000.0}).encode(),
+    )
     state = _make_state(s3, event_ts=0.0)
+    state.sweep_cancel()
+    assert state.cancelled is False
+
+
+def test_cancel_before_other_scope_does_not_cancel():
+    s3 = _FakeS3()
+    s3.put(
+        "test-bucket",
+        "pr/1/cancel-before-base",
+        json.dumps({"ts": 2000.0}).encode(),
+    )
+    state = _make_state(s3, event_ts=1000.0, cancel_scope="default")
     state.sweep_cancel()
     assert state.cancelled is False
 

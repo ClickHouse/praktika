@@ -111,7 +111,6 @@ class Result(MetaClasses.Serializable):
     duration: Optional[float] = None
     results: List["Result"] = dataclasses.field(default_factory=list)
     files: List[Union[str, Path]] = dataclasses.field(default_factory=list)
-    assets: List[Union[str, Path]] = dataclasses.field(default_factory=list)
     links: List[str] = dataclasses.field(default_factory=list)
     info: str = ""
     ext: Dict[str, Any] = dataclasses.field(default_factory=dict)
@@ -194,10 +193,11 @@ class Result(MetaClasses.Serializable):
             duration=duration,
             info="\n".join(infos) if infos else "",
             results=results or [],
-            assets=assets or [],
             files=files or [],
             links=links or [],
         )
+        if assets:
+            result.ext["assets"] = list(assets)
         if isinstance(labels, str):
             labels = [labels]
         for label in labels or []:
@@ -397,7 +397,7 @@ class Result(MetaClasses.Serializable):
     def file_name_static(cls, name):
         return f"{Settings.TEMP_DIR}/result_{Utils.normalize_string(name)}.json"
 
-    def to_markdown(self, max_rows: int = 50) -> str:
+    def to_markdown(self, max_rows: int = 50, report_url: str = "") -> str:
         """Render this Result as a Markdown document suitable for posting
         as a GitHub check run's ``output.text``.
 
@@ -417,7 +417,9 @@ class Result(MetaClasses.Serializable):
 
         def _info_cell(s):
             s = _escape(s or "")
-            return s if len(s) <= 120 else s[:117] + "..."
+            if len(s) <= 120:
+                return s
+            return f"[see report]({report_url})" if report_url else "see report"
 
         lines = []
         # GitHub already renders status + duration as the check summary
@@ -623,14 +625,22 @@ class Result(MetaClasses.Serializable):
         """
         sw = Utils.Stopwatch()
         files = []
-        if pytest_report_file:
-            files.append(pytest_report_file)
-        else:
+        if not pytest_report_file:
             pytest_report_file = ResultTranslator.PYTEST_RESULT_FILE
 
         with ContextManager.cd(cwd):
-            # Construct the full pytest command with jsonl report
-            full_command = f"pytest {command} --report-log={pytest_report_file}"
+            supports_report_log = "--report-log" in Shell.get_output(
+                "pytest --help", verbose=False
+            )
+
+            # Construct the full pytest command with jsonl report when the
+            # plugin is installed; otherwise fall back to plain pytest so local
+            # `praktika run <job>` still works in dev envs that only have the
+            # base `pytest` package.
+            full_command = f"pytest {command}"
+            if supports_report_log:
+                full_command += f" --report-log={pytest_report_file}"
+                files.append(pytest_report_file)
             if pytest_logfile:
                 full_command += f" --log-file={pytest_logfile}"
                 files.append(pytest_logfile)
@@ -646,10 +656,37 @@ class Result(MetaClasses.Serializable):
                 name = f"pytest_{command}"
 
             # Run pytest
-            Shell.run(full_command, log_file=logfile, timeout=timeout)
-            test_result = ResultTranslator.from_pytest_jsonl(
-                pytest_report_file=pytest_report_file
-            )
+            exit_code = Shell.run(full_command, log_file=logfile, timeout=timeout)
+            if supports_report_log:
+                test_result = ResultTranslator.from_pytest_jsonl(
+                    pytest_report_file=pytest_report_file
+                )
+            else:
+                print(
+                    "WARNING: pytest-reportlog is unavailable, falling back to plain pytest results"
+                )
+                info = ""
+                if exit_code != 0:
+                    if logfile and os.path.isfile(logfile):
+                        with open(logfile, "r", encoding="utf-8", errors="ignore") as f:
+                            info = "".join(f.readlines()[-300:]).strip()
+                    if not info:
+                        info = f"pytest exited with code [{exit_code}]"
+                    info = (
+                        "pytest-reportlog plugin is not installed; using plain pytest fallback.\n\n"
+                        + info
+                    )
+                test_result = Result.create_from(
+                    name="pytest",
+                    status=(
+                        Result.Status.OK
+                        if exit_code == 0
+                        else Result.Status.FAIL
+                        if exit_code == 1
+                        else Result.Status.ERROR
+                    ),
+                    info=info,
+                )
 
         return Result.create_from(
             name=name,
@@ -1423,9 +1460,10 @@ class _ResultS3:
         result.files = []
 
         # Upload assets in parallel (preserving relative paths for HTML interlinking)
-        if result.assets:
+        assets = result.ext.get("assets") or []
+        if assets:
             asset_paths = [
-                Path(a).resolve() for a in result.assets if Path(a).is_file()
+                Path(a).resolve() for a in assets if Path(a).is_file()
             ]
             if asset_paths:
                 common_root = os.path.commonpath([p.parent for p in asset_paths])
@@ -1451,7 +1489,7 @@ class _ResultS3:
                         future.result()
                     except Exception as e:
                         print(f"ERROR: Failed to upload asset [{asset}]: {e}")
-        result.assets = []
+        result.ext.pop("assets", None)
 
         if result.results:
             for result_ in result.results:

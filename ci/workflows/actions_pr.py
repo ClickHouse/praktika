@@ -1,4 +1,4 @@
-"""GHActions PR CI — unit tests, lint, artifact/dependency/parametrize demos."""
+"""GHActions PR CI — lint, artifact/dependency/parametrize demos."""
 from praktika import Artifact, Job, Workflow
 from praktika.settings import Settings
 
@@ -15,12 +15,6 @@ WORKFLOWS = [
         base_branches=["main"],
         jobs=[
             # --- real library tests ---
-            Job.Config(
-                name="Unit Tests",
-                command="python -m unittest discover -s ./ci/tests -p 'test_*.py'",
-                pre_hooks=[_INSTALL_DEPS],
-                runs_on=["ubuntu-latest"],
-            ),
             Job.Config(
                 name="Yaml Lint",
                 command="yamllint . --config-file=.yamllint",

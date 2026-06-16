@@ -20,9 +20,11 @@ import pytest
 from praktika.orchestrator.state import (
     JobState,
     JobStatus,
+    RUNNER_PICKUP_TIMEOUT_S,
     WorkflowState,
     _normalize_job_name_for_s3,
 )
+from praktika.orchestrator import state as state_mod
 
 
 class _FakeS3:
@@ -38,7 +40,17 @@ class _FakeS3:
         return {"Body": io.BytesIO(self._store[(Bucket, Key)])}
 
 
-def _make_state(job_names, fake_s3, run_id="run42", status=JobStatus.RUNNING):
+class _FakeCheck:
+    def __init__(self):
+        self.completed = []
+
+    def complete(self, conclusion, output=None, details_url=None):
+        self.completed.append(
+            {"conclusion": conclusion, "output": output, "details_url": details_url}
+        )
+
+
+def _make_state(job_names, fake_s3, run_id="run42", status=JobStatus.QUEUED):
     state = WorkflowState.__new__(WorkflowState)
     state.jobs = {}
     state._deps = {}
@@ -77,15 +89,31 @@ def _make_state(job_names, fake_s3, run_id="run42", status=JobStatus.RUNNING):
     return state
 
 
-def _put_final(fake_s3, run_id, job_name, *, rc, environment=None):
+def _put_final(
+    fake_s3,
+    run_id,
+    job_name,
+    *,
+    rc,
+    environment=None,
+    check_output=None,
+    details_url=None,
+    instance_id=None,
+):
     key = f"runs/{run_id}/{_normalize_job_name_for_s3(job_name)}/final.json"
     payload = {"type": "job_completion", "job_name": job_name, "rc": rc, "ts": time.time()}
     if environment is not None:
         payload["environment"] = environment
+    if check_output is not None:
+        payload["check_output"] = check_output
+    if details_url is not None:
+        payload["details_url"] = details_url
+    if instance_id is not None:
+        payload["instance_id"] = instance_id
     fake_s3.put("test-bucket", key, json.dumps(payload).encode())
 
 
-def test_final_state_advances_running_to_success():
+def test_final_state_advances_queued_to_success():
     s3 = _FakeS3()
     state = _make_state(["A"], s3)
     _put_final(s3, "run42", "A", rc=0)
@@ -94,7 +122,41 @@ def test_final_state_advances_running_to_success():
     assert state.jobs["A"].rc == 0
 
 
-def test_final_state_advances_running_to_failure():
+def test_final_state_completes_check_from_payload():
+    s3 = _FakeS3()
+    state = _make_state(["A"], s3)
+    check = _FakeCheck()
+    state.jobs["A"].check = check
+    output = {"title": "A", "summary": "ok", "text": "details"}
+    details_url = "https://example.com/report"
+    _put_final(
+        s3,
+        "run42",
+        "A",
+        rc=0,
+        check_output=output,
+        details_url=details_url,
+        instance_id="i-runner",
+    )
+
+    state.sweep_completions()
+
+    assert state.jobs["A"].runner_instance_id == "i-runner"
+    assert check.completed == [
+        {"conclusion": "success", "output": output, "details_url": details_url}
+    ]
+
+
+def test_final_state_advances_running_to_success():
+    s3 = _FakeS3()
+    state = _make_state(["A"], s3, status=JobStatus.RUNNING)
+    _put_final(s3, "run42", "A", rc=0)
+    state.sweep_completions()
+    assert state.jobs["A"].status == JobStatus.SUCCESS
+    assert state.jobs["A"].rc == 0
+
+
+def test_final_state_advances_queued_to_failure():
     s3 = _FakeS3()
     state = _make_state(["A"], s3)
     _put_final(s3, "run42", "A", rc=1)
@@ -103,11 +165,11 @@ def test_final_state_advances_running_to_failure():
     assert state.jobs["A"].rc == 1
 
 
-def test_missing_final_state_keeps_job_running():
+def test_missing_final_state_keeps_job_queued():
     s3 = _FakeS3()
     state = _make_state(["A"], s3)
     state.sweep_completions()
-    assert state.jobs["A"].status == JobStatus.RUNNING
+    assert state.jobs["A"].status == JobStatus.QUEUED
 
 
 def test_environment_snapshot_propagates_to_state():
@@ -129,7 +191,7 @@ def test_idempotent_for_already_finished_job():
     state = _make_state(["A"], s3, status=JobStatus.FAILURE)
     _put_final(s3, "run42", "A", rc=0)
     state.sweep_completions()
-    # finish() is gated on RUNNING — FAILURE stays FAILURE.
+    # finish() is gated on in-flight states — FAILURE stays FAILURE.
     assert state.jobs["A"].status == JobStatus.FAILURE
 
 
@@ -139,7 +201,7 @@ def test_sweep_is_noop_in_local_mode():
     state._s3 = None
     _put_final(s3, "run42", "A", rc=0)
     state.sweep_completions()
-    assert state.jobs["A"].status == JobStatus.RUNNING
+    assert state.jobs["A"].status == JobStatus.QUEUED
 
 
 def test_normalized_job_name_in_final_key():
@@ -148,6 +210,22 @@ def test_normalized_job_name_in_final_key():
     _put_final(s3, "run42", "Build And Test", rc=0)
     state.sweep_completions()
     assert state.jobs["Build And Test"].status == JobStatus.SUCCESS
+
+
+def test_wait_processes_final_before_liveness(monkeypatch):
+    """A landed final.json should win over a missing heartbeat in the same poll."""
+    s3 = _FakeS3()
+    state = _make_state(["A"], s3)
+    state.jobs["A"].started_at = time.time() - (RUNNER_PICKUP_TIMEOUT_S + 30)
+    state.sweep_cancel = lambda: None
+    _put_final(s3, "run42", "A", rc=0)
+
+    monkeypatch.setattr(state_mod.time, "sleep", lambda _: None)
+
+    state.wait()
+
+    assert state.jobs["A"].status == JobStatus.SUCCESS
+    assert state.jobs["A"].rc == 0
 
 
 if __name__ == "__main__":

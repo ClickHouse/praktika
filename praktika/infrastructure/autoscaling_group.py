@@ -245,6 +245,9 @@ class AutoScalingGroup:
             import boto3
             from botocore.config import Config
 
+            self.ext.pop("deferred_missing_launch_template", None)
+            self.ext.pop("deployment_warning", None)
+
             subnet_ids = self._resolve_subnet_ids()
 
             # Reduce AWS API retries to avoid long "hangs" on transient/opaque InternalFailure.
@@ -263,6 +266,23 @@ class AutoScalingGroup:
                 else self.min_size
             )
             desired_tags = self._desired_tags()
+
+            def _is_missing_launch_template_error(exc: Exception) -> bool:
+                message = str(exc).lower()
+                return (
+                    "launch template" in message
+                    and "does not exist" in message
+                )
+
+            def _defer_missing_launch_template():
+                warning = (
+                    f"Launch Template is not available yet for ASG '{self.name}'; "
+                    "skipping until the launch template exists"
+                )
+                self.ext["deferred_missing_launch_template"] = True
+                self.ext["deployment_warning"] = warning
+                print(f"WARNING: {warning}")
+                return self
 
             # Try to fetch existing ASG first
             exists = False
@@ -297,7 +317,12 @@ class AutoScalingGroup:
                     f"ASG '{self.name}': UpdateAutoScalingGroup request: {req}",
                     flush=True,
                 )
-                asg_client.update_auto_scaling_group(**req)
+                try:
+                    asg_client.update_auto_scaling_group(**req)
+                except Exception as e:
+                    if _is_missing_launch_template_error(e):
+                        return _defer_missing_launch_template()
+                    raise
                 print(f"Successfully updated ASG: {self.name}")
             else:
                 print(f"Creating new ASG: {self.name}")
@@ -318,7 +343,12 @@ class AutoScalingGroup:
                     f"ASG '{self.name}': CreateAutoScalingGroup request: {req}",
                     flush=True,
                 )
-                asg_client.create_auto_scaling_group(**req)
+                try:
+                    asg_client.create_auto_scaling_group(**req)
+                except Exception as e:
+                    if _is_missing_launch_template_error(e):
+                        return _defer_missing_launch_template()
+                    raise
                 print(f"Successfully created ASG: {self.name}")
 
             if desired_tags:

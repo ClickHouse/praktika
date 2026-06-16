@@ -6,7 +6,7 @@ from .iam_role import IAMRole
 from .image_builder import ImageBuilder
 from .lambda_function import Lambda
 from .launch_template import LaunchTemplate
-from .native import NativeComponents
+from .native import Components
 from .report_page import ReportPage
 from .secret_parameter import SecretParameter
 from .sqs_queue import SQSQueue
@@ -21,6 +21,6 @@ __all__ = [
     "ImageBuilder",
     "Lambda",
     "LaunchTemplate",
-    "NativeComponents",
+    "Components",
     "SQSQueue",
 ]

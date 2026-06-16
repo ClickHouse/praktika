@@ -6,6 +6,8 @@ from typing import Dict, Iterable, List, Optional
 
 @dataclasses.dataclass
 class _Settings:
+    PROJECT_SLUG: str = ""
+
     ######################################
     #    Pipeline generation settings    #
     ######################################
@@ -39,11 +41,21 @@ class _Settings:
     ######################################
     MAX_RETRIES_S3 = 3
     MAX_RETRIES_GH = 3
+    # Runner controller heartbeat write interval, in seconds. Each runner
+    # writes heartbeat.json for its current job at this cadence.
+    HEARTBEAT_INTERVAL_S = 30
+    # Maximum time, in seconds, a dispatched job may stay QUEUED without any
+    # runner heartbeat. This covers SQS wait time, ASG scale-out, EC2 boot,
+    # controller startup, and the runner's first task pickup.
+    RUNNER_PICKUP_TIMEOUT_S = 3600
+    # Maximum time, in seconds, a RUNNING job may go without a fresh heartbeat
+    # after the first heartbeat has been observed.
+    HEARTBEAT_TIMEOUT_S = 300
 
     ######################################
     #   S3 (artifact storage) settings   #
     ######################################
-    S3_ARTIFACT_PATH: str = ""
+    S3_ARTIFACT_BUCKET: str = ""
 
     ######################################
     #        CI workspace settings       #
@@ -58,7 +70,7 @@ class _Settings:
     RUN_LOG: str = f"{TEMP_DIR}/job.log"
 
     USE_CUSTOM_GH_AUTH: bool = False
-    SECRET_GH_APP: str = "praktika-gh-app"
+    SECRET_GH_APP: str = "gh-app"
     GH_AUTH_LAMBDA_NAME: str = ""
     GH_AUTH_LAMBDA_REGION: str = ""
 
@@ -99,7 +111,7 @@ class _Settings:
     ######################################
     # SSM/secret name holding a JSON connection blob:
     #   {"url": "http://host:8123", "user": null, "password": null}
-    # Auto-published by NativeComponents.CIDBCluster.deploy() for CIDB
+    # Auto-published by Components.CIDBCluster.deploy() for CIDB
     # instances praktika manages. Null/empty user+password means "send no
     # auth header" — runners rely on the server-side <no_password/> ACL
     # gated by VPC CIDR.
@@ -123,39 +135,20 @@ class _Settings:
     ######################################
     #        Infrastructure Settings     #
     ######################################
-    CLOUD_INFRASTRUCTURE_CONFIG_PATH: str = ""
+    CLOUD_INFRASTRUCTURE_CONFIG_PATH: str = "./ci/infrastructure/projects.py"
     AWS_REGION: str = ""
     AWS_ACCOUNT_ID: str = ""
     AWS_PROFILE: str = ""
     # S3 path for Slack feed events storage (format: bucket/prefix)
     # Used by EventFeed and FeedSubscription for PR notification subscriptions
     EVENT_FEED_S3_PATH: str = ""
-    # Where the workflow/job agents should install praktika from on every
-    # dispatch. Three forms:
-    #   ""             — no source override; if a side-specific base venv
-    #                    is set, run whatever praktika is already installed
-    #                    there. If all base/source settings are empty, the
-    #                    bootstrapper falls back to its default praktika
-    #                    wheel URL.
-    #   "https://..."  — pip install <url>; pulls a wheel from that URL.
-    #   "<rel/path>"   — pip install <clone_dir>/<rel/path>; resolves
-    #                    relative to the cloned PR tree, so a PR's praktika
-    #                    changes take effect on the very dispatch that
-    #                    picked the PR up. If PRAKTIKA_BASE_VENV is also
-    #                    set, the bootstrapper creates/reuses a derived env
-    #                    from that prebaked base and installs praktika on top.
-    PRAKTIKA_INSTALL_SOURCE: str = ""
-    # Optional fallback base venv name used by both workflow and job sides
-    # unless a side-specific value below is set.
+    # Optional prebaked base venv name shared by both workflow and job sides.
+    # The selected env is expected to already contain praktika.
     PRAKTIKA_BASE_VENV: str = ""
-    # Optional prebaked base venv name for the workflow/orchestrator side.
-    PRAKTIKA_WORKFLOW_BASE_VENV: str = ""
-    # Optional prebaked base venv name for the job/runner side.
-    PRAKTIKA_JOB_BASE_VENV: str = ""
 
 
 _USER_DEFINED_SETTINGS = [
-    "S3_ARTIFACT_PATH",
+    "S3_ARTIFACT_BUCKET",
     "CACHE_S3_PATH",
     "S3_REPORT_BUCKET",
     "S3_UPSTREAM_REPORT_BUCKET",
@@ -179,6 +172,9 @@ _USER_DEFINED_SETTINGS = [
     "PYTHON_PACKET_MANAGER",
     "MAX_RETRIES_S3",
     "MAX_RETRIES_GH",
+    "HEARTBEAT_INTERVAL_S",
+    "RUNNER_PICKUP_TIMEOUT_S",
+    "HEARTBEAT_TIMEOUT_S",
     "VALIDATE_FILE_PATHS",
     "SECRET_DOCKER_REGISTRY",
     "READY_FOR_MERGE_CUSTOM_STATUS_NAME",
@@ -200,10 +196,7 @@ _USER_DEFINED_SETTINGS = [
     "CI_DB_READ_USER",
     "CI_DB_READ_URL",
     "TEST_FAILURE_PATTERNS",
-    "PRAKTIKA_INSTALL_SOURCE",
     "PRAKTIKA_BASE_VENV",
-    "PRAKTIKA_WORKFLOW_BASE_VENV",
-    "PRAKTIKA_JOB_BASE_VENV",
 ]
 
 

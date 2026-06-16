@@ -227,12 +227,12 @@ running `systemctl restart cidb-bootstrap` manually).
 #### Setup
 
 ```python
-from praktika.infrastructure import NativeComponents
+from praktika.infrastructure import Components
 from praktika.infrastructure.cloud import CloudInfrastructure
 
 CLOUD = CloudInfrastructure.Config(
     name="cloud_ci_infra",
-    cidb_cluster=NativeComponents.CIDBCluster(
+    cidb_cluster=Components.CIDBCluster(
         vpc_name="praktika-ci",
         instance_type="t4g.large",
         size=1,

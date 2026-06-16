@@ -1,6 +1,6 @@
 """Domain entry-point for running a single praktika job on a runner EC2.
 
-``praktika_bootstrap job_runner`` (installed on EC2 via user_data) handles the stable
+``praktika-controller`` handles the stable
 infrastructure — SQS poll, clone, GH App token, S3 logs — and then invokes
 ``praktika orchestrate job task.json --ci`` which lands here. Keeping this
 module in the orchestrator package means job-execution policy ships with
@@ -43,30 +43,11 @@ def _read_env_file():
         return None
 
 
-def _patch_check_run(token, repo, check_id, body):
-    """PATCH a GitHub check run. Returns True on success, False on failure
-    (never raises — a broken check update must not kill the job)."""
-    import requests
-
-    try:
-        resp = requests.patch(
-            f"https://api.github.com/repos/{repo}/check-runs/{check_id}",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
-            json=body,
-            timeout=15,
-        )
-        resp.raise_for_status()
-        return True
-    except Exception as e:
-        print(f"  [warn] check run {check_id} PATCH failed: {type(e).__name__}: {e}")
-        return False
+def _current_instance_id():
+    return (os.environ.get("INSTANCE_ID") or "").strip()
 
 
-def _build_check_output(job_name, rc):
+def _build_check_output(job_name, rc, instance_id="", report_url=""):
     """Load the job's dumped Result from TEMP_DIR and render it as the
     ``output`` dict for a completion PATCH. Returns None on any failure
     so the caller can fall back to a bodyless completion."""
@@ -74,14 +55,31 @@ def _build_check_output(job_name, rc):
         from ..result import Result
 
         result = Result.from_fs(job_name)
-        text = result.to_markdown()
+        text = result.to_markdown(report_url=report_url)
         # Check API caps output.text at ~64 KB.
         limit = 60_000
         if len(text) > limit:
             text = text[:limit] + "\n\n_… (truncated)_\n"
         dur = f" in {int(result.duration)}s" if result.duration else ""
-        summary = f"**{result.status}**{dur}"
-        return {"title": job_name, "summary": summary, "text": text}
+        if rc != 0 and result.is_ok():
+            # The runner process crashed after writing an OK result to disk —
+            # OOM, disk-full, SIGKILL, etc. Report ERROR so the summary matches
+            # the failure conclusion and the cause is clearly not the job logic.
+            displayed_status = "ERROR"
+            text = f"Runner process exited with rc={rc} after reporting OK — likely OOM or disk-full.\n\n{text}"
+        else:
+            displayed_status = result.status
+        if displayed_status == "FAIL":
+            displayed_status = "FAILED"
+        summary = f"**{displayed_status}**{dur}"
+        if report_url:
+            summary += f" — [CI Report]({report_url})"
+        if instance_id:
+            summary += f" — runner `{instance_id}`"
+            text = f"**Runner instance:** `{instance_id}`" + (
+                f"\n\n{text}" if text else ""
+            )
+        return {"title": displayed_status, "summary": summary, "text": text}
     except Exception as e:
         print(f"  [warn] could not render job Result as MD: {type(e).__name__}: {e}")
         return None
@@ -224,10 +222,9 @@ def run_job(task, gh_token=None, local=False):
     """Resolve the praktika Workflow + Job from ``task`` and invoke
     ``Runner.run``. Returns the job exit code (0 = success).
 
-    ``gh_token`` is used to drive the GitHub check run the orchestrator
-    queued for this job: the runner flips it to ``in_progress`` as soon as
-    it picks the task up, and PATCHes it to ``completed`` with the matching
-    conclusion once the job finishes.
+    ``gh_token`` is accepted for compatibility with the controller call site,
+    but the runner does not mutate GitHub checks directly. It publishes final
+    state to S3; the orchestrator owns check transitions.
 
     ``local=True`` runs the job in dev-sandbox mode (``local_run=True``,
     hooks off). In EC2 polling mode the runner calls with ``local=False``
@@ -240,13 +237,7 @@ def run_job(task, gh_token=None, local=False):
         print(f"Invalid task: missing workflow_name or job_name: {task}")
         return 1
 
-    # Mark the pending check as in_progress before any real work starts, so
-    # the PR UI reflects that a runner has picked the job up.
-    check_run_id = task.get("check_run_id")
-    repo = task.get("repo", "")
-    post_check_updates = bool(check_run_id and gh_token and repo and not local)
-    if post_check_updates:
-        _patch_check_run(gh_token, repo, check_run_id, {"status": "in_progress"})
+    instance_id = _current_instance_id()
 
     # Pre-populate ci/tmp/environment.json BEFORE calling _get_workflows(), because
     # _get_workflows() triggers Info() -> _Environment.get() and would fall back to
@@ -316,21 +307,14 @@ def run_job(task, gh_token=None, local=False):
         print(f"Runner.run raised: {type(e).__name__}: {e}")
         traceback.print_exc()
 
-    # Conclude the GitHub check before reporting back to the orchestrator so
-    # the PR UI lands on a final state without waiting for the next
-    # orchestrator poll. Render the job Result (dumped by runner.py during
-    # execution) as Markdown and attach it as output.text so the check
-    # displays the per-step/per-test breakdown; fall back silently if the
-    # result file isn't on disk (e.g. runner crashed before `result.dump`).
-    if post_check_updates:
-        body = {
-            "status": "completed",
-            "conclusion": "success" if rc == 0 else "failure",
-        }
-        output = _build_check_output(job_name, rc)
-        if output is not None:
-            body["output"] = output
-        _patch_check_run(gh_token, repo, check_run_id, body)
+    try:
+        from ..info import Info
+        report_url = Info().get_job_report_url()
+    except Exception:
+        report_url = ""
+    check_output = _build_check_output(
+        job_name, rc, instance_id=instance_id, report_url=report_url
+    )
 
     # Snapshot whatever the job wrote into environment.json and ship it back
     # to the orchestrator. Config Workflow drops a RunConfig in there as
@@ -364,6 +348,12 @@ def run_job(task, gh_token=None, local=False):
             }
             if env_snapshot is not None:
                 body["environment"] = env_snapshot
+            if instance_id:
+                body["instance_id"] = instance_id
+            if check_output is not None:
+                body["check_output"] = check_output
+            if report_url:
+                body["details_url"] = report_url
             s3.put_object(
                 Bucket=final_bucket,
                 Key=final_key,

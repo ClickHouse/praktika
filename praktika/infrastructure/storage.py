@@ -94,7 +94,7 @@ class Storage:
                 print(f"Bucket '{self.name}' configured for public read")
 
             # Lifecycle rule — expire all objects after retention_days
-            rule_id = "praktika-retention"
+            rule_id = "retention"
             try:
                 current = s3.get_bucket_lifecycle_configuration(Bucket=self.name)
                 existing = next(

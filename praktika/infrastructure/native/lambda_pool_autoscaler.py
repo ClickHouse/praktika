@@ -21,13 +21,21 @@ def _calculate_desired_capacity(
     max_size: int,
     visible_messages: int,
     in_flight_messages: int,
+    capacity_reserve: int = 0,
 ) -> int:
     backlog = max(0, int(visible_messages)) + max(0, int(in_flight_messages))
-    required_capacity = math.ceil(backlog / 1) if backlog else 0
-    target_capacity = min(max_size, max(current_desired, required_capacity))
+    capacity_reserve = max(0, int(capacity_reserve))
+    current_work_capacity = max(0, int(current_desired) - capacity_reserve)
+    required_work_capacity = math.ceil(backlog / 1) if backlog else 0
+    target_work_capacity = max(current_work_capacity, required_work_capacity)
+    if target_work_capacity <= current_work_capacity:
+        return min(max_size, max(current_desired, capacity_reserve))
+
+    new_work_capacity = min(target_work_capacity, current_work_capacity + 1)
+    target_capacity = min(max_size, capacity_reserve + new_work_capacity)
     if target_capacity <= current_desired:
         return current_desired
-    return min(target_capacity, current_desired + 1)
+    return target_capacity
 
 
 def lambda_handler(event, context):
@@ -42,8 +50,9 @@ def lambda_handler(event, context):
     results = []
     for pool in _load_pool_configs():
         pool_name = str(pool["name"])
-        queue_name = str(pool.get("queue_name") or f"praktika-{pool_name}")
-        asg_name = str(pool.get("asg_name") or f"praktika-{pool_name}")
+        queue_name = str(pool.get("queue_name") or pool_name)
+        asg_name = str(pool.get("asg_name") or pool_name)
+        capacity_reserve = max(0, int(pool.get("capacity_reserve") or 0))
 
         queue_url = sqs.get_queue_url(QueueName=queue_name)["QueueUrl"]
         queue_attrs = sqs.get_queue_attributes(
@@ -72,6 +81,7 @@ def lambda_handler(event, context):
             max_size=max_size,
             visible_messages=visible_messages,
             in_flight_messages=in_flight_messages,
+            capacity_reserve=capacity_reserve,
         )
         scaled = new_desired > current_desired
         if scaled:
@@ -88,6 +98,7 @@ def lambda_handler(event, context):
                 "visible_messages": visible_messages,
                 "in_flight_messages": in_flight_messages,
                 "current_desired": current_desired,
+                "capacity_reserve": capacity_reserve,
                 "new_desired": new_desired,
                 "scaled": scaled,
             }

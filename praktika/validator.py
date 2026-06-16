@@ -13,6 +13,96 @@ from .settings import GHRunners, Settings
 
 class Validator:
     @classmethod
+    def _s3_bucket_name(cls, value: str) -> str:
+        return str(value or "").removeprefix("s3://").split("/", maxsplit=1)[0]
+
+    @classmethod
+    def validate_infrastructure_deploy(cls, cloud):
+        print("---Start validating Infrastructure and settings---")
+
+        project_prefix = re.sub(
+            r"-{2,}",
+            "-",
+            re.sub(r"[^a-z0-9]+", "-", (cloud.name or "").lower()),
+        ).strip("-")
+        for group, names in getattr(cloud, "_pre_namespace_names", {}).items():
+            for name in names:
+                normalized = re.sub(
+                    r"-{2,}",
+                    "-",
+                    re.sub(r"[^a-z0-9]+", "-", str(name).lstrip("/").lower()),
+                ).strip("-")
+                cls.evaluate_check_simple(
+                    not project_prefix
+                    or (
+                        normalized != project_prefix
+                        and not normalized.startswith(f"{project_prefix}-")
+                    ),
+                    f"Infrastructure {group} item name [{name}] already includes "
+                    f"project prefix [{project_prefix}]. Use project-local names; "
+                    "CloudInfrastructure.Config adds the project prefix automatically.",
+                )
+
+        storage_names = {storage.name for storage in getattr(cloud, "storages", [])}
+
+        def _check_setting_bucket(setting_name: str, setting_value: str):
+            bucket = cls._s3_bucket_name(setting_value)
+            if not bucket:
+                return ""
+            cls.evaluate_check_simple(
+                not storage_names or bucket in storage_names,
+                f"Setting {setting_name} bucket [{bucket}] must match one of "
+                f"infrastructure Storage names [{', '.join(sorted(storage_names))}]",
+            )
+            return bucket
+
+        referenced_buckets = {
+            bucket
+            for bucket in (
+                _check_setting_bucket("S3_ARTIFACT_BUCKET", Settings.S3_ARTIFACT_BUCKET),
+                _check_setting_bucket("S3_REPORT_BUCKET", Settings.S3_REPORT_BUCKET),
+                _check_setting_bucket("CACHE_S3_PATH", Settings.CACHE_S3_PATH),
+            )
+            if bucket
+        }
+
+        for report_page in getattr(cloud, "report_pages", []) or []:
+            bucket = cls._s3_bucket_name(
+                getattr(report_page, "bucket_name", "") or Settings.S3_REPORT_BUCKET
+            )
+            if not bucket:
+                continue
+            referenced_buckets.add(bucket)
+            cls.evaluate_check_simple(
+                not storage_names or bucket in storage_names,
+                f"ReportPage bucket [{bucket}] must match one of infrastructure "
+                f"Storage names [{', '.join(sorted(storage_names))}]",
+            )
+
+        endpoint_map = Settings.S3_BUCKET_TO_HTTP_ENDPOINT or {}
+        for bucket in sorted(referenced_buckets):
+            cls.evaluate_check_simple(
+                bucket in endpoint_map,
+                f"S3_BUCKET_TO_HTTP_ENDPOINT must include bucket [{bucket}] used by "
+                "infrastructure/settings S3 configuration",
+            )
+
+        image_builders = getattr(cloud, "image_builders", []) or []
+        if Settings.PRAKTIKA_BASE_VENV and image_builders:
+            venv_names = {
+                venv.name
+                for builder in image_builders
+                for venv in getattr(builder, "prebuilt_venvs", []) or []
+                if getattr(venv, "name", "")
+            }
+            expected = Settings.PRAKTIKA_BASE_VENV
+            cls.evaluate_check_simple(
+                expected in venv_names,
+                f"Setting PRAKTIKA_BASE_VENV [{expected}] must match one of "
+                f"ImageBuilder prebuilt venv names [{', '.join(sorted(venv_names))}]",
+            )
+
+    @classmethod
     def validate(cls):
         print("---Start validating Pipeline and settings---")
 
@@ -171,8 +261,8 @@ class Validator:
                     )
                     if artifact.is_s3_artifact():
                         assert (
-                            Settings.S3_ARTIFACT_PATH
-                        ), "Provide S3_ARTIFACT_PATH setting in any .py file in ./ci/settings/* to be able to use s3 for artifacts"
+                            Settings.S3_ARTIFACT_BUCKET
+                        ), "Provide S3_ARTIFACT_BUCKET setting in any .py file in ./ci/settings/* to be able to use s3 for artifacts"
 
             for job in workflow.jobs:
                 if job.requires and workflow.artifacts:
@@ -387,4 +477,4 @@ class Validator:
             print(f"ERROR: Validation failed:")
             for message in messages:
                 print(" ||  " + message)
-            raise
+            sys.exit(1)

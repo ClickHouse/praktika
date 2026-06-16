@@ -114,7 +114,7 @@ propagating `WORKFLOW_CONFIG`, `COMMIT_AUTHORS`, `JOB_KV_DATA`, etc.
 `cancel_s3_*`, `heartbeat_s3_*`, and `final_state_s3_*` colocate cancel, liveness, and
 completion under one S3 prefix per run — see [Liveness signals](#liveness-signals).
 Phase 2b retired the per-run completions SQS queue: cancel signals now flow lambda
-→ S3 (`runs/<run_id>/cancel-request` for manual cancel, `pr/<pr>/cancel-before` for
+→ S3 (`runs/<run_id>/cancel-request` for manual cancel, `pr/<pr>/cancel-before-<scope>` for
 new-push fan-out) and the orchestrator polls them in `sweep_cancel`.
 
 ### `job_completion` (runner → `s3://.../runs/<run_id>/<job>/final.json`) {#job-completion}
@@ -147,14 +147,14 @@ orchestrator polls both in `sweep_cancel` once per `wait()` cycle.
 | Trigger | S3 key | Body |
 |---|---|---|
 | Manual UI Cancel button (`check_run.requested_action`) | `runs/<run_id>/cancel-request` | `requested` (presence-only) |
-| New push to PR (`pull_request.synchronize`) | `pr/<pr>/cancel-before` | `{"ts": <event_ts>}` |
+| New push to PR (`pull_request.synchronize`) | `pr/<pr>/cancel-before-<scope>` | `{"ts": <event_ts>}` |
 
 The new-push channel uses event timestamp validation: each workflow trigger event
 the lambda enqueues carries `event_ts` (the lambda's receive time). On
-`synchronize`, the lambda writes `cancel-before` with the same `event_ts` it
-stamps on the new run. Older orchestrators see `cancel-before > event_ts` and
-self-cancel; the freshly enqueued run sees `cancel-before == event_ts` and stays
-alive (strict less-than comparison).
+`synchronize`, the lambda writes a queue-scoped `cancel-before` marker with the
+same `event_ts` it stamps on the new run. Older orchestrators in the same scope
+see `cancel-before > event_ts` and self-cancel; the freshly enqueued run sees
+`cancel-before == event_ts` and stays alive (strict less-than comparison).
 
 ## Liveness signals {#liveness-signals}
 
@@ -163,7 +163,7 @@ S3 channels under `s3://<artifacts-bucket>/`:
 | Channel | Direction | Path | Purpose |
 |---|---|---|---|
 | Cancel request | Lambda → orchestrator | `runs/<run_id>/cancel-request` | Manual UI Cancel button — orchestrator's `sweep_cancel` sets `state.cancelled` |
-| Cancel-before | Lambda → orchestrators | `pr/<pr>/cancel-before` (`{ts}`) | New-push fan-out — every run with `event_ts < ts` self-cancels |
+| Cancel-before | Lambda → orchestrators | `pr/<pr>/cancel-before-<scope>` (`{ts}`) | New-push fan-out inside one orchestrator scope — every run with `event_ts < ts` self-cancels |
 | Kill flag | Orchestrator → runners | `runs/<run_id>/cancel` | Once written, every running job in the run kills its subprocess |
 | Heartbeat | Runner → orchestrator | `runs/<run_id>/<normalized-job>/heartbeat.json` | Periodic `{ts, status}` proves the runner is alive |
 | Final state | Runner → orchestrator | `runs/<run_id>/<normalized-job>/final.json` | `{rc, environment, ...}` on job exit |
@@ -178,30 +178,32 @@ killing the job subprocess on first hit.
 
 **Heartbeat** — written by the runner-side `Heartbeat` thread every
 `heartbeat_interval_s` (default 30 s). The orchestrator runs
-`WorkflowState.sweep_liveness` once per `wait()` cycle and marks RUNNING jobs
-dead under two rules:
+`WorkflowState.sweep_liveness` once per `wait()` cycle and marks in-flight jobs
+dead under two separate timeout rules:
 
-- **Pickup grace expired** (default 300 s): no heartbeat ever observed and
-  `now - kicked_at > PICKUP_GRACE_S` → covers empty runner pools and agent
-  crashes before the first heartbeat.
-- **Dead threshold** (default 90 s = 3× interval): heartbeat seen but
-  `now - last_heartbeat_ts > DEAD_THRESHOLD_S` → runner died mid-job.
+- **Runner pickup timeout** (default 3600 s): job is still `QUEUED`, no
+  heartbeat ever observed, and `now - kicked_at > RUNNER_PICKUP_TIMEOUT_S` →
+  covers queue/ASG/boot delays or a pool that never picks the job up.
+- **Heartbeat timeout** (default 300 s): job is `RUNNING` and
+  `now - last_heartbeat_ts > HEARTBEAT_TIMEOUT_S` → runner died mid-job.
 
 Either path completes the per-job check as `failure` and advances the DAG so
 downstream jobs cascade-cancel and `Finish Workflow` (always_run) still fires.
 
 **Final state** — written by `orchestrator/job_runner.py` after `Runner.run`
-returns and the per-job check is PATCHed. The orchestrator's
-`WorkflowState.sweep_completions` polls the key every `wait()` cycle and calls
-`JobState.finish` on hit. Because `final.json` is durable on S3, an
-orchestrator that died after dispatch picks the result up on restart — no
-in-flight messages get lost the way an SQS `job_completion` would.
+returns. The runner includes `rc`, `environment`, and optional check
+`output`/`details_url`; the orchestrator owns the GitHub Checks lifecycle and
+completes the per-job check from this payload. `WorkflowState.sweep_completions`
+polls the key every `wait()` cycle and calls `JobState.finish` on hit. Because
+`final.json` is durable on S3, an orchestrator that died after dispatch picks
+the result up on restart — no in-flight messages get lost the way an SQS
+`job_completion` would.
 
 ## Cancel semantics {#cancel-semantics}
 
 | Trigger | Target | How it reaches the orchestrator |
 |---|---|---|
-| New push (`synchronize`) | Every in-flight run for the PR with `event_ts < new event_ts` | Lambda writes `pr/<pr>/cancel-before` with `{ts}`; older orchestrators self-cancel via `sweep_cancel` |
+| New push (`synchronize`) | Every in-flight run for the PR in the same orchestrator scope with `event_ts < new event_ts` | Lambda writes `pr/<pr>/cancel-before-<scope>` with `{ts}`; older orchestrators in that scope self-cancel via `sweep_cancel` |
 | Manual Cancel button | Exactly one run | Lambda writes `runs/<run_id>/cancel-request`; that orchestrator's `sweep_cancel` picks it up |
 | Re-run (`rerequested`) | — | No cancel written (new run has a new run_id and a new S3 prefix) |
 

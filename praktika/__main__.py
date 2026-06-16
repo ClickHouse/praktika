@@ -1,6 +1,7 @@
 import argparse
 import sys
 
+from .project_init import run_init_interactive
 from .utils import Utils
 from .validator import Validator
 from .yaml_generator import YamlGenerator
@@ -10,13 +11,13 @@ def create_parser():
     parser = argparse.ArgumentParser(
         prog="praktika",
         description=(
-            "Praktika CLI: run CI jobs locally or in CI, generate YAML workflows"
+            "Praktika is a self-hosted CI system for defining pipelines and infrastructure in Python."
         ),
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Available subcommands")
 
-    run_parser = subparsers.add_parser("run", help="Run a CI job")
+    run_parser = subparsers.add_parser("run", help="Run a job")
     run_parser.add_argument(
         "job",
         help="Name of the job to run",
@@ -143,10 +144,77 @@ def create_parser():
         default=False,
     )
 
-    _yaml_parser = subparsers.add_parser("yaml", help="Generate YAML workflows")
+    subparsers.add_parser(
+        "init",
+        help="Initialize Praktika CI for a new project",
+    )
+
+    _infra_parser = subparsers.add_parser(
+        "infrastructure", help="Manage CI infrastructure components"
+    )
+    _infra_parser.add_argument(
+        "--deploy",
+        help="Deploy cloud infrastructure or upload HTML report",
+        action="store_true",
+        default=False,
+    )
+    _infra_parser.add_argument(
+        "--destroy-runtime",
+        help="Delete project-prefixed recreatable runtime resources while keeping S3, CIDB/EC2, Dedicated Hosts, secrets/params, and GitHub API Gateway wiring",
+        action="store_true",
+        default=False,
+    )
+    _infra_parser.add_argument(
+        "--destroy-all",
+        help="Delete all project-prefixed managed infrastructure resources. Requires --project.",
+        action="store_true",
+        default=False,
+    )
+    _infra_parser.add_argument(
+        "--all",
+        help="With --deploy: deploy all configured components",
+        action="store_true",
+        default=False,
+    )
+    _infra_parser.add_argument(
+        "--only",
+        help=(
+            "Process only specified components (e.g. html ImageBuilder AMI VPC LaunchTemplate AutoScalingGroup Lambda DedicatedHost EC2Instance). "
+            "With --deploy: deploys only these components or uploads html report. "
+            "With --destroy-runtime/--destroy-all: deletes only the selected component types."
+        ),
+        nargs="+",
+        type=str,
+        default=None,
+    )
+    _infra_parser.add_argument(
+        "--restart-instances",
+        help="Trigger an instance refresh on all ASGs, replacing all EC2 instances with the current launch template version",
+        action="store_true",
+        default=False,
+    )
+    _infra_parser.add_argument(
+        "--project",
+        help="Infrastructure project name from ci/infrastructure/projects.py PROJECTS",
+        type=str,
+        default="",
+    )
+    _infra_parser.add_argument(
+        "--test",
+        help="Test mode for HTML upload (creates _test.html variant)",
+        action="store_true",
+        default=False,
+    )
+    _infra_parser.add_argument(
+        "-y",
+        "--yes",
+        help="Automatically answer yes to interactive confirmations",
+        action="store_true",
+        default=False,
+    )
 
     orch_parser = subparsers.add_parser(
-        "orchestrate", help="Run a workflow or a single job"
+        "orchestrate", help="Run local workflow orchestration"
     )
     orch_sub = orch_parser.add_subparsers(dest="orch_command")
 
@@ -175,95 +243,80 @@ def create_parser():
     job_parser.add_argument("--ci", action="store_true", default=False,
         help="CI mode: authenticate to GitHub and post check run updates")
 
-    _infra_parser = subparsers.add_parser(
-        "infrastructure", help="Manage cloud infrastructure and HTML reports"
-    )
-    _infra_parser.add_argument(
-        "--deploy",
-        help="Deploy cloud infrastructure or upload HTML report",
-        action="store_true",
-        default=False,
-    )
-    _infra_parser.add_argument(
-        "--destroy-runtime",
-        help="Delete the execution-plane metadata and recreatable compute while keeping S3, VPC, CIDB, Dedicated Hosts, and GitHub webhook wiring",
-        action="store_true",
-        default=False,
-    )
-    _infra_parser.add_argument(
-        "--all",
-        help="Deploy all configured components (used with --deploy)",
-        action="store_true",
-        default=False,
-    )
-    _infra_parser.add_argument(
-        "--only",
-        help=(
-            "Process only specified components (e.g. html ImageBuilder LaunchTemplate AutoScalingGroup Lambda DedicatedHost EC2Instance). "
-            "With --deploy: deploys only these components or uploads html report. "
-            "With --destroy-runtime: deletes only the selected execution-plane components."
-        ),
-        nargs="+",
-        type=str,
-        default=None,
-    )
-    _infra_parser.add_argument(
-        "--restart-instances",
-        help="Trigger an instance refresh on all ASGs, replacing all EC2 instances with the current launch template version",
-        action="store_true",
-        default=False,
-    )
-    _infra_parser.add_argument(
-        "--project",
-        help="Infrastructure project name from ci/infra/cloud.py PROJECTS",
-        type=str,
-        default="",
-    )
-    _infra_parser.add_argument(
-        "--test",
-        help="Test mode for HTML upload (creates _test.html variant)",
-        action="store_true",
-        default=False,
+    subparsers.add_parser(
+        "yaml",
+        help="Generate YAML for GitHub Actions-based Praktika pipelines",
     )
     return parser
 
 
-def main():
+def main(argv=None):
     sys.path.append(".")
     parser = create_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    if args.command == "yaml":
+    if args.command == "init":
+        run_init_interactive()
+    elif args.command == "yaml":
         Validator().validate()
         YamlGenerator().generate()
     elif args.command == "infrastructure":
+        from .interactive import UserPrompt
+
         project = getattr(args, "project", None) or None
-        if not args.deploy and not args.destroy_runtime and not args.restart_instances:
-            Utils.raise_with_error(
-                "infrastructure command requires --deploy, --destroy-runtime, or --restart-instances"
-            )
+        previous_auto_confirm = UserPrompt.AUTO_CONFIRM
+        UserPrompt.AUTO_CONFIRM = bool(getattr(args, "yes", False))
+        try:
+            if (
+                not args.deploy
+                and not args.destroy_runtime
+                and not args.destroy_all
+                and not args.restart_instances
+            ):
+                Utils.raise_with_error(
+                    "infrastructure command requires --deploy, --destroy-runtime, --destroy-all, or --restart-instances"
+                )
+            if args.destroy_runtime and args.destroy_all:
+                Utils.raise_with_error(
+                    "Use either --destroy-runtime or --destroy-all, not both"
+                )
 
-        if args.deploy:
-            from .mangle import _get_infra_config
+            if args.deploy:
+                from .mangle import _get_infra_config
 
-            _get_infra_config(project).deploy(
-                all=args.all,
-                only=args.only,
-                is_test=args.test,
-            )
+                infra_config = _get_infra_config(project)
+                Validator().validate_infrastructure_deploy(infra_config)
+                infra_config.deploy(
+                    all=args.all,
+                    only=args.only,
+                    is_test=args.test,
+                )
 
-        if args.destroy_runtime:
-            from .mangle import _get_infra_config
+            if args.destroy_runtime:
+                from .mangle import _get_infra_config
 
-            _get_infra_config(project).destroy_runtime(
-                force=True,
-                only=args.only,
-            )
+                if args.all:
+                    Utils.raise_with_error(
+                        "Use --destroy-all instead of --destroy-runtime --all"
+                    )
+                _get_infra_config(project, require_project=True).destroy_runtime(
+                    force=True,
+                    only=args.only,
+                )
 
-        if args.restart_instances:
-            from .mangle import _get_infra_config
+            if args.destroy_all:
+                from .mangle import _get_infra_config
 
-            _get_infra_config(project).restart_instances()
+                _get_infra_config(project, require_project=True).destroy_all(
+                    only=args.only,
+                )
+
+            if args.restart_instances:
+                from .mangle import _get_infra_config
+
+                _get_infra_config(project).restart_instances()
+        finally:
+            UserPrompt.AUTO_CONFIRM = previous_auto_confirm
     elif args.command == "orchestrate":
         if args.orch_command == "workflow":
             from .orchestrator import run as orchestrate_run
@@ -271,16 +324,9 @@ def main():
         elif args.orch_command == "job":
             import json as _json
             from .orchestrator.job_runner import run_job
-            from .utils import Shell
             with open(args.task_file) as f:
                 task = _json.load(f)
-            # `gh` CLI is already authenticated by the bootstrap runner
-            # (`praktika_bootstrap job_runner`); pull the token out of `gh auth token`
-            # for `_patch_check_run`, which uses requests directly.
-            gh_token = None
-            if args.ci:
-                gh_token = Shell.get_output("gh auth token") or None
-            sys.exit(run_job(task, gh_token=gh_token, local=not args.ci))
+            sys.exit(run_job(task, local=not args.ci))
         else:
             orch_parser.print_help()
             sys.exit(1)

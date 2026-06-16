@@ -38,13 +38,13 @@ class CIDBCluster:
     Example::
 
         cidb = CIDBCluster(
-            vpc_name="praktika-ci",
+            vpc_name="project-ci",
             instance_type="t4g.large",
             size=1,
         )
     """
 
-    vpc_name: str
+    vpc_name: str = ""
     instance_type: str = "t4g.large"
     size: int = 1
     ami_id: str = ""  # resolved at deploy time via SSM if empty
@@ -70,7 +70,11 @@ class CIDBCluster:
             raise NotImplementedError(
                 f"CIDBCluster.size={self.size} is not yet supported; only size=1 is implemented."
             )
-        if not self.security_group_ids and not self.security_group_names:
+        if (
+            self.vpc_name
+            and not self.security_group_ids
+            and not self.security_group_names
+        ):
             self.security_group_names = [f"{self.vpc_name}-sg"]
 
         self.admin_password_secret = SecretParameter.Config(
@@ -123,7 +127,7 @@ class CIDBCluster:
 
         self.instances = []
         for index in range(1, self.size + 1):
-            replica_name = f"praktika-cidb-{index:02d}"
+            replica_name = f"cidb-{index:02d}"
             user_data = cidb_user_data(
                 vpc_cidr=self.vpc_cidr,
                 admin_password_ssm_name=self.admin_password_secret_name,

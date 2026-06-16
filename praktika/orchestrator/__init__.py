@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import sys
 from collections import defaultdict, deque
@@ -26,6 +27,17 @@ def _branch_matches(branch, patterns):
     return False
 
 
+def _current_orchestrator_filter() -> str:
+    explicit = (os.environ.get("PRAKTIKA_ORCHESTRATOR_FILTER") or "").strip()
+    if explicit:
+        return explicit
+
+    queue_name = (os.environ.get("PRAKTIKA_CONTROLLER_QUEUE") or "").strip()
+    if queue_name.endswith("-base"):
+        return "base"
+    return "default"
+
+
 def find_workflows_for_event(event):
     """Find all workflows matching the trigger event. Returns empty list if no match."""
     event_type = event.get("type", "")
@@ -42,8 +54,16 @@ def find_workflows_for_event(event):
         branch = ""
 
     matched = []
+    orchestrator_filter = _current_orchestrator_filter()
     for wf in _get_workflows():
         if wf.engine == Workflow.Engine.GH_ACTIONS:
+            continue
+        workflow_filter = (getattr(wf, "orchestrator_filter", "") or "default").strip()
+        if workflow_filter != orchestrator_filter:
+            print(
+                f"Skip workflow [{wf.name}] for orchestrator filter "
+                f"[{orchestrator_filter}] (workflow requires [{workflow_filter}])"
+            )
             continue
         if wf.event != workflow_event:
             continue
@@ -141,15 +161,27 @@ def print_execution_plan(workflow, levels, job_deps):
     print(f"\n{'='*80}\n")
 
 
+def _current_instance_id():
+    return (os.environ.get("INSTANCE_ID") or "").strip()
+
+
 def _check_output(workflow, state, error=None, report_url=None):
     """Assemble a Check API `output` dict (title, summary, text) from the
     live ``WorkflowState``. Called on every PATCH so the top-level check's
     Markdown body tracks the current per-job table."""
+    instance_id = _current_instance_id()
     if workflow is None:
+        summary = "No workflow matched this event"
+        if instance_id:
+            summary += f" — orchestrator `{instance_id}`"
         return {
             "title": "No workflow",
-            "summary": "No workflow matched this event",
-            "text": "",
+            "summary": summary,
+            "text": (
+                f"**Orchestrator instance:** `{instance_id}`"
+                if instance_id
+                else ""
+            ),
         }
     title = workflow.name
     if error is not None:
@@ -162,7 +194,13 @@ def _check_output(workflow, state, error=None, report_url=None):
         summary = state.md_status_summary()
     if report_url:
         summary += f" — [CI Report]({report_url})"
+    if instance_id:
+        summary += f" — orchestrator `{instance_id}`"
     text = state.md_status() if state is not None else ""
+    if instance_id:
+        text = f"**Orchestrator instance:** `{instance_id}`" + (
+            f"\n\n{text}" if text else ""
+        )
     if error is not None:
         text += f"\n\n### Error\n\n```\n{error}\n```"
     # Check API caps output.text at ~64 KB.
@@ -274,7 +312,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
 
     # The top-level check body is rendered from `state.md_status()` (a live
     # per-job table) by `_check_output`, not from this stream — so we print
-    # straight to stdout. Lets the user (or `journalctl -fu workflow-agent`)
+    # straight to stdout. Lets the user (or `journalctl -fu praktika-controller`)
     # see progress in real time, especially important when the loop hangs.
     error = None
     state = None

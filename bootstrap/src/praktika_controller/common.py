@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import importlib.util
 import json
 import logging
@@ -11,29 +12,34 @@ import threading
 import time
 from pathlib import Path
 
-DEFAULT_PRAKTIKA_SOURCE = os.environ.get(
-    "PRAKTIKA_DEFAULT_INSTALL_SOURCE",
-    (
-        "https://praktika-artifacts-eu-north-1.s3.amazonaws.com"
-        "/packages/praktika-0.1-py3-none-any.whl"
-    ),
-)
+FIRST_BOOT_RESERVED_CAPACITY_LOG_INTERVAL_S = 60 * 60
 
 
-def resolve_praktika_runtime(
-    clone_dir: str | os.PathLike[str], log, role: str = ""
-) -> tuple[str, str]:
-    """Read Praktika base-venv/source settings from the repo settings.
+class LogRateLimiter:
+    def __init__(
+        self,
+        interval_s: int | float,
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        self._interval_s = max(0, interval_s)
+        self._clock = clock
+        self._last_log_at: float | None = None
 
-    Resolution order:
-      1. side-specific base venv from settings.py (`workflow` / `job`)
-      2. generic PRAKTIKA_BASE_VENV from settings.py
-      3. PRAKTIKA_INSTALL_SOURCE from settings.py
-      2. if neither is set, fall back to the default Praktika wheel URL
-    """
+    def should_log(self) -> bool:
+        now = self._clock()
+        if (
+            self._last_log_at is None
+            or now - self._last_log_at >= self._interval_s
+        ):
+            self._last_log_at = now
+            return True
+        return False
+
+
+def resolve_praktika_base_venv(clone_dir: str | os.PathLike[str], log) -> str:
+    """Read the shared Praktika base-venv selection from repo settings."""
     settings_file = Path(clone_dir) / "ci" / "settings" / "settings.py"
     base_venv = ""
-    src = ""
     if settings_file.exists():
         try:
             spec = importlib.util.spec_from_file_location(
@@ -42,32 +48,14 @@ def resolve_praktika_runtime(
             mod = importlib.util.module_from_spec(spec)
             assert spec.loader is not None
             spec.loader.exec_module(mod)
-            if role == "workflow":
-                base_venv = getattr(mod, "PRAKTIKA_WORKFLOW_BASE_VENV", "") or ""
-            elif role == "job":
-                base_venv = getattr(mod, "PRAKTIKA_JOB_BASE_VENV", "") or ""
-            if not base_venv:
-                base_venv = getattr(mod, "PRAKTIKA_BASE_VENV", "") or ""
-            src = getattr(mod, "PRAKTIKA_INSTALL_SOURCE", "") or ""
+            base_venv = getattr(mod, "PRAKTIKA_BASE_VENV", "") or ""
         except Exception as e:
             log.warning(
                 "Could not read Praktika runtime config from %s: %s",
                 settings_file,
                 e,
             )
-
-    if not src and not base_venv:
-        src = DEFAULT_PRAKTIKA_SOURCE
-
-    if src:
-        if src.startswith(("http://", "https://")):
-            return base_venv, src
-        src_path = Path(src)
-        if not src_path.is_absolute():
-            src_path = Path(clone_dir) / src_path
-        src = str(src_path.resolve())
-
-    return base_venv, src
+    return base_venv
 
 
 def configure_logging(name: str, instance_id: str) -> logging.Logger:
@@ -80,33 +68,47 @@ def configure_logging(name: str, instance_id: str) -> logging.Logger:
     return logging.getLogger(name)
 
 
-def get_github_token(region: str) -> str:
-    """Mint a GitHub installation token for cloning and gh-auth."""
-    import jwt
-    import requests as _requests
+def get_github_token(region: str = "") -> str:
+    """Mint a GitHub installation token by invoking the GH auth lambda."""
+    import boto3
 
-    sm = __import__("boto3").client("secretsmanager", region_name=region)
-    secret = json.loads(
-        sm.get_secret_value(SecretId="praktika-gh-app")["SecretString"]
+    region = (
+        region
+        or os.environ.get("AWS_DEFAULT_REGION", "").strip()
+        or os.environ.get("AWS_REGION", "").strip()
     )
-    app_id = secret["app-id"]
-    app_key = secret["app-key"]
-    installation_id = secret["app-installation-id"]
+    if not region:
+        raise RuntimeError("AWS_DEFAULT_REGION or AWS_REGION must be set")
 
-    now = int(time.time())
-    payload = {"iat": now - 60, "exp": now + 600, "iss": app_id}
-    jwt_token = jwt.encode(payload, app_key, algorithm="RS256")
-
-    resp = _requests.post(
-        f"https://api.github.com/app/installations/{installation_id}/access_tokens",
-        headers={
-            "Authorization": f"Bearer {jwt_token}",
-            "Accept": "application/vnd.github.v3+json",
-        },
-        timeout=10,
+    lambda_name = os.environ.get("GH_AUTH_LAMBDA_NAME", "").strip() or (
+        f"{os.environ.get('PRAKTIKA_PROJECT_SLUG', '').strip()}-gh-token"
+        if os.environ.get("PRAKTIKA_PROJECT_SLUG", "").strip()
+        else "gh-token"
     )
-    resp.raise_for_status()
-    return resp.json()["token"]
+    client = boto3.client("lambda", region_name=region)
+    response = client.invoke(
+        FunctionName=lambda_name,
+        InvocationType="RequestResponse",
+        Payload=b"{}",
+    )
+    payload = response["Payload"].read().decode("utf-8")
+    data = json.loads(payload)
+    if "FunctionError" in response:
+        raise RuntimeError(f"GH auth lambda [{lambda_name}] failed (payload redacted)")
+    if isinstance(data, dict) and "statusCode" in data:
+        if int(data.get("statusCode", 500)) >= 400:
+            raise RuntimeError(
+                f"GH auth lambda [{lambda_name}] returned statusCode={data.get('statusCode')} "
+                "(body redacted)"
+            )
+        body = data.get("body", "{}")
+        data = json.loads(body) if isinstance(body, str) else body
+    token = data.get("token")
+    if not token:
+        raise RuntimeError(
+            f"GH auth lambda [{lambda_name}] returned no token (payload redacted)"
+        )
+    return token
 
 
 def imds_token() -> str:
@@ -143,6 +145,8 @@ def try_scale_in_if_idle(
     queue_name: str,
     region: str,
     instance_id: str,
+    has_received_message: bool = True,
+    reserved_capacity_log_limiter: LogRateLimiter | None = None,
     log,
 ) -> bool:
     if not region or not instance_id:
@@ -153,6 +157,21 @@ def try_scale_in_if_idle(
             return False
         asg_name = instance_tag("praktika_asg", token=token)
         if not asg_name:
+            return False
+        capacity_reserve = max(
+            0,
+            int(instance_tag("praktika_capacity_reserve", token=token) or "0"),
+        )
+        if capacity_reserve and not has_received_message:
+            if (
+                reserved_capacity_log_limiter is None
+                or reserved_capacity_log_limiter.should_log()
+            ):
+                log.info(
+                    "Queue %s is idle, preserving reserved instance %s until first job",
+                    queue_name,
+                    instance_id,
+                )
             return False
         attrs = sqs.get_queue_attributes(
             QueueUrl=queue_url,
@@ -284,23 +303,31 @@ class CancelWatchdog:
 
 
 class Heartbeat:
-    """Periodically write {ts, status} to the per-job S3 heartbeat key."""
+    """Periodically write a per-job liveness payload to S3."""
 
-    def __init__(self, s3_client, bucket, key, interval, status="running", log=None):
+    def __init__(
+        self,
+        s3_client,
+        bucket,
+        key,
+        interval,
+        status="running",
+        fields=None,
+        log=None,
+    ):
         self._s3 = s3_client
         self._bucket = bucket
         self._key = key
         self._interval = max(1, int(interval or 30))
         self._status = status
+        self._fields = dict(fields or {})
         self._stop = threading.Event()
         self._thread = None
         self._log = log or logging.getLogger(__name__)
 
     def start(self):
         self._beat()
-        self._thread = threading.Thread(
-            target=self._run, daemon=True, name="heartbeat"
-        )
+        self._thread = threading.Thread(target=self._run, daemon=True, name="heartbeat")
         self._thread.start()
 
     def stop(self):
@@ -317,10 +344,12 @@ class Heartbeat:
 
     def _beat(self):
         try:
+            body = {"ts": time.time(), "status": self._status}
+            body.update(self._fields)
             self._s3.put_object(
                 Bucket=self._bucket,
                 Key=self._key,
-                Body=json.dumps({"ts": time.time(), "status": self._status}).encode(),
+                Body=json.dumps(body).encode(),
                 ContentType="application/json",
             )
         except Exception as e:
@@ -329,12 +358,6 @@ class Heartbeat:
     def _run(self):
         while not self._stop.wait(self._interval):
             self._beat()
-
-
-def resolve_praktika_install_source(clone_dir: str | os.PathLike[str], log) -> str:
-    """Backward-compatible helper for callers that only care about source."""
-    _, source = resolve_praktika_runtime(clone_dir, log)
-    return source
 
 
 def git(args, cwd=None) -> str:
@@ -391,17 +414,3 @@ def clone_repo(repo, head_sha, pr_number, token, work_dir, branch=None, log=None
     if log is not None:
         log.info("Checked out %s in %s", actual_sha[:12], clone_dir)
     return clone_dir, actual_sha
-
-
-def upload_log(s3, bucket, prefix, instance_id, message, log):
-    from datetime import datetime, timezone
-
-    now = datetime.now(timezone.utc)
-    key = f"{prefix}/{now:%Y-%m-%d}/{instance_id}/{now:%H-%M-%S-%f}.json"
-    s3.put_object(
-        Bucket=bucket,
-        Key=key,
-        Body=json.dumps(message, indent=2),
-        ContentType="application/json",
-    )
-    log.info("Log uploaded to s3://%s/%s", bucket, key)

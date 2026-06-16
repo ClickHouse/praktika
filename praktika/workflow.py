@@ -61,6 +61,13 @@ class Workflow:
         enable_open_issues_check: bool = False
         # If enabled, CI events will be accumulated and stored, allowing users to subscribe to notifications via the Slack Praktika app
         enable_slack_feed: bool = False
+        # Optional orchestrator routing tag. Empty means the default/non-base
+        # orchestrator pool. Workflows tagged "base" are only picked up by the
+        # base orchestrator pool.
+        orchestrator_filter: str = ""
+        # Optional runner label override for Praktika-native jobs such as
+        # Config Workflow and Finish Workflow.
+        native_job_runs_on: List[str] = field(default_factory=list)
         # Simple mode: the job is not required to dump a Result and praktika
         # derives the job outcome purely from the script exit code
         # (0 -> OK, non-zero -> FAIL). Setup-env / pre-run failures and

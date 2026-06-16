@@ -12,7 +12,7 @@ praktika gives you:
   time, not in a half-finished CI run.
 - **Declarative infrastructure.** RunnerPools, an Orchestrator pool, S3 buckets
   for artifacts/reports, SQS queues for sync, SSM/Secrets Manager bindings —
-  all defined in a single `ci/infra/cloud.py` and brought up with
+  all defined in a single `ci/infrastructure/projects.py` and brought up with
   `python -m praktika infrastructure --deploy`.
 - **Standalone-first execution model.** Praktika is designed to run its own CI
   control plane on cloud infrastructure: the orchestrator polls workflow
@@ -34,7 +34,7 @@ pipeline.
 - [`praktika/infrastructure/`](./praktika/infrastructure/README.md) — config
   components for declaring AWS infrastructure (`VPC`, `Storage`,
   `RunnerPool`, `OrchestratorPool`, `report_page_config`, ...) and the
-  `praktika infrastructure --deploy / --shutdown / --restart-instances`
+  `praktika infrastructure --deploy / --destroy-runtime / --destroy-all / --restart-instances`
   commands.
 - [`praktika/orchestrator/`](./praktika/orchestrator/README.md) — the
   standalone CI engine: webhook receiver, workflow agent, job agent, the
@@ -47,7 +47,9 @@ pipeline.
 - Declarative jobs and pipelines in plain Python
 - Declarative CI infrastructure configuration and deployment
 - Built-in CI cache with awareness of successful jobs and reusable artifacts
-- Versioned runtimes via named base virtual environments, with `praktika_bootstrap` selecting the workflow or job runtime and optionally overlaying Praktika from checked-out source
+- Starter hello-world setup with `praktika init`, which scaffolds
+  `ci/workflows/` and `ci/infrastructure/projects.py` for a new project
+- Versioned runtimes via named base virtual environments, with `praktika_controller` selecting the workflow or job runtime and optionally overlaying Praktika from checked-out source
 - HTML CI report page with per-workflow, per-job, and per-test drill-down
 - Consistent test Docker image versioning: images rebuild automatically when inputs change, and versions stay pinned to code state across branches
 - CI DB integration: job results, test results, timings, and related metadata are written automatically
@@ -67,7 +69,7 @@ pipeline.
 - S3 buckets for artifacts and the HTML report
 - SSM Parameter Store and Secrets Manager bindings for workflow secrets
 - API Gateway plus Lambda webhook receiver for inbound Git events
-- CI DB integration for analytics: every job and test result can be streamed to a CI DB, and Praktika can also provision its own native CI DB component (`NativeComponents.CIDBCluster`) or use an existing endpoint via `Settings.SECRET_CI_DB_CONNECTION`
+- CI DB integration for analytics: every job and test result can be streamed to a CI DB, and Praktika can also provision its own native CI DB component (`Components.CIDBCluster`) or use an existing endpoint via `Settings.SECRET_CI_DB_CONNECTION`
 
 ## Known limitations
 
@@ -92,9 +94,16 @@ pipeline.
   table the webhook lambda consumes, so the lambda knows which branches to
   accept, which schedules to fire, and which events to drop without each
   workflow encoding that in the lambda by hand
+- **Remove AWS CLI dependency from CI runtime** — Praktika runtime code should
+  use boto3 APIs directly instead of shelling out to `aws`
+
 **Observability**
 - **Log export for orchestrator and runners** — live tail and persisted
   archive, accessible without SSM
+- **Infra watch agent** — continuously monitor SQS queues, runner and
+  orchestrator pools, Lambda functions, CI DB, and other managed services;
+  log abnormal state, health regressions, and infrastructure problems for
+  follow-up
 - **CI DB provisioning** — bring the ClickHouse cluster and schema under
   praktika-managed infrastructure (today only the writer side ships with
   praktika; the cluster is provisioned out-of-band)
@@ -104,7 +113,9 @@ pipeline.
   those run on private endpoints; optionally also SSH to runner instances
   for debugging
 
-**Project ergonomics**
-- **`praktika init`** — scaffold a new project with a starter
-  `ci/workflows/` and `ci/infra/cloud.py` so adopters do not have to copy
-  them by hand
+**Report / UX**
+- **Pre/post-hook results in report** — move hook sub-results out of
+  `Result.results` into `Result.ext.pre_hook_result` / `Result.ext.post_hook_result`
+  so they are hidden by default and revealed only when the user clicks something like
+  "show infra results"; if any hook result is failed the report page must still surface
+  a Warning note regardless of the toggle state
