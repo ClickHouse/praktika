@@ -84,6 +84,12 @@ def _is_missing_s3_key_error(exc):
     }
 
 
+def _record_value(record, key, default=None):
+    if isinstance(record, dict):
+        return record.get(key, default)
+    return getattr(record, key, default)
+
+
 def _queue_for_runs_on(runs_on):
     """First non-empty ``runs_on`` label → ``<project-slug>-<label>`` queue name."""
     for label in runs_on or ():
@@ -321,24 +327,28 @@ class JobState:
         tag = "[DONE ]" if success else "[FAIL ]"
         print(f"{tag} {self.name:70s} ({duration:.1f}s)")
 
-    def skip(self, reason=""):
+    def skip(self, reason="", output=None, details_url=None, post_check=False):
         """Transition PENDING -> SKIPPED.
 
         Used when the job doesn't need to run — Config Workflow marked
         it out (cache hit, not affected by diff, missing opt-in label).
         Not a failure: outputs are still reachable from S3.
 
-        No per-job check is posted: with ~100 skipped jobs in a typical
-        run the PR UI would be flooded. ``WorkflowState._post_skipped_summary``
-        aggregates all skipped jobs into a single ``Skipped Jobs`` check
-        with the reasons broken out in Markdown.
+        Config Workflow skips request per-job checks so the Checks API shows
+        the same job names regardless of whether work ran or was skipped.
         """
         if self.status != JobStatus.PENDING:
-            return
+            return False
         self.status = JobStatus.SKIPPED
         self.filter_reason = reason
+        if post_check:
+            self._create_check()
+            self._update_check(
+                lambda c: c.complete("skipped", output=output, details_url=details_url)
+            )
         suffix = f" ({reason})" if reason else ""
         print(f"[SKIP ] {self.name:70s}{suffix}")
+        return True
 
     def fail_dead(self, reason):
         """Transition an in-flight job -> FAILURE because it stopped responding.
@@ -476,23 +486,29 @@ class WorkflowState:
         """True iff we have everything needed to open a GitHub check run."""
         return bool(self._gh_token and self._repo and self._head_sha)
 
-    def apply_filtered_jobs(self, filtered):
-        """Mark every job Config Workflow filtered out as SKIPPED and post a
-        single aggregate check summarising the skips.
+    def apply_workflow_config(self, workflow_config):
+        """Apply Config Workflow decisions from the runner environment.
 
-        ``filtered`` is ``WORKFLOW_CONFIG.filtered_jobs`` — a
-        ``{job_name: reason}`` dict populated by ``_config_workflow`` on the
-        runner. Downstream jobs are still considered dispatch-eligible:
-        SKIPPED is treated as SUCCESS-equivalent by ``get_ready`` because
-        the skipped job's outputs are already in S3 from a prior run.
+        Config Workflow exposes two skip surfaces:
+          - ``filtered_jobs``: ``{job_name: reason}`` for jobs filtered by
+            changed files, labels, or other workflow config logic.
+          - ``cache_success`` + ``cache_jobs``: jobs whose prior successful
+            result can be reused from cache.
+
+        Both must become SKIPPED in the orchestrator DAG. SKIPPED is treated
+        as SUCCESS-equivalent by ``get_ready`` because the skipped job's
+        outputs are already in S3 from a prior run.
 
         Unknown job names are ignored so Config Workflow and the orchestrator
         don't have to agree on the exact set of workflow jobs (e.g. a job
         enabled only in the YAML but removed from the Python config).
         """
-        if not filtered:
+        if not isinstance(workflow_config, dict):
             return
-        applied = []
+
+        filtered = workflow_config.get("filtered_jobs") or {}
+        cache_success = workflow_config.get("cache_success") or []
+        cache_jobs = workflow_config.get("cache_jobs") or {}
         for name, reason in filtered.items():
             js = self.jobs.get(name)
             if js is None:
@@ -500,57 +516,64 @@ class WorkflowState:
             if js.status != JobStatus.PENDING:
                 continue
             reason = reason or "Filtered by Config Workflow"
-            js.skip(reason)
-            applied.append((name, reason))
-        if applied:
-            self._post_skipped_summary(applied)
+            output = {
+                "title": "SKIPPED",
+                "summary": f"SKIPPED: {reason}.",
+            }
+            js.skip(reason, output=output, post_check=True)
 
-    def _post_skipped_summary(self, applied):
-        """Post one aggregate GitHub check run covering every filtered job.
+        for name in cache_success:
+            if name in filtered:
+                continue
+            js = self.jobs.get(name)
+            if js is None:
+                continue
+            if js.status != JobStatus.PENDING:
+                continue
 
-        Showing one check per skipped job floods the PR (100+ jobs is common),
-        so we collapse them into a single ``Skipped Jobs`` check whose
-        ``output.text`` is a Markdown breakdown grouped by reason. The check
-        is immediately PATCHed to ``completed / skipped``.
-        """
-        if not self.can_post_checks:
-            return
-        by_reason = {}
-        for name, reason in applied:
-            by_reason.setdefault(reason, []).append(name)
-
-        lines = [f"**{len(applied)} jobs skipped by Config Workflow.**", ""]
-        for reason in sorted(by_reason):
-            names = by_reason[reason]
-            lines.append(f"### {reason} — {len(names)}")
-            for n in sorted(names):
-                lines.append(f"- `{n}`")
-            lines.append("")
-        text = "\n".join(lines)
-
-        # The Checks API caps output.text at ~64 KB.
-        limit = 60_000
-        if len(text) > limit:
-            text = text[:limit] + "\n\n... (truncated)\n"
-
-        summary = f"{len(applied)} job(s) skipped"
-        try:
-            check = JobCheckRun.queue(
-                self._gh_token, self._repo, self._head_sha, f"{self.workflow.name} / Skipped Jobs"
+            reason = "reused from cache"
+            details_url = self._cached_job_report_url(name, cache_jobs.get(name))
+            output = {
+                "title": "SKIPPED",
+                "summary": "SKIPPED: reused from cache.",
+            }
+            if details_url:
+                output["summary"] += f" [CI Report]({details_url})"
+                output["text"] = f"Reused a successful cached result for `{name}`."
+            js.skip(
+                reason,
+                output=output,
+                details_url=details_url,
+                post_check=True,
             )
-            check.complete(
-                "skipped",
-                output={
-                    "title": summary,
-                    "summary": summary,
-                    "text": text,
-                },
+
+    def _cached_job_report_url(self, job_name, record):
+        if not record:
+            return None
+        sha = _record_value(record, "sha", "")
+        if not sha:
+            return None
+        workflow_name = _record_value(record, "workflow", "") or self.workflow.name
+        pr_number = _record_value(record, "pr_number", 0) or 0
+        branch = _record_value(record, "branch", "")
+        if not pr_number and not branch:
+            return None
+        try:
+            from ..info import Info
+
+            return Info.get_specific_report_url_static(
+                pr_number=pr_number,
+                branch=branch,
+                sha=sha,
+                job_name=job_name,
+                workflow_name=workflow_name,
             )
         except Exception as e:
             print(
-                f"  [warn] could not post aggregate skipped-jobs check: "
+                f"  [warn] could not build cached report URL for {job_name!r}: "
                 f"{type(e).__name__}: {e}"
             )
+            return None
 
     # ---------------------------------------------------------- liveness
 
@@ -639,7 +662,7 @@ class WorkflowState:
                 self._environment = env
                 wc = env.get("WORKFLOW_CONFIG")
                 if isinstance(wc, dict):
-                    self.apply_filtered_jobs(wc.get("filtered_jobs") or {})
+                    self.apply_workflow_config(wc)
             output = payload.get("check_output")
             if not isinstance(output, dict):
                 output = None
@@ -806,7 +829,7 @@ class WorkflowState:
                 self._environment = env_snapshot
                 wc = env_snapshot.get("WORKFLOW_CONFIG")
                 if isinstance(wc, dict):
-                    self.apply_filtered_jobs(wc.get("filtered_jobs") or {})
+                    self.apply_workflow_config(wc)
             except Exception as e:
                 print(f"  [warn] could not read env snapshot from {env_path}: {e}")
 
