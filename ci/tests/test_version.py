@@ -2,7 +2,7 @@ from praktika.version import current_praktika_version, version_key
 
 
 def test_current_praktika_version_reads_project_version():
-    assert current_praktika_version() == "0.1.2"
+    assert current_praktika_version() == "0.1.3"
 
 
 def test_version_key_compares_numeric_components():

@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List
+from typing import Any, Dict, List
 
 from praktika.infrastructure.ec2_instance import EC2Instance
 from praktika.infrastructure.iam_instance_profile import IAMInstanceProfile
@@ -59,6 +59,7 @@ class CIDBCluster:
     # cover the praktika VPC). Used to render the ClickHouse `<networks>` ACL.
     vpc_cidr: str = "10.0.0.0/16"
     region: str = ""
+    ext: Dict[str, Any] = field(default_factory=dict)
 
     ec2_role: IAMRole.Config = field(init=False)
     instance_profile: IAMInstanceProfile.Config = field(init=False)

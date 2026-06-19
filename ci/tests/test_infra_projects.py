@@ -18,7 +18,10 @@ from praktika.infrastructure.iam_instance_profile import IAMInstanceProfile
 from praktika.infrastructure.iam_role import IAMRole
 from praktika.infrastructure.lambda_function import Lambda
 from praktika.infrastructure.launch_template import LaunchTemplate
+from praktika.infrastructure.native.cidb_cluster import CIDBCluster
+from praktika.infrastructure.native.github_token_minter import GitHubTokenMinter
 from praktika.infrastructure.native.orchestrator_pool import OrchestratorPool
+from praktika.infrastructure.native.pool_autoscaler import PoolAutoscaler
 from praktika.infrastructure.native.runner_pool import RunnerPool
 from praktika.infrastructure.secret_parameter import SecretParameter
 from praktika.infrastructure.sqs_queue import SQSQueue
@@ -355,6 +358,7 @@ def test_cloud_config_prefixes_embedded_pool_resources():
     assert orchestrator.autoscaling_group.vpc_name == "sandbox-praktika-ci"
     assert orchestrator.lambda_config.name == "sandbox-workflow-orchestrator"
     assert orchestrator.lambda_config.role_name == "sandbox-gh-webhook-role"
+    assert orchestrator.lambda_config.environments["ALLOWED_PUSH_BRANCHES"] == "main"
     assert orchestrator.webhook_secret.name == "sandbox-gh-webhook-secret"
     assert orchestrator.launch_template.tags["praktika_role"] == "workflow_orchestrator"
     assert orchestrator.launch_template.tags["praktika_project_slug"] == "sandbox"
@@ -378,6 +382,9 @@ def test_cloud_config_prefixes_embedded_pool_resources():
     assert (
         base_orchestrator.lambda_config.environments["SQS_QUEUE_NAME"]
         == "sandbox-workflow-orchestrator-base"
+    )
+    assert (
+        base_orchestrator.lambda_config.environments["ALLOWED_PUSH_BRANCHES"] == "main"
     )
     assert (
         base_orchestrator.autoscaling_group.tags["praktika_queue"]
@@ -813,7 +820,7 @@ def test_controller_image_builders_are_declared():
             _IMAGE_BUILDERS_BY_NAME[name]
             .prebuilt_venvs[0]
             .packages[-1]
-            .endswith("/praktika-0.0.1-py3-none-any.whl")
+            .endswith("/praktika-0.1.3-py3-none-any.whl")
         )
         agent_component = next(
             component
@@ -1006,7 +1013,7 @@ def test_non_base_runner_pools_patch_praktika_into_shared_base_venv():
         assert (
             pool.image_builder.prebuilt_venvs[0]
             .packages[-1]
-            .endswith("/praktika-0.0.1-py3-none-any.whl")
+            .endswith("/praktika-0.1.3-py3-none-any.whl")
         )
         assert (
             "/opt/praktika/base-venvs/praktika-runtime/bin/python -m pip install --force-reinstall"
@@ -1017,7 +1024,7 @@ def test_non_base_runner_pools_patch_praktika_into_shared_base_venv():
             "amazon-cloudwatch-agent-ctl -a fetch-config"
             in pool.launch_template.user_data
         )
-        assert "praktika-0.1.2-py3-none-any.whl" in pool.launch_template.user_data
+        assert "praktika-0.1.3-py3-none-any.whl" in pool.launch_template.user_data
         assert (
             "systemctl enable --now praktika-controller"
             in pool.launch_template.user_data
@@ -1061,7 +1068,7 @@ def test_projects_orchestrator_pools_include_default_and_base_image_variants():
     assert (
         _orchestrator_pool.image_builder.prebuilt_venvs[0]
         .packages[-1]
-        .endswith("/praktika-0.0.1-py3-none-any.whl")
+        .endswith("/praktika-0.1.3-py3-none-any.whl")
     )
     assert (
         "praktika-configure-cloudwatch-agent"
@@ -1076,7 +1083,7 @@ def test_projects_orchestrator_pools_include_default_and_base_image_variants():
         in _orchestrator_pool.launch_template.user_data
     )
     assert (
-        "praktika-0.1.2-py3-none-any.whl"
+        "praktika-0.1.3-py3-none-any.whl"
         in _orchestrator_pool.launch_template.user_data
     )
     assert (
@@ -1129,7 +1136,7 @@ def test_projects_orchestrator_pools_include_default_and_base_image_variants():
     assert (
         _orchestrator_pool_base.image_builder.prebuilt_venvs[0]
         .packages[-1]
-        .endswith("/praktika-0.0.1-py3-none-any.whl")
+        .endswith("/praktika-0.1.3-py3-none-any.whl")
     )
     assert _orchestrator_pool_base.autoscaling_group.tags["praktika_queue"] == (
         "workflow-orchestrator-base"
@@ -1170,3 +1177,42 @@ def test_orchestrator_pools_share_default_lambda_role_and_hmac_secret():
     assert pool_b.lambda_role.name == "gh-webhook-role"
     assert pool_a.webhook_secret.name == "gh-webhook-secret"
     assert pool_b.webhook_secret.name == "gh-webhook-secret"
+
+
+def test_orchestrator_pool_can_configure_allowed_push_branches_from_ext():
+    pool = OrchestratorPool(
+        name="orch",
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        size=1,
+        max_size=1,
+        ext={"allowed_push_branches": ["develop", "release/1.0"]},
+    )
+
+    assert pool.lambda_config.environments["ALLOWED_PUSH_BRANCHES"] == (
+        "develop,release/1.0"
+    )
+
+
+def test_native_configs_accept_ext_maps():
+    runner = RunnerPool(
+        name="runner",
+        instance_type="t4g.small",
+        scaling=RunnerPool.Scaling.Disabled,
+        size=1,
+        max_size=1,
+        ext={"owner": "ci"},
+    )
+    token_minter = GitHubTokenMinter(ext={"owner": "ci"})
+    autoscaler_pool = PoolAutoscaler.Pool(name="runner", ext={"owner": "ci"})
+    autoscaler = PoolAutoscaler(pools=[autoscaler_pool], ext={"owner": "ci"})
+    cidb = CIDBCluster(ext={"owner": "ci"})
+    cloud = CloudInfrastructure.Config(name="project", ext={"owner": "ci"})
+
+    assert runner.ext == {"owner": "ci"}
+    assert token_minter.ext == {"owner": "ci"}
+    assert autoscaler_pool.ext == {"owner": "ci"}
+    assert autoscaler.ext == {"owner": "ci"}
+    assert cidb.ext == {"owner": "ci"}
+    assert cloud.ext == {"owner": "ci"}
+    assert '"ext"' not in autoscaler.lambda_config.environments["POOLS_CONFIG_JSON"]

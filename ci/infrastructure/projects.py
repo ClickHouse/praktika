@@ -2,8 +2,8 @@ from praktika.infrastructure.cloud import CloudInfrastructure
 from praktika.infrastructure import Components, Storage, VPC
 
 
-_PRAKTIKA_BASE_VERSION = "0.0.1"
-_PRAKTIKA_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1.2-py3-none-any.whl"
+_PRAKTIKA_BASE_VERSION = "0.1.3"
+_PRAKTIKA_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1.3-py3-none-any.whl"
 _PRAKTIKA_CONTROLLER_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_controller-0.1.1-py3-none-any.whl"
 _RUNTIME_BASE_VENV = "praktika-runtime"
 
@@ -52,8 +52,8 @@ def _custom_image_tests():
 
 
 def _image_builders():
-    ci_version = "1.0.4"
-    ubuntu_ci_version = "1.0.4"
+    ci_version = "1.0.5"
+    ubuntu_ci_version = "1.0.5"
 
     return [
         _create_awslinux_image_builder_config(
@@ -217,7 +217,7 @@ _cidb_cluster = Components.CIDBCluster(
 PROJECTS = [
     CloudInfrastructure.Config(
         name="praktika",
-        min_praktika_version="0.1.2",
+        min_praktika_version="0.1.3",
         vpcs=[
             VPC.Config(
                 subnets=[

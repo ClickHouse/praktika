@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List
+from typing import Any, Dict, List
 
 from praktika.infrastructure.image_builder import ImageBuilder
 from praktika.infrastructure.autoscaling_group import AutoScalingGroup
@@ -75,6 +75,7 @@ class RunnerPool:
     security_group_names: List[str] = field(default_factory=list)
     volume_size_gb: int = 30
     capacity_reserve: int = 0
+    ext: Dict[str, Any] = field(default_factory=dict)
 
     launch_template: LaunchTemplate.Config = field(init=False)
     autoscaling_group: AutoScalingGroup.Config = field(init=False)
