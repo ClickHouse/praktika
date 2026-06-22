@@ -3,6 +3,14 @@ import zipfile
 from praktika.infrastructure.lambda_function import Lambda
 
 
+class _LambdaExceptions:
+    class ResourceNotFoundException(Exception):
+        pass
+
+    class ResourceConflictException(Exception):
+        pass
+
+
 def test_lambda_packaging_vendors_python_dependencies(monkeypatch, tmp_path):
     source = tmp_path / "handler.py"
     source.write_text("def handler(event, context):\n    return 1\n")
@@ -82,12 +90,7 @@ def test_lambda_deploy_readds_api_gateway_permission_when_api_already_exists(
     calls = {"add_permission": None}
 
     class _LambdaClient:
-        class exceptions:
-            class ResourceNotFoundException(Exception):
-                pass
-
-            class ResourceConflictException(Exception):
-                pass
+        exceptions = _LambdaExceptions
 
         def get_function(self, FunctionName):
             return {
@@ -130,3 +133,80 @@ def test_lambda_deploy_readds_api_gateway_permission_when_api_already_exists(
         "Principal": "apigateway.amazonaws.com",
         "SourceArn": "arn:aws:execute-api:eu-north-1:123456789012:api123/*/*",
     }
+
+
+def test_lambda_deploy_updates_environment_when_code_changes(monkeypatch, tmp_path):
+    source = tmp_path / "handler.py"
+    source.write_text("def handler(event, context):\n    return 1\n")
+
+    cfg = Lambda.Config(
+        name="token-minter",
+        path=str(source),
+        handler="handler.handler",
+        role_name="lambda-role",
+        region="eu-north-1",
+        environments={
+            "GH_TOKEN_PERMISSIONS_JSON": '{"contents": "write"}',
+        },
+    )
+    cfg.ext.update(
+        {
+            "role_arn": "arn:aws:iam::123456789012:role/lambda-role",
+            "runtime": "python3.11",
+            "environment": {
+                "GH_TOKEN_PERMISSIONS_JSON": '{"contents": "read"}',
+            },
+            "handler": "handler.handler",
+            "timeout": 3,
+            "memory_size": 128,
+        }
+    )
+
+    monkeypatch.setattr(cfg, "_validate_secrets", lambda: None)
+    monkeypatch.setattr(cfg, "fetch", lambda: cfg)
+    monkeypatch.setattr(
+        cfg,
+        "_package_lambda_code",
+        lambda *args, **kwargs: __import__("io").BytesIO(b"new zip"),
+    )
+
+    calls = {"updated_code": False, "updated_config": None, "waited": False}
+
+    class _Waiter:
+        def wait(self, **kwargs):
+            calls["waited"] = kwargs["FunctionName"] == "token-minter"
+
+    class _LambdaClient:
+        exceptions = _LambdaExceptions
+
+        def get_function(self, FunctionName):
+            return {
+                "Configuration": {
+                    "CodeSha256": __import__("base64").b64encode(
+                        __import__("hashlib").sha256(b"old zip").digest()
+                    ).decode("utf-8"),
+                }
+            }
+
+        def update_function_code(self, **kwargs):
+            calls["updated_code"] = kwargs["FunctionName"] == "token-minter"
+
+        def get_waiter(self, waiter_name):
+            assert waiter_name == "function_updated"
+            return _Waiter()
+
+        def update_function_configuration(self, **kwargs):
+            calls["updated_config"] = kwargs
+
+    monkeypatch.setattr(
+        "praktika.infrastructure.lambda_function.aws_client",
+        lambda service, region, name: _LambdaClient(),
+    )
+
+    cfg.deploy()
+
+    assert calls["updated_code"] is True
+    assert calls["waited"] is True
+    assert calls["updated_config"]["Environment"]["Variables"][
+        "GH_TOKEN_PERMISSIONS_JSON"
+    ] == '{"contents": "write"}'
