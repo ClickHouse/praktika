@@ -287,6 +287,10 @@ class GH:
                     shutil.copytree(item, destination)
                 else:
                     shutil.copy2(item, destination)
+            if not any(target.iterdir()):
+                raise RuntimeError(
+                    f"No GitHub Pages files copied from [{source}] to [{target}]"
+                )
 
             if no_jekyll:
                 (worktree / ".nojekyll").touch()
@@ -307,6 +311,12 @@ class GH:
             )
             Shell.check(
                 f"git -C {shlex.quote(str(worktree))} add -A",
+                strict=True,
+                verbose=verbose,
+            )
+            force_add_path = "." if target == worktree else str(target.relative_to(worktree))
+            Shell.check(
+                f"git -C {shlex.quote(str(worktree))} add -f -A -- {shlex.quote(force_add_path)}",
                 strict=True,
                 verbose=verbose,
             )

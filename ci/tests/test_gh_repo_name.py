@@ -140,6 +140,7 @@ def test_publish_gh_pages_copies_source_and_pushes(tmp_path, monkeypatch):
         and command.endswith(" HEAD:gh-pages")
         for command in commands
     )
+    assert f"git -C {temp_root / 'worktree'} add -f -A -- coverage/pr-1" in commands
     assert any(
         command.startswith("git worktree remove --force") for command in run_commands
     )
@@ -310,3 +311,73 @@ def test_publish_gh_pages_requests_contents_write_token(tmp_path, monkeypatch):
     )
 
     assert requested_permissions == [{"contents": "write"}]
+
+
+def test_publish_gh_pages_refuses_empty_source(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+
+    temp_root = tmp_path / "publish"
+    temp_root.mkdir()
+
+    def _fake_mkdtemp(prefix):
+        assert prefix == "praktika-gh-pages-"
+        return str(temp_root)
+
+    def _fake_check(
+        cls,
+        command,
+        log_file=None,
+        strict=False,
+        verbose=False,
+        dry_run=False,
+        stdin_str=None,
+        timeout=None,
+        retries=1,
+        **kwargs,
+    ):
+        if command.startswith("git worktree add"):
+            (temp_root / "worktree").mkdir(exist_ok=True)
+        return True
+
+    def _fake_run(
+        cls,
+        command,
+        log_file=None,
+        strict=False,
+        verbose=True,
+        dry_run=False,
+        stdin_str=None,
+        timeout=None,
+        retries=1,
+        retry_errors="",
+        **kwargs,
+    ):
+        if "ls-remote" in command:
+            return 0
+        return 0
+
+    real_rmtree = shutil.rmtree
+
+    def _fake_rmtree(path, *args, **kwargs):
+        if str(path) == str(temp_root):
+            return
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "mkdtemp", _fake_mkdtemp)
+    monkeypatch.setattr(shutil, "rmtree", _fake_rmtree)
+    monkeypatch.setattr(Shell, "check", classmethod(_fake_check))
+    monkeypatch.setattr(Shell, "run", classmethod(_fake_run))
+
+    try:
+        GH.publish_gh_pages(
+            str(source),
+            repo="ClickHouse/praktika",
+            destination_dir="/coverage/pr-1/",
+            commit_message="publish coverage",
+            github_token="ghs_test_token",
+            verbose=False,
+        )
+        assert False, "expected empty source failure"
+    except RuntimeError as e:
+        assert "No GitHub Pages files copied" in str(e)
