@@ -965,6 +965,20 @@ def test_advanced_workflow_version_check_runs_on_ubuntu_pool():
     assert version_check.runs_on == [RunnerLabels.SMALL_AMD_UBUNTU]
 
 
+def test_advanced_workflow_pytests_install_coverage():
+    from ci.workflows.praktika_pr_advanced import workflow
+
+    pytest_job = next(job for job in workflow.jobs if job.name == "Praktika Pytests")
+    assert len(pytest_job.pre_hooks) == 1
+    assert "pip install coverage -r ./ci/requirements.txt" in pytest_job.pre_hooks[0]
+
+
+def test_advanced_workflow_coverage_artifact_is_single_archive():
+    from ci.workflows.praktika_pr_advanced import coverage_html
+
+    assert coverage_html.path == "./ci/tmp/coverage-html.tar.gz"
+
+
 def test_all_image_builders_stay_private():
     for name in [
         "ci-arm64-image",
@@ -987,6 +1001,7 @@ def test_project_github_token_minter_uses_defaults_and_project_repo_scope():
     assert gh_token_minter.role_name == "praktika-gh-token-role"
     assert gh_token_minter.secret_name == "praktika-gh-app-echt"
     assert gh_token_minter.repositories == ["praktika"]
+    assert gh_token_minter.permissions["contents"] == "write"
 
     runner = next(pool for pool in cloud.runner_pools if pool.name == "arm-2xsmall")
     orchestrator = cloud.orchestrator_pool

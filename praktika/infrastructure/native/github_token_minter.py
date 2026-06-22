@@ -7,7 +7,7 @@ from praktika.infrastructure.lambda_function import Lambda
 
 DEFAULT_GITHUB_TOKEN_PERMISSIONS = {
     "checks": "write",
-    "contents": "read",
+    "contents": "write",
     "issues": "write",
     "metadata": "read",
     "pull_requests": "write",

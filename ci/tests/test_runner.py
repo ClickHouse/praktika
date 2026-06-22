@@ -23,6 +23,37 @@ _TEST_TEMP_DIR = "./ci/tmp/_test_runner"
 _DUMMY_DB_CONNECTION = "DUMMY_TEST_CI_DB_CONNECTION_NONEXISTENT"
 
 
+def test_gh_auth_uses_custom_auth_outside_github_actions(monkeypatch):
+    from praktika import runner
+    from praktika.gh_auth import GHAuth
+    from praktika.settings import Settings
+
+    calls = []
+
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.setattr(Settings, "USE_CUSTOM_GH_AUTH", True)
+    monkeypatch.setattr(runner, "_GH_authenticated", False)
+    monkeypatch.setattr(
+        GHAuth,
+        "auth_from_settings",
+        classmethod(lambda cls: calls.append("auth")),
+    )
+
+    assert runner._GH_Auth() is True
+    assert calls == ["auth"]
+
+
+def test_gh_auth_skips_outside_github_actions_without_custom_auth(monkeypatch):
+    from praktika import runner
+    from praktika.settings import Settings
+
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.setattr(Settings, "USE_CUSTOM_GH_AUTH", False)
+    monkeypatch.setattr(runner, "_GH_authenticated", False)
+
+    assert runner._GH_Auth() is False
+
+
 class TestRunner(unittest.TestCase):
     def setUp(self):
         from praktika.settings import Settings

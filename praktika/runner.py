@@ -115,14 +115,13 @@ _GH_authenticated = False
 
 def _GH_Auth():
     global _GH_authenticated
-    # Skip all GH status/comment posting when not running inside GitHub Actions.
-    # The CI engine handles GitHub integration via its own check-run mechanism.
-    if not os.environ.get("GITHUB_ACTIONS"):
-        return False
     if _GH_authenticated:
         return True
     if not Settings.USE_CUSTOM_GH_AUTH:
-        return True
+        # GitHub Actions provides auth through the action runtime. Outside
+        # GitHub Actions, callers that merely post optional statuses/comments
+        # should keep skipping GH calls unless custom Praktika auth is enabled.
+        return bool(os.environ.get("GITHUB_ACTIONS"))
     from .gh_auth import GHAuth
 
     try:
