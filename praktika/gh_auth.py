@@ -20,9 +20,38 @@ except (ImportError, AssertionError):
 from praktika.utils import Shell
 
 
+_PERMISSION_LEVELS = {
+    "none": 0,
+    "read": 1,
+    "write": 2,
+    "admin": 3,
+}
+
+
 class GHAuth:
     @classmethod
-    def _get_lambda_token_with_expiry(cls):
+    def _validate_permissions(cls, permissions, required_permissions):
+        if not required_permissions:
+            return
+
+        missing = []
+        permissions = permissions or {}
+        for name, required in required_permissions.items():
+            actual = permissions.get(name)
+            actual_level = _PERMISSION_LEVELS.get(actual, -1)
+            required_level = _PERMISSION_LEVELS.get(required, -1)
+            if actual_level < required_level:
+                missing.append(f"{name}={required} (actual: {actual or 'missing'})")
+
+        if missing:
+            raise RuntimeError(
+                "GH auth token lacks required permissions: "
+                f"{', '.join(missing)}. Update the GitHub App/token minter "
+                "permissions and redeploy the token minter."
+            )
+
+    @classmethod
+    def _get_lambda_token_with_expiry(cls, required_permissions=None):
         import boto3
         from .settings import Settings
 
@@ -54,6 +83,7 @@ class GHAuth:
         expires_at_iso = data.get("expires_at")
         if not token:
             raise RuntimeError("GH auth lambda returned no token (payload redacted)")
+        cls._validate_permissions(data.get("permissions"), required_permissions)
         if expires_at_iso:
             expires_at = datetime.fromisoformat(
                 expires_at_iso.replace("Z", "+00:00")
@@ -158,23 +188,27 @@ class GHAuth:
         return app_id, pem, int(installation_id)
 
     @classmethod
-    def get_installation_token(cls) -> str:
+    def get_installation_token(cls, required_permissions=None) -> str:
         """Return a raw GitHub App installation access token."""
         from .settings import Settings
 
         if Settings.GH_AUTH_LAMBDA_NAME:
-            token, _ = cls._get_lambda_token_with_expiry()
+            token, _ = cls._get_lambda_token_with_expiry(
+                required_permissions=required_permissions
+            )
             return token
         app_id, pem, installation_id = cls._read_app_credentials()
         return cls._get_access_token(pem, app_id, installation_id)
 
     @classmethod
-    def get_installation_token_with_expiry(cls):
+    def get_installation_token_with_expiry(cls, required_permissions=None):
         """Like ``get_installation_token`` but returns ``(token, expires_at_epoch)``."""
         from .settings import Settings
 
         if Settings.GH_AUTH_LAMBDA_NAME:
-            return cls._get_lambda_token_with_expiry()
+            return cls._get_lambda_token_with_expiry(
+                required_permissions=required_permissions
+            )
         app_id, pem, installation_id = cls._read_app_credentials()
         payload = {
             "iat": int(time.time()) - 60,

@@ -220,7 +220,9 @@ class GH:
             if not github_token:
                 from praktika.gh_auth import GHAuth
 
-                github_token = GHAuth.get_installation_token()
+                github_token = GHAuth.get_installation_token(
+                    required_permissions={"contents": "write"}
+                )
             git_env = cls._git_env_with_token(Path(temp_root), github_token)
             remote_url = f"https://github.com/{repo}.git"
             Shell.check(

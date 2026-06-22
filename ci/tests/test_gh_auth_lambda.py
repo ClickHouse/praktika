@@ -56,10 +56,67 @@ def test_gh_auth_prefers_lambda_for_raw_token(monkeypatch):
     monkeypatch.setattr(
         GHAuth,
         "_get_lambda_token_with_expiry",
-        classmethod(lambda cls: ("ghs_lambda_token", 123.0)),
+        classmethod(
+            lambda cls, required_permissions=None: ("ghs_lambda_token", 123.0)
+        ),
     )
 
     assert GHAuth.get_installation_token() == "ghs_lambda_token"
+
+
+def test_gh_auth_validates_required_lambda_permissions(monkeypatch):
+    payload = json.dumps(
+        {
+            "statusCode": 200,
+            "body": json.dumps(
+                {
+                    "token": "ghs_test_token",
+                    "expires_at": "2026-05-30T12:00:00Z",
+                    "permissions": {"contents": "read"},
+                }
+            ),
+        }
+    )
+    client = _DummyLambdaClient(payload)
+    monkeypatch.setattr("boto3.client", lambda service, region_name=None: client)
+    monkeypatch.setattr(Settings, "GH_AUTH_LAMBDA_NAME", "gh-token")
+    monkeypatch.setattr(Settings, "GH_AUTH_LAMBDA_REGION", "eu-north-1")
+
+    try:
+        GHAuth.get_installation_token(
+            required_permissions={"contents": "write"}
+        )
+        assert False, "expected permission failure"
+    except RuntimeError as e:
+        message = str(e)
+        assert "contents=write (actual: read)" in message
+        assert "ghs_test_token" not in message
+
+
+def test_gh_auth_accepts_required_lambda_permissions(monkeypatch):
+    payload = json.dumps(
+        {
+            "statusCode": 200,
+            "body": json.dumps(
+                {
+                    "token": "ghs_test_token",
+                    "expires_at": "2026-05-30T12:00:00Z",
+                    "permissions": {"contents": "write"},
+                }
+            ),
+        }
+    )
+    client = _DummyLambdaClient(payload)
+    monkeypatch.setattr("boto3.client", lambda service, region_name=None: client)
+    monkeypatch.setattr(Settings, "GH_AUTH_LAMBDA_NAME", "gh-token")
+    monkeypatch.setattr(Settings, "GH_AUTH_LAMBDA_REGION", "eu-north-1")
+
+    assert (
+        GHAuth.get_installation_token(
+            required_permissions={"contents": "write"}
+        )
+        == "ghs_test_token"
+    )
 
 
 def test_gh_auth_redacts_lambda_error_payload(monkeypatch):
