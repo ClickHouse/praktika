@@ -31,6 +31,11 @@ def _extract_coverage_archive():
         except TypeError:
             tar.extractall(COVERAGE_HTML_DIR)
 
+    if not (COVERAGE_HTML_DIR / "index.html").is_file():
+        raise RuntimeError(
+            f"Coverage archive did not extract an index.html into {COVERAGE_HTML_DIR}"
+        )
+
 
 def main():
     info = Info()
