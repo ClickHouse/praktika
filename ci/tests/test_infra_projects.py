@@ -969,8 +969,17 @@ def test_advanced_workflow_pytests_install_coverage():
     from ci.workflows.praktika_pr_advanced import workflow
 
     pytest_job = next(job for job in workflow.jobs if job.name == "Praktika Pytests")
+    assert pytest_job.command.startswith("PRAKTIKA_ENABLE_COVERAGE=1 ")
     assert len(pytest_job.pre_hooks) == 1
     assert "pip install coverage -r ./ci/requirements.txt" in pytest_job.pre_hooks[0]
+
+
+def test_simple_workflow_pytests_do_not_enable_coverage():
+    from ci.workflows.praktika_pr_simple import workflow
+
+    pytest_job = next(job for job in workflow.jobs if job.name == "Praktika Pytests")
+    assert pytest_job.command == "python3 ./ci/scripts/run_ci_pytests.py"
+    assert not pytest_job.pre_hooks
 
 
 def test_advanced_workflow_coverage_artifact_is_single_archive():

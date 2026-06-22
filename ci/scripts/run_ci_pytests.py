@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import shutil
 import tarfile
 from pathlib import Path
@@ -11,14 +12,23 @@ COVERAGE_HTML_DIR = Path("./ci/tmp/coverage/html")
 COVERAGE_HTML_ARCHIVE = Path("./ci/tmp/coverage-html.tar.gz")
 
 
+def _coverage_enabled():
+    return os.environ.get("PRAKTIKA_ENABLE_COVERAGE") == "1"
+
+
 def main():
+    coverage_enabled = _coverage_enabled()
     result = Result.from_pytest_run(
         "./ci/tests/test*.py",
         name="Praktika Pytests",
-        pytest_command="coverage run -m pytest",
+        pytest_command="coverage run -m pytest" if coverage_enabled else "pytest",
         pytest_logfile="./ci/tmp/pytest.log",
         logfile="./ci/tmp/pytest.stdout.log",
     )
+    if not coverage_enabled:
+        result.complete_job()
+        return
+
     if COVERAGE_HTML_DIR.exists():
         shutil.rmtree(COVERAGE_HTML_DIR)
     if COVERAGE_HTML_ARCHIVE.exists():

@@ -41,7 +41,7 @@ workflow = Workflow.Config(
         Job.Config(
             name="Praktika Pytests",
             runs_on=[RunnerLabels.SMALL_ARM],
-            command="python3 ./ci/scripts/run_ci_pytests.py",
+            command="PRAKTIKA_ENABLE_COVERAGE=1 python3 ./ci/scripts/run_ci_pytests.py",
             pre_hooks=[_INSTALL_DEPS],
             provides=[coverage_html.name],
             digest_config=Job.CacheDigestConfig(
