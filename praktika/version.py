@@ -1,11 +1,12 @@
 import re
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 
-def _version_from_pyproject() -> str:
-    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+def _version_from_pyproject(pyproject: Optional[Path] = None) -> str:
+    if pyproject is None:
+        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
     if not pyproject.is_file():
         return ""
 
@@ -26,6 +27,11 @@ def _version_from_pyproject() -> str:
 
 def current_praktika_version() -> str:
     return _version_from_pyproject() or package_version("praktika")
+
+
+def current_praktika_controller_version() -> str:
+    pyproject = Path(__file__).resolve().parents[1] / "bootstrap" / "pyproject.toml"
+    return _version_from_pyproject(pyproject) or package_version("praktika-controller")
 
 
 def version_key(value: str) -> Tuple[int, ...]:

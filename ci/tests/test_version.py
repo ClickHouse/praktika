@@ -1,8 +1,33 @@
-from praktika.version import current_praktika_version, version_key
+import re
+from pathlib import Path
+
+from praktika.version import (
+    current_praktika_controller_version,
+    current_praktika_version,
+    version_key,
+)
 
 
 def test_current_praktika_version_reads_project_version():
-    assert current_praktika_version() == "0.1.3"
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    match = re.search(
+        r'(?m)^\[project\](?:\n(?!\[).*)*\nversion\s*=\s*["\']([^"\']+)["\']',
+        pyproject.read_text(encoding="utf-8"),
+    )
+
+    assert match
+    assert current_praktika_version() == match.group(1)
+
+
+def test_current_praktika_controller_version_reads_project_version():
+    pyproject = Path(__file__).resolve().parents[2] / "bootstrap" / "pyproject.toml"
+    match = re.search(
+        r'(?m)^\[project\](?:\n(?!\[).*)*\nversion\s*=\s*["\']([^"\']+)["\']',
+        pyproject.read_text(encoding="utf-8"),
+    )
+
+    assert match
+    assert current_praktika_controller_version() == match.group(1)
 
 
 def test_version_key_compares_numeric_components():

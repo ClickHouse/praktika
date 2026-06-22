@@ -19,7 +19,10 @@ from praktika.project_init import (
     _validate_aws_profile,
 )
 from praktika.settings import Settings
-from praktika.version import current_praktika_version
+from praktika.version import (
+    current_praktika_controller_version,
+    current_praktika_version,
+)
 
 
 def _decode_embedded_file(command: str) -> str:
@@ -292,7 +295,7 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     assert f'"{current_praktika_version()}"' in infra_text
     assert (
         "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/"
-        "praktika_controller-0.1.1-py3-none-any.whl"
+        f"praktika_controller-{current_praktika_controller_version()}-py3-none-any.whl"
     ) in infra_text
     assert "AWS_REGION" not in infra_text
     assert "Components.GitHubTokenMinter(" in infra_text

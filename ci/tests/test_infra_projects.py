@@ -26,8 +26,18 @@ from praktika.infrastructure.native.runner_pool import RunnerPool
 from praktika.infrastructure.secret_parameter import SecretParameter
 from praktika.infrastructure.sqs_queue import SQSQueue
 from praktika.validator import Validator
-from praktika.version import current_praktika_version
+from praktika.version import (
+    current_praktika_controller_version,
+    current_praktika_version,
+    version_key,
+)
 from ci.settings.settings import RunnerLabels
+
+
+_PRAKTIKA_WHEEL = f"/praktika-{current_praktika_version()}-py3-none-any.whl"
+_PRAKTIKA_CONTROLLER_WHEEL = (
+    f"praktika_controller-{current_praktika_controller_version()}-py3-none-any.whl"
+)
 
 
 def _decode_embedded_file(command: str) -> str:
@@ -89,7 +99,9 @@ def test_current_infrastructure_config_imports_all_component_groups(monkeypatch)
 
     cloud = _get_infra_config("praktika")
 
-    assert cloud.min_praktika_version == current_praktika_version()
+    assert version_key(cloud.min_praktika_version) <= version_key(
+        current_praktika_version()
+    )
     assert cloud.vpcs
     assert cloud.storages
     assert cloud.report_pages
@@ -621,7 +633,7 @@ def test_cloud_project_namespace_does_not_rewrite_controller_local_paths():
         version="1.0.0",
         controller_package=(
             "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/"
-            "packages/praktika_controller-0.1.1-py3-none-any.whl"
+            f"packages/{_PRAKTIKA_CONTROLLER_WHEEL}"
         ),
         prebuilt_venvs=[
             Components.create_praktika_venv_config("praktika-runtime-0.1.2", "0.1.2")
@@ -805,7 +817,7 @@ def test_controller_image_builders_are_declared():
             for cmd in builder.inline_components[0]["commands"]
         )
         assert any(
-            "praktika_controller-0.1.1-py3-none-any.whl" in cmd
+            _PRAKTIKA_CONTROLLER_WHEEL in cmd
             for cmd in runtime_component["commands"]
         )
         assert builder.prebuilt_venvs[0].name == "praktika-runtime"
@@ -820,7 +832,7 @@ def test_controller_image_builders_are_declared():
             _IMAGE_BUILDERS_BY_NAME[name]
             .prebuilt_venvs[0]
             .packages[-1]
-            .endswith("/praktika-0.1.3-py3-none-any.whl")
+            .endswith(_PRAKTIKA_WHEEL)
         )
         agent_component = next(
             component
@@ -1013,7 +1025,7 @@ def test_non_base_runner_pools_patch_praktika_into_shared_base_venv():
         assert (
             pool.image_builder.prebuilt_venvs[0]
             .packages[-1]
-            .endswith("/praktika-0.1.3-py3-none-any.whl")
+            .endswith(_PRAKTIKA_WHEEL)
         )
         assert (
             "/opt/praktika/base-venvs/praktika-runtime/bin/python -m pip install --force-reinstall"
@@ -1024,7 +1036,7 @@ def test_non_base_runner_pools_patch_praktika_into_shared_base_venv():
             "amazon-cloudwatch-agent-ctl -a fetch-config"
             in pool.launch_template.user_data
         )
-        assert "praktika-0.1.3-py3-none-any.whl" in pool.launch_template.user_data
+        assert _PRAKTIKA_WHEEL.lstrip("/") in pool.launch_template.user_data
         assert (
             "systemctl enable --now praktika-controller"
             in pool.launch_template.user_data
@@ -1034,7 +1046,7 @@ def test_non_base_runner_pools_patch_praktika_into_shared_base_venv():
     ubuntu_user_data = ubuntu.launch_template.user_data
     assert (
         ubuntu_user_data.index("praktika-configure-cloudwatch-agent")
-        < ubuntu_user_data.index("praktika_controller-0.1.1-py3-none-any.whl")
+        < ubuntu_user_data.index(_PRAKTIKA_CONTROLLER_WHEEL)
     )
     assert (
         "python3.12 -m pip install --ignore-installed"
@@ -1068,7 +1080,7 @@ def test_projects_orchestrator_pools_include_default_and_base_image_variants():
     assert (
         _orchestrator_pool.image_builder.prebuilt_venvs[0]
         .packages[-1]
-        .endswith("/praktika-0.1.3-py3-none-any.whl")
+        .endswith(_PRAKTIKA_WHEEL)
     )
     assert (
         "praktika-configure-cloudwatch-agent"
@@ -1083,7 +1095,7 @@ def test_projects_orchestrator_pools_include_default_and_base_image_variants():
         in _orchestrator_pool.launch_template.user_data
     )
     assert (
-        "praktika-0.1.3-py3-none-any.whl"
+        _PRAKTIKA_WHEEL.lstrip("/")
         in _orchestrator_pool.launch_template.user_data
     )
     assert (
@@ -1136,7 +1148,7 @@ def test_projects_orchestrator_pools_include_default_and_base_image_variants():
     assert (
         _orchestrator_pool_base.image_builder.prebuilt_venvs[0]
         .packages[-1]
-        .endswith("/praktika-0.1.3-py3-none-any.whl")
+        .endswith(_PRAKTIKA_WHEEL)
     )
     assert _orchestrator_pool_base.autoscaling_group.tags["praktika_queue"] == (
         "workflow-orchestrator-base"

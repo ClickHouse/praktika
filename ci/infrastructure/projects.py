@@ -1,10 +1,24 @@
 from praktika.infrastructure.cloud import CloudInfrastructure
 from praktika.infrastructure import Components, Storage, VPC
+from praktika.version import (
+    current_praktika_controller_version,
+    current_praktika_version,
+)
 
 
-_PRAKTIKA_BASE_VERSION = "0.1.3"
-_PRAKTIKA_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1.3-py3-none-any.whl"
-_PRAKTIKA_CONTROLLER_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_controller-0.1.1-py3-none-any.whl"
+_PRAKTIKA_PACKAGE_BASE_URL = (
+    "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages"
+)
+_PRAKTIKA_BASE_VERSION = current_praktika_version()
+_PRAKTIKA_WHL = (
+    f"{_PRAKTIKA_PACKAGE_BASE_URL}/"
+    f"praktika-{_PRAKTIKA_BASE_VERSION}-py3-none-any.whl"
+)
+_PRAKTIKA_CONTROLLER_VERSION = current_praktika_controller_version()
+_PRAKTIKA_CONTROLLER_WHL = (
+    f"{_PRAKTIKA_PACKAGE_BASE_URL}/"
+    f"praktika_controller-{_PRAKTIKA_CONTROLLER_VERSION}-py3-none-any.whl"
+)
 _RUNTIME_BASE_VENV = "praktika-runtime"
 
 

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from .interactive import UserPrompt
-from .version import current_praktika_version
+from .version import current_praktika_controller_version, current_praktika_version
 
 
 PRAKTIKA_MARKERS = {
@@ -503,6 +503,11 @@ def _main_ci_workflow_template(answers: InitAnswers) -> str:
 
 
 def _infrastructure_template(answers: InitAnswers) -> str:
+    praktika_controller_whl = (
+        "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/"
+        f"praktika_controller-{current_praktika_controller_version()}-py3-none-any.whl"
+    )
+
     return textwrap.dedent(
         f"""\
         from ci.settings.settings import PROJECT_NAME, PROJECT_SLUG, PRAKTIKA_BASE_VENV
@@ -511,7 +516,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
 
 
         # until published in pip
-        _PRAKTIKA_CONTROLLER_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_controller-0.1.1-py3-none-any.whl"
+        _PRAKTIKA_CONTROLLER_WHL = "{praktika_controller_whl}"
 
 
         def _image_builders():
