@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from praktika.infrastructure.iam_role import IAMRole
 from praktika.infrastructure.lambda_function import Lambda
@@ -32,6 +32,7 @@ class GitHubTokenMinter:
     region: str = ""
     name: str = "gh-token"
     role_name: str = "gh-token-role"
+    ext: Dict[str, Any] = field(default_factory=dict)
 
     lambda_role: IAMRole.Config = field(init=False)
     lambda_config: Lambda.Config = field(init=False)

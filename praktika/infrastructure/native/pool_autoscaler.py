@@ -1,7 +1,7 @@
 import json
 import os
-from dataclasses import asdict, dataclass, field
-from typing import List
+from dataclasses import dataclass, field
+from typing import Any, Dict, List
 
 from praktika.infrastructure.iam_role import IAMRole
 from praktika.infrastructure.lambda_function import Lambda
@@ -22,6 +22,7 @@ class PoolAutoscaler:
         queue_name: str = ""
         asg_name: str = ""
         capacity_reserve: int = 0
+        ext: Dict[str, Any] = field(default_factory=dict)
 
     name: str = "pool-autoscaler"
     interval_seconds: int = 60
@@ -29,6 +30,7 @@ class PoolAutoscaler:
     lambda_role_name: str = "pool-autoscaler-role"
     timeout_ms: int = 30 * 1000
     memory_size_mb: int = 128
+    ext: Dict[str, Any] = field(default_factory=dict)
 
     lambda_config: Lambda.Config = field(init=False)
     lambda_role: IAMRole.Config = field(init=False)
@@ -44,7 +46,15 @@ class PoolAutoscaler:
                 )
 
         pool_config_json = json.dumps(
-            [asdict(pool) for pool in self.pools],
+            [
+                {
+                    "name": pool.name,
+                    "queue_name": pool.queue_name,
+                    "asg_name": pool.asg_name,
+                    "capacity_reserve": pool.capacity_reserve,
+                }
+                for pool in self.pools
+            ],
             separators=(",", ":"),
             sort_keys=True,
         )

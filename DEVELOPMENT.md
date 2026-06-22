@@ -19,26 +19,29 @@ python3.12 -m venv .build-venv
 Build and upload `praktika`:
 
 ```bash
+VERSION="$(.build-venv/bin/python -c 'from praktika.version import current_praktika_version; print(current_praktika_version())')"
 .build-venv/bin/python -m build --wheel --no-isolation --outdir dist/
 aws --profile Box s3 cp \
-  dist/praktika-0.1.1-py3-none-any.whl \
-  s3://praktika-artifacts-eu-north-1/packages/praktika-0.1.1-py3-none-any.whl
+  "dist/praktika-${VERSION}-py3-none-any.whl" \
+  "s3://praktika-artifacts-eu-north-1/packages/praktika-${VERSION}-py3-none-any.whl"
 ```
 
 Build and upload `praktika-controller`:
 
 ```bash
+VERSION="$(.build-venv/bin/python -c 'from pathlib import Path; from praktika.version import current_praktika_controller_version; print(current_praktika_controller_version(Path("bootstrap/pyproject.toml")))')"
 .build-venv/bin/python -m build --wheel --no-isolation --outdir bootstrap/dist bootstrap
 aws --profile Box s3 cp \
-  bootstrap/dist/praktika_controller-0.1.1-py3-none-any.whl \
-  s3://praktika-artifacts-eu-north-1/packages/praktika_controller-0.1.1-py3-none-any.whl
+  "bootstrap/dist/praktika_controller-${VERSION}-py3-none-any.whl" \
+  "s3://praktika-artifacts-eu-north-1/packages/praktika_controller-${VERSION}-py3-none-any.whl"
 ```
 
 Optionally, refresh the local install of `praktika` from the same S3 URL:
 
 ```bash
+VERSION="$(python3 -c 'from praktika.version import current_praktika_version; print(current_praktika_version())')"
 pip install --force-reinstall \
-  "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1.1-py3-none-any.whl" \
+  "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-${VERSION}-py3-none-any.whl" \
   --break-system-packages
 ```
 

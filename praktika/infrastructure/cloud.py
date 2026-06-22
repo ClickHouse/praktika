@@ -67,6 +67,7 @@ class CloudInfrastructure:
         orchestrator_pool: Optional["OrchestratorPool"] = None
         orchestrator_pools: List["OrchestratorPool"] = field(default_factory=list)
         cidb_cluster: Optional["CIDBCluster"] = None
+        ext: Dict[str, Any] = field(default_factory=dict)
         _settings: Optional[_Settings] = None
         _pre_namespace_names: Dict[str, List[str]] = field(
             default_factory=dict, init=False, repr=False

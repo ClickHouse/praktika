@@ -1,9 +1,21 @@
+import re
+from pathlib import Path
+
 from setuptools import find_packages, setup
+
+
+def _version_from_pyproject() -> str:
+    pyproject = Path(__file__).with_name("pyproject.toml")
+    for raw_line in pyproject.read_text(encoding="utf-8").splitlines():
+        match = re.match(r'version\s*=\s*["\']([^"\']+)["\']', raw_line.strip())
+        if match:
+            return match.group(1)
+    raise RuntimeError(f"Could not find project version in {pyproject}")
 
 
 setup(
     name="praktika-controller",
-    version="0.1.1",
+    version=_version_from_pyproject(),
     description="Thin controller launcher for versioned Praktika workloads",
     url="https://github.com/ClickHouse/praktika",
     project_urls={

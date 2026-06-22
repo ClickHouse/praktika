@@ -17,7 +17,16 @@ S3_BUCKET = os.environ.get("S3_BUCKET", "")
 # Keep the sender allow-list hook in place, but leave it empty by default so
 # webhook dispatch is unrestricted unless a deployment explicitly populates it.
 ALLOWED_SENDERS = set()
-ALLOWED_PUSH_BRANCHES = {"main"}
+
+
+def _parse_allowed_push_branches():
+    value = os.environ.get("ALLOWED_PUSH_BRANCHES")
+    if value is None:
+        return {"main"}
+    return {branch.strip() for branch in value.split(",") if branch.strip()}
+
+
+ALLOWED_PUSH_BRANCHES = _parse_allowed_push_branches()
 
 
 def _cancel_scope(queue_name: str) -> str:
@@ -225,7 +234,7 @@ def _enqueue(workflow, delivery_id):
     target = (
         f"PR#{workflow['pr_number']}"
         if workflow.get("pr_number")
-        else f"branch={workflow.get('branch', '?')}"
+        else f"branch={workflow.get('head_ref', '?')}"
     )
     print(f"ENQUEUED: {label} {target} delivery={delivery_id}")
 

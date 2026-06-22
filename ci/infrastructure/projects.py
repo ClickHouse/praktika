@@ -1,10 +1,51 @@
+import re
+from pathlib import Path
+
 from praktika.infrastructure.cloud import CloudInfrastructure
 from praktika.infrastructure import Components, Storage, VPC
+from praktika.version import current_praktika_version
 
 
-_PRAKTIKA_BASE_VERSION = "0.0.1"
-_PRAKTIKA_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika-0.1.2-py3-none-any.whl"
-_PRAKTIKA_CONTROLLER_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_controller-0.1.1-py3-none-any.whl"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_PRAKTIKA_PACKAGE_BASE_URL = (
+    "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages"
+)
+_PRAKTIKA_BASE_VERSION = "0.1.3"
+_PRAKTIKA_LATEST_VERSION = current_praktika_version()
+_PRAKTIKA_WHL = (
+    f"{_PRAKTIKA_PACKAGE_BASE_URL}/"
+    f"praktika-{_PRAKTIKA_LATEST_VERSION}-py3-none-any.whl"
+)
+
+
+def _version_from_pyproject(pyproject: Path) -> str:
+    in_project = False
+    for raw_line in pyproject.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if line == "[project]":
+            in_project = True
+            continue
+        if in_project and line.startswith("["):
+            break
+        if in_project and line.startswith("version"):
+            match = re.match(r'version\s*=\s*["\']([^"\']+)["\']', line)
+            if match:
+                return match.group(1)
+    raise RuntimeError(f"Could not find project version in {pyproject}")
+
+
+_PRAKTIKA_CONTROLLER_BASE_VERSION = "0.1.1"
+_PRAKTIKA_CONTROLLER_LATEST_VERSION = _version_from_pyproject(
+    _REPO_ROOT / "bootstrap" / "pyproject.toml"
+)
+_PRAKTIKA_CONTROLLER_BASE_WHL = (
+    f"{_PRAKTIKA_PACKAGE_BASE_URL}/"
+    f"praktika_controller-{_PRAKTIKA_CONTROLLER_BASE_VERSION}-py3-none-any.whl"
+)
+_PRAKTIKA_CONTROLLER_WHL = (
+    f"{_PRAKTIKA_PACKAGE_BASE_URL}/"
+    f"praktika_controller-{_PRAKTIKA_CONTROLLER_LATEST_VERSION}-py3-none-any.whl"
+)
 _RUNTIME_BASE_VENV = "praktika-runtime"
 
 
@@ -52,28 +93,28 @@ def _custom_image_tests():
 
 
 def _image_builders():
-    ci_version = "1.0.4"
-    ubuntu_ci_version = "1.0.4"
+    ci_version = "1.0.6"
+    ubuntu_ci_version = "1.0.6"
 
     return [
         _create_awslinux_image_builder_config(
             name="ci-arm64-image",
             version=ci_version,
-            controller_package=_PRAKTIKA_CONTROLLER_WHL,
+            controller_package=_PRAKTIKA_CONTROLLER_BASE_WHL,
             prebuilt_venvs=_runtime_prebuilt_venvs(),
             instance_types=["t4g.small"],
         ),
         _create_awslinux_image_builder_config(
             name="ci-x86_64-image",
             version=ci_version,
-            controller_package=_PRAKTIKA_CONTROLLER_WHL,
+            controller_package=_PRAKTIKA_CONTROLLER_BASE_WHL,
             prebuilt_venvs=_runtime_prebuilt_venvs(),
             instance_types=["t3.small"],
         ),
         _create_ubuntu_image_builder_config(
             name="ci-ubuntu-x86_64-image",
             version=ubuntu_ci_version,
-            controller_package=_PRAKTIKA_CONTROLLER_WHL,
+            controller_package=_PRAKTIKA_CONTROLLER_BASE_WHL,
             prebuilt_venvs=_runtime_prebuilt_venvs(),
             components=_custom_image_tests(),
             instance_types=["t3.small"],
@@ -97,6 +138,8 @@ _runner_pools = [
                 "#!/usr/bin/env bash",
                 "set -xeuo pipefail",
                 "",
+                "# Update the controller if changed (to test new version w/o image rebuild)",
+                f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages",
                 "# Add any host customization you need above this line.",
                 "/usr/local/bin/praktika-configure-cloudwatch-agent",
                 "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/praktika/amazon-cloudwatch-agent.json -s",
@@ -217,7 +260,7 @@ _cidb_cluster = Components.CIDBCluster(
 PROJECTS = [
     CloudInfrastructure.Config(
         name="praktika",
-        min_praktika_version="0.1.2",
+        min_praktika_version="0.1.3",
         vpcs=[
             VPC.Config(
                 subnets=[
@@ -232,7 +275,7 @@ PROJECTS = [
             Components.report_page_config,
         ],
         image_builders=_IMAGE_BUILDERS,
-        github_token_minters=[Components.GitHubTokenMinter()],
+        github_token_minters=[Components.GitHubTokenMinter(secret_name="gh-app-echt")],
         orchestrator_pools=[_orchestrator_pool, _orchestrator_pool_base],
         runner_pools=_runner_pools,
         cidb_cluster=_cidb_cluster,

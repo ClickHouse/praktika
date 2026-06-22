@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 import copy
-from typing import List
+from typing import Any, Dict, List
 
 from praktika.infrastructure.image_builder import ImageBuilder
 from praktika.infrastructure.autoscaling_group import AutoScalingGroup
@@ -51,6 +51,9 @@ class OrchestratorPool:
     boot; `user_data` can override that when extra instance boot customization
     is required.
 
+    `ext["allowed_push_branches"]` controls which GitHub push branch refs the
+    webhook Lambda accepts for this pool. The default is `["main"]`.
+
     Registered into CloudInfrastructure.Config automatically via its
     orchestrator_pool field.
 
@@ -86,6 +89,8 @@ class OrchestratorPool:
     security_group_names: List[str] = field(default_factory=list)
     volume_size_gb: int = 30
     capacity_reserve: int = 0
+    # TODO: Consider updating ext["allowed_push_branches"] automatically from MainCI push workflow branches.
+    ext: Dict[str, Any] = field(default_factory=dict)
 
     launch_template: LaunchTemplate.Config = field(init=False)
     autoscaling_group: AutoScalingGroup.Config = field(init=False)
@@ -138,6 +143,15 @@ class OrchestratorPool:
         assert (
             self.capacity_reserve >= 0
         ), f"capacity_reserve={self.capacity_reserve} must be >= 0"
+        allowed_push_branches = self.ext.get("allowed_push_branches", ["main"])
+        assert isinstance(
+            allowed_push_branches, list
+        ), "ext['allowed_push_branches'] must be a list of branch names"
+        assert all(
+            isinstance(branch, str) and branch.strip()
+            for branch in allowed_push_branches
+        ), "ext['allowed_push_branches'] must contain only non-empty strings"
+        allowed_push_branches = [branch.strip() for branch in allowed_push_branches]
         assert (
             self.max_size >= self.capacity_reserve
         ), f"max_size={self.max_size} must be >= capacity_reserve={self.capacity_reserve}"
@@ -264,6 +278,9 @@ class OrchestratorPool:
             self._webhook_secret_name(): "GH_WEBHOOK_SECRET",
         }
         self.lambda_config.environments["SQS_QUEUE_NAME"] = queue_name
+        self.lambda_config.environments["ALLOWED_PUSH_BRANCHES"] = ",".join(
+            allowed_push_branches
+        )
         self.webhook_secret = SecretParameter.Config(
             name=self._webhook_secret_name(),
             description="GitHub webhook secret for the workflow trigger Lambda",
