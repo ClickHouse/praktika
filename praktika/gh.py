@@ -187,6 +187,7 @@ class GH:
         git_user_name: str = "praktika[bot]",
         git_user_email: str = "praktika[bot]@users.noreply.github.com",
         verbose: bool = True,
+        clean_destination: bool = True,
     ) -> str:
         """Publish a local directory to a path on the repository's Pages branch.
 
@@ -274,17 +275,23 @@ class GH:
                 )
 
             target = worktree / destination_dir if destination_dir else worktree
-            if target.exists():
+            if target.exists() and clean_destination:
                 if target.is_dir():
                     shutil.rmtree(target)
                 else:
                     target.unlink()
+            elif target.exists() and not target.is_dir():
+                raise RuntimeError(
+                    f"GitHub Pages destination is not a directory [{target}]"
+                )
             target.mkdir(parents=True, exist_ok=True)
 
             for item in source.iterdir():
                 destination = target / item.name
                 if item.is_dir():
-                    shutil.copytree(item, destination)
+                    shutil.copytree(
+                        item, destination, dirs_exist_ok=not clean_destination
+                    )
                 else:
                     shutil.copy2(item, destination)
             if not any(target.iterdir()):

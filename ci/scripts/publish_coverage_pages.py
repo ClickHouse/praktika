@@ -10,6 +10,7 @@ from praktika.settings import Settings
 
 COVERAGE_HTML_ARCHIVE = Path(Settings.INPUT_DIR) / "coverage-html.tar.gz"
 COVERAGE_HTML_DIR = Path(Settings.TEMP_DIR) / "coverage/html_publish"
+LATEST_COVERAGE_INDEX_DIR = Path(Settings.TEMP_DIR) / "coverage/latest_index"
 
 
 def _extract_coverage_archive():
@@ -37,6 +38,32 @@ def _extract_coverage_archive():
         )
 
 
+def _write_redirect_index(target_url: str):
+    if LATEST_COVERAGE_INDEX_DIR.exists():
+        shutil.rmtree(LATEST_COVERAGE_INDEX_DIR)
+    LATEST_COVERAGE_INDEX_DIR.mkdir(parents=True, exist_ok=True)
+    (LATEST_COVERAGE_INDEX_DIR / "index.html").write_text(
+        "\n".join(
+            [
+                "<!doctype html>",
+                '<html lang="en">',
+                "<head>",
+                '<meta charset="utf-8">',
+                f'<meta http-equiv="refresh" content="0; url={target_url}">',
+                f'<link rel="canonical" href="{target_url}">',
+                "<title>Latest coverage report</title>",
+                "</head>",
+                "<body>",
+                f'<p><a href="{target_url}">Latest coverage report</a></p>',
+                "</body>",
+                "</html>",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def main():
     info = Info()
     if info.pr_number:
@@ -50,13 +77,25 @@ def main():
         destination_dir=destination_dir,
         commit_message=f"Publish coverage report for {info.sha[:12]}",
     )
+    _write_redirect_index(url)
+    latest_url = GH.publish_gh_pages(
+        str(LATEST_COVERAGE_INDEX_DIR),
+        destination_dir="coverage",
+        commit_message=f"Update latest coverage report for {info.sha[:12]}",
+        clean_destination=False,
+    )
+    GH.publish_gh_pages(
+        str(LATEST_COVERAGE_INDEX_DIR),
+        commit_message=f"Update coverage report index for {info.sha[:12]}",
+        clean_destination=False,
+    )
     result = Result.create_from(
         name="Publish Coverage Report",
         status=Result.Status.OK,
-        info=f"Coverage report: {url}",
-        links=[url],
+        info=f"Coverage report: {latest_url}\nReport snapshot: {url}",
+        links=[latest_url, url],
     )
-    result.set_label("coverage", link=url)
+    result.set_label("coverage", link=latest_url)
     result.complete_job()
 
 

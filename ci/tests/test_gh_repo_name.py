@@ -381,3 +381,88 @@ def test_publish_gh_pages_refuses_empty_source(tmp_path, monkeypatch):
         assert False, "expected empty source failure"
     except RuntimeError as e:
         assert "No GitHub Pages files copied" in str(e)
+
+
+def test_publish_gh_pages_can_merge_without_cleaning_destination(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "index.html").write_text("latest", encoding="utf-8")
+
+    temp_root = tmp_path / "publish"
+    temp_root.mkdir()
+    commands = []
+
+    def _fake_mkdtemp(prefix):
+        assert prefix == "praktika-gh-pages-"
+        return str(temp_root)
+
+    def _fake_check(
+        cls,
+        command,
+        log_file=None,
+        strict=False,
+        verbose=False,
+        dry_run=False,
+        stdin_str=None,
+        timeout=None,
+        retries=1,
+        **kwargs,
+    ):
+        commands.append(command)
+        if command.startswith("git worktree add"):
+            old_report = temp_root / "worktree" / "coverage" / "pr-old"
+            old_report.mkdir(parents=True, exist_ok=True)
+            (old_report / "index.html").write_text("old", encoding="utf-8")
+        return True
+
+    def _fake_run(
+        cls,
+        command,
+        log_file=None,
+        strict=False,
+        verbose=True,
+        dry_run=False,
+        stdin_str=None,
+        timeout=None,
+        retries=1,
+        retry_errors="",
+        **kwargs,
+    ):
+        if "ls-remote" in command:
+            return 0
+        if command.endswith("diff --cached --quiet"):
+            return 1
+        return 0
+
+    real_rmtree = shutil.rmtree
+
+    def _fake_rmtree(path, *args, **kwargs):
+        if str(path) == str(temp_root):
+            return
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "mkdtemp", _fake_mkdtemp)
+    monkeypatch.setattr(shutil, "rmtree", _fake_rmtree)
+    monkeypatch.setattr(Shell, "check", classmethod(_fake_check))
+    monkeypatch.setattr(Shell, "run", classmethod(_fake_run))
+
+    GH.publish_gh_pages(
+        str(source),
+        repo="ClickHouse/praktika",
+        destination_dir="coverage",
+        commit_message="publish latest coverage index",
+        github_token="ghs_test_token",
+        verbose=False,
+        clean_destination=False,
+    )
+
+    worktree = temp_root / "worktree"
+    assert (worktree / "coverage" / "index.html").read_text(
+        encoding="utf-8"
+    ) == "latest"
+    assert (worktree / "coverage" / "pr-old" / "index.html").read_text(
+        encoding="utf-8"
+    ) == "old"
+    assert f"git -C {worktree} add -f -A -- coverage" in commands
