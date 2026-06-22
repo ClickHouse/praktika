@@ -29,7 +29,7 @@ aws --profile Box s3 cp \
 Build and upload `praktika-controller`:
 
 ```bash
-VERSION="$(.build-venv/bin/python -c 'from praktika.version import current_praktika_controller_version; print(current_praktika_controller_version())')"
+VERSION="$(.build-venv/bin/python -c 'from pathlib import Path; from praktika.version import current_praktika_controller_version; print(current_praktika_controller_version(Path("bootstrap/pyproject.toml")))')"
 .build-venv/bin/python -m build --wheel --no-isolation --outdir bootstrap/dist bootstrap
 aws --profile Box s3 cp \
   "bootstrap/dist/praktika_controller-${VERSION}-py3-none-any.whl" \

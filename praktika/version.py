@@ -29,8 +29,9 @@ def current_praktika_version() -> str:
     return _version_from_pyproject() or package_version("praktika")
 
 
-def current_praktika_controller_version() -> str:
-    pyproject = Path(__file__).resolve().parents[1] / "bootstrap" / "pyproject.toml"
+def current_praktika_controller_version(pyproject: Optional[Path] = None) -> str:
+    if pyproject is None:
+        pyproject = Path(__file__).resolve().parents[1] / "bootstrap" / "pyproject.toml"
     return _version_from_pyproject(pyproject) or package_version("praktika-controller")
 
 

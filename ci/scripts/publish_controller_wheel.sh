@@ -4,7 +4,7 @@
 set -euo pipefail
 
 VERSION="$(
-  python3 -c "from praktika.version import current_praktika_controller_version; print(current_praktika_controller_version())"
+  python3 -c "from pathlib import Path; from praktika.version import current_praktika_controller_version; print(current_praktika_controller_version(Path('bootstrap/pyproject.toml')))"
 )"
 
 python3 -m build --wheel --outdir bootstrap/dist/ ./bootstrap
