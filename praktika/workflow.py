@@ -42,6 +42,9 @@ class Workflow:
         enable_automerge: bool = False
         enable_merge_ready_status: bool = False
         enable_gh_summary_comment: bool = False
+        # Post commit statuses for failed jobs on non-Praktika engines. With
+        # the Praktika engine this is redundant: the orchestrator uses the
+        # GitHub Checks API and always publishes workflow/job check status.
         enable_commit_status_on_failure: bool = False
         enable_cidb: bool = False
         enable_merge_commit: bool = False

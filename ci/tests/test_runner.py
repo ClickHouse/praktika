@@ -17,10 +17,24 @@ import os
 import shutil
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 
 _TEST_TEMP_DIR = "./ci/tmp/_test_runner"
 _DUMMY_DB_CONNECTION = "DUMMY_TEST_CI_DB_CONNECTION_NONEXISTENT"
+
+
+def test_runner_commit_status_posting_is_only_for_non_praktika_engines():
+    from praktika.runner import _should_post_commit_status
+    from praktika.workflow import Workflow
+
+    assert _should_post_commit_status(
+        SimpleNamespace(engine=Workflow.Engine.GH_ACTIONS)
+    )
+    assert not _should_post_commit_status(
+        SimpleNamespace(engine=Workflow.Engine.PRAKTIKA)
+    )
+    assert _should_post_commit_status(SimpleNamespace(engine="custom-engine"))
 
 
 def test_gh_auth_uses_custom_auth_outside_github_actions(monkeypatch):

@@ -27,11 +27,16 @@ from .s3 import S3
 from .settings import Settings
 from .usage import ComputeUsage, StorageUsage
 from .utils import Shell, TeePopen, Utils
+from .workflow import Workflow
 
 _WRAP_WIDTH = 160
 _TIMESTAMP_INDENT = len(
     datetime.datetime(2000, 1, 1).strftime("[%Y-%m-%d %H:%M:%S] ")
 )
+
+
+def _should_post_commit_status(workflow):
+    return workflow.engine != Workflow.Engine.PRAKTIKA
 
 
 class _TimestampedStream:
@@ -854,9 +859,11 @@ class Runner:
         info = Info()
         report_url = info.get_job_report_url(latest=False)
 
-        if (
-            workflow.enable_commit_status_on_failure and not result.is_ok()
-        ) or job.enable_commit_status:
+        if _should_post_commit_status(workflow) and (
+            workflow.enable_commit_status_on_failure
+            and not result.is_ok()
+            or job.enable_commit_status
+        ):
             if _GH_Auth():
                 if not GH.post_commit_status(
                     name=job.name,
@@ -873,7 +880,7 @@ class Runner:
         if workflow.enable_report:
             print(f"Run html report hook")
             status_updated = HtmlRunnerHooks.post_run(workflow, job)
-            if status_updated:
+            if status_updated and _should_post_commit_status(workflow):
                 print(f"Update GH commit status [{result.name}]: [{status_updated}]")
                 if _GH_Auth():
                     GH.post_commit_status(
