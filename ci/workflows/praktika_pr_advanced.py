@@ -11,17 +11,7 @@ from praktika.version import current_praktika_version
 
 _HEAD_PRAKTIKA_VERSION = current_praktika_version()
 
-_INSTALL_DEPS = (
-    "python3 -m pip install coverage -r ./ci/requirements.txt --break-system-packages "
-    "|| python3 -m pip install coverage -r ./ci/requirements.txt"
-)
-
 artifact = Artifact.Config(name="greet", type=Artifact.Type.S3, path="./artifact.txt")
-coverage_html = Artifact.Config(
-    name="coverage-html",
-    type=Artifact.Type.S3,
-    path="./ci/tmp/coverage-html.tar.gz",
-)
 
 workflow = Workflow.Config(
     name="Praktika CI Advanced",
@@ -41,9 +31,7 @@ workflow = Workflow.Config(
         Job.Config(
             name="Praktika Pytests",
             runs_on=[RunnerLabels.SMALL_ARM],
-            command="PRAKTIKA_ENABLE_COVERAGE=1 python3 ./ci/scripts/run_ci_pytests.py",
-            pre_hooks=[_INSTALL_DEPS],
-            provides=[coverage_html.name],
+            command="python3 ./ci/scripts/run_ci_pytests.py",
             digest_config=Job.CacheDigestConfig(
                 include_paths=[
                     "./ci/scripts/run_ci_pytests.py",
@@ -52,13 +40,6 @@ workflow = Workflow.Config(
                     "./pyproject.toml",
                 ],
             ),
-        ),
-        Job.Config(
-            name="Publish Coverage Report",
-            runs_on=[RunnerLabels.SMALL_ARM],
-            command="python3 ./ci/scripts/publish_coverage_pages.py",
-            requires=[coverage_html.name],
-            enable_gh_auth=True,
         ),
         # S3 artifact with cache digest
         Job.Config(
@@ -101,7 +82,7 @@ workflow = Workflow.Config(
             Job.ParamSet(parameter={"key_1": [2, 3]}),
         ),
     ],
-    artifacts=[artifact, coverage_html],
+    artifacts=[artifact],
     dockers=[
         Docker.Config(
             name="clickhouse/praktika",
