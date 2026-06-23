@@ -1151,6 +1151,15 @@ def test_controller_image_builders_are_declared():
             for component in builder.inline_components
             if component["name"] == "praktika-controller-runtime"
         )
+        setup_commands = "\n".join(builder.inline_components[0]["commands"])
+        runtime_commands = "\n".join(runtime_component["commands"])
+        assert "python3.12 python3.12-pip" in setup_commands
+        assert "awscli-exe-linux-$(uname -m).zip" in setup_commands
+        assert not any(
+            "dnf install" in command and "awscli" in command
+            for command in builder.inline_components[0]["commands"]
+        )
+        assert "python3.12 -m pip install" in runtime_commands
         assert any(
             "amazon-cloudwatch-agent" in cmd
             for cmd in builder.inline_components[0]["commands"]

@@ -15,7 +15,8 @@ def _write_file_from_base64(path: str, content: str) -> str:
 
 def _setup_component(name: str, *, with_docker: bool):
     commands = [
-        "dnf install -y python3 python3-pip python3.12 python3.12-pip git jq awscli",
+        "dnf install -y python3 python3-pip python3.12 python3.12-pip git jq curl unzip",
+        "cd /tmp && curl -fsSL \"https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip\" -o awscliv2.zip && unzip -q awscliv2.zip && ./aws/install && rm -rf awscliv2.zip aws",
         "dnf install -y amazon-cloudwatch-agent",
         "ln -sf /usr/bin/python3.12 /usr/local/bin/python3",
         "curl -fsSL https://cli.github.com/packages/rpm/gh-cli.repo -o /etc/yum.repos.d/gh-cli.repo",
