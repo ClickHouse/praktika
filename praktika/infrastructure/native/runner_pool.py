@@ -8,6 +8,78 @@ from praktika.infrastructure.iam_role import IAMRole
 from praktika.infrastructure.launch_template import LaunchTemplate
 from praktika.infrastructure.sqs_queue import SQSQueue
 
+# Lets the local SSM Agent register and report this EC2 instance as a managed
+# instance. This intentionally omits Parameter Store read actions from AWS's
+# AmazonSSMManagedInstanceCore managed policy; runner access to secrets/params
+# must come through allowed_ssm_parameters or allow_all_ssm_parameters.
+#
+# Security note: job code using the instance role can still call these APIs.
+# They do not grant Run Command, Session Manager, or parameter reads, but they
+# do allow writing SSM inventory/compliance/association status metadata and
+# reading SSM documents. For public/untrusted jobs, prefer a dedicated runner
+# pool with the minimum required role surface and no sensitive SSM documents.
+_SSM_MANAGED_INSTANCE_CORE_STATEMENT = {
+    "Sid": "SSMManagedInstanceCore",
+    "Effect": "Allow",
+    "Action": [
+        "ssm:DescribeAssociation",
+        "ssm:GetDeployablePatchSnapshotForInstance",
+        "ssm:GetDocument",
+        "ssm:DescribeDocument",
+        "ssm:GetManifest",
+        "ssm:ListAssociations",
+        "ssm:ListInstanceAssociations",
+        "ssm:PutInventory",
+        "ssm:PutComplianceItems",
+        "ssm:PutConfigurePackageResult",
+        "ssm:UpdateAssociationStatus",
+        "ssm:UpdateInstanceAssociationStatus",
+        "ssm:UpdateInstanceInformation",
+    ],
+    "Resource": "*",
+}
+
+# Lets SSM Agent maintain Session Manager / Run Command control and data
+# channels after another principal with the right permissions starts an SSM
+# operation. This role still cannot start sessions or send commands by itself.
+#
+# Security note: untrusted code with instance-role credentials could attempt to
+# interfere with the local agent channels, so this is operationally useful but
+# not a hard isolation boundary.
+_SSM_MESSAGES_STATEMENT = {
+    "Sid": "SSMMessages",
+    "Effect": "Allow",
+    "Action": [
+        "ssmmessages:CreateControlChannel",
+        "ssmmessages:CreateDataChannel",
+        "ssmmessages:OpenControlChannel",
+        "ssmmessages:OpenDataChannel",
+    ],
+    "Resource": "*",
+}
+
+# Legacy SSM Agent message delivery APIs used to poll and acknowledge work for
+# this managed instance. These are needed for compatibility with SSM Agent
+# control-plane behavior on EC2.
+#
+# Security note: this does not expose Parameter Store or Secrets Manager, but
+# untrusted code with instance-role credentials could still call these instance
+# messaging APIs. Avoid attaching this statement to OSS pools if SSM management
+# of those instances is not required.
+_EC2_MESSAGES_STATEMENT = {
+    "Sid": "EC2Messages",
+    "Effect": "Allow",
+    "Action": [
+        "ec2messages:AcknowledgeMessage",
+        "ec2messages:DeleteMessage",
+        "ec2messages:FailMessage",
+        "ec2messages:GetEndpoint",
+        "ec2messages:GetMessages",
+        "ec2messages:SendReply",
+    ],
+    "Resource": "*",
+}
+
 _DEFAULT_PRAKTIKA_CONTROLLER_USER_DATA = "\n".join(
     [
         "#!/usr/bin/env bash",
@@ -20,6 +92,48 @@ _DEFAULT_PRAKTIKA_CONTROLLER_USER_DATA = "\n".join(
         "",
     ]
 )
+
+
+def _ssm_parameter_resource(name_or_arn: str) -> str:
+    value = name_or_arn.strip()
+    if value.startswith("arn:"):
+        return value
+    return f"arn:aws:ssm:*:*:parameter/{value.lstrip('/')}"
+
+
+def _secrets_manager_resource(name_or_arn: str) -> str:
+    value = name_or_arn.strip()
+    if value.startswith("arn:"):
+        return value
+    return f"arn:aws:secretsmanager:*:*:secret:{value}*"
+
+
+def _s3_prefix_resources(prefix_or_arn: str) -> List[str]:
+    value = prefix_or_arn.strip()
+    if value.startswith("arn:"):
+        return [value]
+    value = value.removeprefix("s3://").lstrip("/")
+    if not value:
+        return []
+    bucket, _, prefix = value.partition("/")
+    if not bucket:
+        return []
+    if not prefix:
+        return [f"arn:aws:s3:::{bucket}", f"arn:aws:s3:::{bucket}/*"]
+    prefix = prefix.strip("/")
+    return [
+        f"arn:aws:s3:::{bucket}",
+        f"arn:aws:s3:::{bucket}/{prefix}",
+        f"arn:aws:s3:::{bucket}/{prefix}/*",
+    ]
+
+
+def _unique(values: List[str]) -> List[str]:
+    result = []
+    for value in values:
+        if value not in result:
+            result.append(value)
+    return result
 
 
 @dataclass
@@ -37,6 +151,17 @@ class RunnerPool:
     runtime and systemd unit. By default it enables `praktika-controller` at
     boot; `user_data` can override that when extra instance boot customization
     is required.
+
+    Runtime SSM Parameter Store, Secrets Manager, and S3 access are opt-in
+    through `allowed_ssm_parameters`, `allowed_secrets`, and
+    `allowed_s3_prefixes`. Bare names are project namespaced by
+    CloudInfrastructure.Config; full ARNs are preserved as-is. Each resource
+    type also has an explicit `allow_all_*` escape hatch.
+
+    SSM debugging is opt-in through `allow_ssm_debug`. When enabled, the
+    runner instance role gets only the instance-side SSM Agent permissions
+    needed to register, receive commands/sessions, and reply. It still cannot
+    issue SSM commands or start sessions against any runner.
 
     All three AWS components are created at construction time and registered
     into CloudInfrastructure.Config automatically via its runner_pools list.
@@ -71,6 +196,13 @@ class RunnerPool:
     user_data: str = ""
     ec2_role: IAMRole.Config | None = None
     instance_profile: IAMInstanceProfile.Config | None = None
+    allowed_ssm_parameters: List[str] = field(default_factory=list)
+    allowed_secrets: List[str] = field(default_factory=list)
+    allowed_s3_prefixes: List[str] = field(default_factory=list)
+    allow_all_ssm_parameters: bool = False
+    allow_all_secrets: bool = False
+    allow_all_s3_prefixes: bool = False
+    allow_ssm_debug: bool = False
     security_group_ids: List[str] = field(default_factory=list)
     security_group_names: List[str] = field(default_factory=list)
     volume_size_gb: int = 30
@@ -114,65 +246,127 @@ class RunnerPool:
         launch_template_name = f"{self.name}-lt"
 
         if self.ec2_role is None:
+            allowed_ssm_parameter_resources = (
+                ["arn:aws:ssm:*:*:parameter/*"]
+                if self.allow_all_ssm_parameters
+                else [
+                    _ssm_parameter_resource(name)
+                    for name in self.allowed_ssm_parameters
+                    if name and name.strip()
+                ]
+            )
+            allowed_secret_resources = (
+                ["arn:aws:secretsmanager:*:*:secret:*"]
+                if self.allow_all_secrets
+                else [
+                    _secrets_manager_resource(name)
+                    for name in self.allowed_secrets
+                    if name and name.strip()
+                ]
+            )
+            allowed_s3_resources = (
+                ["arn:aws:s3:::*", "arn:aws:s3:::*/*"]
+                if self.allow_all_s3_prefixes
+                else _unique(
+                    [
+                        resource
+                        for prefix in self.allowed_s3_prefixes
+                        if prefix and prefix.strip()
+                        for resource in _s3_prefix_resources(prefix)
+                    ]
+                )
+            )
+            runner_statements = [
+                {
+                    "Sid": "SQSReceiveDelete",
+                    "Effect": "Allow",
+                    "Action": [
+                        "sqs:ReceiveMessage",
+                        "sqs:DeleteMessage",
+                        "sqs:ChangeMessageVisibility",
+                        "sqs:SendMessage",
+                        "sqs:GetQueueUrl",
+                        "sqs:GetQueueAttributes",
+                    ],
+                    "Resource": f"arn:aws:sqs:*:*:{queue_name}",
+                },
+                {
+                    "Sid": "AutoScalingScaleIn",
+                    "Effect": "Allow",
+                    "Action": [
+                        "autoscaling:Describe*",
+                        "autoscaling:TerminateInstanceInAutoScalingGroup",
+                    ],
+                    "Resource": "*",
+                },
+                {
+                    "Sid": "EC2TerminateOnly",
+                    "Effect": "Allow",
+                    "Action": ["ec2:Describe*", "ec2:TerminateInstances"],
+                    "Resource": "*",
+                },
+            ]
+            if self.allow_ssm_debug:
+                runner_statements = [
+                    _SSM_MANAGED_INSTANCE_CORE_STATEMENT,
+                    _SSM_MESSAGES_STATEMENT,
+                    _EC2_MESSAGES_STATEMENT,
+                ] + runner_statements
+            if allowed_s3_resources:
+                runner_statements.append(
+                    {
+                        "Sid": "AllowedS3ReadWrite",
+                        "Effect": "Allow",
+                        "Action": [
+                            "s3:GetObject",
+                            "s3:GetObjectTagging",
+                            "s3:HeadObject",
+                            "s3:ListBucket",
+                            "s3:GetBucketLocation",
+                            "s3:PutObject",
+                            "s3:PutObjectTagging",
+                            "s3:AbortMultipartUpload",
+                            "s3:ListBucketMultipartUploads",
+                            "s3:ListMultipartUploadParts",
+                        ],
+                        "Resource": allowed_s3_resources,
+                    }
+                )
+            if allowed_ssm_parameter_resources:
+                runner_statements.append(
+                    {
+                        "Sid": "AllowedSSMParametersRead",
+                        "Effect": "Allow",
+                        "Action": [
+                            "ssm:GetParameter",
+                            "ssm:GetParameters",
+                        ],
+                        "Resource": allowed_ssm_parameter_resources,
+                    }
+                )
+            if allowed_secret_resources:
+                runner_statements.append(
+                    {
+                        "Sid": "AllowedSecretsManagerSecretsRead",
+                        "Effect": "Allow",
+                        "Action": [
+                            "secretsmanager:DescribeSecret",
+                            "secretsmanager:GetSecretValue",
+                        ],
+                        "Resource": allowed_secret_resources,
+                    }
+                )
             self.ec2_role = IAMRole.Config(
                 name=f"{self.name}-role",
                 trust_service="ec2.amazonaws.com",
                 policy_arns=[
-                    "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
-                    "arn:aws:iam::aws:policy/AmazonSSMReadOnlyAccess",
                     "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy",
                     "arn:aws:iam::aws:policy/EC2InstanceProfileForImageBuilder",
                 ],
                 inline_policies={
                     "RunnerAccess": {
                         "Version": "2012-10-17",
-                        "Statement": [
-                            {
-                                "Sid": "S3ReadWrite",
-                                "Effect": "Allow",
-                                "Action": [
-                                    "s3:GetObject",
-                                    "s3:GetObjectTagging",
-                                    "s3:HeadObject",
-                                    "s3:ListBucket",
-                                    "s3:GetBucketLocation",
-                                    "s3:PutObject",
-                                    "s3:PutObjectTagging",
-                                    "s3:AbortMultipartUpload",
-                                    "s3:ListBucketMultipartUploads",
-                                    "s3:ListMultipartUploadParts",
-                                ],
-                                "Resource": ["arn:aws:s3:::*", "arn:aws:s3:::*/*"],
-                            },
-                            {
-                                "Sid": "SQSReceiveDelete",
-                                "Effect": "Allow",
-                                "Action": [
-                                    "sqs:ReceiveMessage",
-                                    "sqs:DeleteMessage",
-                                    "sqs:ChangeMessageVisibility",
-                                    "sqs:SendMessage",
-                                    "sqs:GetQueueUrl",
-                                    "sqs:GetQueueAttributes",
-                                ],
-                                "Resource": f"arn:aws:sqs:*:*:{queue_name}",
-                            },
-                            {
-                                "Sid": "AutoScalingScaleIn",
-                                "Effect": "Allow",
-                                "Action": [
-                                    "autoscaling:Describe*",
-                                    "autoscaling:TerminateInstanceInAutoScalingGroup",
-                                ],
-                                "Resource": "*",
-                            },
-                            {
-                                "Sid": "EC2TerminateOnly",
-                                "Effect": "Allow",
-                                "Action": ["ec2:Describe*", "ec2:TerminateInstances"],
-                                "Resource": "*",
-                            },
-                        ],
+                        "Statement": runner_statements,
                     }
                 },
             )

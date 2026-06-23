@@ -475,6 +475,51 @@ class CloudInfrastructure:
                     pool.vpc_name = self._prefixed(pool.vpc_name)
                     self._record_rename(replacements, old_vpc, pool.vpc_name)
                 pool.security_group_names = [self._prefixed(name) for name in pool.security_group_names]
+                new_allowed_ssm_parameters = []
+                for param_name in pool.allowed_ssm_parameters:
+                    if param_name.startswith("arn:"):
+                        new_allowed_ssm_parameters.append(param_name)
+                        continue
+                    old_param = param_name
+                    new_param = self._prefixed_secret_name(param_name)
+                    new_allowed_ssm_parameters.append(new_param)
+                    self._record_rename(replacements, old_param, new_param)
+                    self._record_rename(
+                        replacements, old_param.lstrip("/"), new_param.lstrip("/")
+                    )
+                pool.allowed_ssm_parameters = new_allowed_ssm_parameters
+                new_allowed_secrets = []
+                for secret_name in pool.allowed_secrets:
+                    if secret_name.startswith("arn:"):
+                        new_allowed_secrets.append(secret_name)
+                        continue
+                    old_secret = secret_name
+                    new_secret = self._prefixed_secret_name(secret_name)
+                    new_allowed_secrets.append(new_secret)
+                    self._record_rename(replacements, old_secret, new_secret)
+                    self._record_rename(
+                        replacements, old_secret.lstrip("/"), new_secret.lstrip("/")
+                    )
+                pool.allowed_secrets = new_allowed_secrets
+                new_allowed_s3_prefixes = []
+                for s3_prefix in pool.allowed_s3_prefixes:
+                    if not s3_prefix or not s3_prefix.strip():
+                        continue
+                    if s3_prefix.startswith("arn:"):
+                        new_allowed_s3_prefixes.append(s3_prefix)
+                        continue
+                    scheme = "s3://" if s3_prefix.startswith("s3://") else ""
+                    old_s3_prefix = s3_prefix
+                    clean_s3_prefix = s3_prefix.removeprefix("s3://").lstrip("/")
+                    bucket, separator, key_prefix = clean_s3_prefix.partition("/")
+                    new_bucket = self._prefixed(bucket)
+                    new_s3_prefix = f"{scheme}{new_bucket}"
+                    if separator:
+                        new_s3_prefix = f"{new_s3_prefix}/{key_prefix}"
+                    new_allowed_s3_prefixes.append(new_s3_prefix)
+                    self._record_rename(replacements, old_s3_prefix, new_s3_prefix)
+                    self._record_rename(replacements, bucket, new_bucket)
+                pool.allowed_s3_prefixes = new_allowed_s3_prefixes
                 old_role_name = pool.ec2_role.name
                 pool.ec2_role.name = self._prefixed(pool.ec2_role.name)
                 self._record_rename(replacements, old_role_name, pool.ec2_role.name)

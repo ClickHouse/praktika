@@ -124,6 +124,13 @@ def _image_builders():
 
 _IMAGE_BUILDERS = _image_builders()
 _IMAGE_BUILDERS_BY_NAME = {builder.name: builder for builder in _IMAGE_BUILDERS}
+_RUNNER_ALLOWED_SSM_PARAMETERS = []
+_RUNNER_ALLOWED_SECRETS = []
+_RUNNER_ALLOWED_S3_PREFIXES = ["artifacts-eu-north-1"]
+_RUNNER_ALLOW_ALL_SSM_PARAMETERS = False
+_RUNNER_ALLOW_ALL_SECRETS = False
+_RUNNER_ALLOW_ALL_S3_PREFIXES = False
+_RUNNER_ALLOW_SSM_DEBUG = False
 
 _runner_pools = [
     Components.RunnerPool(
@@ -133,6 +140,13 @@ _runner_pools = [
         size=0,
         max_size=10,
         image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
+        allowed_ssm_parameters=list(_RUNNER_ALLOWED_SSM_PARAMETERS),
+        allowed_secrets=list(_RUNNER_ALLOWED_SECRETS),
+        allowed_s3_prefixes=list(_RUNNER_ALLOWED_S3_PREFIXES),
+        allow_all_ssm_parameters=_RUNNER_ALLOW_ALL_SSM_PARAMETERS,
+        allow_all_secrets=_RUNNER_ALLOW_ALL_SECRETS,
+        allow_all_s3_prefixes=_RUNNER_ALLOW_ALL_S3_PREFIXES,
+        allow_ssm_debug=_RUNNER_ALLOW_SSM_DEBUG,
         user_data="\n".join(
             [
                 "#!/usr/bin/env bash",
@@ -159,6 +173,13 @@ _runner_pools = [
         size=0,
         max_size=10,
         image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
+        allowed_ssm_parameters=list(_RUNNER_ALLOWED_SSM_PARAMETERS),
+        allowed_secrets=list(_RUNNER_ALLOWED_SECRETS),
+        allowed_s3_prefixes=list(_RUNNER_ALLOWED_S3_PREFIXES),
+        allow_all_ssm_parameters=_RUNNER_ALLOW_ALL_SSM_PARAMETERS,
+        allow_all_secrets=_RUNNER_ALLOW_ALL_SECRETS,
+        allow_all_s3_prefixes=_RUNNER_ALLOW_ALL_S3_PREFIXES,
+        allow_ssm_debug=_RUNNER_ALLOW_SSM_DEBUG,
     ),
     Components.RunnerPool(
         name="amd-2xsmall",
@@ -167,6 +188,13 @@ _runner_pools = [
         size=0,
         max_size=10,
         image_builder=_IMAGE_BUILDERS_BY_NAME["ci-x86_64-image"],
+        allowed_ssm_parameters=list(_RUNNER_ALLOWED_SSM_PARAMETERS),
+        allowed_secrets=list(_RUNNER_ALLOWED_SECRETS),
+        allowed_s3_prefixes=list(_RUNNER_ALLOWED_S3_PREFIXES),
+        allow_all_ssm_parameters=_RUNNER_ALLOW_ALL_SSM_PARAMETERS,
+        allow_all_secrets=_RUNNER_ALLOW_ALL_SECRETS,
+        allow_all_s3_prefixes=_RUNNER_ALLOW_ALL_S3_PREFIXES,
+        allow_ssm_debug=_RUNNER_ALLOW_SSM_DEBUG,
         user_data="\n".join(
             [
                 "#!/usr/bin/env bash",
@@ -193,6 +221,13 @@ _runner_pools = [
         size=0,
         max_size=10,
         image_builder=_IMAGE_BUILDERS_BY_NAME["ci-ubuntu-x86_64-image"],
+        allowed_ssm_parameters=list(_RUNNER_ALLOWED_SSM_PARAMETERS),
+        allowed_secrets=list(_RUNNER_ALLOWED_SECRETS),
+        allowed_s3_prefixes=list(_RUNNER_ALLOWED_S3_PREFIXES),
+        allow_all_ssm_parameters=_RUNNER_ALLOW_ALL_SSM_PARAMETERS,
+        allow_all_secrets=_RUNNER_ALLOW_ALL_SECRETS,
+        allow_all_s3_prefixes=_RUNNER_ALLOW_ALL_S3_PREFIXES,
+        allow_ssm_debug=_RUNNER_ALLOW_SSM_DEBUG,
         user_data="\n".join(
             [
                 "#!/usr/bin/env bash",

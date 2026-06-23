@@ -338,6 +338,18 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     assert infra_text.count("max_size=50") == 5
     assert "volume_size_gb=100" in infra_text
     assert infra_text.count("volume_size_gb=100") == 5
+    assert "allowed_ssm_parameters=[]" in infra_text
+    assert infra_text.count("allowed_ssm_parameters=[]") == 4
+    assert "allowed_secrets=[]" in infra_text
+    assert infra_text.count("allowed_secrets=[]") == 4
+    assert 'allowed_s3_prefixes=["artifacts"]' in infra_text
+    assert infra_text.count('allowed_s3_prefixes=["artifacts"]') == 4
+    assert "allow_all_ssm_parameters=True" in infra_text
+    assert infra_text.count("allow_all_ssm_parameters=True") == 4
+    assert "allow_all_secrets=True" in infra_text
+    assert infra_text.count("allow_all_secrets=True") == 4
+    assert "allow_all_s3_prefixes=True" in infra_text
+    assert infra_text.count("allow_all_s3_prefixes=True") == 4
 
     compile(settings_text, str(settings_path), "exec")
     compile(pr_workflow_text, str(pr_workflow_path), "exec")
@@ -415,6 +427,7 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
     builders_by_arch = {
         _builder_arch(builder): builder for builder in cloud.image_builders
     }
+    project_slug = tmp_path.name.lower().replace("_", "-")
 
     assert {workflow.name for workflow in workflows} == {
         "Pull Request CI",
@@ -453,9 +466,14 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
         "arm-medium": 100,
         "amd-medium": 100,
     }
+    assert {tuple(pool.allowed_s3_prefixes) for pool in cloud.runner_pools} == {
+        (f"{project_slug}-artifacts",)
+    }
+    assert all(pool.allow_all_ssm_parameters for pool in cloud.runner_pools)
+    assert all(pool.allow_all_secrets for pool in cloud.runner_pools)
+    assert all(pool.allow_all_s3_prefixes for pool in cloud.runner_pools)
     assert set(builders_by_arch) == {"arm64", "x86_64"}
     assert all(len(builder.inline_components) == 4 for builder in cloud.image_builders)
-    project_slug = tmp_path.name.lower().replace("_", "-")
     assert {
         arch: builder.instance_profile_name
         for arch, builder in builders_by_arch.items()
@@ -605,6 +623,15 @@ def test_run_init_interactive_supports_oss_storage_and_ubuntu_images(
     assert "Components.create_image_test_component(" in infra_text
     assert "Components.create_awslinux_image_builder_config(" not in infra_text
     assert 'name="artifacts-eu-north-1"' in infra_text
+    assert "allowed_ssm_parameters=[]" in infra_text
+    assert "allowed_secrets=[]" in infra_text
+    assert 'allowed_s3_prefixes=["artifacts-eu-north-1"]' in infra_text
+    assert "allow_all_ssm_parameters=False" in infra_text
+    assert infra_text.count("allow_all_ssm_parameters=False") == 4
+    assert "allow_all_secrets=False" in infra_text
+    assert infra_text.count("allow_all_secrets=False") == 4
+    assert "allow_all_s3_prefixes=False" in infra_text
+    assert infra_text.count("allow_all_s3_prefixes=False") == 4
     assert "public=True" in infra_text
 
     compile(settings_text, str(settings_path), "exec")
