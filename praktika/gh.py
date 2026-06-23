@@ -1,11 +1,14 @@
 import dataclasses
+import html
 import json
 import os
 import re
+import shutil
 import shlex
 import tempfile
 import time
 import traceback
+from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional, Union
 
 from praktika._environment import _Environment
@@ -119,6 +122,295 @@ class GH:
             repo_url,
         )
         return match.group(1) if match else ""
+
+    @staticmethod
+    def _normalize_gh_pages_destination(destination_dir: str) -> str:
+        destination_dir = (destination_dir or "").strip().strip("/")
+        if not destination_dir:
+            return ""
+
+        parts = PurePosixPath(destination_dir).parts
+        if any(part in ("", ".", "..") for part in parts):
+            raise ValueError(f"Invalid GitHub Pages destination [{destination_dir}]")
+
+        return PurePosixPath(*parts).as_posix()
+
+    @staticmethod
+    def _git_env_with_token(temp_root: Path, token: str) -> Dict[str, str]:
+        if not token:
+            raise RuntimeError("GitHub Pages publish requires a GitHub token")
+
+        token_file = temp_root / "github-token"
+        askpass_file = temp_root / "git-askpass.sh"
+        token_file.write_text(token, encoding="utf-8")
+        os.chmod(token_file, 0o600)
+        askpass_file.write_text(
+            "#!/bin/sh\n"
+            'case "$1" in\n'
+            "  *Username*) printf '%s\\n' 'x-access-token' ;;\n"
+            f"  *) cat {shlex.quote(str(token_file))} ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        os.chmod(askpass_file, 0o700)
+
+        env = os.environ.copy()
+        env["GIT_ASKPASS"] = str(askpass_file)
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        return env
+
+    @classmethod
+    def gh_pages_url(cls, repo="", destination_dir="") -> str:
+        repo = repo or _Environment.get().REPOSITORY
+        if not repo:
+            repo_url = Shell.get_output(
+                "git config --get remote.origin.url", strict=True
+            )
+            repo = cls._repo_name_from_git_remote_url(repo_url)
+        if not repo:
+            raise RuntimeError("Failed to resolve repository name for GitHub Pages")
+
+        owner, name = repo.split("/", 1)
+        destination_dir = cls._normalize_gh_pages_destination(destination_dir)
+        suffix = f"/{destination_dir}" if destination_dir else ""
+        return f"https://{owner.lower()}.github.io/{name}{suffix}/"
+
+    @classmethod
+    def _write_gh_pages_index(cls, worktree: Path):
+        entries = []
+        for item in sorted(worktree.iterdir(), key=lambda path: path.name.lower()):
+            if item.name in {".git", ".nojekyll", "index.html"}:
+                continue
+            if item.name.startswith("."):
+                continue
+            href = f"{item.name}/" if item.is_dir() else item.name
+            label = f"{item.name}/" if item.is_dir() else item.name
+            entries.append((href, label))
+
+        list_items = "\n".join(
+            f'  <li><a href="{html.escape(href, quote=True)}">'
+            f"{html.escape(label)}</a></li>"
+            for href, label in entries
+        )
+        worktree.joinpath("index.html").write_text(
+            "\n".join(
+                [
+                    "<!doctype html>",
+                    '<html lang="en">',
+                    "<head>",
+                    '<meta charset="utf-8">',
+                    '<meta name="viewport" content="width=device-width, initial-scale=1">',
+                    "<title>Pages index</title>",
+                    "</head>",
+                    "<body>",
+                    "<h1>Pages index</h1>",
+                    "<ul>",
+                    list_items,
+                    "</ul>",
+                    "</body>",
+                    "</html>",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def publish_gh_pages(
+        cls,
+        source_dir: str,
+        destination_dir: str = "",
+        branch: str = "gh-pages",
+        commit_message: str = "",
+        repo: str = "",
+        no_jekyll: bool = True,
+        github_token: str = "",
+        git_user_name: str = "praktika[bot]",
+        git_user_email: str = "praktika[bot]@users.noreply.github.com",
+        verbose: bool = True,
+        clean_destination: bool = True,
+        update_root_index: bool = True,
+    ) -> str:
+        """Publish a local directory to a path on the repository's Pages branch.
+
+        Publishes through Praktika's GitHub App token. Praktika jobs that call
+        this should use ``Job.Config.enable_gh_auth=True`` so runner-side auth
+        setup and token-minting permissions are available.
+        """
+
+        source = Path(source_dir).resolve()
+        if not source.is_dir():
+            raise FileNotFoundError(f"GitHub Pages source dir not found [{source}]")
+
+        destination_dir = cls._normalize_gh_pages_destination(destination_dir)
+        repo = repo or _Environment.get().REPOSITORY
+        if not repo:
+            repo_url = Shell.get_output(
+                "git config --get remote.origin.url", strict=True
+            )
+            repo = cls._repo_name_from_git_remote_url(repo_url)
+        if not repo:
+            raise RuntimeError("Failed to resolve repository name for GitHub Pages")
+
+        temp_root = tempfile.mkdtemp(prefix="praktika-gh-pages-")
+        worktree = Path(temp_root) / "worktree"
+        remote_name = f"praktika-gh-pages-{os.getpid()}"
+        safe_branch = shlex.quote(branch)
+        safe_remote_name = shlex.quote(remote_name)
+        git_env = None
+        remote_added = False
+        try:
+            if not github_token:
+                from praktika.gh_auth import GHAuth
+
+                github_token = GHAuth.get_installation_token(
+                    required_permissions={"contents": "write"}
+                )
+            git_env = cls._git_env_with_token(Path(temp_root), github_token)
+            remote_url = f"https://github.com/{repo}.git"
+            Shell.check(
+                f"git remote add {safe_remote_name} {shlex.quote(remote_url)}",
+                strict=True,
+                verbose=verbose,
+            )
+            remote_added = True
+            branch_exists = (
+                Shell.run(
+                    f"git ls-remote --exit-code --heads {safe_remote_name} {safe_branch}",
+                    verbose=verbose,
+                    env=git_env,
+                )
+                == 0
+            )
+            if branch_exists:
+                remote_branch_ref = shlex.quote(f"{remote_name}/{branch}")
+                fetch_refspec = shlex.quote(
+                    f"+refs/heads/{branch}:refs/remotes/{remote_name}/{branch}"
+                )
+                Shell.check(
+                    f"git fetch --depth=1 {safe_remote_name} {fetch_refspec}",
+                    strict=True,
+                    verbose=verbose,
+                    env=git_env,
+                )
+                Shell.check(
+                    "git worktree add --detach "
+                    f"{shlex.quote(str(worktree))} {remote_branch_ref}",
+                    strict=True,
+                    verbose=verbose,
+                )
+            else:
+                Shell.check(
+                    f"git worktree add --detach {shlex.quote(str(worktree))}",
+                    strict=True,
+                    verbose=verbose,
+                )
+                Shell.check(
+                    f"git -C {shlex.quote(str(worktree))} checkout --orphan {safe_branch}",
+                    strict=True,
+                    verbose=verbose,
+                )
+                Shell.check(
+                    f"git -C {shlex.quote(str(worktree))} rm -rf --ignore-unmatch .",
+                    strict=True,
+                    verbose=verbose,
+                )
+
+            target = worktree / destination_dir if destination_dir else worktree
+            if target.exists() and clean_destination:
+                if target.is_dir():
+                    shutil.rmtree(target)
+                else:
+                    target.unlink()
+            elif target.exists() and not target.is_dir():
+                raise RuntimeError(
+                    f"GitHub Pages destination is not a directory [{target}]"
+                )
+            target.mkdir(parents=True, exist_ok=True)
+
+            for item in source.iterdir():
+                destination = target / item.name
+                if item.is_dir():
+                    shutil.copytree(
+                        item, destination, dirs_exist_ok=not clean_destination
+                    )
+                else:
+                    shutil.copy2(item, destination)
+            if not any(target.iterdir()):
+                raise RuntimeError(
+                    f"No GitHub Pages files copied from [{source}] to [{target}]"
+                )
+
+            if no_jekyll:
+                (worktree / ".nojekyll").touch()
+            if update_root_index and destination_dir:
+                cls._write_gh_pages_index(worktree)
+
+            Shell.check(
+                "git -C "
+                f"{shlex.quote(str(worktree))} config user.name "
+                f"{shlex.quote(git_user_name)}",
+                strict=True,
+                verbose=verbose,
+            )
+            Shell.check(
+                "git -C "
+                f"{shlex.quote(str(worktree))} config user.email "
+                f"{shlex.quote(git_user_email)}",
+                strict=True,
+                verbose=verbose,
+            )
+            Shell.check(
+                f"git -C {shlex.quote(str(worktree))} add -A",
+                strict=True,
+                verbose=verbose,
+            )
+            force_add_path = "." if target == worktree else str(target.relative_to(worktree))
+            Shell.check(
+                f"git -C {shlex.quote(str(worktree))} add -f -A -- {shlex.quote(force_add_path)}",
+                strict=True,
+                verbose=verbose,
+            )
+            if (
+                Shell.run(
+                    f"git -C {shlex.quote(str(worktree))} diff --cached --quiet",
+                    verbose=verbose,
+                )
+                == 0
+            ):
+                print("No GitHub Pages changes to publish")
+                return cls.gh_pages_url(repo=repo, destination_dir=destination_dir)
+
+            commit_message = (
+                commit_message or f"Publish GitHub Pages from {source.name}"
+            )
+            Shell.check(
+                f"git -C {shlex.quote(str(worktree))} commit -m {shlex.quote(commit_message)}",
+                strict=True,
+                verbose=verbose,
+            )
+            Shell.check(
+                f"git -C {shlex.quote(str(worktree))} push {safe_remote_name} HEAD:{safe_branch}",
+                strict=True,
+                verbose=verbose,
+                env=git_env,
+            )
+            url = cls.gh_pages_url(repo=repo, destination_dir=destination_dir)
+            print(f"Published GitHub Pages: {url}")
+            return url
+        finally:
+            if worktree.exists():
+                Shell.run(
+                    f"git worktree remove --force {shlex.quote(str(worktree))}",
+                    verbose=verbose,
+                )
+            if remote_added:
+                Shell.run(
+                    f"git remote remove {safe_remote_name}",
+                    verbose=verbose,
+                    env=git_env,
+                )
+            shutil.rmtree(temp_root, ignore_errors=True)
 
     @classmethod
     def do_command_with_retries(cls, command, verbose=False):

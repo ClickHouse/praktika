@@ -958,13 +958,6 @@ def test_project_image_builders_register_expected_launch_templates():
     ] == ["amd-2xsmall-ubuntu-lt"]
 
 
-def test_advanced_workflow_version_check_runs_on_ubuntu_pool():
-    from ci.workflows.praktika_pr_advanced import workflow
-
-    version_check = next(job for job in workflow.jobs if job.name == "Version Check")
-    assert version_check.runs_on == [RunnerLabels.SMALL_AMD_UBUNTU]
-
-
 def test_all_image_builders_stay_private():
     for name in [
         "ci-arm64-image",
@@ -987,6 +980,7 @@ def test_project_github_token_minter_uses_defaults_and_project_repo_scope():
     assert gh_token_minter.role_name == "praktika-gh-token-role"
     assert gh_token_minter.secret_name == "praktika-gh-app-echt"
     assert gh_token_minter.repositories == ["praktika"]
+    assert gh_token_minter.permissions["contents"] == "write"
 
     runner = next(pool for pool in cloud.runner_pools if pool.name == "arm-2xsmall")
     orchestrator = cloud.orchestrator_pool

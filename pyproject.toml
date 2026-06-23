@@ -55,6 +55,7 @@ all = [
     "requests>=2.25.0",
 ]
 dev = [
+    "coverage>=7.0.0,<8",
     "pytest>=7.0.0",
     "pytest-reportlog>=0.4.0",
     "boto3>=1.18.0",

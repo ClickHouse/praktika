@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from praktika.result import Result
+from praktika.result import Result, ResultTranslator
 from praktika.utils import Shell
 
 
@@ -47,6 +47,58 @@ def test_from_pytest_run_falls_back_without_reportlog(tmp_path, monkeypatch):
     assert result.files == [str(pytest_log), str(stdout_log)]
     assert "pytest-reportlog plugin is not installed" in result.info
     assert "AssertionError: boom" in result.info
+
+
+def test_from_pytest_run_allows_custom_pytest_command(tmp_path, monkeypatch):
+    commands = []
+    pytest_report = tmp_path / "pytest.jsonl"
+
+    def _fake_get_output(cls, command, strict=False, verbose=False, retries=1, delay=2):
+        if command == "pytest --help":
+            return "--report-log"
+        return ""
+
+    def _fake_run(
+        cls,
+        command,
+        log_file=None,
+        strict=False,
+        verbose=True,
+        dry_run=False,
+        stdin_str=None,
+        timeout=None,
+        retries=1,
+        retry_errors="",
+        **kwargs,
+    ):
+        commands.append(command)
+        return 0
+
+    def _fake_from_pytest_jsonl(
+        cls, pytest_report_file, enable_capture_output_to_info=False
+    ):
+        assert pytest_report_file == str(pytest_report)
+        return Result.create_from(name="pytest", status=Result.Status.OK)
+
+    monkeypatch.setattr(Shell, "get_output", classmethod(_fake_get_output))
+    monkeypatch.setattr(Shell, "run", classmethod(_fake_run))
+    monkeypatch.setattr(
+        ResultTranslator,
+        "from_pytest_jsonl",
+        classmethod(_fake_from_pytest_jsonl),
+    )
+
+    result = Result.from_pytest_run(
+        "./ci/tests/test_parser.py",
+        name="Praktika Pytests",
+        pytest_command="coverage run -m pytest",
+        pytest_report_file=str(pytest_report),
+    )
+
+    assert result.status == Result.Status.OK
+    assert commands == [
+        f"coverage run -m pytest ./ci/tests/test_parser.py --report-log={pytest_report}"
+    ]
 
 
 def test_assets_live_in_ext():

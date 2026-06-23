@@ -351,7 +351,7 @@ class Lambda:
             role_arn = self.ext.get("role_arn")
             memory_size = self.memory_size_mb
             timeout = int(self.timeout_ms / 1000)
-            environment = self.ext.get("environment", {})
+            environment = dict(self.ext.get("environment", {}))
 
             # Merge non-secret environment variables (plain configuration)
             if self.environments:
@@ -415,22 +415,38 @@ class Lambda:
                     print(f"Successfully updated Lambda function code: {function_name}")
 
                 # Update function configuration only if something changed
-                current_env = self.ext.get("environment", {})
+                current_env = dict(self.ext.get("environment", {}))
+                changed_env_keys = sorted(
+                    key
+                    for key in set(current_env) | set(environment)
+                    if current_env.get(key) != environment.get(key)
+                )
                 config_changed = (
                     self.ext.get("handler") != handler
                     or self.ext.get("timeout") != timeout
                     or self.ext.get("memory_size") != memory_size
                     or current_env != environment
                 )
-                if config_changed:
+                if changed_env_keys:
+                    print(
+                        "Lambda environment changes detected for key(s): "
+                        f"{', '.join(changed_env_keys)}"
+                    )
+                if config_changed or code_updated:
                     if code_updated:
                         print(f"Waiting for code update to complete...")
                         waiter = lambda_client.get_waiter("function_updated")
                         waiter.wait(FunctionName=function_name)
 
-                    print(
-                        f"Updating Lambda configuration (timeout={timeout}s, memory={memory_size}MB, handler={handler})..."
-                    )
+                    if config_changed:
+                        print(
+                            f"Updating Lambda configuration (timeout={timeout}s, memory={memory_size}MB, handler={handler})..."
+                        )
+                    else:
+                        print(
+                            "Refreshing Lambda configuration after code update "
+                            f"(timeout={timeout}s, memory={memory_size}MB, handler={handler})..."
+                        )
                     lambda_client.update_function_configuration(
                         FunctionName=function_name,
                         Handler=handler,

@@ -603,6 +603,7 @@ class Result(MetaClasses.Serializable):
         cwd=None,
         name="Tests",
         env=None,
+        pytest_command="pytest",
         pytest_report_file=None,
         pytest_logfile=None,
         logfile=None,
@@ -616,6 +617,7 @@ class Result(MetaClasses.Serializable):
             cwd (str, optional): Working directory to run the command in
             name (str, optional): Name for the root Result object
             env (dict, optional): Environment variables for the pytest command
+            pytest_command (str, optional): Command used to invoke pytest
             pytest_report_file (str, optional): Path to write the pytest jsonl report
             logfile (str, optional): Path to write pytest output logs
             timeout (int, optional): Hard timeout in seconds to kill the pytest process
@@ -637,7 +639,7 @@ class Result(MetaClasses.Serializable):
             # plugin is installed; otherwise fall back to plain pytest so local
             # `praktika run <job>` still works in dev envs that only have the
             # base `pytest` package.
-            full_command = f"pytest {command}"
+            full_command = f"{pytest_command} {command}"
             if supports_report_log:
                 full_command += f" --report-log={pytest_report_file}"
                 files.append(pytest_report_file)

@@ -32,6 +32,14 @@ workflow = Workflow.Config(
             name="Praktika Pytests",
             runs_on=[RunnerLabels.SMALL_ARM],
             command="python3 ./ci/scripts/run_ci_pytests.py",
+            digest_config=Job.CacheDigestConfig(
+                include_paths=[
+                    "./ci/scripts/run_ci_pytests.py",
+                    "./ci/tests",
+                    "./praktika",
+                    "./pyproject.toml",
+                ],
+            ),
         ),
         # S3 artifact with cache digest
         Job.Config(
