@@ -11,7 +11,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PRAKTIKA_PACKAGE_BASE_URL = (
     "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages"
 )
-_PRAKTIKA_BASE_VERSION = "0.1.3"
+_PRAKTIKA_BASE_VERSION = "0.1.4"
 _PRAKTIKA_LATEST_VERSION = current_praktika_version()
 _PRAKTIKA_WHL = (
     f"{_PRAKTIKA_PACKAGE_BASE_URL}/"
@@ -94,8 +94,8 @@ def _custom_image_tests():
 
 
 def _image_builders():
-    ci_version = "1.0.6"
-    ubuntu_ci_version = "1.0.6"
+    ci_version = "1.0.7"
+    ubuntu_ci_version = "1.0.7"
 
     return [
         _create_awslinux_image_builder_config(
@@ -296,7 +296,7 @@ _cidb_cluster = Components.CIDBCluster(
 PROJECTS = [
     CloudInfrastructure.Config(
         name="praktika",
-        min_praktika_version="0.1.3",
+        min_praktika_version="0.1.4",
         vpcs=[
             VPC.Config(
                 subnets=[

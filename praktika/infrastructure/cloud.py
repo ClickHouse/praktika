@@ -10,6 +10,7 @@ from .autoscaling_group import AutoScalingGroup
 from .dedicated_host import DedicatedHost
 from .ec2_instance import EC2Instance
 from .iam_instance_profile import IAMInstanceProfile
+from .iam_role import IAMRole
 from .image_builder import ImageBuilder
 from .lambda_function import lambda_app_config, lambda_worker_config
 from .launch_template import LaunchTemplate
@@ -251,49 +252,6 @@ class CloudInfrastructure:
         def _apply_image_builder_defaults(self):
             default_vpc_name = self.vpcs[0].name if len(self.vpcs) == 1 else ""
 
-            def _is_arm_instance_type(instance_type: str):
-                family = (instance_type or "").split(".")[0]
-                if not family:
-                    return None
-                return family.endswith("g")
-
-            def _builder_is_arm(builder):
-                if not builder.instance_types:
-                    return None
-                return _is_arm_instance_type(builder.instance_types[0])
-
-            def _consumer_launch_templates(builder):
-                seen = set()
-
-                def _add(launch_template):
-                    if not launch_template or id(launch_template) in seen:
-                        return []
-                    seen.add(id(launch_template))
-                    return [launch_template]
-
-                for pool in self.runner_pools:
-                    if getattr(pool, "image_builder", None) is builder:
-                        yield from _add(getattr(pool, "launch_template", None))
-                for pool in self.orchestrator_pools:
-                    if getattr(pool, "image_builder", None) is builder:
-                        yield from _add(getattr(pool, "launch_template", None))
-                for launch_template in self.launch_templates:
-                    if getattr(launch_template, "image_builder", None) is builder:
-                        yield from _add(launch_template)
-                for launch_template in builder.launch_templates:
-                    yield from _add(launch_template)
-
-            def _matching_runner_launch_templates(builder):
-                builder_is_arm = _builder_is_arm(builder)
-                if builder_is_arm is None:
-                    return
-                for pool in self.runner_pools:
-                    if _is_arm_instance_type(pool.instance_type) == builder_is_arm:
-                        yield pool.launch_template
-                for pool in self.orchestrator_pools:
-                    if _is_arm_instance_type(pool.instance_type) == builder_is_arm:
-                        yield pool.launch_template
-
             for builder in self.image_builders:
                 if not builder.vpc_name and default_vpc_name:
                     builder.vpc_name = default_vpc_name
@@ -303,20 +261,6 @@ class CloudInfrastructure:
                     and builder.vpc_name
                 ):
                     builder.security_group_names = [f"{builder.vpc_name}-sg"]
-                if not builder.instance_profile_name:
-                    for launch_template in _consumer_launch_templates(builder):
-                        if getattr(launch_template, "iam_instance_profile_name", ""):
-                            builder.instance_profile_name = (
-                                launch_template.iam_instance_profile_name
-                            )
-                            break
-                if not builder.instance_profile_name:
-                    for launch_template in _matching_runner_launch_templates(builder):
-                        if getattr(launch_template, "iam_instance_profile_name", ""):
-                            builder.instance_profile_name = (
-                                launch_template.iam_instance_profile_name
-                            )
-                            break
 
         def _apply_project_namespace(self):
             # Centralize namespacing here instead of forcing ci/infrastructure/projects.py
@@ -819,6 +763,32 @@ class CloudInfrastructure:
                 if secret.name not in seen_secret_names:
                     self.secret_parameters.append(secret)
                     seen_secret_names.add(secret.name)
+
+            image_builder_role = IAMRole.Config(
+                name=self._prefixed("imagebuilder-role"),
+                trust_service="ec2.amazonaws.com",
+                policy_arns=[
+                    "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
+                    "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy",
+                    "arn:aws:iam::aws:policy/EC2InstanceProfileForImageBuilder",
+                ],
+            )
+            image_builder_profile = IAMInstanceProfile.Config(
+                name=self._prefixed("imagebuilder-profile"),
+                role_name=image_builder_role.name,
+            )
+            needs_image_builder_profile = False
+            for builder in self.image_builders:
+                if (
+                    builder.instance_profile_name
+                    or builder.infrastructure_configuration
+                ):
+                    continue
+                builder.instance_profile_name = image_builder_profile.name
+                needs_image_builder_profile = True
+            if needs_image_builder_profile:
+                _add_role(image_builder_role)
+                _add_profile(image_builder_profile)
 
             implicit_autoscaler_sources = []
             for pool in self.orchestrator_pools:

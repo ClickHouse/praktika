@@ -175,9 +175,28 @@ def test_current_infrastructure_config_imports_all_component_groups(monkeypatch)
     assert {
         name: builder.instance_profile_name for name, builder in image_builders.items()
     } == {
-        "praktika-ci-arm64-image": "praktika-arm-2xsmall-profile",
-        "praktika-ci-x86_64-image": "praktika-amd-2xsmall-profile",
-        "praktika-ci-ubuntu-x86_64-image": "praktika-amd-2xsmall-ubuntu-profile",
+        "praktika-ci-arm64-image": "praktika-imagebuilder-profile",
+        "praktika-ci-x86_64-image": "praktika-imagebuilder-profile",
+        "praktika-ci-ubuntu-x86_64-image": "praktika-imagebuilder-profile",
+    }
+    imagebuilder_roles = {
+        role.name: role
+        for role in cloud.iam_roles
+        if role.name.endswith("-imagebuilder-role")
+    }
+    assert set(imagebuilder_roles) == {"praktika-imagebuilder-role"}
+    assert imagebuilder_roles["praktika-imagebuilder-role"].policy_arns == [
+        "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
+        "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy",
+        "arn:aws:iam::aws:policy/EC2InstanceProfileForImageBuilder",
+    ]
+    imagebuilder_profiles = {
+        profile.name: profile.role_name
+        for profile in cloud.iam_instance_profiles
+        if profile.name.endswith("-imagebuilder-profile")
+    }
+    assert imagebuilder_profiles == {
+        "praktika-imagebuilder-profile": "praktika-imagebuilder-role"
     }
     assert {builder.vpc_name for builder in image_builders.values()} == {"praktika-vpc"}
     assert {
@@ -571,6 +590,27 @@ def test_runner_pool_can_opt_in_to_ssm_debug_permissions():
         "ec2messages:GetMessages",
         "ec2messages:SendReply",
     ]
+
+
+def test_runner_pool_with_image_builder_keeps_runner_role_without_ssm_agent_permissions():
+    pool = RunnerPool(
+        name="runner",
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        scaling=RunnerPool.Scaling.Auto,
+        size=0,
+        max_size=1,
+        image_builder=ImageBuilder.Config(name="runner-image"),
+    )
+
+    assert (
+        "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+        not in pool.ec2_role.policy_arns
+    )
+    sids = {stmt.get("Sid") for stmt in _runner_access_statements(pool)}
+    assert "SSMManagedInstanceCore" not in sids
+    assert "SSMMessages" not in sids
+    assert "EC2Messages" not in sids
 
 
 def test_runner_pool_can_allow_specific_ssm_parameters_secrets_and_s3_prefixes():
@@ -1003,6 +1043,18 @@ def test_cloud_deploy_runs_lambdas_before_image_backed_compute(monkeypatch):
     cloud._settings = SimpleNamespace(AWS_REGION="eu-north-1", EVENT_FEED_S3_PATH="")
     monkeypatch.setattr(cloud, "_verify_account", lambda: None)
 
+    for role in cloud.iam_roles:
+        monkeypatch.setattr(
+            role,
+            "deploy",
+            lambda role=role: calls.append(f"role:{role.name}"),
+        )
+    for profile in cloud.iam_instance_profiles:
+        monkeypatch.setattr(
+            profile,
+            "deploy",
+            lambda profile=profile: calls.append(f"profile:{profile.name}"),
+        )
     monkeypatch.setattr(
         cloud.lambda_functions[0],
         "deploy",
@@ -1027,6 +1079,8 @@ def test_cloud_deploy_runs_lambdas_before_image_backed_compute(monkeypatch):
     cloud.deploy()
 
     assert calls == [
+        "role:deploy-order-imagebuilder-role",
+        "profile:deploy-order-imagebuilder-profile",
         "lambda:deploy-order-webhook",
         "imagebuilder:deploy-order-builder",
         "lt:deploy-order-runner-lt",

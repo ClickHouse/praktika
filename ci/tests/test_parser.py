@@ -33,7 +33,7 @@ class TestWorkflowConfigParser(unittest.TestCase):
             "Version Check"
         )
 
-        self.assertIn("assert praktika == '0.1.3'", simple_version_check.command)
+        self.assertIn("assert praktika == '0.1.4'", simple_version_check.command)
         self.assertEqual(simple_version_check.runs_on, ["arm-2xsmall-base"])
         self.assertIn(
             f"assert praktika == '{current_praktika_version()}'",
