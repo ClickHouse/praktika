@@ -14,6 +14,19 @@ class _CompletedProcess:
 _PY_TAG = f"py{sys.version_info.major}.{sys.version_info.minor}"
 
 
+def test_praktika_command_uses_safe_python_path_mode(tmp_path):
+    venv_dir = tmp_path / "runtime"
+
+    assert venv_manager.praktika_command(venv_dir, "orchestrate", "job") == [
+        str(venv_dir / "bin" / "python"),
+        "-P",
+        "-m",
+        "praktika",
+        "orchestrate",
+        "job",
+    ]
+
+
 def test_ensure_praktika_venv_reuses_existing_installed_env(tmp_path, monkeypatch):
     source_dir = tmp_path / "praktika-src"
     source_dir.mkdir()

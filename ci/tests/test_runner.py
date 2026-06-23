@@ -37,6 +37,35 @@ def test_runner_commit_status_posting_is_only_for_non_praktika_engines():
     assert _should_post_commit_status(SimpleNamespace(engine="custom-engine"))
 
 
+def test_job_python_env_prefers_runtime_paths_before_repo_paths(monkeypatch, tmp_path):
+    from praktika.runner import _job_python_env
+
+    monkeypatch.chdir(tmp_path)
+    other_path = tmp_path / "other"
+    other_path.mkdir()
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        os.pathsep.join([".", str(tmp_path), str(other_path)]),
+    )
+
+    env = _job_python_env()
+    pythonpath = env["PYTHONPATH"].split(os.pathsep)
+
+    assert env["PYTHONSAFEPATH"] == "1"
+    assert "." in pythonpath
+    assert "./ci" in pythonpath
+    assert str(other_path) in pythonpath
+    assert pythonpath.index(".") < pythonpath.index("./ci")
+    assert str(tmp_path) in pythonpath
+
+    site_paths = [
+        entry
+        for entry in pythonpath[: pythonpath.index(".")]
+        if "site-packages" in entry or "dist-packages" in entry
+    ]
+    assert site_paths
+
+
 def test_gh_auth_uses_custom_auth_outside_github_actions(monkeypatch):
     from praktika import runner
     from praktika.gh_auth import GHAuth
@@ -185,6 +214,28 @@ class TestRunner(unittest.TestCase):
         # set start_time and update_duration computes now - start_time.
         self.assertIsNotNone(result.duration)
         self.assertGreater(result.duration, 0)
+
+    def test_non_docker_job_does_not_mutate_parent_pythonpath(self):
+        from praktika.orchestrator.job_runner import run_job
+
+        os.environ["PYTHONPATH"] = "/existing"
+        task = {
+            "workflow_name": "DummyExitCodeResultTest",
+            "job_name": "exit_ok",
+            "pr_number": 1,
+            "base_ref": "main",
+            "head_ref": "test-branch",
+            "head_sha": "0" * 40,
+            "repo": "test-org/test-repo",
+        }
+        self._bootstrap_workflow_state(task)
+
+        try:
+            rc = run_job(task, gh_token=None, local=True)
+            self.assertEqual(rc, 0, f"run_job returned non-zero rc [{rc}]")
+            self.assertEqual(os.environ["PYTHONPATH"], "/existing")
+        finally:
+            os.environ.pop("PYTHONPATH", None)
 
     def test_exit_code_result_synthesizes_fail_on_nonzero_exit(self):
         """enable_exit_code_result=True + script that exits non-zero

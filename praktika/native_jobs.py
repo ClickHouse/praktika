@@ -24,6 +24,11 @@ from .s3 import S3
 from .settings import Settings
 from .utils import Shell, Utils
 
+# Expose repo-local ci.* modules after Praktika itself has resolved from the
+# selected runtime venv, not from the cloned worktree.
+if "." not in sys.path:
+    sys.path.append(".")
+
 assert Settings.CI_CONFIG_RUNS_ON
 
 
