@@ -1,4 +1,5 @@
 import dataclasses
+import html
 import json
 import os
 import re
@@ -175,6 +176,46 @@ class GH:
         return f"https://{owner.lower()}.github.io/{name}{suffix}/"
 
     @classmethod
+    def _write_gh_pages_index(cls, worktree: Path):
+        entries = []
+        for item in sorted(worktree.iterdir(), key=lambda path: path.name.lower()):
+            if item.name in {".git", ".nojekyll", "index.html"}:
+                continue
+            if item.name.startswith("."):
+                continue
+            href = f"{item.name}/" if item.is_dir() else item.name
+            label = f"{item.name}/" if item.is_dir() else item.name
+            entries.append((href, label))
+
+        list_items = "\n".join(
+            f'  <li><a href="{html.escape(href, quote=True)}">'
+            f"{html.escape(label)}</a></li>"
+            for href, label in entries
+        )
+        worktree.joinpath("index.html").write_text(
+            "\n".join(
+                [
+                    "<!doctype html>",
+                    '<html lang="en">',
+                    "<head>",
+                    '<meta charset="utf-8">',
+                    '<meta name="viewport" content="width=device-width, initial-scale=1">',
+                    "<title>Pages index</title>",
+                    "</head>",
+                    "<body>",
+                    "<h1>Pages index</h1>",
+                    "<ul>",
+                    list_items,
+                    "</ul>",
+                    "</body>",
+                    "</html>",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    @classmethod
     def publish_gh_pages(
         cls,
         source_dir: str,
@@ -188,6 +229,7 @@ class GH:
         git_user_email: str = "praktika[bot]@users.noreply.github.com",
         verbose: bool = True,
         clean_destination: bool = True,
+        update_root_index: bool = True,
     ) -> str:
         """Publish a local directory to a path on the repository's Pages branch.
 
@@ -301,6 +343,8 @@ class GH:
 
             if no_jekyll:
                 (worktree / ".nojekyll").touch()
+            if update_root_index and destination_dir:
+                cls._write_gh_pages_index(worktree)
 
             Shell.check(
                 "git -C "

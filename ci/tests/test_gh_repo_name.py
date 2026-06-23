@@ -41,6 +41,24 @@ def test_gh_pages_destination_rejects_parent_traversal():
         assert False, "Expected invalid destination to raise"
 
 
+def test_write_gh_pages_index_lists_top_level_entries(tmp_path):
+    (tmp_path / "coverage").mkdir()
+    (tmp_path / "coverage" / "index.html").write_text("coverage", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "asset.txt").write_text("asset", encoding="utf-8")
+    (tmp_path / ".nojekyll").touch()
+    (tmp_path / ".hidden").mkdir()
+
+    GH._write_gh_pages_index(tmp_path)
+
+    index = (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert '<a href="asset.txt">asset.txt</a>' in index
+    assert '<a href="coverage/">coverage/</a>' in index
+    assert '<a href="docs/">docs/</a>' in index
+    assert ".nojekyll" not in index
+    assert ".hidden" not in index
+
+
 def test_publish_gh_pages_copies_source_and_pushes(tmp_path, monkeypatch):
     source = tmp_path / "source"
     source.mkdir()
@@ -117,6 +135,9 @@ def test_publish_gh_pages_copies_source_and_pushes(tmp_path, monkeypatch):
     assert (temp_root / "worktree" / "coverage" / "pr-1" / "index.html").read_text(
         encoding="utf-8"
     ) == "coverage"
+    root_index = (temp_root / "worktree" / "index.html").read_text(encoding="utf-8")
+    assert '<a href="coverage/">coverage/</a>' in root_index
+    assert ".nojekyll" not in root_index
     assert any(
         command.startswith("git remote add praktika-gh-pages-")
         and command.endswith(" https://github.com/ClickHouse/praktika.git")
