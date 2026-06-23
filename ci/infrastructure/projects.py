@@ -4,6 +4,7 @@ from pathlib import Path
 from praktika.infrastructure.cloud import CloudInfrastructure
 from praktika.infrastructure import Components, Storage, VPC
 from praktika.version import current_praktika_version
+from ci.settings.settings import SECRET_CI_DB_CONNECTION
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -124,7 +125,7 @@ def _image_builders():
 
 _IMAGE_BUILDERS = _image_builders()
 _IMAGE_BUILDERS_BY_NAME = {builder.name: builder for builder in _IMAGE_BUILDERS}
-_RUNNER_ALLOWED_SSM_PARAMETERS = []
+_RUNNER_ALLOWED_SSM_PARAMETERS = [SECRET_CI_DB_CONNECTION]
 _RUNNER_ALLOWED_SECRETS = []
 _RUNNER_ALLOWED_S3_PREFIXES = ["artifacts-eu-north-1"]
 _RUNNER_ALLOW_ALL_SSM_PARAMETERS = False

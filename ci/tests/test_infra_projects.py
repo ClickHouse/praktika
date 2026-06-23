@@ -1249,7 +1249,7 @@ def test_project_github_token_minter_uses_defaults_and_project_repo_scope():
     assert orchestrator.launch_template.tags["praktika_project_slug"] == "praktika"
 
 
-def test_project_runner_pools_do_not_allow_ssm_secrets_by_default():
+def test_project_runner_pools_allow_only_required_ssm_parameters():
     cloud = _get_infra_config("praktika")
 
     for pool in cloud.runner_pools:
@@ -1261,9 +1261,8 @@ def test_project_runner_pools_do_not_allow_ssm_secrets_by_default():
             "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
             not in pool.ec2_role.policy_arns
         )
-        assert pool.allowed_ssm_parameters == []
-        assert pool.allowed_secrets == []
         assert pool.allowed_ssm_parameters == list(_RUNNER_ALLOWED_SSM_PARAMETERS)
+        assert pool.allowed_secrets == []
         assert pool.allowed_secrets == list(_RUNNER_ALLOWED_SECRETS)
         assert pool.allowed_s3_prefixes == [
             f"praktika-{_RUNNER_ALLOWED_S3_PREFIXES[0]}"
@@ -1276,9 +1275,14 @@ def test_project_runner_pools_do_not_allow_ssm_secrets_by_default():
         assert all(stmt.get("Sid") != "SSMManagedInstanceCore" for stmt in runner_access)
         assert all(stmt.get("Sid") != "SSMMessages" for stmt in runner_access)
         assert all(stmt.get("Sid") != "EC2Messages" for stmt in runner_access)
-        assert all(
-            stmt.get("Sid") != "AllowedSSMParametersRead" for stmt in runner_access
-        )
+        assert _statement_by_sid(pool, "AllowedSSMParametersRead") == {
+            "Sid": "AllowedSSMParametersRead",
+            "Effect": "Allow",
+            "Action": ["ssm:GetParameter", "ssm:GetParameters"],
+            "Resource": [
+                f"arn:aws:ssm:*:*:parameter/{_RUNNER_ALLOWED_SSM_PARAMETERS[0]}"
+            ],
+        }
         assert all(
             stmt.get("Sid") != "AllowedSecretsManagerSecretsRead"
             for stmt in runner_access
