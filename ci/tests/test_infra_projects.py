@@ -89,6 +89,35 @@ def test_get_infra_config_requires_project_when_multiple(tmp_path, monkeypatch):
     assert _get_infra_config("beta").name == "beta"
 
 
+def test_get_infra_config_reports_version_mismatch_for_newer_fields(
+    tmp_path, monkeypatch
+):
+    config_path = tmp_path / "cloud.py"
+    config_path.write_text(
+        "\n".join(
+            [
+                "class RunnerPool:",
+                "    def __init__(self):",
+                "        pass",
+                "RunnerPool(allowed_ssm_parameters=[])",
+                "PROJECTS = []",
+            ]
+        )
+    )
+    monkeypatch.setattr(Settings, "CLOUD_INFRASTRUCTURE_CONFIG_PATH", str(config_path))
+
+    with pytest.raises(RuntimeError) as exc:
+        _get_infra_config()
+
+    message = str(exc.value)
+    assert "mismatch between the Praktika version and the infrastructure config" in message
+    assert f"Config file: {config_path}" in message
+    assert f"Running Praktika version: {current_praktika_version()}" in message
+    assert "unexpected keyword argument 'allowed_ssm_parameters'" in message
+    assert "newer infrastructure fields" in message
+    assert "Praktika package version that matches this config" in message
+
+
 def test_deploy_rejects_config_that_requires_newer_praktika(monkeypatch):
     current_version = current_praktika_version()
     cloud = CloudInfrastructure.Config(

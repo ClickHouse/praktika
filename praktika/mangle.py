@@ -9,6 +9,7 @@ from . import Job
 from .info import Info
 from .settings import Settings
 from .utils import Utils
+from .version import current_praktika_version
 
 
 def _is_local_run():
@@ -153,7 +154,22 @@ def _get_infra_projects():
         )
 
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except TypeError as e:
+        message = str(e)
+        if "__init__()" in message and "unexpected keyword argument" in message:
+            Utils.raise_with_error(
+                "Infrastructure config cannot be loaded because there is a mismatch "
+                "between the Praktika version and the infrastructure config.\n"
+                f"Config file: {Settings.CLOUD_INFRASTRUCTURE_CONFIG_PATH}\n"
+                f"Running Praktika version: {current_praktika_version()}\n"
+                f"Import error: {message}\n"
+                "The config likely uses newer infrastructure fields that this "
+                "Praktika runtime does not understand. Run the Praktika package "
+                "version that matches this config, then retry."
+            )
+        raise
 
     try:
         projects = list(getattr(module, "PROJECTS"))
