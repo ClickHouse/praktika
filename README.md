@@ -29,6 +29,8 @@ See [GETTING_STARTED.md](./GETTING_STARTED.md) — it walks you through
 infrastructure configuration and deployment, and writing your first Praktika
 pipeline.
 
+For deployment security considerations, see [SECURITY.md](./SECURITY.md).
+
 ## Module references
 
 - [`praktika/infrastructure/`](./praktika/infrastructure/README.md) — config

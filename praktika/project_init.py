@@ -610,6 +610,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                         allow_all_ssm_parameters={not answers.is_oss},
                         allow_all_secrets={not answers.is_oss},
                         allow_all_s3_prefixes={not answers.is_oss},
+                        allow_ssm_debug=False,
                     ),
                     Components.RunnerPool(
                         name="amd-small",
@@ -625,6 +626,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                         allow_all_ssm_parameters={not answers.is_oss},
                         allow_all_secrets={not answers.is_oss},
                         allow_all_s3_prefixes={not answers.is_oss},
+                        allow_ssm_debug=False,
                     ),
                     Components.RunnerPool(
                         name="arm-medium",
@@ -640,6 +642,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                         allow_all_ssm_parameters={not answers.is_oss},
                         allow_all_secrets={not answers.is_oss},
                         allow_all_s3_prefixes={not answers.is_oss},
+                        allow_ssm_debug=False,
                     ),
                     Components.RunnerPool(
                         name="amd-medium",
@@ -655,6 +658,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                         allow_all_ssm_parameters={not answers.is_oss},
                         allow_all_secrets={not answers.is_oss},
                         allow_all_s3_prefixes={not answers.is_oss},
+                        allow_ssm_debug=False,
                     ),
                 ],
             )

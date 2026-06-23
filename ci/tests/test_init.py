@@ -209,84 +209,6 @@ def test_prompt_aws_account_id_retries_with_available_account_ids(monkeypatch, c
     assert "Available account IDs: 123456789012, 210987654321" in out
 
 
-def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
-    confirm_answers = iter([True, False])
-    string_answers = iter(
-        [
-            "main",
-            "us-east-1",
-            "us-east-1a",
-            "awslinux",
-        ]
-    )
-
-    monkeypatch.setattr(
-        UserPrompt,
-        "confirm",
-        staticmethod(lambda _: next(confirm_answers)),
-    )
-    monkeypatch.setattr(
-        UserPrompt,
-        "get_string",
-        staticmethod(lambda *args, **kwargs: next(string_answers)),
-    )
-    monkeypatch.setattr(
-        "praktika.project_init._prompt_aws_profile",
-        lambda default="default": "default",
-    )
-    monkeypatch.setattr(
-        "praktika.project_init._prompt_aws_account_id",
-        lambda profile="": "123456789012",
-    )
-
-    written = run_init_interactive(tmp_path)
-
-    written_rel = {path.relative_to(tmp_path).as_posix() for path in written}
-    assert written_rel == {
-        "ci/settings/settings.py",
-        "ci/workflows/pull_request.py",
-        "ci/workflows/main_ci.py",
-        "ci/infrastructure/projects.py",
-    }
-
-    for path in written:
-        compile(path.read_text(encoding="utf8"), str(path), "exec")
-
-    monkeypatch.syspath_prepend(str(tmp_path))
-    module_names = ("ci.settings.settings", "ci.settings")
-    missing_module = object()
-    previous_modules = {
-        module_name: sys.modules.get(module_name, missing_module)
-        for module_name in module_names
-    }
-    for module_name in module_names:
-        sys.modules.pop(module_name, None)
-    monkeypatch.setattr(
-        Settings,
-        "WORKFLOWS_DIRECTORY",
-        str(tmp_path / "ci/workflows"),
-    )
-    monkeypatch.setattr(
-        Settings,
-        "CLOUD_INFRASTRUCTURE_CONFIG_PATH",
-        str(tmp_path / "ci/infrastructure/projects.py"),
-    )
-    monkeypatch.setattr(Settings, "ENABLED_WORKFLOWS", None)
-    monkeypatch.setattr(Settings, "DISABLED_WORKFLOWS", None)
-
-    try:
-        workflows = _get_workflows(_for_validation_check=True)
-        cloud = _get_infra_config()
-    finally:
-        for module_name in module_names:
-            sys.modules.pop(module_name, None)
-        for module_name, previous_module in previous_modules.items():
-            if previous_module is not missing_module:
-                sys.modules[module_name] = previous_module
-
-    assert workflows
-    assert cloud
-
 
 def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeypatch):
     confirm_answers = iter([True, False])
@@ -404,9 +326,12 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
     assert {tuple(pool.allowed_s3_prefixes) for pool in cloud.runner_pools} == {
         (f"{project_slug}-artifacts",)
     }
+    assert {tuple(pool.allowed_ssm_parameters) for pool in cloud.runner_pools} == {()}
+    assert {tuple(pool.allowed_secrets) for pool in cloud.runner_pools} == {()}
     assert all(pool.allow_all_ssm_parameters for pool in cloud.runner_pools)
     assert all(pool.allow_all_secrets for pool in cloud.runner_pools)
     assert all(pool.allow_all_s3_prefixes for pool in cloud.runner_pools)
+    assert all(pool.allow_ssm_debug is False for pool in cloud.runner_pools)
     assert set(builders_by_arch) == {"arm64", "x86_64"}
     assert all(len(builder.inline_components) == 4 for builder in cloud.image_builders)
     assert {
