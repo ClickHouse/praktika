@@ -552,6 +552,14 @@ def _infrastructure_template(answers: InitAnswers) -> str:
 
 
         _GH_TOKEN_MINTER = Components.GitHubTokenMinter(
+            permissions={{
+                "checks": "write",
+                "contents": "write",
+                "issues": "write",
+                "metadata": "read",
+                "pull_requests": "write",
+                "statuses": "write",
+            }},
             repositories=[PROJECT_NAME],
         )
         _IMAGE_BUILDERS = _image_builders()

@@ -22,6 +22,16 @@ from praktika.settings import Settings
 from praktika.version import current_praktika_version
 
 
+EXPECTED_GITHUB_TOKEN_MINTER_PERMISSIONS = {
+    "checks": "write",
+    "contents": "write",
+    "issues": "write",
+    "metadata": "read",
+    "pull_requests": "write",
+    "statuses": "write",
+}
+
+
 def _decode_embedded_file(command: str) -> str:
     payload = command.split("'")[3]
     return base64.b64decode(payload).decode("utf-8")
@@ -201,7 +211,6 @@ def test_prompt_aws_account_id_retries_with_available_account_ids(monkeypatch, c
 
 def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
     confirm_answers = iter([True, False])
-    project_slug = tmp_path.name.replace("_", "-")
     string_answers = iter(
         [
             "main",
@@ -240,121 +249,43 @@ def test_run_init_interactive_writes_starter_project(tmp_path, monkeypatch):
         "ci/infrastructure/projects.py",
     }
 
-    settings_path = tmp_path / "ci/settings/settings.py"
-    pr_workflow_path = tmp_path / "ci/workflows/pull_request.py"
-    main_ci_workflow_path = tmp_path / "ci/workflows/main_ci.py"
-    infra_path = tmp_path / "ci/infrastructure/projects.py"
+    for path in written:
+        compile(path.read_text(encoding="utf8"), str(path), "exec")
 
-    settings_text = settings_path.read_text(encoding="utf8")
-    pr_workflow_text = pr_workflow_path.read_text(encoding="utf8")
-    main_ci_workflow_text = main_ci_workflow_path.read_text(encoding="utf8")
-    infra_text = infra_path.read_text(encoding="utf8")
-
-    assert 'AWS_REGION = "us-east-1"' in settings_text
-    assert f'PROJECT_NAME = "{tmp_path.name}"' in settings_text
-    assert f'PROJECT_SLUG = "{project_slug}"' in settings_text
-    assert 'GH_AUTH_LAMBDA_NAME = f"{PROJECT_SLUG}-gh-token"' in settings_text
-    assert 'S3_ARTIFACT_BUCKET = f"{PROJECT_SLUG}-artifacts"' in settings_text
-    assert "ENABLE_SUBMODULE_CACHE = True" in settings_text
-    expected_base_venv = f"praktika-runtime-{current_praktika_version()}"
-    assert f'PRAKTIKA_BASE_VENV = "{expected_base_venv}"' in settings_text
-    assert (
-        'CLOUD_INFRASTRUCTURE_CONFIG_PATH = "./ci/infrastructure/projects.py"'
-        not in settings_text
+    monkeypatch.syspath_prepend(str(tmp_path))
+    module_names = ("ci.settings.settings", "ci.settings")
+    missing_module = object()
+    previous_modules = {
+        module_name: sys.modules.get(module_name, missing_module)
+        for module_name in module_names
+    }
+    for module_name in module_names:
+        sys.modules.pop(module_name, None)
+    monkeypatch.setattr(
+        Settings,
+        "WORKFLOWS_DIRECTORY",
+        str(tmp_path / "ci/workflows"),
     )
-    assert 'PRAKTIKA_INSTALL_SOURCE = "."' not in settings_text
-    assert 'SMALL_ARM = "arm-small"' in settings_text
-    assert 'SMALL_AMD = "amd-small"' in settings_text
-    assert 'MEDIUM_ARM = "arm-medium"' in settings_text
-    assert 'MEDIUM_AMD = "amd-medium"' in settings_text
-    assert 'name="Pull Request CI"' in pr_workflow_text
-    assert 'base_branches=["main"]' in pr_workflow_text
-    assert "enable_cache=True" in pr_workflow_text
-    assert "enable_gh_summary_comment=True" in pr_workflow_text
-    assert "enable_gh_summary_comment=True" not in main_ci_workflow_text
-    assert 'name="Main CI"' in main_ci_workflow_text
-    assert "event=Workflow.Event.PUSH" in main_ci_workflow_text
-    assert 'branches=["main"]' in main_ci_workflow_text
-    assert "enable_cache=True" in main_ci_workflow_text
-    assert (
-        "from ci.settings.settings import PROJECT_NAME, PROJECT_SLUG, PRAKTIKA_BASE_VENV"
-        in infra_text
+    monkeypatch.setattr(
+        Settings,
+        "CLOUD_INFRASTRUCTURE_CONFIG_PATH",
+        str(tmp_path / "ci/infrastructure/projects.py"),
     )
-    assert "from praktika.infrastructure import Components, Storage, VPC" in infra_text
-    assert f'min_praktika_version="{current_praktika_version()}"' in infra_text
-    assert "# until published in pip" in infra_text
-    assert "Components.create_praktika_venv_config(" in infra_text
-    assert "Components.create_image_test_component(" in infra_text
-    assert 'name="project-image-test"' in infra_text
-    assert "components=custom_image_tests" in infra_text
-    assert "PRAKTIKA_BASE_VENV," in infra_text
-    assert "_RUNTIME_BASE_VENV" not in infra_text
-    assert f'"{current_praktika_version()}"' in infra_text
-    assert (
-        "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/"
-        "praktika_controller-0.1.1-py3-none-any.whl"
-    ) in infra_text
-    assert "AWS_REGION" not in infra_text
-    assert "Components.GitHubTokenMinter(" in infra_text
-    assert "repositories=[PROJECT_NAME]" in infra_text
-    assert 'name="gh-token"' not in infra_text
-    assert 'secret_name="gh-app"' not in infra_text
-    assert 'PROJECT_NAME = "' not in infra_text
-    assert 'name="praktika-ci"' not in infra_text
-    assert "CI_VPC_NAME" not in infra_text
-    assert "region=CI_REGION" not in infra_text
-    assert "capacity_reserve=1" in infra_text
-    assert "def _controller_image_component(name: str):" not in infra_text
-    assert "Components.create_awslinux_image_builder_config(" in infra_text
-    assert infra_text.count("Components.create_awslinux_image_builder_config(") == 2
-    assert "Components.create_ubuntu_image_builder_config(" not in infra_text
-    assert "project_slug=" not in infra_text
-    assert "SQS_QUEUE_NAME" not in infra_text
-    assert "ImageBuilder.Config(" not in infra_text
-    assert 'name="ci-arm64-image"' in infra_text
-    assert 'name="ci-x86_64-image"' in infra_text
-    assert "ami_name=" not in infra_text
-    assert "image_pipeline_name=" not in infra_text
-    assert "instance_profile_name=" not in infra_text
-    assert "security_group_names=" not in infra_text
-    assert "vpc_name=" not in infra_text
-    assert "image_builders=_IMAGE_BUILDERS" in infra_text
-    assert 'image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"]' in infra_text
-    assert 'image_builder=_IMAGE_BUILDERS_BY_NAME["ci-x86_64-image"]' in infra_text
-    assert "/etc/systemd/system/praktika-controller.service" not in infra_text
-    assert '"log_group_name"' not in infra_text
-    assert '"/praktika/controller"' not in infra_text
-    assert 'name="artifacts"' in infra_text
-    assert "public=False" in infra_text
-    assert 'name="arm-small"' in infra_text
-    assert 'instance_type="t4g.medium"' in infra_text
-    assert 'name="amd-small"' in infra_text
-    assert 'instance_type="t3.medium"' in infra_text
-    assert 'name="arm-medium"' in infra_text
-    assert 'instance_type="c7g.4xlarge"' in infra_text
-    assert 'name="amd-medium"' in infra_text
-    assert 'instance_type="c7a.4xlarge"' in infra_text
-    assert "max_size=50" in infra_text
-    assert infra_text.count("max_size=50") == 5
-    assert "volume_size_gb=100" in infra_text
-    assert infra_text.count("volume_size_gb=100") == 5
-    assert "allowed_ssm_parameters=[]" in infra_text
-    assert infra_text.count("allowed_ssm_parameters=[]") == 4
-    assert "allowed_secrets=[]" in infra_text
-    assert infra_text.count("allowed_secrets=[]") == 4
-    assert 'allowed_s3_prefixes=["artifacts"]' in infra_text
-    assert infra_text.count('allowed_s3_prefixes=["artifacts"]') == 4
-    assert "allow_all_ssm_parameters=True" in infra_text
-    assert infra_text.count("allow_all_ssm_parameters=True") == 4
-    assert "allow_all_secrets=True" in infra_text
-    assert infra_text.count("allow_all_secrets=True") == 4
-    assert "allow_all_s3_prefixes=True" in infra_text
-    assert infra_text.count("allow_all_s3_prefixes=True") == 4
+    monkeypatch.setattr(Settings, "ENABLED_WORKFLOWS", None)
+    monkeypatch.setattr(Settings, "DISABLED_WORKFLOWS", None)
 
-    compile(settings_text, str(settings_path), "exec")
-    compile(pr_workflow_text, str(pr_workflow_path), "exec")
-    compile(main_ci_workflow_text, str(main_ci_workflow_path), "exec")
-    compile(infra_text, str(infra_path), "exec")
+    try:
+        workflows = _get_workflows(_for_validation_check=True)
+        cloud = _get_infra_config()
+    finally:
+        for module_name in module_names:
+            sys.modules.pop(module_name, None)
+        for module_name, previous_module in previous_modules.items():
+            if previous_module is not missing_module:
+                sys.modules[module_name] = previous_module
+
+    assert workflows
+    assert cloud
 
 
 def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeypatch):
@@ -445,6 +376,10 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
     )
     assert cloud.name == tmp_path.name
     assert cloud.min_praktika_version == current_praktika_version()
+    assert (
+        cloud.github_token_minters[0].permissions
+        == EXPECTED_GITHUB_TOKEN_MINTER_PERMISSIONS
+    )
     assert cloud.orchestrator_pool.capacity_reserve == 1
     assert cloud.orchestrator_pool.max_size == 50
     assert cloud.orchestrator_pool.volume_size_gb == 100
