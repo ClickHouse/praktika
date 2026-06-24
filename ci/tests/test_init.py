@@ -338,8 +338,8 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
         arch: builder.instance_profile_name
         for arch, builder in builders_by_arch.items()
     } == {
-        "arm64": f"{project_slug}-arm-small-profile",
-        "x86_64": f"{project_slug}-amd-small-profile",
+        "arm64": f"{project_slug}-imagebuilder-profile",
+        "x86_64": f"{project_slug}-imagebuilder-profile",
     }
     assert {arch: builder.vpc_name for arch, builder in builders_by_arch.items()} == {
         "arm64": f"{project_slug}-vpc",

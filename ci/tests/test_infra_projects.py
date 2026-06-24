@@ -7,6 +7,7 @@ from ci.infrastructure.projects import (
     _IMAGE_BUILDERS_BY_NAME,
     _PRAKTIKA_BASE_VERSION,
     _PRAKTIKA_CONTROLLER_BASE_VERSION,
+    _PRAKTIKA_CONTROLLER_LATEST_VERSION,
     _RUNNER_ALLOWED_SECRETS,
     _RUNNER_ALLOWED_S3_PREFIXES,
     _RUNNER_ALLOWED_SSM_PARAMETERS,
@@ -35,11 +36,7 @@ from praktika.infrastructure.native.runner_pool import RunnerPool
 from praktika.infrastructure.secret_parameter import SecretParameter
 from praktika.infrastructure.sqs_queue import SQSQueue
 from praktika.validator import Validator
-from praktika.version import (
-    current_praktika_controller_version,
-    current_praktika_version,
-    version_key,
-)
+from praktika.version import current_praktika_version, version_key
 from ci.settings.settings import RunnerLabels
 
 
@@ -49,7 +46,7 @@ _PRAKTIKA_CONTROLLER_BASE_WHEEL = (
     f"praktika_controller-{_PRAKTIKA_CONTROLLER_BASE_VERSION}-py3-none-any.whl"
 )
 _PRAKTIKA_CONTROLLER_LATEST_WHEEL = (
-    f"praktika_controller-{current_praktika_controller_version()}-py3-none-any.whl"
+    f"praktika_controller-{_PRAKTIKA_CONTROLLER_LATEST_VERSION}-py3-none-any.whl"
 )
 
 
