@@ -314,7 +314,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
     # AI advisor (skeleton): consulted on every workflow update. None when AI
     # orchestration is disabled (the default), in which case the loop is
     # unchanged.
-    advisor = Advisor.maybe_create(run_id=run_id, local_mode=local_mode)
+    advisor = Advisor.maybe_create(event=event, run_id=run_id, local_mode=local_mode)
 
     # The top-level check body is rendered from `state.md_status()` (a live
     # per-job table) by `_check_output`, not from this stream — so we print
@@ -353,7 +353,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
         print(f"\n\nError: {error}")
     finally:
         if advisor is not None:
-            advisor.finalize()
+            advisor.finalize(state)
         if state is not None:
             state.cleanup()
 

@@ -65,15 +65,26 @@ def test_maybe_create_enabled_returns_advisor(monkeypatch):
 # --------------------------------------------------------------- mock provider
 
 
-def test_mock_provider_does_nothing():
+def test_mock_provider_no_failures_is_noop_note():
     obs = Observation(event=EVENT, jobs=[], changed=[], summary="")
     turn = MockProvider(model="m").decide(obs)
-    assert turn.decision == []
+    # Non-actionable "note" only, no fix proposed, zero cost.
+    assert [d["type"] for d in turn.decision] == ["note"]
     assert turn.error is None
     assert turn.usage.input_tokens == 0
-    assert turn.usage.output_tokens == 0
     assert turn.usage.cost_usd == 0.0
     assert turn.usage.provider == "mock"
+
+
+def test_mock_provider_proposes_fix_on_failure():
+    obs = Observation(
+        event=EVENT, jobs=[], changed=[{"name": "Style check", "status": "failure"}], summary=""
+    )
+    turn = MockProvider(model="m").decide(obs)
+    types = [d["type"] for d in turn.decision]
+    assert "propose_fix" in types
+    # Still non-actionable and free.
+    assert turn.usage.cost_usd == 0.0
 
 
 # --------------------------------------------------------------- observation
@@ -134,8 +145,8 @@ def test_advisory_only_no_mutation_and_zero_cost(monkeypatch):
     state = _state([a])
     turn = advisor.on_workflow_update(state, EVENT)
 
-    # Mock makes no decision and the job state is untouched.
-    assert turn.decision == []
+    # Mock's decision is non-actionable, the job state is untouched, free.
+    assert all(d["type"] in ("note", "propose_fix") for d in turn.decision)
     assert a.status.value == "success"
     assert advisor._ledger.cost_usd == 0.0
 

@@ -14,6 +14,7 @@ Disabled by default (``Settings.AI_ORCHESTRATION_ENABLED``).
 from praktika.settings import Settings
 
 from .provider import Observation, Turn, Usage, resolve
+from .session import SessionManager
 from .trace import TraceLogger, UsageLedger
 
 # Job status values (JobStatus.value) that count as terminal — a result has
@@ -61,26 +62,46 @@ def build_observation(state, event, changed) -> Observation:
 class Advisor:
     """Consults an AIProvider on every workflow update and records the turn."""
 
-    def __init__(self, provider, trace):
+    def __init__(self, provider, console, session=None):
         self._provider = provider
-        self._trace = trace
+        self._console = console
+        self._session = session
         self._ledger = UsageLedger()
         # Last status value seen per job — used to fire a turn only when a job
         # newly reaches a terminal state (a result was actually received).
         self._last_status = {}
 
     @classmethod
-    def maybe_create(cls, run_id=None, local_mode=False):
-        """Build an Advisor from Settings, or return None if AI is disabled."""
+    def maybe_create(cls, event=None, run_id=None, local_mode=False):
+        """Build an Advisor from Settings, or return None if AI is disabled.
+
+        Also opens (or rejoins) the durable per-PR AI session and registers
+        this CI run with it. Session setup is best-effort: if it fails the
+        advisor still runs with console-only output.
+        """
         if not getattr(Settings, "AI_ORCHESTRATION_ENABLED", False):
             return None
         provider_name = getattr(Settings, "AI_PROVIDER", "mock") or "mock"
         model = getattr(Settings, "AI_MODEL", "") or ""
         provider = resolve(provider_name)(model=model)
+        console = TraceLogger(run_id=run_id)
         print(
             f"[AI   ] advisor enabled: provider={provider_name} model={model or '(default)'}"
         )
-        return cls(provider, TraceLogger(run_id, local_mode=local_mode))
+
+        session = None
+        if event is not None:
+            try:
+                session = SessionManager.from_event(
+                    event, run_id=run_id, local_mode=local_mode, console=console
+                )
+                session.begin_run(
+                    run_id=run_id or "", sha=event.get("head_sha", ""), event=event
+                )
+            except Exception as e:
+                print(f"  [warn] AI session unavailable: {type(e).__name__}: {e}")
+                session = None
+        return cls(provider, console, session=session)
 
     def _delta(self, state):
         """Return [{name, status, ...}] for jobs newly terminal since last turn."""
@@ -125,9 +146,39 @@ class Advisor:
         observation = build_observation(state, event, changed)
         turn = self._safe_decide(observation)
         self._ledger.add(turn.usage)
-        self._trace.record(observation, turn, ledger=self._ledger)
+        if self._session is not None:
+            # Session owns persistence + console + index; it also opens a round
+            # implicitly on the first failure.
+            self._session.observe_turn(observation, turn)
+        else:
+            self._console.record(observation, turn)
         return turn
 
-    def finalize(self):
-        """End-of-run hook: print the cost/usage total for the run."""
-        self._trace.summary(self._ledger)
+    def finalize(self, state=None):
+        """End-of-run hook: print the run cost total and close out the session.
+
+        On a green run an open round auto-resolves; otherwise it is left open
+        and persisted, so the next CI run on this PR rejoins it.
+        """
+        self._console.summary(self._ledger)
+        if self._session is not None:
+            self._session.finalize_run(
+                conclusion=_run_conclusion(state),
+                job_outcomes=_job_outcomes(state),
+            )
+
+
+def _run_conclusion(state):
+    if state is None:
+        return "error"
+    if getattr(state, "cancelled", False):
+        return "cancelled"
+    if state.any_failed():
+        return "failure"
+    return "success"
+
+
+def _job_outcomes(state):
+    if state is None:
+        return []
+    return [{"name": js.name, "status": _status_value(js)} for js in state.jobs.values()]

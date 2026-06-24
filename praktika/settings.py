@@ -62,6 +62,13 @@ class _Settings:
     AI_PROVIDER: str = "mock"
     # Provider-specific model id; empty means the provider's default.
     AI_MODEL: str = ""
+    # Session store backend: "auto" (S3 in CI, local fs in local mode), "s3",
+    # or "local". See ai/store.py.
+    AI_SESSION_STORE: str = "auto"
+    # Budget guardrails (0 = disabled). Enforced by SessionManager (stubs for now):
+    # per-PR cumulative cost cap, and max CI-run iterations per AI round.
+    AI_PR_COST_CAP_USD: float = 0.0
+    AI_ROUND_MAX_ITERATIONS: int = 0
 
     ######################################
     #   S3 (artifact storage) settings   #
@@ -211,6 +218,9 @@ _USER_DEFINED_SETTINGS = [
     "AI_ORCHESTRATION_ENABLED",
     "AI_PROVIDER",
     "AI_MODEL",
+    "AI_SESSION_STORE",
+    "AI_PR_COST_CAP_USD",
+    "AI_ROUND_MAX_ITERATIONS",
 ]
 
 
