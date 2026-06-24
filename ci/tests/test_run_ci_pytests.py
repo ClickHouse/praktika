@@ -1,3 +1,4 @@
+import os
 import tarfile
 
 from ci.scripts import run_ci_pytests
@@ -17,12 +18,14 @@ class _FakeResult:
 
 def test_run_ci_pytests_defaults_to_plain_pytest(monkeypatch, tmp_path):
     commands = []
+    envs = []
     fake_result = _FakeResult()
     monkeypatch.delenv("PRAKTIKA_ENABLE_COVERAGE", raising=False)
     monkeypatch.setattr(
         run_ci_pytests.Result,
         "from_pytest_run",
         lambda *args, **kwargs: commands.append(kwargs["pytest_command"])
+        or envs.append(kwargs["env"])
         or fake_result,
     )
     monkeypatch.setattr(
@@ -39,13 +42,15 @@ def test_run_ci_pytests_defaults_to_plain_pytest(monkeypatch, tmp_path):
     run_ci_pytests.main()
 
     assert commands == ["pytest"]
+    assert envs[0]["PYTHONPATH"].split(os.pathsep)[:2] == [
+        str(run_ci_pytests.REPO_ROOT),
+        str(run_ci_pytests.BOOTSTRAP_SRC),
+    ]
     assert fake_result.completed is True
     assert not (tmp_path / "coverage-html.tar.gz").exists()
 
 
-def test_run_ci_pytests_generates_coverage_archive_when_enabled(
-    monkeypatch, tmp_path
-):
+def test_run_ci_pytests_generates_coverage_archive_when_enabled(monkeypatch, tmp_path):
     commands = []
     fake_result = _FakeResult()
     coverage_dir = tmp_path / "coverage" / "html"

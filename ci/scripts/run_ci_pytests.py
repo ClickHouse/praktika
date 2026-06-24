@@ -10,10 +10,23 @@ from praktika.utils import Shell
 
 COVERAGE_HTML_DIR = Path("./ci/tmp/coverage/html")
 COVERAGE_HTML_ARCHIVE = Path("./ci/tmp/coverage-html.tar.gz")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+BOOTSTRAP_SRC = REPO_ROOT / "bootstrap" / "src"
 
 
 def _coverage_enabled():
     return os.environ.get("PRAKTIKA_ENABLE_COVERAGE") == "1"
+
+
+def _pytest_env():
+    # Job commands normally resolve praktika from the installed runtime package.
+    # This job is the package test suite, so pytest must import the checked-out
+    # PR code first; otherwise CI validates the stale base image package.
+    pythonpath_entries = [str(REPO_ROOT), str(BOOTSTRAP_SRC)]
+    for entry in (os.environ.get("PYTHONPATH") or "").split(os.pathsep):
+        if entry and entry not in pythonpath_entries:
+            pythonpath_entries.append(entry)
+    return {"PYTHONPATH": os.pathsep.join(pythonpath_entries)}
 
 
 def main():
@@ -21,6 +34,7 @@ def main():
     result = Result.from_pytest_run(
         "./ci/tests/test*.py",
         name="Praktika Pytests",
+        env=_pytest_env(),
         pytest_command="coverage run -m pytest" if coverage_enabled else "pytest",
         pytest_logfile="./ci/tmp/pytest.log",
         logfile="./ci/tmp/pytest.stdout.log",
