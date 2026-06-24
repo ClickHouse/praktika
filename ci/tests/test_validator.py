@@ -1,0 +1,73 @@
+import pytest
+
+from praktika import Job, Workflow
+from praktika.settings import Settings
+from praktika.validator import Validator
+
+
+def _run_validator_for_workflow(monkeypatch, workflow):
+    def _fake_get_workflows(*args, **kwargs):
+        file_names = kwargs.get("_file_names_out")
+        if isinstance(file_names, list):
+            file_names.append("test_workflow")
+        return [workflow]
+
+    monkeypatch.setattr(Settings, "CLOUD_INFRASTRUCTURE_CONFIG_PATH", "")
+    monkeypatch.setattr(Settings, "ENABLED_WORKFLOWS", None)
+    monkeypatch.setattr(Settings, "DISABLED_WORKFLOWS", None)
+    monkeypatch.setattr(Settings, "USE_CUSTOM_GH_AUTH", False)
+    monkeypatch.setattr(Settings, "VALIDATE_FILE_PATHS", False)
+    monkeypatch.setattr("praktika.validator._get_workflows", _fake_get_workflows)
+
+    Validator.validate()
+
+
+def test_validator_rejects_job_commit_status_for_praktika_workflow(
+    monkeypatch, capsys
+):
+    workflow = Workflow.Config(
+        name="native",
+        event=Workflow.Event.PULL_REQUEST,
+        jobs=[
+            Job.Config(
+                name="job",
+                runs_on=["runner"],
+                command="echo ok",
+                enable_commit_status=True,
+            )
+        ],
+    )
+
+    with pytest.raises(SystemExit):
+        _run_validator_for_workflow(monkeypatch, workflow)
+
+    out = capsys.readouterr().out
+    assert ".enable_commit_status is redundant for Praktika engine workflows" in out
+    assert "GitHub Checks API is used" in out
+
+
+def test_validator_rejects_failure_commit_status_for_praktika_workflow(
+    monkeypatch, capsys
+):
+    workflow = Workflow.Config(
+        name="native",
+        event=Workflow.Event.PULL_REQUEST,
+        jobs=[
+            Job.Config(
+                name="job",
+                runs_on=["runner"],
+                command="echo ok",
+            )
+        ],
+        enable_commit_status_on_failure=True,
+    )
+
+    with pytest.raises(SystemExit):
+        _run_validator_for_workflow(monkeypatch, workflow)
+
+    out = capsys.readouterr().out
+    assert (
+        ".enable_commit_status_on_failure is redundant for Praktika engine workflows"
+        in out
+    )
+    assert "GitHub Checks API is used" in out

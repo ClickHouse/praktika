@@ -164,6 +164,12 @@ class Validator:
                 f"Invalid engine [{workflow.engine}], must be one of {_VALID_ENGINES}",
                 workflow.name,
             )
+            if workflow.engine == Workflow.Engine.PRAKTIKA:
+                cls.evaluate_check(
+                    not workflow.enable_commit_status_on_failure,
+                    ".enable_commit_status_on_failure is redundant for Praktika engine workflows: the GitHub Checks API is used and always publishes workflow/job check status",
+                    workflow.name,
+                )
             if Settings.USE_CUSTOM_GH_AUTH and workflow.enable_report:
                 if not Settings.GH_AUTH_LAMBDA_NAME:
                     secret = workflow.get_secret(Settings.SECRET_GH_APP)
@@ -191,6 +197,13 @@ class Validator:
                         len(job.runs_on) == 1,
                         f"Non-GHActions workflow jobs must have exactly one runs_on label, got [{job.runs_on}] for [{job.name}]",
                         workflow.name,
+                    )
+                if workflow.engine == Workflow.Engine.PRAKTIKA:
+                    cls.evaluate_check(
+                        not job.enable_commit_status,
+                        ".enable_commit_status is redundant for Praktika engine workflows: the GitHub Checks API is used and always publishes workflow/job check status",
+                        workflow.name,
+                        job.name,
                     )
                 cls.evaluate_check(
                     "PARAMETER" not in job.command,

@@ -92,7 +92,9 @@ def ensure_praktika_runtime(
 
 
 def praktika_command(venv_dir: str | os.PathLike[str], *args: str) -> list[str]:
-    return [str(Path(venv_dir) / "bin" / "python"), "-m", "praktika", *args]
+    # Use safe path mode so the controller runs Praktika from the selected venv,
+    # without Python prepending the current working directory to sys.path.
+    return [str(Path(venv_dir) / "bin" / "python"), "-P", "-m", "praktika", *args]
 
 
 def venv_env(

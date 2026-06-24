@@ -10,6 +10,7 @@ DEFAULT_GITHUB_TOKEN_PERMISSIONS = {
     "contents": "write",
     "issues": "write",
     "metadata": "read",
+    "pages": "write",
     "pull_requests": "write",
     "statuses": "write",
 }

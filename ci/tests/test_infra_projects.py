@@ -7,6 +7,14 @@ from ci.infrastructure.projects import (
     _IMAGE_BUILDERS_BY_NAME,
     _PRAKTIKA_BASE_VERSION,
     _PRAKTIKA_CONTROLLER_BASE_VERSION,
+    _PRAKTIKA_CONTROLLER_LATEST_VERSION,
+    _RUNNER_ALLOWED_SECRETS,
+    _RUNNER_ALLOWED_S3_PREFIXES,
+    _RUNNER_ALLOWED_SSM_PARAMETERS,
+    _RUNNER_ALLOW_ALL_S3_PREFIXES,
+    _RUNNER_ALLOW_ALL_SECRETS,
+    _RUNNER_ALLOW_ALL_SSM_PARAMETERS,
+    _RUNNER_ALLOW_SSM_DEBUG,
     _orchestrator_pool,
     _orchestrator_pool_base,
     _runner_pools,
@@ -28,11 +36,7 @@ from praktika.infrastructure.native.runner_pool import RunnerPool
 from praktika.infrastructure.secret_parameter import SecretParameter
 from praktika.infrastructure.sqs_queue import SQSQueue
 from praktika.validator import Validator
-from praktika.version import (
-    current_praktika_controller_version,
-    current_praktika_version,
-    version_key,
-)
+from praktika.version import current_praktika_version, version_key
 from ci.settings.settings import RunnerLabels
 
 
@@ -42,13 +46,23 @@ _PRAKTIKA_CONTROLLER_BASE_WHEEL = (
     f"praktika_controller-{_PRAKTIKA_CONTROLLER_BASE_VERSION}-py3-none-any.whl"
 )
 _PRAKTIKA_CONTROLLER_LATEST_WHEEL = (
-    f"praktika_controller-{current_praktika_controller_version()}-py3-none-any.whl"
+    f"praktika_controller-{_PRAKTIKA_CONTROLLER_LATEST_VERSION}-py3-none-any.whl"
 )
 
 
 def _decode_embedded_file(command: str) -> str:
     payload = command.split("'")[3]
     return base64.b64decode(payload).decode("utf-8")
+
+
+def _runner_access_statements(pool):
+    return pool.ec2_role.inline_policies["RunnerAccess"]["Statement"]
+
+
+def _statement_by_sid(pool, sid: str):
+    return next(
+        stmt for stmt in _runner_access_statements(pool) if stmt.get("Sid") == sid
+    )
 
 
 def test_get_infra_config_requires_project_when_multiple(tmp_path, monkeypatch):
@@ -70,6 +84,35 @@ def test_get_infra_config_requires_project_when_multiple(tmp_path, monkeypatch):
         _get_infra_config()
 
     assert _get_infra_config("beta").name == "beta"
+
+
+def test_get_infra_config_reports_version_mismatch_for_newer_fields(
+    tmp_path, monkeypatch
+):
+    config_path = tmp_path / "cloud.py"
+    config_path.write_text(
+        "\n".join(
+            [
+                "class RunnerPool:",
+                "    def __init__(self):",
+                "        pass",
+                "RunnerPool(allowed_ssm_parameters=[])",
+                "PROJECTS = []",
+            ]
+        )
+    )
+    monkeypatch.setattr(Settings, "CLOUD_INFRASTRUCTURE_CONFIG_PATH", str(config_path))
+
+    with pytest.raises(RuntimeError) as exc:
+        _get_infra_config()
+
+    message = str(exc.value)
+    assert "mismatch between the Praktika version and the infrastructure config" in message
+    assert f"Config file: {config_path}" in message
+    assert f"Running Praktika version: {current_praktika_version()}" in message
+    assert "unexpected keyword argument 'allowed_ssm_parameters'" in message
+    assert "newer infrastructure fields" in message
+    assert "Praktika package version that matches this config" in message
 
 
 def test_deploy_rejects_config_that_requires_newer_praktika(monkeypatch):
@@ -129,9 +172,28 @@ def test_current_infrastructure_config_imports_all_component_groups(monkeypatch)
     assert {
         name: builder.instance_profile_name for name, builder in image_builders.items()
     } == {
-        "praktika-ci-arm64-image": "praktika-arm-2xsmall-profile",
-        "praktika-ci-x86_64-image": "praktika-amd-2xsmall-profile",
-        "praktika-ci-ubuntu-x86_64-image": "praktika-amd-2xsmall-ubuntu-profile",
+        "praktika-ci-arm64-image": "praktika-imagebuilder-profile",
+        "praktika-ci-x86_64-image": "praktika-imagebuilder-profile",
+        "praktika-ci-ubuntu-x86_64-image": "praktika-imagebuilder-profile",
+    }
+    imagebuilder_roles = {
+        role.name: role
+        for role in cloud.iam_roles
+        if role.name.endswith("-imagebuilder-role")
+    }
+    assert set(imagebuilder_roles) == {"praktika-imagebuilder-role"}
+    assert imagebuilder_roles["praktika-imagebuilder-role"].policy_arns == [
+        "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
+        "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy",
+        "arn:aws:iam::aws:policy/EC2InstanceProfileForImageBuilder",
+    ]
+    imagebuilder_profiles = {
+        profile.name: profile.role_name
+        for profile in cloud.iam_instance_profiles
+        if profile.name.endswith("-imagebuilder-profile")
+    }
+    assert imagebuilder_profiles == {
+        "praktika-imagebuilder-profile": "praktika-imagebuilder-role"
     }
     assert {builder.vpc_name for builder in image_builders.values()} == {"praktika-vpc"}
     assert {
@@ -347,6 +409,19 @@ def test_cloud_config_prefixes_embedded_pool_resources():
     assert runner.launch_template.tags["praktika_role"] == "job_runner"
     assert runner.launch_template.tags["praktika_queue"] == runner.queue.name
     assert runner.launch_template.tags["praktika_project_slug"] == "sandbox"
+    assert (
+        "arn:aws:iam::aws:policy/AmazonSSMReadOnlyAccess"
+        not in runner.ec2_role.policy_arns
+    )
+    assert (
+        "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+        not in runner.ec2_role.policy_arns
+    )
+    assert all(
+        "ssm:GetParameter"
+        not in (stmt.get("Action") if isinstance(stmt.get("Action"), list) else [])
+        for stmt in _runner_access_statements(runner)
+    )
     assert all(
         stmt.get("Sid") != "SecretsManagerRead"
         for stmt in runner.ec2_role.inline_policies["RunnerAccess"]["Statement"]
@@ -445,6 +520,247 @@ def test_runner_pools_get_distinct_roles_and_profiles():
         "sandbox-arm-2xsmall-profile",
         "sandbox-arm-2xsmall-base-profile",
     }
+
+
+def test_runner_pool_default_role_has_no_broad_ssm_secret_or_s3_reads():
+    pool = RunnerPool(
+        name="runner",
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        scaling=RunnerPool.Scaling.Auto,
+        size=0,
+        max_size=1,
+    )
+
+    assert (
+        "arn:aws:iam::aws:policy/AmazonSSMReadOnlyAccess"
+        not in pool.ec2_role.policy_arns
+    )
+    assert (
+        "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+        not in pool.ec2_role.policy_arns
+    )
+    actions = [
+        action
+        for stmt in _runner_access_statements(pool)
+        for action in (
+            stmt.get("Action") if isinstance(stmt.get("Action"), list) else []
+        )
+    ]
+    assert "ssm:GetParameter" not in actions
+    assert "ssm:GetParameters" not in actions
+    assert "secretsmanager:GetSecretValue" not in actions
+    assert "s3:GetObject" not in actions
+    assert "s3:PutObject" not in actions
+    sids = {stmt.get("Sid") for stmt in _runner_access_statements(pool)}
+    assert "SSMManagedInstanceCore" not in sids
+    assert "SSMMessages" not in sids
+    assert "EC2Messages" not in sids
+
+
+def test_runner_pool_can_opt_in_to_ssm_debug_permissions():
+    pool = RunnerPool(
+        name="runner",
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        scaling=RunnerPool.Scaling.Auto,
+        size=0,
+        max_size=1,
+        allow_ssm_debug=True,
+    )
+
+    ssm_core = _statement_by_sid(pool, "SSMManagedInstanceCore")
+    assert "ssm:UpdateInstanceInformation" in ssm_core["Action"]
+    assert "ssm:GetParameter" not in ssm_core["Action"]
+    assert "ssm:GetParameters" not in ssm_core["Action"]
+    assert _statement_by_sid(pool, "SSMMessages")["Action"] == [
+        "ssmmessages:CreateControlChannel",
+        "ssmmessages:CreateDataChannel",
+        "ssmmessages:OpenControlChannel",
+        "ssmmessages:OpenDataChannel",
+    ]
+    assert _statement_by_sid(pool, "EC2Messages")["Action"] == [
+        "ec2messages:AcknowledgeMessage",
+        "ec2messages:DeleteMessage",
+        "ec2messages:FailMessage",
+        "ec2messages:GetEndpoint",
+        "ec2messages:GetMessages",
+        "ec2messages:SendReply",
+    ]
+
+
+def test_runner_pool_with_image_builder_keeps_runner_role_without_ssm_agent_permissions():
+    pool = RunnerPool(
+        name="runner",
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        scaling=RunnerPool.Scaling.Auto,
+        size=0,
+        max_size=1,
+        image_builder=ImageBuilder.Config(name="runner-image"),
+    )
+
+    assert (
+        "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+        not in pool.ec2_role.policy_arns
+    )
+    sids = {stmt.get("Sid") for stmt in _runner_access_statements(pool)}
+    assert "SSMManagedInstanceCore" not in sids
+    assert "SSMMessages" not in sids
+    assert "EC2Messages" not in sids
+
+
+def test_runner_pool_can_allow_specific_ssm_parameters_secrets_and_s3_prefixes():
+    pool = RunnerPool(
+        name="runner",
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        scaling=RunnerPool.Scaling.Auto,
+        size=0,
+        max_size=1,
+        allowed_ssm_parameters=[
+            "cidb-connection",
+            "/nested/docker-registry",
+            "arn:aws:ssm:eu-north-1:123456789012:parameter/external",
+        ],
+        allowed_secrets=[
+            "github-app",
+            "arn:aws:secretsmanager:eu-north-1:123456789012:secret:external-AbCd",
+        ],
+        allowed_s3_prefixes=[
+            "artifact-bucket",
+            "cache-bucket/ci_cache",
+            "s3://reports-bucket/reports",
+            "arn:aws:s3:::external-bucket/custom/*",
+        ],
+    )
+
+    ssm_read = _statement_by_sid(pool, "AllowedSSMParametersRead")
+    assert ssm_read["Action"] == ["ssm:GetParameter", "ssm:GetParameters"]
+    assert ssm_read["Resource"] == [
+        "arn:aws:ssm:*:*:parameter/cidb-connection",
+        "arn:aws:ssm:*:*:parameter/nested/docker-registry",
+        "arn:aws:ssm:eu-north-1:123456789012:parameter/external",
+    ]
+
+    secrets_read = _statement_by_sid(pool, "AllowedSecretsManagerSecretsRead")
+    assert secrets_read["Action"] == [
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:GetSecretValue",
+    ]
+    assert secrets_read["Resource"] == [
+        "arn:aws:secretsmanager:*:*:secret:github-app*",
+        "arn:aws:secretsmanager:eu-north-1:123456789012:secret:external-AbCd",
+    ]
+
+    s3_read_write = _statement_by_sid(pool, "AllowedS3ReadWrite")
+    assert s3_read_write["Resource"] == [
+        "arn:aws:s3:::artifact-bucket",
+        "arn:aws:s3:::artifact-bucket/*",
+        "arn:aws:s3:::cache-bucket",
+        "arn:aws:s3:::cache-bucket/ci_cache",
+        "arn:aws:s3:::cache-bucket/ci_cache/*",
+        "arn:aws:s3:::reports-bucket",
+        "arn:aws:s3:::reports-bucket/reports",
+        "arn:aws:s3:::reports-bucket/reports/*",
+        "arn:aws:s3:::external-bucket/custom/*",
+    ]
+
+
+def test_runner_pool_allow_lists_are_project_namespaced():
+    cloud = CloudInfrastructure.Config(
+        name="sandbox",
+        image_builders=[],
+        runner_pools=[
+            RunnerPool(
+                name="runner",
+                instance_type="t4g.small",
+                vpc_name="praktika-ci",
+                scaling=RunnerPool.Scaling.Auto,
+                size=0,
+                max_size=1,
+                allowed_ssm_parameters=[
+                    "cidb-connection",
+                    "/nested/docker-registry",
+                    "arn:aws:ssm:eu-north-1:123456789012:parameter/external",
+                ],
+                allowed_secrets=[
+                    "github-app",
+                    "arn:aws:secretsmanager:eu-north-1:123456789012:secret:external-AbCd",
+                ],
+                allowed_s3_prefixes=[
+                    "artifact-bucket",
+                    "cache-bucket/ci_cache",
+                    "s3://reports-bucket/reports",
+                    "arn:aws:s3:::external-bucket/custom/*",
+                ],
+            )
+        ],
+    )
+
+    pool = cloud.runner_pools[0]
+    assert pool.allowed_ssm_parameters == [
+        "sandbox-cidb-connection",
+        "/sandbox-nested/docker-registry",
+        "arn:aws:ssm:eu-north-1:123456789012:parameter/external",
+    ]
+    assert pool.allowed_secrets == [
+        "sandbox-github-app",
+        "arn:aws:secretsmanager:eu-north-1:123456789012:secret:external-AbCd",
+    ]
+    assert pool.allowed_s3_prefixes == [
+        "sandbox-artifact-bucket",
+        "sandbox-cache-bucket/ci_cache",
+        "s3://sandbox-reports-bucket/reports",
+        "arn:aws:s3:::external-bucket/custom/*",
+    ]
+    assert _statement_by_sid(pool, "AllowedSSMParametersRead")["Resource"] == [
+        "arn:aws:ssm:*:*:parameter/sandbox-cidb-connection",
+        "arn:aws:ssm:*:*:parameter/sandbox-nested/docker-registry",
+        "arn:aws:ssm:eu-north-1:123456789012:parameter/external",
+    ]
+    assert _statement_by_sid(pool, "AllowedSecretsManagerSecretsRead")[
+        "Resource"
+    ] == [
+        "arn:aws:secretsmanager:*:*:secret:sandbox-github-app*",
+        "arn:aws:secretsmanager:eu-north-1:123456789012:secret:external-AbCd",
+    ]
+    assert _statement_by_sid(pool, "AllowedS3ReadWrite")["Resource"] == [
+        "arn:aws:s3:::sandbox-artifact-bucket",
+        "arn:aws:s3:::sandbox-artifact-bucket/*",
+        "arn:aws:s3:::sandbox-cache-bucket",
+        "arn:aws:s3:::sandbox-cache-bucket/ci_cache",
+        "arn:aws:s3:::sandbox-cache-bucket/ci_cache/*",
+        "arn:aws:s3:::sandbox-reports-bucket",
+        "arn:aws:s3:::sandbox-reports-bucket/reports",
+        "arn:aws:s3:::sandbox-reports-bucket/reports/*",
+        "arn:aws:s3:::external-bucket/custom/*",
+    ]
+
+
+def test_runner_pool_can_allow_all_runner_external_resources():
+    pool = RunnerPool(
+        name="runner",
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        scaling=RunnerPool.Scaling.Auto,
+        size=0,
+        max_size=1,
+        allow_all_ssm_parameters=True,
+        allow_all_secrets=True,
+        allow_all_s3_prefixes=True,
+    )
+
+    assert _statement_by_sid(pool, "AllowedSSMParametersRead")["Resource"] == [
+        "arn:aws:ssm:*:*:parameter/*"
+    ]
+    assert _statement_by_sid(pool, "AllowedSecretsManagerSecretsRead")[
+        "Resource"
+    ] == ["arn:aws:secretsmanager:*:*:secret:*"]
+    assert _statement_by_sid(pool, "AllowedS3ReadWrite")["Resource"] == [
+        "arn:aws:s3:::*",
+        "arn:aws:s3:::*/*",
+    ]
 
 
 def test_runner_pool_accepts_custom_role_and_profile_configs():
@@ -724,6 +1040,18 @@ def test_cloud_deploy_runs_lambdas_before_image_backed_compute(monkeypatch):
     cloud._settings = SimpleNamespace(AWS_REGION="eu-north-1", EVENT_FEED_S3_PATH="")
     monkeypatch.setattr(cloud, "_verify_account", lambda: None)
 
+    for role in cloud.iam_roles:
+        monkeypatch.setattr(
+            role,
+            "deploy",
+            lambda role=role: calls.append(f"role:{role.name}"),
+        )
+    for profile in cloud.iam_instance_profiles:
+        monkeypatch.setattr(
+            profile,
+            "deploy",
+            lambda profile=profile: calls.append(f"profile:{profile.name}"),
+        )
     monkeypatch.setattr(
         cloud.lambda_functions[0],
         "deploy",
@@ -748,6 +1076,8 @@ def test_cloud_deploy_runs_lambdas_before_image_backed_compute(monkeypatch):
     cloud.deploy()
 
     assert calls == [
+        "role:deploy-order-imagebuilder-role",
+        "profile:deploy-order-imagebuilder-profile",
         "lambda:deploy-order-webhook",
         "imagebuilder:deploy-order-builder",
         "lt:deploy-order-runner-lt",
@@ -818,6 +1148,15 @@ def test_controller_image_builders_are_declared():
             for component in builder.inline_components
             if component["name"] == "praktika-controller-runtime"
         )
+        setup_commands = "\n".join(builder.inline_components[0]["commands"])
+        runtime_commands = "\n".join(runtime_component["commands"])
+        assert "python3.12 python3.12-pip" in setup_commands
+        assert "awscli-exe-linux-$(uname -m).zip" in setup_commands
+        assert not any(
+            "dnf install" in command and "awscli" in command
+            for command in builder.inline_components[0]["commands"]
+        )
+        assert "python3.12 -m pip install" in runtime_commands
         assert any(
             "amazon-cloudwatch-agent" in cmd
             for cmd in builder.inline_components[0]["commands"]
@@ -997,6 +1336,50 @@ def test_project_github_token_minter_uses_defaults_and_project_repo_scope():
     )
     assert runner.launch_template.tags["praktika_project_slug"] == "praktika"
     assert orchestrator.launch_template.tags["praktika_project_slug"] == "praktika"
+
+
+def test_project_runner_pools_allow_only_required_ssm_parameters():
+    cloud = _get_infra_config("praktika")
+
+    for pool in cloud.runner_pools:
+        assert (
+            "arn:aws:iam::aws:policy/AmazonSSMReadOnlyAccess"
+            not in pool.ec2_role.policy_arns
+        )
+        assert (
+            "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+            not in pool.ec2_role.policy_arns
+        )
+        assert pool.allowed_ssm_parameters == list(_RUNNER_ALLOWED_SSM_PARAMETERS)
+        assert pool.allowed_secrets == []
+        assert pool.allowed_secrets == list(_RUNNER_ALLOWED_SECRETS)
+        assert pool.allowed_s3_prefixes == [
+            f"praktika-{_RUNNER_ALLOWED_S3_PREFIXES[0]}"
+        ]
+        assert pool.allow_all_ssm_parameters is _RUNNER_ALLOW_ALL_SSM_PARAMETERS
+        assert pool.allow_all_secrets is _RUNNER_ALLOW_ALL_SECRETS
+        assert pool.allow_all_s3_prefixes is _RUNNER_ALLOW_ALL_S3_PREFIXES
+        assert pool.allow_ssm_debug is _RUNNER_ALLOW_SSM_DEBUG
+        runner_access = pool.ec2_role.inline_policies["RunnerAccess"]["Statement"]
+        assert all(stmt.get("Sid") != "SSMManagedInstanceCore" for stmt in runner_access)
+        assert all(stmt.get("Sid") != "SSMMessages" for stmt in runner_access)
+        assert all(stmt.get("Sid") != "EC2Messages" for stmt in runner_access)
+        assert _statement_by_sid(pool, "AllowedSSMParametersRead") == {
+            "Sid": "AllowedSSMParametersRead",
+            "Effect": "Allow",
+            "Action": ["ssm:GetParameter", "ssm:GetParameters"],
+            "Resource": [
+                f"arn:aws:ssm:*:*:parameter/{_RUNNER_ALLOWED_SSM_PARAMETERS[0]}"
+            ],
+        }
+        assert all(
+            stmt.get("Sid") != "AllowedSecretsManagerSecretsRead"
+            for stmt in runner_access
+        )
+        assert _statement_by_sid(pool, "AllowedS3ReadWrite")["Resource"] == [
+            f"arn:aws:s3:::praktika-{_RUNNER_ALLOWED_S3_PREFIXES[0]}",
+            f"arn:aws:s3:::praktika-{_RUNNER_ALLOWED_S3_PREFIXES[0]}/*",
+        ]
 
 
 def test_base_runner_pool_uses_base_image_without_bootstrap_user_data():

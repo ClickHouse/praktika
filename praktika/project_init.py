@@ -505,7 +505,7 @@ def _main_ci_workflow_template(answers: InitAnswers) -> str:
 def _infrastructure_template(answers: InitAnswers) -> str:
     return textwrap.dedent(
         f"""\
-        from ci.settings.settings import PROJECT_NAME, PROJECT_SLUG, PRAKTIKA_BASE_VENV
+        from ci.settings.settings import PROJECT_NAME, PRAKTIKA_BASE_VENV
         from praktika.infrastructure import Components, Storage, VPC
         from praktika.infrastructure.cloud import CloudInfrastructure
 
@@ -552,6 +552,15 @@ def _infrastructure_template(answers: InitAnswers) -> str:
 
 
         _GH_TOKEN_MINTER = Components.GitHubTokenMinter(
+            permissions={{
+                "checks": "write",
+                "contents": "write",
+                "issues": "write",
+                "metadata": "read",
+                "pages": "write",
+                "pull_requests": "write",
+                "statuses": "write",
+            }},
             repositories=[PROJECT_NAME],
         )
         _IMAGE_BUILDERS = _image_builders()
@@ -596,6 +605,13 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                         max_size=50,
                         volume_size_gb=100,
                         image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
+                        allowed_ssm_parameters=[],
+                        allowed_secrets=[],
+                        allowed_s3_prefixes=["{answers.artifact_storage_name}"],
+                        allow_all_ssm_parameters={not answers.is_oss},
+                        allow_all_secrets={not answers.is_oss},
+                        allow_all_s3_prefixes={not answers.is_oss},
+                        allow_ssm_debug=False,
                     ),
                     Components.RunnerPool(
                         name="amd-small",
@@ -605,6 +621,13 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                         max_size=50,
                         volume_size_gb=100,
                         image_builder=_IMAGE_BUILDERS_BY_NAME["ci-x86_64-image"],
+                        allowed_ssm_parameters=[],
+                        allowed_secrets=[],
+                        allowed_s3_prefixes=["{answers.artifact_storage_name}"],
+                        allow_all_ssm_parameters={not answers.is_oss},
+                        allow_all_secrets={not answers.is_oss},
+                        allow_all_s3_prefixes={not answers.is_oss},
+                        allow_ssm_debug=False,
                     ),
                     Components.RunnerPool(
                         name="arm-medium",
@@ -614,6 +637,13 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                         max_size=50,
                         volume_size_gb=100,
                         image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
+                        allowed_ssm_parameters=[],
+                        allowed_secrets=[],
+                        allowed_s3_prefixes=["{answers.artifact_storage_name}"],
+                        allow_all_ssm_parameters={not answers.is_oss},
+                        allow_all_secrets={not answers.is_oss},
+                        allow_all_s3_prefixes={not answers.is_oss},
+                        allow_ssm_debug=False,
                     ),
                     Components.RunnerPool(
                         name="amd-medium",
@@ -623,6 +653,13 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                         max_size=50,
                         volume_size_gb=100,
                         image_builder=_IMAGE_BUILDERS_BY_NAME["ci-x86_64-image"],
+                        allowed_ssm_parameters=[],
+                        allowed_secrets=[],
+                        allowed_s3_prefixes=["{answers.artifact_storage_name}"],
+                        allow_all_ssm_parameters={not answers.is_oss},
+                        allow_all_secrets={not answers.is_oss},
+                        allow_all_s3_prefixes={not answers.is_oss},
+                        allow_ssm_debug=False,
                     ),
                 ],
             )

@@ -4,13 +4,14 @@ from pathlib import Path
 from praktika.infrastructure.cloud import CloudInfrastructure
 from praktika.infrastructure import Components, Storage, VPC
 from praktika.version import current_praktika_version
+from ci.settings.settings import SECRET_CI_DB_CONNECTION
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PRAKTIKA_PACKAGE_BASE_URL = (
     "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages"
 )
-_PRAKTIKA_BASE_VERSION = "0.1.3"
+_PRAKTIKA_BASE_VERSION = "0.1.4"
 _PRAKTIKA_LATEST_VERSION = current_praktika_version()
 _PRAKTIKA_WHL = (
     f"{_PRAKTIKA_PACKAGE_BASE_URL}/"
@@ -93,8 +94,8 @@ def _custom_image_tests():
 
 
 def _image_builders():
-    ci_version = "1.0.6"
-    ubuntu_ci_version = "1.0.6"
+    ci_version = "1.0.7"
+    ubuntu_ci_version = "1.0.7"
 
     return [
         _create_awslinux_image_builder_config(
@@ -124,6 +125,13 @@ def _image_builders():
 
 _IMAGE_BUILDERS = _image_builders()
 _IMAGE_BUILDERS_BY_NAME = {builder.name: builder for builder in _IMAGE_BUILDERS}
+_RUNNER_ALLOWED_SSM_PARAMETERS = [SECRET_CI_DB_CONNECTION]
+_RUNNER_ALLOWED_SECRETS = []
+_RUNNER_ALLOWED_S3_PREFIXES = ["artifacts-eu-north-1"]
+_RUNNER_ALLOW_ALL_SSM_PARAMETERS = False
+_RUNNER_ALLOW_ALL_SECRETS = False
+_RUNNER_ALLOW_ALL_S3_PREFIXES = False
+_RUNNER_ALLOW_SSM_DEBUG = False
 
 _runner_pools = [
     Components.RunnerPool(
@@ -133,6 +141,13 @@ _runner_pools = [
         size=0,
         max_size=10,
         image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
+        allowed_ssm_parameters=list(_RUNNER_ALLOWED_SSM_PARAMETERS),
+        allowed_secrets=list(_RUNNER_ALLOWED_SECRETS),
+        allowed_s3_prefixes=list(_RUNNER_ALLOWED_S3_PREFIXES),
+        allow_all_ssm_parameters=_RUNNER_ALLOW_ALL_SSM_PARAMETERS,
+        allow_all_secrets=_RUNNER_ALLOW_ALL_SECRETS,
+        allow_all_s3_prefixes=_RUNNER_ALLOW_ALL_S3_PREFIXES,
+        allow_ssm_debug=_RUNNER_ALLOW_SSM_DEBUG,
         user_data="\n".join(
             [
                 "#!/usr/bin/env bash",
@@ -159,6 +174,13 @@ _runner_pools = [
         size=0,
         max_size=10,
         image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
+        allowed_ssm_parameters=list(_RUNNER_ALLOWED_SSM_PARAMETERS),
+        allowed_secrets=list(_RUNNER_ALLOWED_SECRETS),
+        allowed_s3_prefixes=list(_RUNNER_ALLOWED_S3_PREFIXES),
+        allow_all_ssm_parameters=_RUNNER_ALLOW_ALL_SSM_PARAMETERS,
+        allow_all_secrets=_RUNNER_ALLOW_ALL_SECRETS,
+        allow_all_s3_prefixes=_RUNNER_ALLOW_ALL_S3_PREFIXES,
+        allow_ssm_debug=_RUNNER_ALLOW_SSM_DEBUG,
     ),
     Components.RunnerPool(
         name="amd-2xsmall",
@@ -167,6 +189,13 @@ _runner_pools = [
         size=0,
         max_size=10,
         image_builder=_IMAGE_BUILDERS_BY_NAME["ci-x86_64-image"],
+        allowed_ssm_parameters=list(_RUNNER_ALLOWED_SSM_PARAMETERS),
+        allowed_secrets=list(_RUNNER_ALLOWED_SECRETS),
+        allowed_s3_prefixes=list(_RUNNER_ALLOWED_S3_PREFIXES),
+        allow_all_ssm_parameters=_RUNNER_ALLOW_ALL_SSM_PARAMETERS,
+        allow_all_secrets=_RUNNER_ALLOW_ALL_SECRETS,
+        allow_all_s3_prefixes=_RUNNER_ALLOW_ALL_S3_PREFIXES,
+        allow_ssm_debug=_RUNNER_ALLOW_SSM_DEBUG,
         user_data="\n".join(
             [
                 "#!/usr/bin/env bash",
@@ -193,6 +222,13 @@ _runner_pools = [
         size=0,
         max_size=10,
         image_builder=_IMAGE_BUILDERS_BY_NAME["ci-ubuntu-x86_64-image"],
+        allowed_ssm_parameters=list(_RUNNER_ALLOWED_SSM_PARAMETERS),
+        allowed_secrets=list(_RUNNER_ALLOWED_SECRETS),
+        allowed_s3_prefixes=list(_RUNNER_ALLOWED_S3_PREFIXES),
+        allow_all_ssm_parameters=_RUNNER_ALLOW_ALL_SSM_PARAMETERS,
+        allow_all_secrets=_RUNNER_ALLOW_ALL_SECRETS,
+        allow_all_s3_prefixes=_RUNNER_ALLOW_ALL_S3_PREFIXES,
+        allow_ssm_debug=_RUNNER_ALLOW_SSM_DEBUG,
         user_data="\n".join(
             [
                 "#!/usr/bin/env bash",
@@ -260,7 +296,7 @@ _cidb_cluster = Components.CIDBCluster(
 PROJECTS = [
     CloudInfrastructure.Config(
         name="praktika",
-        min_praktika_version="0.1.3",
+        min_praktika_version="0.1.4",
         vpcs=[
             VPC.Config(
                 subnets=[

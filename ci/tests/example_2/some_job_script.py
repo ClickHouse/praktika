@@ -2,6 +2,8 @@ from praktika.result import Result
 from praktika.settings import Settings
 from praktika.utils import Shell, Utils
 
+# cache-bust: 2026-06-23
+
 if __name__ == "__main__":
     # 1. do some work
 

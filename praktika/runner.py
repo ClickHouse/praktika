@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shlex
+import site
 import sys
 import textwrap
 import traceback
@@ -27,11 +28,47 @@ from .s3 import S3
 from .settings import Settings
 from .usage import ComputeUsage, StorageUsage
 from .utils import Shell, TeePopen, Utils
+from .workflow import Workflow
 
 _WRAP_WIDTH = 160
 _TIMESTAMP_INDENT = len(
     datetime.datetime(2000, 1, 1).strftime("[%Y-%m-%d %H:%M:%S] ")
 )
+
+
+def _job_python_env() -> dict:
+    env = os.environ.copy()
+
+    # Keep the runtime environment ahead of the checkout. Jobs still need the
+    # repository on PYTHONPATH for ci.* modules, but praktika itself must resolve
+    # from the selected venv/base image package before "." can shadow it.
+    site_paths = []
+    if hasattr(site, "getsitepackages"):
+        site_paths.extend(site.getsitepackages())
+    if hasattr(site, "getusersitepackages"):
+        site_paths.append(site.getusersitepackages())
+
+    pythonpath_entries = []
+    for entry in site_paths:
+        if entry and entry not in pythonpath_entries:
+            pythonpath_entries.append(entry)
+
+    for entry in [".", "./ci"]:
+        if entry not in pythonpath_entries:
+            pythonpath_entries.append(entry)
+
+    for entry in (env.get("PYTHONPATH") or "").split(os.pathsep):
+        if not entry:
+            continue
+        if entry not in pythonpath_entries:
+            pythonpath_entries.append(entry)
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
+    env["PYTHONSAFEPATH"] = "1"
+    return env
+
+
+def _should_post_commit_status(workflow):
+    return workflow.engine != Workflow.Engine.PRAKTIKA
 
 
 class _TimestampedStream:
@@ -531,11 +568,10 @@ class Runner:
                 settings = rewritten_settings
 
             local_env_flag = f"--env-file {self.LOCAL_ENV_FILE}" if Path(self.LOCAL_ENV_FILE).exists() else ""
-            cmd = f"docker run {tty} --rm --name {container_name} {'--user $(id -u):$(id -g)' if not from_root else ''} -e PYTHONUNBUFFERED=1 -e PYTHONPATH='.:./ci' {local_env_flag} --volume {host_dir_q}:{current_dir} {extra_mounts} {gh_mount} {workdir} {' '.join(settings)} {docker} {job.command}"
+            cmd = f"docker run {tty} --rm --name {container_name} {'--user $(id -u):$(id -g)' if not from_root else ''} -e PYTHONUNBUFFERED=1 -e PYTHONSAFEPATH=1 -e PYTHONPATH=.:./ci {local_env_flag} --volume {host_dir_q}:{current_dir} {extra_mounts} {gh_mount} {workdir} {' '.join(settings)} {docker} {job.command}"
         else:
             cmd = job.command
-            python_path = os.getenv("PYTHONPATH", ":")
-            os.environ["PYTHONPATH"] = f".:{python_path}"
+        job_env = _job_python_env()
 
         if param:
             print(f"Custom --param [{param}] will be passed to job's script")
@@ -562,6 +598,7 @@ class Runner:
 
         with TeePopen(
             cmd,
+            env=job_env,
             timeout=job.timeout,
             preserve_stdio=preserve_stdio,
             timeout_shell_cleanup=job.timeout_shell_cleanup,
@@ -854,9 +891,11 @@ class Runner:
         info = Info()
         report_url = info.get_job_report_url(latest=False)
 
-        if (
-            workflow.enable_commit_status_on_failure and not result.is_ok()
-        ) or job.enable_commit_status:
+        if _should_post_commit_status(workflow) and (
+            workflow.enable_commit_status_on_failure
+            and not result.is_ok()
+            or job.enable_commit_status
+        ):
             if _GH_Auth():
                 if not GH.post_commit_status(
                     name=job.name,
@@ -873,7 +912,7 @@ class Runner:
         if workflow.enable_report:
             print(f"Run html report hook")
             status_updated = HtmlRunnerHooks.post_run(workflow, job)
-            if status_updated:
+            if status_updated and _should_post_commit_status(workflow):
                 print(f"Update GH commit status [{result.name}]: [{status_updated}]")
                 if _GH_Auth():
                     GH.post_commit_status(

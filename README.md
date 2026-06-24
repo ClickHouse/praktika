@@ -1,15 +1,17 @@
 # praktika
 
 praktika is a self-contained CI system that you configure and deploy on top of
-a cloud provider. Pipelines and infrastructure are both declared in plain
-Python and deployed with one command.
-
+a cloud provider.
 praktika gives you:
 
 - **Declarative pipelines.** Jobs, dependencies, artifacts, parametrized runs,
   caching, secrets, and reports are all expressed as plain Python objects in
   `ci/workflows/*.py`. Errors in the pipeline config surface at generation
   time, not in a half-finished CI run.
+- **Unified CI outcome model.** Workflows, jobs, sub-tasks, and tests all
+  produce the same `Result` type. That single shape powers smooth HTML report
+  visualization, telemetry, and consistent navigation for humans and AI
+  agents.
 - **Declarative infrastructure.** RunnerPools, an Orchestrator pool, S3 buckets
   for artifacts/reports, SQS queues for sync, SSM/Secrets Manager bindings —
   all defined in a single `ci/infrastructure/projects.py` and brought up with
@@ -28,6 +30,8 @@ conceptually limited to them, but those are the integrations implemented today.
 See [GETTING_STARTED.md](./GETTING_STARTED.md) — it walks you through
 infrastructure configuration and deployment, and writing your first Praktika
 pipeline.
+
+For deployment security considerations, see [SECURITY.md](./SECURITY.md).
 
 ## Module references
 
@@ -59,6 +63,7 @@ pipeline.
 - `pull_request` and `push` pipeline triggers
 - Status reporting through the GitHub Checks API
 - GitHub App authentication through a token-broker Lambda
+- GitHub Pages publishing for hosted reports
 
 **Cloud side (AWS)**
 - Runner pools based on Auto Scaling Groups, Launch Templates, and EC2 Linux VMs
@@ -71,24 +76,31 @@ pipeline.
 - API Gateway plus Lambda webhook receiver for inbound Git events
 - CI DB integration for analytics: every job and test result can be streamed to a CI DB, and Praktika can also provision its own native CI DB component (`Components.CIDBCluster`) or use an existing endpoint via `Settings.SECRET_CI_DB_CONNECTION`
 
-## Known limitations
-
-- Only one workflow is processed at a time per trigger type (`pull_request`,
-  `push`). If multiple workflows match the same trigger, the current
-  orchestrator processes them sequentially in the same orchestrator run rather
-  than in parallel.
-
 ## Roadmap
-**Blockers**
-- Approve and Run alternative for forks in OSS
-
 **Execution engine**
+- **Approve and Run alternative for forks in OSS** — provide a standalone-engine
+  flow for safely reviewing and explicitly allowing CI runs from forked pull
+  requests
 - **Job cancel / job rerun** — cancel an in-flight job from the GitHub UI;
   re-run a single failed job without rerunning the whole workflow
-- **`schedule` and `workflow_dispatch` workflows** — cron-driven and
-  manually-triggered pipelines on the standalone engine
+- **Dispatch and cron workflows** — support manually-triggered
+  `workflow_dispatch` runs and scheduled `cron` / `schedule` pipelines on the
+  standalone engine
+- **Ephemeral merge-commit PR runs** — run pull-request CI against an
+  ephemeral merge commit by default instead of the branch head, with an
+  explicit opt-in mode for testing the raw head commit when needed. PRs with
+  merge conflicts should not start CI runs until the conflicts are resolved.
+  For future AI-edit sessions, prefer keeping parent 2 of the merge commit
+  stable across automatic commits so Praktika can reuse CI cache state and
+  avoid rerunning jobs that already passed earlier in the same session.
 - **Config and Finish stages on the orchestrator** — run the auto-injected
   setup/teardown jobs in-process instead of consuming a runner slot
+- **AI-assisted orchestrator loop** — allow the orchestrator to call a
+  provider-agnostic AI decision hook at each execution-graph advance. The hook
+  should receive the current workflow state and return constrained actions such
+  as continuing normally, reordering runnable jobs within dependency and
+  resource limits, canceling the workflow, or canceling and starting an
+  automated fix attempt.
 - **Centralized event routing** — have MainCI walk every workflow's active
   triggers (events, branch filters, cron schedules) and publish a routing
   table the webhook lambda consumes, so the lambda knows which branches to
@@ -97,6 +109,14 @@ pipeline.
 - **Remove AWS CLI dependency from CI runtime** — Praktika runtime code should
   use boto3 APIs directly instead of shelling out to `aws`
 
+**Infrastructure / deployment**
+- **Incremental deploys with component hashes** — compute a stable hash for
+  every deployable infrastructure component and persist the deployment
+  manifest in Parameter Store together with the Praktika version used for that
+  deploy. On redeploy, compare the current component hashes with the stored
+  manifest, validate the Praktika version compatibility, and update only the
+  components whose inputs changed so routine deploys complete faster.
+
 **Observability**
 - **Log export for orchestrator and runners** — live tail and persisted
   archive, accessible without SSM
@@ -104,14 +124,14 @@ pipeline.
   orchestrator pools, Lambda functions, CI DB, and other managed services;
   log abnormal state, health regressions, and infrastructure problems for
   follow-up
-- **CI DB provisioning** — bring the ClickHouse cluster and schema under
-  praktika-managed infrastructure (today only the writer side ships with
-  praktika; the cluster is provisioned out-of-band)
 
 **Networking**
 - **Private-access gateway (VPN)** — reach the HTML report and CI DB when
   those run on private endpoints; optionally also SSH to runner instances
   for debugging
+- **S3-backed Docker proxy** — create a native component that caches Docker
+  image pulls in S3 so runners get fast, local pulls without registry rate
+  limiting
 
 **Report / UX**
 - **Pre/post-hook results in report** — move hook sub-results out of

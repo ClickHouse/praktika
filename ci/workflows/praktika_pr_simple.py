@@ -17,6 +17,7 @@ _INSTALL_DEPS = (
     "python3 -m pip install -r ./ci/requirements.txt --break-system-packages "
     "|| python3 -m pip install -r ./ci/requirements.txt"
 )
+_BASE_PRAKTIKA_VERSION = "0.1.4"
 
 artifact = Artifact.Config(name="greet", type=Artifact.Type.S3, path="./artifact.txt")
 
@@ -27,6 +28,16 @@ workflow = Workflow.Config(
     orchestrator_filter="base",
     native_job_runs_on=[RunnerLabels.SMALL_ARM_BASE],
     jobs=[
+        Job.Config(
+            name="Version Check",
+            runs_on=[RunnerLabels.SMALL_ARM_BASE],
+            command=(
+                "python3 -c \"import importlib.metadata as m; "
+                f"praktika=m.version('praktika'); "
+                "print('praktika=', praktika); "
+                f"assert praktika == '{_BASE_PRAKTIKA_VERSION}', praktika\""
+            ),
+        ),
         Job.Config(
             name="Praktika Pytests",
             runs_on=[RunnerLabels.SMALL_ARM_BASE],

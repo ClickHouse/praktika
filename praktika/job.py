@@ -65,6 +65,9 @@ class Job:
 
         allow_merge_on_failure: bool = False
 
+        # Post this job as a commit status for non-Praktika engines. With the
+        # Praktika engine this is redundant: the orchestrator uses the GitHub
+        # Checks API and always publishes workflow/job check status.
         enable_commit_status: bool = False
 
         enable_gh_auth: bool = False
