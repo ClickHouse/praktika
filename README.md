@@ -1,15 +1,17 @@
 # praktika
 
 praktika is a self-contained CI system that you configure and deploy on top of
-a cloud provider. Pipelines and infrastructure are both declared in plain
-Python and deployed with one command.
-
+a cloud provider.
 praktika gives you:
 
 - **Declarative pipelines.** Jobs, dependencies, artifacts, parametrized runs,
   caching, secrets, and reports are all expressed as plain Python objects in
   `ci/workflows/*.py`. Errors in the pipeline config surface at generation
   time, not in a half-finished CI run.
+- **Unified CI outcome model.** Workflows, jobs, sub-tasks, and tests all
+  produce the same `Result` type. That single shape powers smooth HTML report
+  visualization, telemetry, and consistent navigation for humans and AI
+  agents.
 - **Declarative infrastructure.** RunnerPools, an Orchestrator pool, S3 buckets
   for artifacts/reports, SQS queues for sync, SSM/Secrets Manager bindings —
   all defined in a single `ci/infrastructure/projects.py` and brought up with
@@ -61,6 +63,7 @@ For deployment security considerations, see [SECURITY.md](./SECURITY.md).
 - `pull_request` and `push` pipeline triggers
 - Status reporting through the GitHub Checks API
 - GitHub App authentication through a token-broker Lambda
+- GitHub Pages publishing for hosted reports
 
 **Cloud side (AWS)**
 - Runner pools based on Auto Scaling Groups, Launch Templates, and EC2 Linux VMs
@@ -72,13 +75,6 @@ For deployment security considerations, see [SECURITY.md](./SECURITY.md).
 - SSM Parameter Store and Secrets Manager bindings for workflow secrets
 - API Gateway plus Lambda webhook receiver for inbound Git events
 - CI DB integration for analytics: every job and test result can be streamed to a CI DB, and Praktika can also provision its own native CI DB component (`Components.CIDBCluster`) or use an existing endpoint via `Settings.SECRET_CI_DB_CONNECTION`
-
-## Known limitations
-
-- Only one workflow is processed at a time per trigger type (`pull_request`,
-  `push`). If multiple workflows match the same trigger, the current
-  orchestrator processes them sequentially in the same orchestrator run rather
-  than in parallel.
 
 ## Roadmap
 **Execution engine**
@@ -128,14 +124,14 @@ For deployment security considerations, see [SECURITY.md](./SECURITY.md).
   orchestrator pools, Lambda functions, CI DB, and other managed services;
   log abnormal state, health regressions, and infrastructure problems for
   follow-up
-- **CI DB provisioning** — bring the ClickHouse cluster and schema under
-  praktika-managed infrastructure (today only the writer side ships with
-  praktika; the cluster is provisioned out-of-band)
 
 **Networking**
 - **Private-access gateway (VPN)** — reach the HTML report and CI DB when
   those run on private endpoints; optionally also SSH to runner instances
   for debugging
+- **S3-backed Docker proxy** — create a native component that caches Docker
+  image pulls in S3 so runners get fast, local pulls without registry rate
+  limiting
 
 **Report / UX**
 - **Pre/post-hook results in report** — move hook sub-results out of

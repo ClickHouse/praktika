@@ -505,7 +505,7 @@ def _main_ci_workflow_template(answers: InitAnswers) -> str:
 def _infrastructure_template(answers: InitAnswers) -> str:
     return textwrap.dedent(
         f"""\
-        from ci.settings.settings import PROJECT_NAME, PROJECT_SLUG, PRAKTIKA_BASE_VENV
+        from ci.settings.settings import PROJECT_NAME, PRAKTIKA_BASE_VENV
         from praktika.infrastructure import Components, Storage, VPC
         from praktika.infrastructure.cloud import CloudInfrastructure
 
@@ -557,6 +557,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                 "contents": "write",
                 "issues": "write",
                 "metadata": "read",
+                "pages": "write",
                 "pull_requests": "write",
                 "statuses": "write",
             }},
