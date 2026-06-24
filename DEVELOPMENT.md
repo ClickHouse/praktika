@@ -16,6 +16,12 @@ python3.12 -m venv .build-venv
 .build-venv/bin/python -m pip install setuptools wheel build
 ```
 
+Or run the combined helper:
+
+```bash
+bash ci/scripts/build_and_publish_wheels.sh
+```
+
 Build and upload `praktika`:
 
 ```bash

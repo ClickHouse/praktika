@@ -308,7 +308,13 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
 
     print(f"Matched workflow [{workflow.name}] with {len(workflow.jobs)} jobs")
 
+    from .ai import Advisor
     from .state import WorkflowState
+
+    # AI advisor (skeleton): consulted on every workflow update. None when AI
+    # orchestration is disabled (the default), in which case the loop is
+    # unchanged.
+    advisor = Advisor.maybe_create(run_id=run_id, local_mode=local_mode)
 
     # The top-level check body is rendered from `state.md_status()` (a live
     # per-job table) by `_check_output`, not from this stream — so we print
@@ -337,6 +343,8 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
             for job in state.get_ready():
                 job.kick()
             state.wait()
+            if advisor is not None:
+                advisor.on_workflow_update(state, event)
             _patch_top_check(check, workflow, state, details_url=report_url)
 
         state.print_summary()
@@ -344,6 +352,8 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
         error = f"{type(e).__name__}: {e}"
         print(f"\n\nError: {error}")
     finally:
+        if advisor is not None:
+            advisor.finalize()
         if state is not None:
             state.cleanup()
 

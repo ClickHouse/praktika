@@ -53,6 +53,17 @@ class _Settings:
     HEARTBEAT_TIMEOUT_S = 300
 
     ######################################
+    #    AI orchestration settings       #
+    ######################################
+    # Master switch for the AI advisor. Off by default: the orchestrator loop
+    # is unchanged unless a project opts in. See praktika/orchestrator/ai.
+    AI_ORCHESTRATION_ENABLED: bool = False
+    # Registered provider name (see ai/provider.py registry). "mock" does nothing.
+    AI_PROVIDER: str = "mock"
+    # Provider-specific model id; empty means the provider's default.
+    AI_MODEL: str = ""
+
+    ######################################
     #   S3 (artifact storage) settings   #
     ######################################
     S3_ARTIFACT_BUCKET: str = ""
@@ -197,6 +208,9 @@ _USER_DEFINED_SETTINGS = [
     "CI_DB_READ_URL",
     "TEST_FAILURE_PATTERNS",
     "PRAKTIKA_BASE_VENV",
+    "AI_ORCHESTRATION_ENABLED",
+    "AI_PROVIDER",
+    "AI_MODEL",
 ]
 
 
