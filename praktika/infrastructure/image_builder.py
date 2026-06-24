@@ -153,6 +153,7 @@ class ImageBuilder:
                 "        action: ExecuteBash",
                 "        inputs:",
                 "          commands:",
+                '            - "set -e -o pipefail"',
             ]
             for cmd in escaped:
                 lines.append(f'            - "{cmd}"')

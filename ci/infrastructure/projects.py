@@ -3,7 +3,6 @@ from pathlib import Path
 
 from praktika.infrastructure.cloud import CloudInfrastructure
 from praktika.infrastructure import Components, Storage, VPC
-from praktika.version import current_praktika_version
 from ci.settings.settings import SECRET_CI_DB_CONNECTION
 
 
@@ -12,11 +11,15 @@ _PRAKTIKA_PACKAGE_BASE_URL = (
     "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages"
 )
 _PRAKTIKA_BASE_VERSION = "0.1.4"
-_PRAKTIKA_LATEST_VERSION = current_praktika_version()
-_PRAKTIKA_WHL = (
-    f"{_PRAKTIKA_PACKAGE_BASE_URL}/"
-    f"praktika-{_PRAKTIKA_LATEST_VERSION}-py3-none-any.whl"
-)
+# The latest praktika wheel is published to a fixed, version-less S3 location so
+# that runner/orchestrator user-data and image recipes never need editing on a
+# version bump. The "0.0.0" is a placeholder: pip requires a PEP 440-valid
+# version in the wheel *filename*, but installs the real version from the
+# wheel's dist-info metadata. Both publish scripts mirror the freshly built
+# wheel to this key (ci/scripts/publish_wheel.sh,
+# ci/scripts/build_and_publish_wheels.sh).
+_PRAKTIKA_LATEST_WHL_NAME = "praktika-0.0.0-py3-none-any.whl"
+_PRAKTIKA_WHL = f"{_PRAKTIKA_PACKAGE_BASE_URL}/latest/{_PRAKTIKA_LATEST_WHL_NAME}"
 
 
 def _version_from_pyproject(pyproject: Path) -> str:
@@ -94,8 +97,8 @@ def _custom_image_tests():
 
 
 def _image_builders():
-    ci_version = "1.0.7"
-    ubuntu_ci_version = "1.0.7"
+    ci_version = "1.0.10"
+    ubuntu_ci_version = "1.0.8"
 
     return [
         _create_awslinux_image_builder_config(

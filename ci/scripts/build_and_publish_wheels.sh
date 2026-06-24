@@ -27,6 +27,14 @@ aws --profile "${AWS_PROFILE}" s3 cp \
   "dist/${PRAKTIKA_WHEEL}" \
   "${S3_PACKAGES_URI}/${PRAKTIKA_WHEEL}"
 
+# Also mirror to the fixed, version-less "latest" key that _PRAKTIKA_WHL points
+# at, so runner/orchestrator user-data never needs editing on a version bump.
+# The 0.0.0 in the key is a placeholder; pip reads the real version from the
+# wheel's dist-info metadata.
+aws --profile "${AWS_PROFILE}" s3 cp \
+  "dist/${PRAKTIKA_WHEEL}" \
+  "${S3_PACKAGES_URI}/latest/praktika-0.0.0-py3-none-any.whl"
+
 CONTROLLER_VERSION="$(
   "${BUILD_VENV}/bin/python" -c 'from pathlib import Path; from praktika.version import current_praktika_controller_version; print(current_praktika_controller_version(Path("bootstrap/pyproject.toml")))'
 )"
