@@ -45,6 +45,15 @@ def test_init_parser_supports_command():
     assert args.command == "init"
 
 
+def test_orchestrate_workflow_parser_supports_workflow_name():
+    parser = create_parser()
+    args = parser.parse_args(["orchestrate", "workflow", "--name", "PR Fast"])
+
+    assert args.command == "orchestrate"
+    assert args.orch_command == "workflow"
+    assert args.name == "PR Fast"
+
+
 def test_has_praktika_project_files_detects_markers(tmp_path):
     assert has_praktika_project_files(tmp_path) is False
 
@@ -615,5 +624,12 @@ def test_run_init_interactive_auto_creates_missing_settings_and_workflow(
 def test_main_without_args_prints_help_and_exits():
     try:
         main([])
+    except SystemExit as ex:
+        assert ex.code == 1
+
+
+def test_main_orchestrate_without_subcommand_prints_help_and_exits():
+    try:
+        main(["orchestrate"])
     except SystemExit as ex:
         assert ex.code == 1

@@ -97,7 +97,7 @@ def _custom_image_tests():
 
 
 def _image_builders():
-    ci_version = "1.0.10"
+    ci_version = "1.0.11"
     ubuntu_ci_version = "1.0.8"
 
     return [
@@ -204,7 +204,7 @@ _runner_pools = [
                 "#!/usr/bin/env bash",
                 "set -xeuo pipefail",
                 "",
-                "# Update the controller if changed (to test new version w/o inage rebuild)",
+                "# Update the controller if changed (to test new version w/o image rebuild)",
                 f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages",
                 "# Add any host customization you need above this line.",
                 "/usr/local/bin/praktika-configure-cloudwatch-agent",
@@ -259,14 +259,14 @@ _orchestrator_pool = Components.OrchestratorPool(
     scaling=Components.OrchestratorPool.Scaling.Auto,
     size=0,
     max_size=10,
-    capacity_reserve=2,
+    capacity_reserve=0,
     image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
     user_data="\n".join(
         [
             "#!/usr/bin/env bash",
             "set -xeuo pipefail",
             "",
-            "# Update the controller if changed (to test new version w/o inage rebuild)",
+            "# Update the controller if changed (to test new version w/o image rebuild)",
             f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages",
             "# Add any host customization you need above this line.",
             "/usr/local/bin/praktika-configure-cloudwatch-agent",
