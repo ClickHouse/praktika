@@ -6,6 +6,7 @@ import pytest
 from ci.infrastructure.projects import (
     _IMAGE_BUILDERS_BY_NAME,
     _PRAKTIKA_BASE_VERSION,
+    _PRAKTIKA_LATEST_WHL_NAME,
     _PRAKTIKA_CONTROLLER_BASE_VERSION,
     _PRAKTIKA_CONTROLLER_LATEST_VERSION,
     _RUNNER_ALLOWED_SECRETS,
@@ -41,7 +42,9 @@ from ci.settings.settings import RunnerLabels
 
 
 _PRAKTIKA_BASE_WHEEL = f"/praktika-{_PRAKTIKA_BASE_VERSION}-py3-none-any.whl"
-_PRAKTIKA_LATEST_WHEEL = f"/praktika-{current_praktika_version()}-py3-none-any.whl"
+# Latest praktika is now installed from a fixed, version-less S3 key (see
+# projects.py); user-data references the placeholder filename, not the version.
+_PRAKTIKA_LATEST_WHEEL = f"/latest/{_PRAKTIKA_LATEST_WHL_NAME}"
 _PRAKTIKA_CONTROLLER_BASE_WHEEL = (
     f"praktika_controller-{_PRAKTIKA_CONTROLLER_BASE_VERSION}-py3-none-any.whl"
 )
@@ -1151,6 +1154,7 @@ def test_controller_image_builders_are_declared():
         setup_commands = "\n".join(builder.inline_components[0]["commands"])
         runtime_commands = "\n".join(runtime_component["commands"])
         assert "python3.12 python3.12-pip" in setup_commands
+        assert "dnf install -y --allowerasing" in setup_commands
         assert "awscli-exe-linux-$(uname -m).zip" in setup_commands
         assert not any(
             "dnf install" in command and "awscli" in command

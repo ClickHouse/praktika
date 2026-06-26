@@ -3,7 +3,6 @@ from pathlib import Path
 
 from praktika.infrastructure.cloud import CloudInfrastructure
 from praktika.infrastructure import Components, Storage, VPC
-from praktika.version import current_praktika_version
 from ci.settings.settings import SECRET_CI_DB_CONNECTION
 
 
@@ -12,11 +11,15 @@ _PRAKTIKA_PACKAGE_BASE_URL = (
     "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages"
 )
 _PRAKTIKA_BASE_VERSION = "0.1.4"
-_PRAKTIKA_LATEST_VERSION = current_praktika_version()
-_PRAKTIKA_WHL = (
-    f"{_PRAKTIKA_PACKAGE_BASE_URL}/"
-    f"praktika-{_PRAKTIKA_LATEST_VERSION}-py3-none-any.whl"
-)
+# The latest praktika wheel is published to a fixed, version-less S3 location so
+# that runner/orchestrator user-data and image recipes never need editing on a
+# version bump. The "0.0.0" is a placeholder: pip requires a PEP 440-valid
+# version in the wheel *filename*, but installs the real version from the
+# wheel's dist-info metadata. Both publish scripts mirror the freshly built
+# wheel to this key (ci/scripts/publish_wheel.sh,
+# ci/scripts/build_and_publish_wheels.sh).
+_PRAKTIKA_LATEST_WHL_NAME = "praktika-0.0.0-py3-none-any.whl"
+_PRAKTIKA_WHL = f"{_PRAKTIKA_PACKAGE_BASE_URL}/latest/{_PRAKTIKA_LATEST_WHL_NAME}"
 
 
 def _version_from_pyproject(pyproject: Path) -> str:
@@ -94,8 +97,8 @@ def _custom_image_tests():
 
 
 def _image_builders():
-    ci_version = "1.0.7"
-    ubuntu_ci_version = "1.0.7"
+    ci_version = "1.0.11"
+    ubuntu_ci_version = "1.0.8"
 
     return [
         _create_awslinux_image_builder_config(
@@ -201,7 +204,7 @@ _runner_pools = [
                 "#!/usr/bin/env bash",
                 "set -xeuo pipefail",
                 "",
-                "# Update the controller if changed (to test new version w/o inage rebuild)",
+                "# Update the controller if changed (to test new version w/o image rebuild)",
                 f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages",
                 "# Add any host customization you need above this line.",
                 "/usr/local/bin/praktika-configure-cloudwatch-agent",
@@ -256,14 +259,14 @@ _orchestrator_pool = Components.OrchestratorPool(
     scaling=Components.OrchestratorPool.Scaling.Auto,
     size=0,
     max_size=10,
-    capacity_reserve=2,
+    capacity_reserve=0,
     image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
     user_data="\n".join(
         [
             "#!/usr/bin/env bash",
             "set -xeuo pipefail",
             "",
-            "# Update the controller if changed (to test new version w/o inage rebuild)",
+            "# Update the controller if changed (to test new version w/o image rebuild)",
             f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages",
             "# Add any host customization you need above this line.",
             "/usr/local/bin/praktika-configure-cloudwatch-agent",

@@ -191,6 +191,7 @@ Requires AWS SSM access and S3 write permission to `clickhouse-test-reports-priv
 ```bash
 praktika orchestrate workflow            # auto-builds the event from git state
 praktika orchestrate workflow event.json # or load a pre-built event
+praktika orchestrate workflow --name "PR Fast" # run one matching workflow
 ```
 
 Without `--ci` this runs in local-orchestrator mode: every job is dispatched as a

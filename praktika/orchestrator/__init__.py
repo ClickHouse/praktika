@@ -38,8 +38,9 @@ def _current_orchestrator_filter() -> str:
     return "default"
 
 
-def find_workflows_for_event(event):
+def find_workflows_for_event(event, workflow_name=None):
     """Find all workflows matching the trigger event. Returns empty list if no match."""
+    workflow_name = (workflow_name or "").strip()
     event_type = event.get("type", "")
     workflow_event = _EVENT_MAP.get(event_type)
     if not workflow_event:
@@ -56,10 +57,12 @@ def find_workflows_for_event(event):
     matched = []
     orchestrator_filter = _current_orchestrator_filter()
     for wf in _get_workflows():
+        if workflow_name and wf.name != workflow_name:
+            continue
         if wf.engine == Workflow.Engine.GH_ACTIONS:
             continue
         workflow_filter = (getattr(wf, "orchestrator_filter", "") or "default").strip()
-        if workflow_filter != orchestrator_filter:
+        if not workflow_name and workflow_filter != orchestrator_filter:
             print(
                 f"Skip workflow [{wf.name}] for orchestrator filter "
                 f"[{orchestrator_filter}] (workflow requires [{workflow_filter}])"
@@ -75,7 +78,11 @@ def find_workflows_for_event(event):
                 matched.append(wf)
 
     if not matched:
-        print(f"No workflow found for event [{workflow_event}] branch [{branch}]")
+        name_hint = f" name [{workflow_name}]" if workflow_name else ""
+        print(
+            f"No workflow found for event [{workflow_event}] "
+            f"branch [{branch}]{name_hint}"
+        )
     return matched
 
 
@@ -224,7 +231,14 @@ def _patch_top_check(check, workflow, state, error=None, details_url=None):
         print(f"  [warn] top-level check PATCH failed: {type(e).__name__}: {e}")
 
 
-def orchestrate(event, check=None, gh_token=None, run_id=None, ci=True):
+def orchestrate(
+    event,
+    check=None,
+    gh_token=None,
+    run_id=None,
+    ci=True,
+    workflow_name=None,
+):
     """Single orchestrator entry-point used by both the SQS runner and the CLI.
 
     Finds all workflows matching ``event`` and runs them sequentially. Each
@@ -254,7 +268,7 @@ def orchestrate(event, check=None, gh_token=None, run_id=None, ci=True):
         except Exception as e:
             raise RuntimeError(f"Failed to mint GH token for CI orchestration: {e}") from e
 
-    workflows = find_workflows_for_event(event)
+    workflows = find_workflows_for_event(event, workflow_name=workflow_name)
     if not workflows:
         print("No matching workflows, exiting")
         if check is not None:
@@ -308,7 +322,13 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
 
     print(f"Matched workflow [{workflow.name}] with {len(workflow.jobs)} jobs")
 
+    from .ai import Advisor
     from .state import WorkflowState
+
+    # AI advisor (skeleton): consulted on every workflow update. None when AI
+    # orchestration is disabled (the default), in which case the loop is
+    # unchanged.
+    advisor = Advisor.maybe_create(event=event, run_id=run_id, local_mode=local_mode)
 
     # The top-level check body is rendered from `state.md_status()` (a live
     # per-job table) by `_check_output`, not from this stream — so we print
@@ -337,6 +357,8 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
             for job in state.get_ready():
                 job.kick()
             state.wait()
+            if advisor is not None:
+                advisor.on_workflow_update(state, event)
             _patch_top_check(check, workflow, state, details_url=report_url)
 
         state.print_summary()
@@ -344,6 +366,8 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
         error = f"{type(e).__name__}: {e}"
         print(f"\n\nError: {error}")
     finally:
+        if advisor is not None:
+            advisor.finalize(state)
         if state is not None:
             state.cleanup()
 
@@ -423,4 +447,5 @@ def run(event_file=None, args=None):
     else:
         event = _build_event(args)
     ci = getattr(args, "ci", False)
-    sys.exit(orchestrate(event, ci=ci))
+    workflow_name = getattr(args, "name", None)
+    sys.exit(orchestrate(event, ci=ci, workflow_name=workflow_name))

@@ -36,6 +36,37 @@ def test_default_orchestrator_skips_base_workflows(monkeypatch):
     assert [wf.name for wf in matched] == ["default"]
 
 
+def test_workflow_name_filter_selects_one_matching_workflow(monkeypatch):
+    pr_fast = _make_pr_workflow("PR Fast")
+    pr_full = _make_pr_workflow("PR Full")
+    event = {"type": "pull_request", "base_ref": "main"}
+
+    monkeypatch.setenv("PRAKTIKA_CONTROLLER_QUEUE", "workflow-orchestrator")
+    monkeypatch.setattr(
+        "praktika.orchestrator._get_workflows",
+        lambda: [pr_fast, pr_full],
+    )
+
+    matched = find_workflows_for_event(event, workflow_name="PR Full")
+
+    assert [wf.name for wf in matched] == ["PR Full"]
+
+
+def test_workflow_name_filter_ignores_orchestrator_pool_filter(monkeypatch):
+    base_workflow = _make_pr_workflow("Praktika CI", orchestrator_filter="base")
+    event = {"type": "pull_request", "base_ref": "main"}
+
+    monkeypatch.setenv("PRAKTIKA_CONTROLLER_QUEUE", "workflow-orchestrator")
+    monkeypatch.setattr(
+        "praktika.orchestrator._get_workflows",
+        lambda: [base_workflow],
+    )
+
+    matched = find_workflows_for_event(event, workflow_name="Praktika CI")
+
+    assert [wf.name for wf in matched] == ["Praktika CI"]
+
+
 def test_base_orchestrator_skips_default_workflows(monkeypatch):
     default_workflow = _make_pr_workflow("default")
     base_workflow = _make_pr_workflow("base", orchestrator_filter="base")

@@ -216,6 +216,7 @@ def create_parser():
     orch_parser = subparsers.add_parser(
         "orchestrate", help="Run local workflow orchestration"
     )
+    orch_parser.set_defaults(_command_parser=orch_parser)
     orch_sub = orch_parser.add_subparsers(dest="orch_command")
 
     wf_parser = orch_sub.add_parser(
@@ -233,6 +234,11 @@ def create_parser():
     wf_parser.add_argument("--base-ref", default="main")
     wf_parser.add_argument("--pr-number", default=None, type=int)
     wf_parser.add_argument("--sender", default=None)
+    wf_parser.add_argument(
+        "--name",
+        default=None,
+        help="Workflow name to run when more than one workflow matches the event",
+    )
     wf_parser.add_argument("--ci", action="store_true", default=False,
         help="CI mode: authenticate to GitHub and post check runs")
 
@@ -328,7 +334,7 @@ def main(argv=None):
                 task = _json.load(f)
             sys.exit(run_job(task, local=not args.ci))
         else:
-            orch_parser.print_help()
+            args._command_parser.print_help()
             sys.exit(1)
     elif args.command == "run":
         from .mangle import _get_workflows

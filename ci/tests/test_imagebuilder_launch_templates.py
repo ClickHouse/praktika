@@ -402,6 +402,7 @@ def test_inline_component_can_use_test_phase(monkeypatch):
 
     assert builder._ensure_inline_components() == ["arn:component/test/1.2.3/1"]
     assert "  - name: test" in captured["data"]
+    assert '            - "set -e -o pipefail"' in captured["data"]
     assert "test -x /usr/local/bin/praktika-controller" in captured["data"]
 
 
