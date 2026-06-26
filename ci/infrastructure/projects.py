@@ -1,12 +1,8 @@
-import re
-from pathlib import Path
-
 from praktika.infrastructure.cloud import CloudInfrastructure
 from praktika.infrastructure import Components, Storage, VPC
 from ci.settings.settings import SECRET_CI_DB_CONNECTION
 
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
 _PRAKTIKA_PACKAGE_BASE_URL = (
     "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages"
 )
@@ -21,34 +17,18 @@ _PRAKTIKA_BASE_VERSION = "0.1.4"
 _PRAKTIKA_LATEST_WHL_NAME = "praktika-0.0.0-py3-none-any.whl"
 _PRAKTIKA_WHL = f"{_PRAKTIKA_PACKAGE_BASE_URL}/latest/{_PRAKTIKA_LATEST_WHL_NAME}"
 
-
-def _version_from_pyproject(pyproject: Path) -> str:
-    in_project = False
-    for raw_line in pyproject.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if line == "[project]":
-            in_project = True
-            continue
-        if in_project and line.startswith("["):
-            break
-        if in_project and line.startswith("version"):
-            match = re.match(r'version\s*=\s*["\']([^"\']+)["\']', line)
-            if match:
-                return match.group(1)
-    raise RuntimeError(f"Could not find project version in {pyproject}")
-
-
 _PRAKTIKA_CONTROLLER_BASE_VERSION = "0.1.1"
-_PRAKTIKA_CONTROLLER_LATEST_VERSION = _version_from_pyproject(
-    _REPO_ROOT / "bootstrap" / "pyproject.toml"
-)
 _PRAKTIKA_CONTROLLER_BASE_WHL = (
     f"{_PRAKTIKA_PACKAGE_BASE_URL}/"
     f"praktika_controller-{_PRAKTIKA_CONTROLLER_BASE_VERSION}-py3-none-any.whl"
 )
+# The latest controller wheel uses the same fixed, version-less "latest" S3
+# location as praktika (see _PRAKTIKA_LATEST_WHL_NAME above), so user-data never
+# needs editing on a controller version bump. Both publish scripts mirror the
+# freshly built controller wheel to this key.
+_PRAKTIKA_CONTROLLER_LATEST_WHL_NAME = "praktika_controller-0.0.0-py3-none-any.whl"
 _PRAKTIKA_CONTROLLER_WHL = (
-    f"{_PRAKTIKA_PACKAGE_BASE_URL}/"
-    f"praktika_controller-{_PRAKTIKA_CONTROLLER_LATEST_VERSION}-py3-none-any.whl"
+    f"{_PRAKTIKA_PACKAGE_BASE_URL}/latest/{_PRAKTIKA_CONTROLLER_LATEST_WHL_NAME}"
 )
 _RUNTIME_BASE_VENV = "praktika-runtime"
 

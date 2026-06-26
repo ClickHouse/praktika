@@ -8,7 +8,7 @@ from ci.infrastructure.projects import (
     _PRAKTIKA_BASE_VERSION,
     _PRAKTIKA_LATEST_WHL_NAME,
     _PRAKTIKA_CONTROLLER_BASE_VERSION,
-    _PRAKTIKA_CONTROLLER_LATEST_VERSION,
+    _PRAKTIKA_CONTROLLER_LATEST_WHL_NAME,
     _RUNNER_ALLOWED_SECRETS,
     _RUNNER_ALLOWED_S3_PREFIXES,
     _RUNNER_ALLOWED_SSM_PARAMETERS,
@@ -48,9 +48,9 @@ _PRAKTIKA_LATEST_WHEEL = f"/latest/{_PRAKTIKA_LATEST_WHL_NAME}"
 _PRAKTIKA_CONTROLLER_BASE_WHEEL = (
     f"praktika_controller-{_PRAKTIKA_CONTROLLER_BASE_VERSION}-py3-none-any.whl"
 )
-_PRAKTIKA_CONTROLLER_LATEST_WHEEL = (
-    f"praktika_controller-{_PRAKTIKA_CONTROLLER_LATEST_VERSION}-py3-none-any.whl"
-)
+# Latest controller is now installed from the same fixed, version-less S3 key as
+# praktika (see projects.py); user-data references the placeholder filename.
+_PRAKTIKA_CONTROLLER_LATEST_WHEEL = f"/latest/{_PRAKTIKA_CONTROLLER_LATEST_WHL_NAME}"
 
 
 def _decode_embedded_file(command: str) -> str:
@@ -958,7 +958,7 @@ def test_cloud_project_namespace_does_not_rewrite_controller_local_paths():
         version="1.0.0",
         controller_package=(
             "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/"
-            f"packages/{_PRAKTIKA_CONTROLLER_LATEST_WHEEL}"
+            f"packages{_PRAKTIKA_CONTROLLER_LATEST_WHEEL}"
         ),
         prebuilt_venvs=[
             Components.create_praktika_venv_config("praktika-runtime-0.1.2", "0.1.2")

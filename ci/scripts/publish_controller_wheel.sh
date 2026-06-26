@@ -10,3 +10,10 @@ VERSION="$(
 python3 -m build --wheel --outdir bootstrap/dist/ ./bootstrap
 aws s3 cp "bootstrap/dist/praktika_controller-${VERSION}-py3-none-any.whl" \
   "s3://praktika-artifacts-eu-north-1/packages/praktika_controller-${VERSION}-py3-none-any.whl"
+
+# Also mirror to the fixed, version-less "latest" key that _PRAKTIKA_CONTROLLER_WHL
+# points at, so runner/orchestrator user-data never needs editing on a controller
+# version bump. The 0.0.0 in the key is a placeholder; pip reads the real version
+# from the wheel's dist-info metadata.
+aws s3 cp "bootstrap/dist/praktika_controller-${VERSION}-py3-none-any.whl" \
+  "s3://praktika-artifacts-eu-north-1/packages/latest/praktika_controller-0.0.0-py3-none-any.whl"
