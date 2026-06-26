@@ -134,7 +134,7 @@ class SessionManager:
         self.store = store
         self.index = index or LoggingIndex()
         self.console = console or TraceLogger(run_id=None)
-        self._base = f"ai-sessions/{_slug(repo)}/pr/{self.pr}"
+        self._base = f"ai-sessions/pr/{self.pr}"
         self.session = self._load_session()
         self._run = None  # RunManifest for the current run
         self._round = None  # RoundManifest for the open round, if any

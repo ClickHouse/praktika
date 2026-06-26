@@ -53,7 +53,7 @@ on read.
 ### Key layout
 
 ```
-ai-sessions/<repo>/pr/<pr>/
+ai-sessions/pr/<pr>/
   session.json
   rounds/<round_id>.json
   runs/<run_id>/run.json
