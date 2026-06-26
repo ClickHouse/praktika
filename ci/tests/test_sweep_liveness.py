@@ -13,6 +13,7 @@ boto3 or network access. ``_make_queued_state`` builds a minimal
 WorkflowState with one or more QUEUED jobs and a stubbed _s3 — enough
 surface for sweep_liveness without booting the full DAG init.
 """
+
 import io
 import json
 import time
@@ -80,14 +81,18 @@ def _make_queued_state(job_names, started_at_offsets, fake_s3, run_id="run42"):
         js.finished_at = None
         js.filter_reason = None
         js.last_heartbeat_ts = None
+        js.last_heartbeat_phase = None
+        js.runner_instance_id = None
         js._workflow_state = state
         state.jobs[name] = js
     return state
 
 
-def _put_heartbeat(fake_s3, run_id, job_name, ts):
+def _put_heartbeat(fake_s3, run_id, job_name, ts, **fields):
     key = f"runs/{run_id}/{_normalize_job_name_for_s3(job_name)}/heartbeat.json"
-    fake_s3.put("test-bucket", key, json.dumps({"ts": ts, "status": "running"}).encode())
+    body = {"ts": ts, "status": "running"}
+    body.update(fields)
+    fake_s3.put("test-bucket", key, json.dumps(body).encode())
 
 
 class _FakeCheck:
@@ -106,13 +111,16 @@ class _FakeCheck:
 
 def test_queued_check_output_names_state_and_pool(monkeypatch):
     job = types.SimpleNamespace(name="A", runs_on=["arm-small"])
-    js = JobState(job, workflow_state=types.SimpleNamespace(
-        can_post_checks=True,
-        workflow=types.SimpleNamespace(name="CI"),
-        _gh_token="token",
-        _repo="org/repo",
-        _head_sha="sha",
-    ))
+    js = JobState(
+        job,
+        workflow_state=types.SimpleNamespace(
+            can_post_checks=True,
+            workflow=types.SimpleNamespace(name="CI"),
+            _gh_token="token",
+            _repo="org/repo",
+            _head_sha="sha",
+        ),
+    )
     calls = []
 
     def fake_queue(token, repo, head_sha, name, output=None):
@@ -156,9 +164,7 @@ def test_fresh_queued_job_stays_queued():
 def test_pickup_timeout_expired_with_no_heartbeat_marks_dead():
     """Job queued longer than RUNNER_PICKUP_TIMEOUT_S with no heartbeat → FAILURE."""
     s3 = _FakeS3()
-    state = _make_queued_state(
-        ["A"], {"A": RUNNER_PICKUP_TIMEOUT_S + 30}, s3
-    )
+    state = _make_queued_state(["A"], {"A": RUNNER_PICKUP_TIMEOUT_S + 30}, s3)
     state.sweep_liveness()
     assert state.jobs["A"].status == JobStatus.FAILURE
     assert state.jobs["A"].rc == 1
@@ -182,9 +188,7 @@ def test_transient_heartbeat_read_error_does_not_mark_dead():
 
 def test_pickup_grace_reason_mentions_runner_pool():
     s3 = _FakeS3()
-    state = _make_queued_state(
-        ["A"], {"A": RUNNER_PICKUP_TIMEOUT_S + 30}, s3
-    )
+    state = _make_queued_state(["A"], {"A": RUNNER_PICKUP_TIMEOUT_S + 30}, s3)
     state.jobs["A"].job.runs_on = ["arm-2xsmall"]
     reasons = []
     state.jobs["A"].fail_dead = reasons.append
@@ -203,9 +207,7 @@ def test_pickup_grace_reason_mentions_runner_pool():
 def test_within_pickup_grace_with_no_heartbeat_stays_queued():
     """Queue/ASG delays must not be flagged before grace expires."""
     s3 = _FakeS3()
-    state = _make_queued_state(
-        ["A"], {"A": RUNNER_PICKUP_TIMEOUT_S - 30}, s3
-    )
+    state = _make_queued_state(["A"], {"A": RUNNER_PICKUP_TIMEOUT_S - 30}, s3)
     state.sweep_liveness()
     assert state.jobs["A"].status == JobStatus.QUEUED
 
@@ -213,9 +215,7 @@ def test_within_pickup_grace_with_no_heartbeat_stays_queued():
 def test_recent_heartbeat_marks_job_running():
     """Heartbeat was within the dead threshold — job is alive."""
     s3 = _FakeS3()
-    state = _make_queued_state(
-        ["A"], {"A": RUNNER_PICKUP_TIMEOUT_S + 60}, s3
-    )
+    state = _make_queued_state(["A"], {"A": RUNNER_PICKUP_TIMEOUT_S + 60}, s3)
     _put_heartbeat(s3, "run42", "A", time.time() - 10)
     state.sweep_liveness()
     assert state.jobs["A"].status == JobStatus.RUNNING
@@ -232,7 +232,12 @@ def test_heartbeat_sets_check_in_progress_with_runner_id():
         "test-bucket",
         key,
         json.dumps(
-            {"ts": time.time() - 1, "status": "running", "instance_id": "i-runner"}
+            {
+                "ts": time.time() - 1,
+                "status": "running",
+                "instance_id": "i-runner",
+                "phase": "cloning",
+            }
         ).encode(),
     )
 
@@ -240,9 +245,13 @@ def test_heartbeat_sets_check_in_progress_with_runner_id():
 
     assert state.jobs["A"].status == JobStatus.RUNNING
     assert state.jobs["A"].runner_instance_id == "i-runner"
+    assert state.jobs["A"].last_heartbeat_phase == "cloning"
     assert check.in_progress == [
         {
-            "output": {"title": "RUNNING", "summary": "RUNNING on runner `i-runner`."},
+            "output": {
+                "title": "RUNNING",
+                "summary": "RUNNING on runner `i-runner`. Phase: `cloning`.",
+            },
             "details_url": None,
         }
     ]
@@ -251,12 +260,37 @@ def test_heartbeat_sets_check_in_progress_with_runner_id():
 def test_stale_heartbeat_marks_dead():
     """Stale heartbeat after pickup → FAILURE (runner died mid-job)."""
     s3 = _FakeS3()
-    state = _make_queued_state(
-        ["A"], {"A": RUNNER_PICKUP_TIMEOUT_S + 200}, s3
-    )
+    state = _make_queued_state(["A"], {"A": RUNNER_PICKUP_TIMEOUT_S + 200}, s3)
     _put_heartbeat(s3, "run42", "A", time.time() - (HEARTBEAT_TIMEOUT_S + 30))
     state.sweep_liveness()
     assert state.jobs["A"].status == JobStatus.FAILURE
+
+
+def test_stale_heartbeat_reason_names_runner_and_phase():
+    s3 = _FakeS3()
+    state = _make_queued_state(["A"], {"A": RUNNER_PICKUP_TIMEOUT_S + 200}, s3)
+    state.jobs["A"].status = JobStatus.RUNNING
+    state.jobs["A"].job.runs_on = ["arm-medium"]
+    reasons = []
+    state.jobs["A"].fail_dead = reasons.append
+    _put_heartbeat(
+        s3,
+        "run42",
+        "A",
+        time.time() - (HEARTBEAT_TIMEOUT_S + 30),
+        instance_id="i-runner",
+        phase="cloning",
+    )
+
+    state.sweep_liveness()
+
+    assert reasons == [
+        (
+            "runner `i-runner` in pool `arm-medium` stopped heartbeating "
+            f"during phase `cloning` (no heartbeat in {HEARTBEAT_TIMEOUT_S + 30}s, "
+            f"timeout={HEARTBEAT_TIMEOUT_S}s)"
+        )
+    ]
 
 
 def test_sweep_is_noop_in_local_mode():

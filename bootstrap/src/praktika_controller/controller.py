@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 
 from praktika_controller.common import (
     CancelWatchdog,
@@ -13,12 +14,15 @@ from praktika_controller.common import (
     Heartbeat,
     LogRateLimiter,
     VisibilityHeartbeat,
+    clean_work_root,
     clone_repo,
     configure_logging,
     get_github_token,
     imds_token,
     instance_tag,
     resolve_praktika_base_venv,
+    terminate_instance_for_replacement,
+    terminate_process_group,
     try_scale_in_if_idle,
 )
 from praktika_controller.venv_manager import (
@@ -33,6 +37,9 @@ WORK_DIR = os.environ.get("WORK_DIR", "/opt/praktika/work")
 ROLE_WORKFLOW = "workflow_orchestrator"
 ROLE_RUNNER = "job_runner"
 SUPPORTED_ROLES = {ROLE_WORKFLOW, ROLE_RUNNER}
+INFRA_FAILURE_MAX_RECEIVES = int(
+    os.environ.get("PRAKTIKA_INFRA_FAILURE_MAX_RECEIVES", "3")
+)
 
 
 def _instance_runtime_tags() -> tuple[str, str]:
@@ -86,6 +93,84 @@ def _praktika_env(venv_dir: str, queue_name: str) -> dict[str, str]:
     env = venv_env(venv_dir)
     env["PRAKTIKA_CONTROLLER_QUEUE"] = queue_name
     return env
+
+
+def _s3_key_exists(s3, bucket: str, key: str, log) -> bool:
+    if not bucket or not key:
+        return False
+    try:
+        s3.head_object(Bucket=bucket, Key=key)
+        return True
+    except Exception as e:
+        code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
+        if str(code) in {"404", "NoSuchKey", "NotFound"}:
+            return False
+        log.warning(
+            "Could not check s3://%s/%s: %s: %s",
+            bucket,
+            key,
+            type(e).__name__,
+            e,
+        )
+        return False
+
+
+def _write_infra_failure_final(task, exc: Exception, log) -> bool:
+    final_bucket = task.get("final_state_s3_bucket", "")
+    final_key = task.get("final_state_s3_key", "")
+    if not final_bucket or not final_key:
+        return False
+    try:
+        import boto3
+
+        s3 = boto3.client("s3", region_name=REGION)
+        body = {
+            "type": "job_completion",
+            "job_name": task.get("job_name"),
+            "rc": 1,
+            "ts": time.time(),
+            "repo": task.get("repo"),
+            "pr_number": task.get("pr_number"),
+            "head_sha": task.get("head_sha"),
+            "workflow_name": task.get("workflow_name"),
+            "instance_id": INSTANCE_ID,
+            "infra_error": True,
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:1000],
+            "check_output": {
+                "title": "INFRA_ERROR",
+                "summary": (
+                    f"Runner infrastructure failed before job start on `{INSTANCE_ID}`: "
+                    f"{type(exc).__name__}: {str(exc)[:300]}"
+                ),
+            },
+        }
+        s3.put_object(
+            Bucket=final_bucket,
+            Key=final_key,
+            Body=json.dumps(body).encode(),
+            ContentType="application/json",
+        )
+        log.info("Wrote infra failure final state s3://%s/%s", final_bucket, final_key)
+        return True
+    except Exception:
+        log.exception(
+            "Failed to write infra failure final state s3://%s/%s",
+            final_bucket,
+            final_key,
+        )
+        return False
+
+
+def _prepare_runner_for_task(role: str, log) -> str:
+    if role != ROLE_RUNNER:
+        return ""
+    try:
+        clean_work_root(WORK_DIR, log)
+        return ""
+    except Exception as e:
+        log.exception("Runner workdir cleanup failed before task")
+        return f"workdir cleanup failed: {type(e).__name__}: {e}"
 
 
 def handle_workflow(event, log, queue_name: str):
@@ -172,13 +257,20 @@ def handle_task(task, log, queue_name: str):
     import boto3
 
     s3 = boto3.client("s3", region_name=REGION)
+    if _s3_key_exists(s3, cancel_s3_bucket, cancel_s3_key, log):
+        log.info(
+            "Task %r belongs to a cancelled run, skipping before clone",
+            job_name,
+        )
+        return {"status": "skipped", "reason": "cancelled", "job": job_name}
+
     cm_heartbeat = (
         Heartbeat(
             s3,
             heartbeat_s3_bucket,
             heartbeat_s3_key,
             heartbeat_interval_s,
-            fields={"instance_id": INSTANCE_ID},
+            fields={"instance_id": INSTANCE_ID, "phase": "picked_up"},
             log=log,
         )
         if heartbeat_s3_bucket and heartbeat_s3_key
@@ -187,7 +279,10 @@ def handle_task(task, log, queue_name: str):
     if cm_heartbeat is not None:
         cm_heartbeat.start()
 
+    proc = None
     try:
+        if cm_heartbeat is not None:
+            cm_heartbeat.update(phase="authenticating")
         gh_token = get_github_token(REGION)
         subprocess.run(
             ["gh", "auth", "login", "--with-token"],
@@ -196,17 +291,24 @@ def handle_task(task, log, queue_name: str):
             check=True,
         )
 
+        if cm_heartbeat is not None:
+            cm_heartbeat.update(phase="cloning")
         clone_dir, actual_sha = clone_repo(
             repo,
             head_sha,
             pr_number,
             gh_token,
             work_dir=WORK_DIR,
+            clean_existing=False,
             log=log,
         )
 
+        if cm_heartbeat is not None:
+            cm_heartbeat.update(phase="resolving_runtime")
         base_venv, venv_dir = _resolve_runtime(clone_dir, log)
 
+        if cm_heartbeat is not None:
+            cm_heartbeat.update(phase="writing_task")
         task_file = os.path.join(clone_dir, "ci", "tmp", "task.json")
         os.makedirs(os.path.dirname(task_file), exist_ok=True)
         with open(task_file, "w", encoding="utf-8") as f:
@@ -214,12 +316,15 @@ def handle_task(task, log, queue_name: str):
 
         log.info("Running job %r for PR#%s in %s", job_name, pr_number, venv_dir)
 
+        if cm_heartbeat is not None:
+            cm_heartbeat.update(phase="running_job")
         proc = subprocess.Popen(
             praktika_command(venv_dir, "orchestrate", "job", task_file, "--ci"),
             cwd=clone_dir,
             env=_praktika_env(venv_dir, queue_name),
             stderr=subprocess.PIPE,
             text=True,
+            start_new_session=True,
         )
 
         cm_cancel = CancelWatchdog(s3, cancel_s3_bucket, cancel_s3_key, proc, log=log)
@@ -241,6 +346,8 @@ def handle_task(task, log, queue_name: str):
             "stderr": stderr_output.strip()[:500] if stderr_output else "",
         }
     finally:
+        if proc is not None:
+            terminate_process_group(proc, log, grace_s=1)
         if cm_heartbeat is not None:
             cm_heartbeat.stop()
 
@@ -273,6 +380,7 @@ def poll():
             QueueUrl=queue_url,
             MaxNumberOfMessages=1,
             WaitTimeSeconds=20,
+            AttributeNames=["ApproximateReceiveCount"],
         )
         messages = resp.get("Messages", [])
         if not messages:
@@ -292,22 +400,78 @@ def poll():
         has_received_message = True
         msg = messages[0]
         receipt = msg["ReceiptHandle"]
+        payload = None
+        receive_count = int(
+            msg.get("Attributes", {}).get("ApproximateReceiveCount") or "1"
+        )
         try:
             payload = json.loads(msg["Body"])
             log.info("RECEIVED: %s", json.dumps(payload))
 
             with VisibilityHeartbeat(sqs, queue_url, receipt, visibility):
+                cleanup_error = _prepare_runner_for_task(role, log)
+                if cleanup_error:
+                    try:
+                        sqs.change_message_visibility(
+                            QueueUrl=queue_url,
+                            ReceiptHandle=receipt,
+                            VisibilityTimeout=0,
+                        )
+                    except Exception:
+                        log.exception("Failed to release task after cleanup failure")
+                    terminate_instance_for_replacement(
+                        region=REGION,
+                        instance_id=INSTANCE_ID,
+                        log=log,
+                        reason=cleanup_error,
+                    )
+                    return
+
                 if role == ROLE_WORKFLOW:
                     result = handle_workflow(payload, log, queue_name)
                 else:
                     result = handle_task(payload, log, queue_name)
+        except json.JSONDecodeError:
+            log.exception("ERROR processing message: malformed JSON")
+            try:
                 sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt)
-                log.info("DONE: message deleted")
-            log.info("RESULT: %s", json.dumps(result))
+                log.info("DONE: malformed message deleted")
+            except Exception:
+                log.exception("Failed to delete malformed message")
         except Exception as exc:
             log.exception("ERROR processing message: %s", type(exc).__name__)
-            sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt)
-            log.info("DONE: message deleted on Exception; won't be retried")
+            if (
+                isinstance(payload, dict)
+                and payload.get("type") == "job_task"
+                and receive_count >= INFRA_FAILURE_MAX_RECEIVES
+                and _write_infra_failure_final(payload, exc, log)
+            ):
+                try:
+                    sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt)
+                    log.info("DONE: message deleted after infra failure final state")
+                except Exception:
+                    log.exception(
+                        "Failed to delete message after infra failure final state"
+                    )
+            else:
+                try:
+                    sqs.change_message_visibility(
+                        QueueUrl=queue_url,
+                        ReceiptHandle=receipt,
+                        VisibilityTimeout=0,
+                    )
+                except Exception:
+                    log.exception("Failed to release failed message for retry")
+                log.info("DONE: message left for retry")
+        else:
+            try:
+                sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt)
+                log.info("DONE: message deleted")
+            except Exception:
+                log.exception(
+                    "RESULT produced but message delete failed; message may retry"
+                )
+            log.info("RESULT: %s", json.dumps(result))
 
 
 def main():

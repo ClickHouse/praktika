@@ -19,6 +19,7 @@ orchestrate job`` synchronously as a subprocess. ``wait`` long-polls the
 per-run completions queue in CI mode, and is a no-op in local mode (the
 sync subprocess already advanced state by the time it returned).
 """
+
 import json
 import os
 import time
@@ -37,6 +38,7 @@ def _queue_prefix():
     if gh_auth_lambda.endswith("-gh-token"):
         return gh_auth_lambda.removesuffix("-gh-token") + "-"
     return ""
+
 
 # Job liveness — S3-based heartbeat (see roadmap). The job agent posts
 # ``heartbeat.json`` under ``runs/<run_id>/<job>/`` every
@@ -177,20 +179,20 @@ class JobCheckRun:
 
 
 class JobStatus(Enum):
-    PENDING = "pending"    # not yet runnable (deps unresolved)
-    READY = "ready"        # all deps resolved, queued for kick
-    QUEUED = "queued"      # dispatched to runner pool, awaiting first heartbeat
-    RUNNING = "running"    # runner has received the task and emitted heartbeat
+    PENDING = "pending"  # not yet runnable (deps unresolved)
+    READY = "ready"  # all deps resolved, queued for kick
+    QUEUED = "queued"  # dispatched to runner pool, awaiting first heartbeat
+    RUNNING = "running"  # runner has received the task and emitted heartbeat
     SUCCESS = "success"
     FAILURE = "failure"
-    SKIPPED = "skipped"    # didn't need to run — Config Workflow marked the job
-                           # out (cache hit, not affected by diff, missing opt-in
-                           # label). Not a failure: outputs are still reachable
-                           # from S3. SUCCESS-equivalent for dep resolution.
+    SKIPPED = "skipped"  # didn't need to run — Config Workflow marked the job
+    # out (cache hit, not affected by diff, missing opt-in
+    # label). Not a failure: outputs are still reachable
+    # from S3. SUCCESS-equivalent for dep resolution.
     CANCELLED = "cancelled"  # couldn't run — the run was cancelled (user action,
-                             # new push) OR an upstream dep failed (cascade).
-                             # Counts as a failure for workflow-level summary.
-                             # Maps 1:1 to the Checks API ``cancelled`` conclusion.
+    # new push) OR an upstream dep failed (cascade).
+    # Counts as a failure for workflow-level summary.
+    # Maps 1:1 to the Checks API ``cancelled`` conclusion.
 
 
 _TERMINAL = {
@@ -219,6 +221,7 @@ class JobState:
         # stale-heartbeat checks apply.
         self.last_heartbeat_ts = None
         self.runner_instance_id = None
+        self.last_heartbeat_phase = None
 
     @property
     def name(self):
@@ -409,7 +412,16 @@ class WorkflowState:
     on the PR until the orchestrator actually decides to run a job.
     """
 
-    def __init__(self, workflow, event=None, gh_token=None, repo=None, head_sha=None, run_id=None, local_mode=False):
+    def __init__(
+        self,
+        workflow,
+        event=None,
+        gh_token=None,
+        repo=None,
+        head_sha=None,
+        run_id=None,
+        local_mode=False,
+    ):
         self.workflow = workflow
         self.local_mode = local_mode
         self._event = event or {}
@@ -426,6 +438,7 @@ class WorkflowState:
         # check run ID (string), used as the suffix of the per-run S3 prefix.
         # Falls back to a UUID when running without a check (local mode).
         import uuid
+
         self._run_id = str(run_id) if run_id else str(uuid.uuid4())
         # Last environment.json snapshot published by a finished job. Seeded
         # into every subsequent dispatched task so WORKFLOW_CONFIG (and other
@@ -433,13 +446,16 @@ class WorkflowState:
         # GHA. Later completions overwrite earlier ones — the serialized
         # environment is already cumulative.
         self._environment = None
-        self.cancelled = False  # set by sweep_cancel() on cancel-request / cancel-before
+        self.cancelled = (
+            False  # set by sweep_cancel() on cancel-request / cancel-before
+        )
 
         # S3 client used by sweep_liveness, sweep_completions, sweep_cancel,
         # and the orchestrator → runners kill flag. Only created in CI mode;
         # local mode runs jobs synchronously inside `kick` (no S3 needed).
         if not local_mode:
             import boto3
+
             region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
             self._s3 = boto3.client("s3", region_name=region)
         else:
@@ -458,6 +474,7 @@ class WorkflowState:
         # sweep_cancel polls both. The orchestrator → runners kill flag at
         # runs/<run_id>/cancel is written by cancel_unfinished_jobs.
         from ..settings import Settings
+
         self._cancel_s3_bucket = Settings.S3_ARTIFACT_BUCKET
         self._runs_s3_prefix = f"runs/{self._run_id}"
         self._cancel_s3_key = f"{self._runs_s3_prefix}/cancel"
@@ -581,7 +598,9 @@ class WorkflowState:
         return f"{self._runs_s3_prefix}/{_normalize_job_name_for_s3(job_name)}/heartbeat.json"
 
     def _final_state_s3_key(self, job_name):
-        return f"{self._runs_s3_prefix}/{_normalize_job_name_for_s3(job_name)}/final.json"
+        return (
+            f"{self._runs_s3_prefix}/{_normalize_job_name_for_s3(job_name)}/final.json"
+        )
 
     def sweep_cancel(self):
         """Detect lambda-driven cancel signals on S3.
@@ -703,16 +722,22 @@ class WorkflowState:
                 ts = float(hb.get("ts", 0))
                 if ts > 0:
                     js.last_heartbeat_ts = ts
+                    phase = str(hb.get("phase") or "").strip()
+                    if phase:
+                        js.last_heartbeat_phase = phase
+                    instance_id = str(hb.get("instance_id") or "").strip()
+                    if instance_id:
+                        js.runner_instance_id = instance_id
                     if js.status == JobStatus.QUEUED:
                         js.status = JobStatus.RUNNING
-                        instance_id = str(hb.get("instance_id") or "").strip()
-                        js.runner_instance_id = instance_id or None
                         output = {
                             "title": "RUNNING",
                             "summary": "RUNNING: runner picked up the job.",
                         }
-                        if instance_id:
+                        if js.runner_instance_id:
                             output["summary"] = f"RUNNING on runner `{instance_id}`."
+                        if phase:
+                            output["summary"] += f" Phase: `{phase}`."
                         js._update_check(lambda c: c.set_in_progress(output=output))
                         duration = now - (js.started_at or now)
                         print(f"[PICK ] {js.name:70s} ({duration:.1f}s)")
@@ -739,10 +764,23 @@ class WorkflowState:
             elif js.status == JobStatus.RUNNING:
                 age_since_hb = now - js.last_heartbeat_ts
                 if age_since_hb > HEARTBEAT_TIMEOUT_S:
-                    js.fail_dead(
-                        f"runner pool `{runs_on}` died (no heartbeat in {int(age_since_hb)}s, "
-                        f"timeout={HEARTBEAT_TIMEOUT_S}s)"
-                    )
+                    runner = js.runner_instance_id
+                    phase = js.last_heartbeat_phase
+                    if runner:
+                        reason = f"runner `{runner}` in pool `{runs_on}` stopped heartbeating"
+                        if phase:
+                            reason += f" during phase `{phase}`"
+                        reason += (
+                            f" (no heartbeat in {int(age_since_hb)}s, "
+                            f"timeout={HEARTBEAT_TIMEOUT_S}s)"
+                        )
+                    else:
+                        reason = (
+                            f"runner pool `{runs_on}` died "
+                            f"(no heartbeat in {int(age_since_hb)}s, "
+                            f"timeout={HEARTBEAT_TIMEOUT_S}s)"
+                        )
+                    js.fail_dead(reason)
 
     # ---------------------------------------------------------- dispatch
 
@@ -783,6 +821,7 @@ class WorkflowState:
         try:
             if self._sqs is None:
                 import boto3
+
                 region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
                 self._sqs = boto3.client("sqs", region_name=region)
 
@@ -813,7 +852,9 @@ class WorkflowState:
         import subprocess
         from ..settings import Settings
 
-        task_file = os.path.join(Settings.TEMP_DIR, f"task_{job_state.name.replace(' ', '_')}.json")
+        task_file = os.path.join(
+            Settings.TEMP_DIR, f"task_{job_state.name.replace(' ', '_')}.json"
+        )
         os.makedirs(Settings.TEMP_DIR, exist_ok=True)
         with open(task_file, "w") as f:
             json.dump(task, f, indent=2)
@@ -891,14 +932,12 @@ class WorkflowState:
         will be ignored because finish() only accepts in-flight states.
         """
         has_running = any(
-            js.status in (JobStatus.QUEUED, JobStatus.RUNNING)
-            and not js.job.always_run
+            js.status in (JobStatus.QUEUED, JobStatus.RUNNING) and not js.job.always_run
             for js in self.jobs.values()
         )
         for js in self.jobs.values():
             if (
-                js.status
-                in (JobStatus.PENDING, JobStatus.QUEUED, JobStatus.RUNNING)
+                js.status in (JobStatus.PENDING, JobStatus.QUEUED, JobStatus.RUNNING)
                 and not js.job.always_run
             ):
                 js.cancel(reason="run cancelled")
@@ -909,7 +948,9 @@ class WorkflowState:
                     Key=self._cancel_s3_key,
                     Body=b"cancelled",
                 )
-                print(f"  [cancel] wrote s3://{self._cancel_s3_bucket}/{self._cancel_s3_key}")
+                print(
+                    f"  [cancel] wrote s3://{self._cancel_s3_bucket}/{self._cancel_s3_key}"
+                )
             except Exception as e:
                 print(f"  [warn] could not write cancel flag: {type(e).__name__}: {e}")
 
@@ -968,7 +1009,9 @@ class WorkflowState:
                 deps = self._deps.get(name, set())
                 runs_on = ", ".join(job.runs_on) if job.runs_on else "default"
                 dep_str = f" <- [{', '.join(sorted(deps))}]" if deps else ""
-                provides_str = f" -> [{', '.join(job.provides)}]" if job.provides else ""
+                provides_str = (
+                    f" -> [{', '.join(job.provides)}]" if job.provides else ""
+                )
                 print(f"  {name}")
                 print(f"    runner: {runs_on}{dep_str}{provides_str}")
         print(f"\n{'=' * 80}\n")
@@ -1023,7 +1066,9 @@ class WorkflowState:
         event = self._event
         sha = (self._head_sha or "")[:12]
         lines = []
-        lines.append(f"**Event:** `{event.get('type', '')}.{event.get('action', '')}`  ")
+        lines.append(
+            f"**Event:** `{event.get('type', '')}.{event.get('action', '')}`  "
+        )
         if sha:
             lines.append(f"**SHA:** `{sha}`  ")
         pr = event.get("pr_number")
