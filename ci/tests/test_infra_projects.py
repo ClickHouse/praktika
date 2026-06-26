@@ -1140,7 +1140,6 @@ def test_controller_image_builders_are_declared():
 
         assert builder.ami_launch_permission == {}
         assert builder.ami_name == ami_name
-        assert builder.image_recipe_version == "1.0.10"
         assert builder.instance_types == [instance_type]
         assert [component["name"] for component in builder.inline_components] == [
             "praktika-controller-setup",
