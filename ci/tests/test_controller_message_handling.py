@@ -1,0 +1,318 @@
+import json
+import sys
+import types
+
+import pytest
+
+from praktika_controller import common, controller
+
+
+class _Done(Exception):
+    pass
+
+
+class _Log:
+    def __init__(self):
+        self.events = []
+
+    def info(self, *args, **_kwargs):
+        self.events.append(("info", args))
+
+    def warning(self, *args, **_kwargs):
+        self.events.append(("warning", args))
+
+    def error(self, *args, **_kwargs):
+        self.events.append(("error", args))
+
+    def exception(self, *args, **_kwargs):
+        self.events.append(("exception", args))
+
+
+class _NoopVisibilityHeartbeat:
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+
+def test_runner_cleanup_failure_after_receive_releases_message_and_terminates(
+    monkeypatch,
+):
+    events = []
+
+    class _SQS:
+        def get_queue_url(self, QueueName):
+            return {"QueueUrl": "queue-url"}
+
+        def get_queue_attributes(self, QueueUrl, AttributeNames):
+            return {"Attributes": {"VisibilityTimeout": "30"}}
+
+        def receive_message(self, **kwargs):
+            assert kwargs["AttributeNames"] == ["ApproximateReceiveCount"]
+            events.append("receive")
+            return {
+                "Messages": [
+                    {
+                        "ReceiptHandle": "receipt",
+                        "Body": json.dumps(
+                            {
+                                "type": "job_task",
+                                "job_name": "Test",
+                            }
+                        ),
+                        "Attributes": {"ApproximateReceiveCount": "1"},
+                    }
+                ]
+            }
+
+        def delete_message(self, **_kwargs):
+            events.append("delete")
+
+        def change_message_visibility(self, **kwargs):
+            events.append(("visibility", kwargs["VisibilityTimeout"]))
+
+    def fake_terminate(**kwargs):
+        events.append(("terminate", kwargs["reason"]))
+
+    sqs = _SQS()
+    monkeypatch.setitem(
+        sys.modules,
+        "boto3",
+        types.SimpleNamespace(client=lambda *_args, **_kwargs: sqs),
+    )
+    monkeypatch.setattr(
+        controller, "_resolve_role_and_queue", lambda: (controller.ROLE_RUNNER, "queue")
+    )
+    monkeypatch.setattr(controller, "configure_logging", lambda *_args: _Log())
+    monkeypatch.setattr(controller, "VisibilityHeartbeat", _NoopVisibilityHeartbeat)
+    monkeypatch.setattr(
+        controller,
+        "clean_work_root",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("still dirty")),
+    )
+    monkeypatch.setattr(
+        controller, "terminate_instance_for_replacement", fake_terminate
+    )
+
+    controller.poll()
+
+    assert "delete" not in events
+    assert ("visibility", 0) in events
+    assert events[-1][0] == "terminate"
+    assert "workdir cleanup failed" in events[-1][1]
+
+
+def test_poll_leaves_processing_exception_for_retry(monkeypatch):
+    events = []
+
+    class _SQS:
+        def get_queue_url(self, QueueName):
+            return {"QueueUrl": "queue-url"}
+
+        def get_queue_attributes(self, QueueUrl, AttributeNames):
+            return {"Attributes": {"VisibilityTimeout": "30"}}
+
+        def receive_message(self, **_kwargs):
+            events.append("receive")
+            if events.count("receive") == 1:
+                return {
+                    "Messages": [
+                        {
+                            "ReceiptHandle": "receipt",
+                            "Body": json.dumps(
+                                {
+                                    "type": "job_task",
+                                    "job_name": "Test",
+                                }
+                            ),
+                            "Attributes": {"ApproximateReceiveCount": "1"},
+                        }
+                    ]
+                }
+            raise _Done()
+
+        def delete_message(self, **_kwargs):
+            events.append("delete")
+
+        def change_message_visibility(self, **kwargs):
+            events.append(("visibility", kwargs["VisibilityTimeout"]))
+
+    sqs = _SQS()
+    monkeypatch.setitem(
+        sys.modules,
+        "boto3",
+        types.SimpleNamespace(client=lambda *_args, **_kwargs: sqs),
+    )
+    monkeypatch.setattr(
+        controller, "_resolve_role_and_queue", lambda: (controller.ROLE_RUNNER, "queue")
+    )
+    monkeypatch.setattr(controller, "configure_logging", lambda *_args: _Log())
+    monkeypatch.setattr(controller, "_prepare_runner_for_task", lambda *_args: "")
+    monkeypatch.setattr(controller, "VisibilityHeartbeat", _NoopVisibilityHeartbeat)
+    monkeypatch.setattr(
+        controller,
+        "handle_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    with pytest.raises(_Done):
+        controller.poll()
+
+    assert "delete" not in events
+    assert ("visibility", 0) in events
+
+
+def test_poll_retries_infra_failure_before_max_receives(monkeypatch):
+    events = []
+
+    class _SQS:
+        def get_queue_url(self, QueueName):
+            return {"QueueUrl": "queue-url"}
+
+        def get_queue_attributes(self, QueueUrl, AttributeNames):
+            return {"Attributes": {"VisibilityTimeout": "30"}}
+
+        def receive_message(self, **_kwargs):
+            events.append("receive")
+            if events.count("receive") == 1:
+                return {
+                    "Messages": [
+                        {
+                            "ReceiptHandle": "receipt",
+                            "Body": json.dumps(
+                                {
+                                    "type": "job_task",
+                                    "job_name": "Test",
+                                    "final_state_s3_bucket": "bucket",
+                                    "final_state_s3_key": "runs/1/Test/final.json",
+                                }
+                            ),
+                            "Attributes": {"ApproximateReceiveCount": "2"},
+                        }
+                    ]
+                }
+            raise _Done()
+
+        def delete_message(self, **_kwargs):
+            events.append("delete")
+
+        def change_message_visibility(self, **kwargs):
+            events.append(("visibility", kwargs["VisibilityTimeout"]))
+
+    sqs = _SQS()
+    monkeypatch.setitem(
+        sys.modules,
+        "boto3",
+        types.SimpleNamespace(client=lambda *_args, **_kwargs: sqs),
+    )
+    monkeypatch.setattr(
+        controller, "_resolve_role_and_queue", lambda: (controller.ROLE_RUNNER, "queue")
+    )
+    monkeypatch.setattr(controller, "configure_logging", lambda *_args: _Log())
+    monkeypatch.setattr(controller, "_prepare_runner_for_task", lambda *_args: "")
+    monkeypatch.setattr(controller, "VisibilityHeartbeat", _NoopVisibilityHeartbeat)
+    monkeypatch.setattr(
+        controller,
+        "_write_infra_failure_final",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("must not write final before max receives")
+        ),
+    )
+    monkeypatch.setattr(
+        controller,
+        "handle_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    with pytest.raises(_Done):
+        controller.poll()
+
+    assert "delete" not in events
+    assert ("visibility", 0) in events
+
+
+def test_poll_deletes_after_infra_failure_final_state_at_max_receives(monkeypatch):
+    events = []
+
+    class _SQS:
+        def get_queue_url(self, QueueName):
+            return {"QueueUrl": "queue-url"}
+
+        def get_queue_attributes(self, QueueUrl, AttributeNames):
+            return {"Attributes": {"VisibilityTimeout": "30"}}
+
+        def receive_message(self, **_kwargs):
+            events.append("receive")
+            if events.count("receive") == 1:
+                return {
+                    "Messages": [
+                        {
+                            "ReceiptHandle": "receipt",
+                            "Body": json.dumps(
+                                {
+                                    "type": "job_task",
+                                    "job_name": "Test",
+                                    "final_state_s3_bucket": "bucket",
+                                    "final_state_s3_key": "runs/1/Test/final.json",
+                                }
+                            ),
+                            "Attributes": {"ApproximateReceiveCount": "3"},
+                        }
+                    ]
+                }
+            raise _Done()
+
+        def delete_message(self, **_kwargs):
+            events.append("delete")
+
+    sqs = _SQS()
+    monkeypatch.setitem(
+        sys.modules,
+        "boto3",
+        types.SimpleNamespace(client=lambda *_args, **_kwargs: sqs),
+    )
+    monkeypatch.setattr(
+        controller, "_resolve_role_and_queue", lambda: (controller.ROLE_RUNNER, "queue")
+    )
+    monkeypatch.setattr(controller, "configure_logging", lambda *_args: _Log())
+    monkeypatch.setattr(controller, "_prepare_runner_for_task", lambda *_args: "")
+    monkeypatch.setattr(controller, "VisibilityHeartbeat", _NoopVisibilityHeartbeat)
+    monkeypatch.setattr(controller, "_write_infra_failure_final", lambda *_args: True)
+    monkeypatch.setattr(
+        controller,
+        "handle_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    with pytest.raises(_Done):
+        controller.poll()
+
+    assert "delete" in events
+
+
+def test_cancel_watchdog_terminates_process_group(monkeypatch):
+    calls = []
+
+    class _S3:
+        def head_object(self, **_kwargs):
+            return {}
+
+    proc = types.SimpleNamespace(pid=123)
+    monkeypatch.setattr(
+        common,
+        "terminate_process_group",
+        lambda proc_arg, *_args, **_kwargs: calls.append(proc_arg),
+    )
+
+    watchdog = common.CancelWatchdog(
+        _S3(), "bucket", "runs/1/cancel", proc, interval=0, log=_Log()
+    )
+    watchdog._stop = types.SimpleNamespace(wait=lambda _interval: False)
+
+    watchdog._run()
+
+    assert calls == [proc]

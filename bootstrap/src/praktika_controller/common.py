@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import errno
 import importlib.util
 import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -13,6 +15,8 @@ import time
 from pathlib import Path
 
 FIRST_BOOT_RESERVED_CAPACITY_LOG_INTERVAL_S = 60 * 60
+WORKDIR_CLEANUP_ATTEMPTS = 3
+WORKDIR_CLEANUP_RETRY_DELAY_S = 2
 
 
 class LogRateLimiter:
@@ -27,10 +31,7 @@ class LogRateLimiter:
 
     def should_log(self) -> bool:
         now = self._clock()
-        if (
-            self._last_log_at is None
-            or now - self._last_log_at >= self._interval_s
-        ):
+        if self._last_log_at is None or now - self._last_log_at >= self._interval_s:
             self._last_log_at = now
             return True
         return False
@@ -205,6 +206,113 @@ def try_scale_in_if_idle(
         return False
 
 
+def terminate_instance_for_replacement(
+    *,
+    region: str,
+    instance_id: str,
+    log,
+    reason: str,
+) -> None:
+    """Terminate this runner without decrementing ASG desired capacity."""
+    log.error("Terminating instance %s for replacement: %s", instance_id, reason)
+    if region and instance_id and instance_id != "local-dev":
+        try:
+            import boto3
+
+            autoscaling = boto3.client("autoscaling", region_name=region)
+            autoscaling.terminate_instance_in_auto_scaling_group(
+                InstanceId=instance_id,
+                ShouldDecrementDesiredCapacity=False,
+            )
+            return
+        except Exception:
+            log.exception("Failed to request ASG replacement termination")
+
+    subprocess.Popen(["/sbin/shutdown", "-h", "now"])
+
+
+def _remove_path(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    else:
+        shutil.rmtree(path)
+
+
+def clean_work_root(
+    work_dir: str | os.PathLike[str],
+    log,
+    *,
+    attempts: int = WORKDIR_CLEANUP_ATTEMPTS,
+    retry_delay_s: int | float = WORKDIR_CLEANUP_RETRY_DELAY_S,
+) -> None:
+    """Clean runner work root before accepting another task.
+
+    The root itself is kept stable; every checkout/temp entry inside it is
+    removed. ENOTEMPTY is retried because it usually means a just-finished
+    child process was still creating files while rmtree walked the tree.
+    """
+    root = Path(work_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    for path in list(root.iterdir()):
+        for attempt in range(1, max(1, attempts) + 1):
+            try:
+                _remove_path(path)
+                break
+            except OSError as e:
+                is_last = attempt >= attempts
+                if e.errno == errno.ENOENT:
+                    break
+                if e.errno == errno.ENOTEMPTY and not is_last:
+                    log.warning(
+                        "Workdir cleanup raced on %s (%s), retrying %s/%s",
+                        path,
+                        e,
+                        attempt,
+                        attempts,
+                    )
+                    time.sleep(retry_delay_s)
+                    continue
+                raise
+
+
+def terminate_process_group(proc, log, *, grace_s: int | float = 10) -> None:
+    """Terminate the process group rooted at ``proc`` if it still exists."""
+    if proc is None or getattr(proc, "pid", None) is None:
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        # The group leader may already be gone while background children still
+        # exist in the session we created. start_new_session=True makes pid=pgid.
+        pgid = proc.pid
+    except Exception as e:
+        log.warning("Could not resolve process group for %s: %s", proc.pid, e)
+        return
+
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except Exception as e:
+        log.warning("Could not SIGTERM process group %s: %s", pgid, e)
+        return
+
+    deadline = time.time() + max(0, grace_s)
+    while time.time() < deadline:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.2)
+
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except Exception as e:
+        log.warning("Could not SIGKILL process group %s: %s", pgid, e)
+
+
 class VisibilityHeartbeat:
     """Extend SQS message visibility while we process it."""
 
@@ -296,7 +404,7 @@ class CancelWatchdog:
                     self._bucket,
                     self._key,
                 )
-                self._proc.kill()
+                terminate_process_group(self._proc, self._log)
                 return
             except Exception:
                 pass
@@ -324,6 +432,7 @@ class Heartbeat:
         self._stop = threading.Event()
         self._thread = None
         self._log = log or logging.getLogger(__name__)
+        self._lock = threading.Lock()
 
     def start(self):
         self._beat()
@@ -344,8 +453,9 @@ class Heartbeat:
 
     def _beat(self):
         try:
-            body = {"ts": time.time(), "status": self._status}
-            body.update(self._fields)
+            with self._lock:
+                body = {"ts": time.time(), "status": self._status}
+                body.update(self._fields)
             self._s3.put_object(
                 Bucket=self._bucket,
                 Key=self._key,
@@ -358,6 +468,13 @@ class Heartbeat:
     def _run(self):
         while not self._stop.wait(self._interval):
             self._beat()
+
+    def update(self, *, status=None, **fields):
+        with self._lock:
+            if status is not None:
+                self._status = status
+            self._fields.update(fields)
+        self._beat()
 
 
 def git(args, cwd=None) -> str:
@@ -374,7 +491,16 @@ def git(args, cwd=None) -> str:
     return result.stdout
 
 
-def clone_repo(repo, head_sha, pr_number, token, work_dir, branch=None, log=None):
+def clone_repo(
+    repo,
+    head_sha,
+    pr_number,
+    token,
+    work_dir,
+    branch=None,
+    log=None,
+    clean_existing=True,
+):
     """Clone repo into a per-event work dir."""
     work_dir = str(work_dir)
     if pr_number:
@@ -382,8 +508,12 @@ def clone_repo(repo, head_sha, pr_number, token, work_dir, branch=None, log=None
     else:
         slug = (branch or head_sha[:12] or "push").replace("/", "_")
         clone_dir = os.path.join(work_dir, f"push-{slug}")
-    if os.path.exists(clone_dir):
+    if os.path.exists(clone_dir) and clean_existing:
         shutil.rmtree(clone_dir)
+    elif os.path.exists(clone_dir) and any(Path(clone_dir).iterdir()):
+        raise RuntimeError(
+            f"Workdir {clone_dir} is not clean before clone; refusing in-task cleanup"
+        )
     os.makedirs(clone_dir, exist_ok=True)
 
     clone_url = f"https://x-access-token:{token}@github.com/{repo}.git"

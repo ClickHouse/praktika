@@ -12,6 +12,10 @@ class _FakeHeartbeat:
     def start(self):
         self.events.append("heartbeat.start")
 
+    def update(self, **fields):
+        phase = fields.get("phase", "?")
+        self.events.append(f"heartbeat.update:{phase}")
+
     def stop(self):
         self.events.append("heartbeat.stop")
 
@@ -29,6 +33,7 @@ class _FakeCancelWatchdog:
 
 class _FakeProc:
     returncode = 0
+    pid = None
 
     def __init__(self, events):
         self._events = events
@@ -66,17 +71,25 @@ def test_job_heartbeat_starts_before_runner_setup(monkeypatch, tmp_path):
         events.append("clone")
         return str(clone_dir), "actual-sha"
 
-    def fake_popen(*_args, **_kwargs):
+    def fake_popen(*_args, **kwargs):
+        assert kwargs["start_new_session"] is True
         events.append("popen")
         return _FakeProc(events)
 
     monkeypatch.setattr(controller.subprocess, "run", fake_run)
     monkeypatch.setattr(controller.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(controller, "clone_repo", fake_clone_repo)
+
+    class _FakeS3:
+        def head_object(self, **_kwargs):
+            error = Exception("not found")
+            error.response = {"Error": {"Code": "404"}}
+            raise error
+
     monkeypatch.setitem(
         sys.modules,
         "boto3",
-        types.SimpleNamespace(client=lambda *_args, **_kwargs: object()),
+        types.SimpleNamespace(client=lambda *_args, **_kwargs: _FakeS3()),
     )
 
     result = controller.handle_task(
@@ -98,8 +111,13 @@ def test_job_heartbeat_starts_before_runner_setup(monkeypatch, tmp_path):
     assert result["status"] == "ok"
     assert events == [
         "heartbeat.start",
+        "heartbeat.update:authenticating",
         "gh-auth",
+        "heartbeat.update:cloning",
         "clone",
+        "heartbeat.update:resolving_runtime",
+        "heartbeat.update:writing_task",
+        "heartbeat.update:running_job",
         "popen",
         "communicate",
         "heartbeat.stop",
