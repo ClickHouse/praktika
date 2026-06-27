@@ -19,7 +19,7 @@ python3.12 -m venv .build-venv
 Or run the combined helper:
 
 ```bash
-bash ci/scripts/build_and_publish_wheels.sh
+bash ci/build_and_publish_wheels.sh
 ```
 
 Build and upload `praktika`:
@@ -31,6 +31,15 @@ aws --profile Box s3 cp \
   "dist/praktika-${VERSION}-py3-none-any.whl" \
   "s3://praktika-artifacts-eu-north-1/packages/praktika-${VERSION}-py3-none-any.whl"
 ```
+
+The manual helper also mirrors each wheel to the version-less latest alias:
+
+- `packages/latest/...` for the newest build across all branches
+
+The MainCI publish scripts (`ci/scripts/publish_wheel.sh` and
+`ci/scripts/publish_controller_wheel.sh`) additionally mirror each wheel to
+`packages/XX.XX/...` for the latest backwards-compatible patch in that compat
+branch.
 
 Build and upload `praktika-controller`:
 
@@ -51,10 +60,8 @@ pip install --force-reinstall \
   --break-system-packages
 ```
 
-If you change the bootstrap package version, update the wheel name in both:
-
-- `ci/infrastructure/projects.py`
-- `ci/scripts/publish_controller_wheel.sh`
+If you change the bootstrap package version, ensure its `XX.XX` branch matches
+the Praktika package branch before MainCI publishes the compat alias.
 
 ## Base vs non-base routing
 

@@ -42,6 +42,13 @@ def version_key(value: str) -> Tuple[int, ...]:
     return tuple(int(part) for part in parts)
 
 
+def compat_version(value: str) -> str:
+    parts = version_key(value)
+    if len(parts) < 2:
+        raise ValueError(f"unsupported compat version format: {value!r}")
+    return ".".join(str(part) for part in parts[:2])
+
+
 try:
     __version__ = current_praktika_version()
 except PackageNotFoundError:

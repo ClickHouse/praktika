@@ -3,7 +3,7 @@
 # orchestrators, and AMI builds.
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_PYTHON="${BUILD_PYTHON:-python3.12}"
 BUILD_VENV="${BUILD_VENV:-${ROOT_DIR}/.build-venv}"
 AWS_PROFILE="${AWS_PROFILE:-Box}"
@@ -27,10 +27,8 @@ aws --profile "${AWS_PROFILE}" s3 cp \
   "dist/${PRAKTIKA_WHEEL}" \
   "${S3_PACKAGES_URI}/${PRAKTIKA_WHEEL}"
 
-# Also mirror to the fixed, version-less "latest" key that _PRAKTIKA_WHL points
-# at, so runner/orchestrator user-data never needs editing on a version bump.
-# The 0.0.0 in the key is a placeholder; pip reads the real version from the
-# wheel's dist-info metadata.
+# Also mirror to the fixed, version-less latest alias. The 0.0.0 in the key is a
+# placeholder; pip reads the real version from the wheel's dist-info metadata.
 aws --profile "${AWS_PROFILE}" s3 cp \
   "dist/${PRAKTIKA_WHEEL}" \
   "${S3_PACKAGES_URI}/latest/praktika-0.0.0-py3-none-any.whl"
@@ -45,10 +43,8 @@ aws --profile "${AWS_PROFILE}" s3 cp \
   "bootstrap/dist/${CONTROLLER_WHEEL}" \
   "${S3_PACKAGES_URI}/${CONTROLLER_WHEEL}"
 
-# Also mirror to the fixed, version-less "latest" key that _PRAKTIKA_CONTROLLER_WHL
-# points at, so runner/orchestrator user-data never needs editing on a controller
-# version bump. The 0.0.0 in the key is a placeholder; pip reads the real version
-# from the wheel's dist-info metadata.
+# Also mirror to the fixed, version-less latest alias. The 0.0.0 in the key is a
+# placeholder; pip reads the real version from the wheel's dist-info metadata.
 aws --profile "${AWS_PROFILE}" s3 cp \
   "bootstrap/dist/${CONTROLLER_WHEEL}" \
   "${S3_PACKAGES_URI}/latest/praktika_controller-0.0.0-py3-none-any.whl"

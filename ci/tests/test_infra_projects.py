@@ -42,13 +42,13 @@ from ci.settings.settings import RunnerLabels
 
 
 _PRAKTIKA_BASE_WHEEL = f"/praktika-{_PRAKTIKA_BASE_VERSION}-py3-none-any.whl"
-# Latest praktika is now installed from a fixed, version-less S3 key (see
+# Latest praktika is installed from a fixed, version-less S3 key (see
 # projects.py); user-data references the placeholder filename, not the version.
 _PRAKTIKA_LATEST_WHEEL = f"/latest/{_PRAKTIKA_LATEST_WHL_NAME}"
 _PRAKTIKA_CONTROLLER_BASE_WHEEL = (
     f"praktika_controller-{_PRAKTIKA_CONTROLLER_BASE_VERSION}-py3-none-any.whl"
 )
-# Latest controller is now installed from the same fixed, version-less S3 key as
+# Latest controller is installed from the same fixed, version-less S3 key as
 # praktika (see projects.py); user-data references the placeholder filename.
 _PRAKTIKA_CONTROLLER_LATEST_WHEEL = f"/latest/{_PRAKTIKA_CONTROLLER_LATEST_WHL_NAME}"
 

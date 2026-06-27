@@ -11,9 +11,9 @@ _PRAKTIKA_BASE_VERSION = "0.1.4"
 # that runner/orchestrator user-data and image recipes never need editing on a
 # version bump. The "0.0.0" is a placeholder: pip requires a PEP 440-valid
 # version in the wheel *filename*, but installs the real version from the
-# wheel's dist-info metadata. Both publish scripts mirror the freshly built
-# wheel to this key (ci/scripts/publish_wheel.sh,
-# ci/scripts/build_and_publish_wheels.sh).
+# wheel's dist-info metadata. MainCI publish scripts also mirror the same wheel
+# to the major.minor compat version for external consumers that want a BC branch
+# alias.
 _PRAKTIKA_LATEST_WHL_NAME = "praktika-0.0.0-py3-none-any.whl"
 _PRAKTIKA_WHL = f"{_PRAKTIKA_PACKAGE_BASE_URL}/latest/{_PRAKTIKA_LATEST_WHL_NAME}"
 
@@ -23,9 +23,8 @@ _PRAKTIKA_CONTROLLER_BASE_WHL = (
     f"praktika_controller-{_PRAKTIKA_CONTROLLER_BASE_VERSION}-py3-none-any.whl"
 )
 # The latest controller wheel uses the same fixed, version-less "latest" S3
-# location as praktika (see _PRAKTIKA_LATEST_WHL_NAME above), so user-data never
-# needs editing on a controller version bump. Both publish scripts mirror the
-# freshly built controller wheel to this key.
+# location as praktika. MainCI publish scripts also mirror it to a major.minor
+# compat version.
 _PRAKTIKA_CONTROLLER_LATEST_WHL_NAME = "praktika_controller-0.0.0-py3-none-any.whl"
 _PRAKTIKA_CONTROLLER_WHL = (
     f"{_PRAKTIKA_PACKAGE_BASE_URL}/latest/{_PRAKTIKA_CONTROLLER_LATEST_WHL_NAME}"
