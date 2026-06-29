@@ -6,6 +6,8 @@ from typing import Any, Dict, List
 from praktika.infrastructure.iam_role import IAMRole
 from praktika.infrastructure.lambda_function import Lambda
 
+from . import iam_scope
+
 
 def _rate_expression_for_seconds(interval_seconds: int) -> str:
     interval_seconds = max(60, int(interval_seconds))
@@ -77,12 +79,16 @@ class PoolAutoscaler:
                     "Version": "2012-10-17",
                     "Statement": [
                         {
+                            # Describe does not support resource-level scoping.
                             "Effect": "Allow",
-                            "Action": [
-                                "autoscaling:DescribeAutoScalingGroups",
-                                "autoscaling:UpdateAutoScalingGroup",
-                            ],
+                            "Action": ["autoscaling:DescribeAutoScalingGroups"],
                             "Resource": "*",
+                        },
+                        {
+                            # Scale-out is limited to this project's ASGs.
+                            "Effect": "Allow",
+                            "Action": ["autoscaling:UpdateAutoScalingGroup"],
+                            "Resource": iam_scope.autoscaling_group_arns(),
                         },
                         {
                             "Effect": "Allow",

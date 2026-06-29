@@ -8,6 +8,8 @@ from praktika.infrastructure.iam_role import IAMRole
 from praktika.infrastructure.launch_template import LaunchTemplate
 from praktika.infrastructure.sqs_queue import SQSQueue
 
+from . import iam_scope
+
 # Lets the local SSM Agent register and report this EC2 instance as a managed
 # instance. This intentionally omits Parameter Store read actions from AWS's
 # AmazonSSMManagedInstanceCore managed policy; runner access to secrets/params
@@ -246,8 +248,12 @@ class RunnerPool:
         launch_template_name = f"{self.name}-lt"
 
         if self.ec2_role is None:
+            # allow_all_* grants access to every resource in the project's
+            # namespace (the "{slug}-"/"{slug}/" name prefix), not the whole
+            # account. To reach resources outside the namespace, list their
+            # exact ARNs in the allowed_* fields instead.
             allowed_ssm_parameter_resources = (
-                ["arn:aws:ssm:*:*:parameter/*"]
+                iam_scope.ssm_parameter_arns()
                 if self.allow_all_ssm_parameters
                 else [
                     _ssm_parameter_resource(name)
@@ -256,7 +262,7 @@ class RunnerPool:
                 ]
             )
             allowed_secret_resources = (
-                ["arn:aws:secretsmanager:*:*:secret:*"]
+                iam_scope.secret_arns()
                 if self.allow_all_secrets
                 else [
                     _secrets_manager_resource(name)
@@ -265,7 +271,7 @@ class RunnerPool:
                 ]
             )
             allowed_s3_resources = (
-                ["arn:aws:s3:::*", "arn:aws:s3:::*/*"]
+                iam_scope.project_bucket_arns()
                 if self.allow_all_s3_prefixes
                 else _unique(
                     [
@@ -291,19 +297,15 @@ class RunnerPool:
                     "Resource": f"arn:aws:sqs:*:*:{queue_name}",
                 },
                 {
-                    "Sid": "AutoScalingScaleIn",
+                    # Scale-in is self-termination via the ASG (performed by
+                    # the controller on the instance). No ec2:TerminateInstances
+                    # — direct instance termination is not needed.
+                    "Sid": "AutoScalingSelfTerminate",
                     "Effect": "Allow",
                     "Action": [
-                        "autoscaling:Describe*",
                         "autoscaling:TerminateInstanceInAutoScalingGroup",
                     ],
-                    "Resource": "*",
-                },
-                {
-                    "Sid": "EC2TerminateOnly",
-                    "Effect": "Allow",
-                    "Action": ["ec2:Describe*", "ec2:TerminateInstances"],
-                    "Resource": "*",
+                    "Resource": iam_scope.autoscaling_group_arns(),
                 },
             ]
             if self.allow_ssm_debug:
@@ -361,7 +363,6 @@ class RunnerPool:
                 trust_service="ec2.amazonaws.com",
                 policy_arns=[
                     "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy",
-                    "arn:aws:iam::aws:policy/EC2InstanceProfileForImageBuilder",
                 ],
                 inline_policies={
                     "RunnerAccess": {

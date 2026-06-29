@@ -166,6 +166,7 @@ class _Settings:
 
 
 _USER_DEFINED_SETTINGS = [
+    "PROJECT_SLUG",
     "S3_ARTIFACT_BUCKET",
     "CACHE_S3_PATH",
     "S3_REPORT_BUCKET",

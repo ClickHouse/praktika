@@ -12,6 +12,8 @@ from praktika.infrastructure.secret_parameter import SecretParameter
 from praktika.infrastructure.sqs_queue import SQSQueue
 from praktika.settings import Settings
 
+from . import iam_scope
+
 from .configs import (
     ORCHESTRATOR_INSTANCE_PROFILE_NAME,
     ORCHESTRATOR_ROLE_NAME,
@@ -177,13 +179,17 @@ class OrchestratorPool:
             policy_arns=[
                 "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
                 "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy",
-                "arn:aws:iam::aws:policy/EC2InstanceProfileForImageBuilder",
             ],
             inline_policies={
                 "WorkflowOrchestratorAccess": {
                     "Version": "2012-10-17",
                     "Statement": [
                         {
+                            # Orchestrator receives from its own queue and
+                            # dispatches job tasks to the project's runner
+                            # queues; all share the project-slug prefix.
+                            # Queues are created at deploy time, so no
+                            # Create/DeleteQueue at runtime.
                             "Sid": "SQSReadDeleteSend",
                             "Effect": "Allow",
                             "Action": [
@@ -193,13 +199,8 @@ class OrchestratorPool:
                                 "sqs:SendMessage",
                                 "sqs:GetQueueUrl",
                                 "sqs:GetQueueAttributes",
-                                "sqs:CreateQueue",
-                                "sqs:DeleteQueue",
                             ],
-                            "Resource": [
-                                f"arn:aws:sqs:*:*:{queue_name}",
-                                "arn:aws:sqs:*:*:*",
-                            ],
+                            "Resource": iam_scope.sqs_queue_arns(),
                         },
                         {
                             "Sid": "S3ReadWrite",
@@ -212,20 +213,19 @@ class OrchestratorPool:
                                 "s3:PutObject",
                                 "s3:AbortMultipartUpload",
                             ],
-                            "Resource": ["arn:aws:s3:::*", "arn:aws:s3:::*/*"],
+                            "Resource": iam_scope.project_bucket_arns(),
                         },
                         {
-                            "Sid": "EC2CreateTerminate",
+                            # Scale-out is performed by the autoscaler Lambda
+                            # (UpdateAutoScalingGroup) and the ASG service, not
+                            # this role; scale-in is self-termination via the
+                            # ASG. No ec2:RunInstances / ec2:TerminateInstances.
+                            "Sid": "AutoScalingSelfTerminate",
                             "Effect": "Allow",
                             "Action": [
-                                "autoscaling:Describe*",
                                 "autoscaling:TerminateInstanceInAutoScalingGroup",
-                                "ec2:Describe*",
-                                "ec2:RunInstances",
-                                "ec2:TerminateInstances",
-                                "ec2:CreateTags",
                             ],
-                            "Resource": "*",
+                            "Resource": iam_scope.autoscaling_group_arns(),
                         },
                         {
                             "Sid": "CloudWatchLogs",
@@ -235,7 +235,7 @@ class OrchestratorPool:
                                 "logs:CreateLogStream",
                                 "logs:PutLogEvents",
                             ],
-                            "Resource": "arn:aws:logs:*:*:*",
+                            "Resource": iam_scope.cloudwatch_log_group_arns(),
                         },
                     ],
                 }
@@ -302,9 +302,7 @@ class OrchestratorPool:
                         {
                             "Effect": "Allow",
                             "Action": ["sqs:SendMessage", "sqs:GetQueueUrl"],
-                            "Resource": [
-                                "arn:aws:sqs:*:*:*",
-                            ],
+                            "Resource": iam_scope.sqs_queue_arns(),
                         },
                     ],
                 },
