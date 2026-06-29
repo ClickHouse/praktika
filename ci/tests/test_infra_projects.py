@@ -741,7 +741,9 @@ def test_runner_pool_allow_lists_are_project_namespaced():
     ]
 
 
-def test_runner_pool_can_allow_all_runner_external_resources():
+def test_runner_pool_allow_all_is_scoped_to_project_namespace():
+    # allow_all_* grants every resource in the project's "{slug}-"/"{slug}/"
+    # namespace, NOT the whole account (Settings.PROJECT_SLUG == "praktika").
     pool = RunnerPool(
         name="runner",
         instance_type="t4g.small",
@@ -755,15 +757,142 @@ def test_runner_pool_can_allow_all_runner_external_resources():
     )
 
     assert _statement_by_sid(pool, "AllowedSSMParametersRead")["Resource"] == [
-        "arn:aws:ssm:*:*:parameter/*"
+        "arn:aws:ssm:*:*:parameter/praktika-*",
+        "arn:aws:ssm:*:*:parameter/praktika/*",
     ]
     assert _statement_by_sid(pool, "AllowedSecretsManagerSecretsRead")[
         "Resource"
-    ] == ["arn:aws:secretsmanager:*:*:secret:*"]
-    assert _statement_by_sid(pool, "AllowedS3ReadWrite")["Resource"] == [
-        "arn:aws:s3:::*",
-        "arn:aws:s3:::*/*",
+    ] == [
+        "arn:aws:secretsmanager:*:*:secret:praktika-*",
+        "arn:aws:secretsmanager:*:*:secret:praktika/*",
     ]
+    assert _statement_by_sid(pool, "AllowedS3ReadWrite")["Resource"] == [
+        "arn:aws:s3:::praktika-artifacts-eu-north-1",
+        "arn:aws:s3:::praktika-artifacts-eu-north-1/*",
+    ]
+
+
+def _orchestrator_statements(pool):
+    return pool.ec2_role.inline_policies["WorkflowOrchestratorAccess"]["Statement"]
+
+
+def _all_actions(statements):
+    actions = set()
+    for stmt in statements:
+        act = stmt["Action"]
+        actions.update([act] if isinstance(act, str) else act)
+    return actions
+
+
+_PROJECT_ASG_ARN = (
+    "arn:aws:autoscaling:*:*:autoScalingGroup:*:autoScalingGroupName/praktika-*"
+)
+
+
+def _make_orchestrator():
+    return OrchestratorPool(
+        name="workflow-orchestrator",
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        scaling=OrchestratorPool.Scaling.Auto,
+        size=0,
+        max_size=2,
+    )
+
+
+def test_orchestrator_role_drops_run_and_terminate_instances():
+    # Scale-out is the autoscaler Lambda + ASG service; scale-in is ASG
+    # self-termination. The orchestrator never launches/terminates instances
+    # directly and never manages queues at runtime.
+    pool = _make_orchestrator()
+    stmts = _orchestrator_statements(pool)
+    actions = _all_actions(stmts)
+    for forbidden in (
+        "ec2:RunInstances",
+        "ec2:TerminateInstances",
+        "ec2:CreateTags",
+        "ec2:Describe*",
+        "autoscaling:Describe*",
+        "sqs:CreateQueue",
+        "sqs:DeleteQueue",
+    ):
+        assert forbidden not in actions, forbidden
+    term = next(s for s in stmts if s["Sid"] == "AutoScalingSelfTerminate")
+    assert term["Action"] == ["autoscaling:TerminateInstanceInAutoScalingGroup"]
+    assert term["Resource"] == [_PROJECT_ASG_ARN]
+    # Image Builder runs on its own role, not the runtime orchestrator role.
+    assert (
+        "arn:aws:iam::aws:policy/EC2InstanceProfileForImageBuilder"
+        not in pool.ec2_role.policy_arns
+    )
+    # CloudWatch log access is scoped to this project's log groups.
+    logs = next(s for s in stmts if s["Sid"] == "CloudWatchLogs")
+    assert logs["Resource"] == [
+        "arn:aws:logs:*:*:log-group:/praktika/*",
+        "arn:aws:logs:*:*:log-group:/praktika/*:*",
+    ]
+
+
+def test_orchestrator_role_scopes_sqs_and_s3_to_project():
+    pool = _make_orchestrator()
+    stmts = _orchestrator_statements(pool)
+    sqs = next(s for s in stmts if s["Sid"] == "SQSReadDeleteSend")
+    assert sqs["Resource"] == ["arn:aws:sqs:*:*:praktika-*"]
+    s3 = next(s for s in stmts if s["Sid"] == "S3ReadWrite")
+    assert s3["Resource"] == [
+        "arn:aws:s3:::praktika-artifacts-eu-north-1",
+        "arn:aws:s3:::praktika-artifacts-eu-north-1/*",
+    ]
+    send = pool.lambda_role.inline_policies["SQSSendMessage"]["Statement"][0]
+    assert send["Resource"] == ["arn:aws:sqs:*:*:praktika-*"]
+
+
+def test_runner_role_has_no_direct_ec2_terminate():
+    pool = RunnerPool(
+        name="arm-small",
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        scaling=RunnerPool.Scaling.Auto,
+        size=0,
+        max_size=2,
+    )
+    actions = _all_actions(_runner_access_statements(pool))
+    assert "ec2:TerminateInstances" not in actions
+    assert "ec2:Describe*" not in actions
+    assert "autoscaling:Describe*" not in actions
+    term = _statement_by_sid(pool, "AutoScalingSelfTerminate")
+    assert term["Action"] == ["autoscaling:TerminateInstanceInAutoScalingGroup"]
+    assert term["Resource"] == [_PROJECT_ASG_ARN]
+    assert (
+        "arn:aws:iam::aws:policy/EC2InstanceProfileForImageBuilder"
+        not in pool.ec2_role.policy_arns
+    )
+
+
+def test_pool_autoscaler_scopes_update_to_project_asgs():
+    autoscaler = PoolAutoscaler(
+        pools=[
+            PoolAutoscaler.Pool(
+                name="arm-small",
+                asg_name="praktika-arm-small",
+                queue_name="praktika-arm-small",
+                capacity_reserve=1,
+            )
+        ]
+    )
+    stmts = autoscaler.lambda_role.inline_policies["PoolAutoscalerAccess"]["Statement"]
+    update = next(
+        s for s in stmts if s["Action"] == ["autoscaling:UpdateAutoScalingGroup"]
+    )
+    assert update["Resource"] == [_PROJECT_ASG_ARN]
+
+
+def test_iam_scoping_requires_project_slug(monkeypatch):
+    from praktika.infrastructure.native import iam_scope
+
+    monkeypatch.setattr(Settings, "PROJECT_SLUG", "")
+    with pytest.raises(ValueError, match="PROJECT_SLUG is required"):
+        iam_scope.sqs_queue_arns()
 
 
 def test_runner_pool_accepts_custom_role_and_profile_configs():
