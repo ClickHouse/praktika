@@ -78,9 +78,6 @@ For deployment security considerations, see [SECURITY.md](./SECURITY.md).
 
 ## Roadmap
 **Execution engine**
-- **Approve and Run alternative for forks in OSS** — provide a standalone-engine
-  flow for safely reviewing and explicitly allowing CI runs from forked pull
-  requests
 - **Job cancel / job rerun** — cancel an in-flight job from the GitHub UI;
   re-run a single failed job without rerunning the whole workflow
 - **Dispatch and cron workflows** — support manually-triggered
