@@ -74,7 +74,7 @@ For deployment security considerations, see [SECURITY.md](./SECURITY.md).
 - Durable per-PR sessions persist every turn, decision, edit, and token/cost
   across CI runs — the AI's memory, so it doesn't retry a fix that already failed
 - Bedrock / Anthropic providers (plus a no-op mock); enabled and configured via
-  `Settings.AI_ORCHESTRATION_ENABLED` / `AI_PROVIDER` / `AI_MODEL`
+  `Workflow.Config.orchestrator_ai`
 
 **GitHub side**
 - Webhook ingestion via AWS Lambda
@@ -144,6 +144,10 @@ For deployment security considerations, see [SECURITY.md](./SECURITY.md).
 **Observability**
 - **Log export for orchestrator and runners** — live tail and persisted
   archive, accessible without SSM
+- **Move AI agent logging and observability into `AIProvider`** — consolidate
+  AI session logging, turn tracing, usage/cost accounting, and related
+  observability hooks under the provider abstraction instead of spreading them
+  across the advisor/orchestrator flow
 - **Infra watch agent** — continuously monitor SQS queues, runner and
   orchestrator pools, Lambda functions, CI DB, and other managed services;
   log abnormal state, health regressions, and infrastructure problems for

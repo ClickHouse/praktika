@@ -368,7 +368,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
 
     print(f"Matched workflow [{workflow.name}] with {len(workflow.jobs)} jobs")
 
-    from .ai import Advisor
+    from .ai import OrchestratorAI
     from .state import WorkflowState
 
     # The top-level check body is rendered from `state.md_status()` (a live
@@ -415,16 +415,17 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
                     )
                 else:
                     patcher = None
-                # The "AI Advisor" check mirrors the advisor's observations and
+                # The "AI Orchestrator [Workflow]" check mirrors the
+                # orchestrator AI observations and decisions
                 # decisions (CI only; created lazily on the first consultation).
                 ai_check = (
-                    _make_ai_check_updater(gh_token, repo, head_sha)
+                    _make_ai_check_updater(gh_token, repo, head_sha, workflow.name)
                     if not local_mode
                     else None
                 )
-                advisor = Advisor.maybe_create(
+                advisor = OrchestratorAI.maybe_create(
                     event=event, run_id=run_id, local_mode=local_mode,
-                    patcher=patcher, ai_check=ai_check,
+                    patcher=patcher, ai_check=ai_check, workflow_config=workflow,
                 )
 
                 phase = "planning"
@@ -532,26 +533,28 @@ def _resolve_gh_token(gh_token):
     return getter() if callable(getter) else gh_token
 
 
-def _make_ai_check_updater(gh_token, repo, head_sha):
+def _make_ai_check_updater(gh_token, repo, head_sha, workflow_name):
     """Build the ``updater(status, summary_md)`` the AI advisor mirrors to.
 
-    Returns a callable that maintains a dedicated **AI Advisor** GitHub check:
-    ``status="in_progress"`` while an observation is out to the model,
-    ``"neutral"`` once the turn lands. The check run is created **lazily on first
-    use** (the first model consultation), so green runs never show one. Returns
-    None when there's nothing to authenticate with.
+    Returns a callable that maintains a dedicated
+    **AI Orchestrator [Workflow Name]** GitHub check: ``status="in_progress"``
+    while an observation is out to the model, ``"neutral"`` once the turn
+    lands. The check run is created **lazily on first use** (the first model
+    consultation), so green runs never show one. Returns None when there's
+    nothing to authenticate with.
     """
     if not (gh_token and repo and head_sha):
         return None
     from .check_run import CheckRun
 
     state = {"check": None}
+    title = f"AI Orchestrator [{workflow_name}]"
 
     def update(status, summary):
-        out = {"title": "AI Advisor", "summary": summary}
+        out = {"title": title, "summary": summary}
         if state["check"] is None:
             state["check"] = CheckRun.start(
-                gh_token, repo, head_sha, "AI Advisor", with_cancel_action=False
+                gh_token, repo, head_sha, title, with_cancel_action=False
             )
         if status == "in_progress":
             state["check"].update(status="in_progress", output=out)
@@ -733,10 +736,9 @@ def _apply_settings_overrides(pairs):
     """Apply ``KEY=VALUE`` CLI overrides onto the live ``Settings`` instance.
 
     Keys are Settings attribute names exactly as in the config (e.g.
-    ``AI_ORCHESTRATION_ENABLED=true``). Lets a local run flip settings without
-    editing ``settings.py``. Unknown keys are still set — Settings is a plain
-    object and the advisor reads via ``getattr`` — so a typo silently does
-    nothing rather than erroring; the printed line is the receipt.
+    ``AWS_REGION=eu-north-1``). Unknown keys are still set — Settings is a
+    plain object and readers use ``getattr`` — so a typo silently does nothing
+    rather than erroring; the printed line is the receipt.
     """
     if not pairs:
         return

@@ -233,14 +233,14 @@ _runner_pools = [
     ),
 ]
 
-# The AI advisor (AI_PROVIDER="bedrock") reaches Claude through Bedrock's Mantle
-# API, which the orchestrator's instance role must be allowed to invoke. Both
+# The AI advisor (AI_PROVIDER="bedrock") reaches Claude through Bedrock Runtime,
+# which the orchestrator's instance role must be allowed to invoke. Both
 # orchestrator pools share one role and get the grant (the base pool doesn't run
 # the advisor today, but the permission is harmless there).
 _ORCHESTRATOR_BEDROCK_IAM_STATEMENT = {
-    "Sid": "BedrockMantleInference",
+    "Sid": "BedrockRuntimeInference",
     "Effect": "Allow",
-    "Action": ["bedrock-mantle:CreateInference"],
+    "Action": ["bedrock:InvokeModel"],
     "Resource": "*",
 }
 

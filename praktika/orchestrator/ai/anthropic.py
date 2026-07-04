@@ -36,9 +36,10 @@ _PRICING = {
 def _price_per_mtok(model):
     """(input, output) $/1M for a model id, tolerant of backend prefixes.
 
-    Bedrock ids carry an ``anthropic.`` prefix and cross-region inference
-    profiles add a region segment (e.g. ``eu.anthropic.claude-opus-4-8``); the
-    first-party id is bare. Match on the longest pricing key contained in the id.
+    Bedrock runtime targets may be raw provider ids (``anthropic.*``) or
+    inference-profile ids (for example ``eu.anthropic.claude-opus-4-8`` or
+    ``global.anthropic.claude-sonnet-5``); the first-party id is bare. Match on
+    the longest pricing key contained in the id.
     """
     for key in sorted(_PRICING, key=len, reverse=True):
         if key in model:
@@ -532,18 +533,21 @@ class AnthropicProvider(AIProvider):
 class BedrockProvider(AnthropicProvider):
     """Same provider, served through Amazon Bedrock instead of the first-party API.
 
-    Only the transport differs: the Bedrock Mantle client authenticates with the
+    Only the transport differs: the Bedrock Runtime client authenticates with the
     standard AWS credential chain (env / shared profile / instance role — no
-    ``ANTHROPIC_API_KEY``) and model ids carry an ``anthropic.`` prefix. The
-    prompt, structured-output schema, and decode/usage logic are inherited.
+    ``ANTHROPIC_API_KEY``). Runtime targets may be raw Bedrock foundation-model
+    ids or Bedrock inference-profile ids such as ``eu.anthropic.*`` /
+    ``global.anthropic.*``. The prompt, structured-output schema, and
+    decode/usage logic are inherited.
 
     Region resolution: explicit ``aws_region`` arg → ``Settings.AWS_REGION`` →
-    ``AWS_REGION`` / ``AWS_DEFAULT_REGION`` env. Mantle has no region fallback, so
-    a region must be resolvable or ``decide`` raises (→ advisor error Turn).
+    ``AWS_REGION`` / ``AWS_DEFAULT_REGION`` env. Bedrock Runtime has no region
+    fallback, so a region must be resolvable or ``decide`` raises (→ advisor
+    error Turn).
     """
 
     name = "bedrock"
-    DEFAULT_MODEL = "anthropic.claude-opus-4-8"
+    DEFAULT_MODEL = "global.anthropic.claude-opus-4-8"
 
     def __init__(self, model="", aws_region=""):
         super().__init__(model=model)
@@ -566,7 +570,7 @@ class BedrockProvider(AnthropicProvider):
     def _get_client(self):
         if self._client is None:
             try:
-                from anthropic import AnthropicBedrockMantle
+                from anthropic import AnthropicBedrock
             except ImportError as e:  # optional dependency
                 raise RuntimeError(
                     "anthropic[bedrock] not installed; `pip install 'anthropic[bedrock]'` "
@@ -577,5 +581,5 @@ class BedrockProvider(AnthropicProvider):
                 raise RuntimeError(
                     "no AWS region for Bedrock; set Settings.AWS_REGION or AWS_REGION"
                 )
-            self._client = AnthropicBedrockMantle(aws_region=region)
+            self._client = AnthropicBedrock(aws_region=region)
         return self._client

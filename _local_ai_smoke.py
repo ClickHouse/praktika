@@ -1,6 +1,6 @@
 """Local smoke test for the AI advisor + AnthropicProvider.
 
-Drives the real Advisor (Settings-resolved provider, local session store) against
+Drives the real OrchestratorAI (workflow-resolved provider, local session store) against
 a stub WorkflowState, simulating a job failing so a turn fires and the Anthropic
 provider is actually called. Run from the repo root with ANTHROPIC_API_KEY set:
 
@@ -8,7 +8,10 @@ provider is actually called. Run from the repo root with ANTHROPIC_API_KEY set:
 
 Not a pytest test — a throwaway harness. Delete when done.
 """
-from praktika.orchestrator.ai import Advisor
+from types import SimpleNamespace
+
+from praktika import Workflow
+from praktika.orchestrator.ai import OrchestratorAI
 
 
 class _Status:
@@ -49,9 +52,20 @@ def main():
         "repo": "ClickHouse/ClickHouse",
     }
 
-    advisor = Advisor.maybe_create(event=event, run_id="local-smoke-1", local_mode=True)
+    workflow = SimpleNamespace(
+        orchestrator_ai=Workflow.OrchestratorAI.Config(
+            enabled=True,
+            provider="anthropic",
+        )
+    )
+    advisor = OrchestratorAI.maybe_create(
+        event=event,
+        run_id="local-smoke-1",
+        local_mode=True,
+        workflow_config=workflow,
+    )
     if advisor is None:
-        raise SystemExit("Advisor disabled — check AI_ORCHESTRATION_ENABLED in ci/settings")
+        raise SystemExit("Advisor disabled — check Workflow.Config.orchestrator_ai")
 
     state = StubState(
         [

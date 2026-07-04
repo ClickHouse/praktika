@@ -92,7 +92,7 @@ SessionManager.from_event(event, run_id, local_mode)  # pick store, load/create 
   .cost_summary()                       # per-PR + per-round
 ```
 
-`Advisor` (per run) calls `begin_run` once at creation, `observe_turn` for each
+`OrchestratorAI` (per run) calls `begin_run` once at creation, `observe_turn` for each
 recorded turn (today, on a job failure), and `finalize_run` at the end. The advisor never touches the
 store or the index directly.
 
@@ -100,9 +100,8 @@ store or the index directly.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `AI_SESSION_STORE` | `"auto"` | `auto` = S3 in CI / local fs in local mode; or force `s3` / `local`. |
-| `AI_PR_COST_CAP_USD` | `0.0` | Per-PR cumulative cost cap (0 = off). |
-| `AI_ROUND_MAX_ITERATIONS` | `0` | Max CI-run iterations per round (0 = off). |
+| `pr_token_cap` | `0` | Per-PR cumulative token cap (input + output, 0 = off). |
+| `max_rounds` | `0` | Max CI-run iterations per round (0 = off). |
 
 ## Status / non-goals
 

@@ -19,6 +19,26 @@ class Workflow:
         PRAKTIKA = "praktika"
         GH_ACTIONS = "GHActions"
 
+    class OrchestratorAI:
+        @dataclass
+        class Config:
+            # Master switch. False means the orchestrator behaves exactly as if
+            # no AI advisor existed for this workflow.
+            enabled: bool = False
+            # Provider selector: registered name ("mock", "anthropic",
+            # "bedrock"), a custom AIProvider subclass, or a ready provider
+            # instance attached directly by the workflow.
+            provider: object = "mock"
+            # Provider-specific model/runtime target. Empty means "use the
+            # provider's default model".
+            model: str = ""
+            # Optional cumulative per-PR token cap (input + output). 0 disables
+            # the cap.
+            pr_token_cap: int = 0
+            # Optional cap on how many CI runs one AI round may span. 0 disables
+            # the cap.
+            max_rounds: int = 0
+
     @dataclass
     class Config:
         """
@@ -64,6 +84,8 @@ class Workflow:
         enable_open_issues_check: bool = False
         # If enabled, CI events will be accumulated and stored, allowing users to subscribe to notifications via the Slack Praktika app
         enable_slack_feed: bool = False
+        # Per-workflow orchestrator AI configuration. ``None`` disables it.
+        orchestrator_ai: Optional["Workflow.OrchestratorAI.Config"] = None
         # Optional orchestrator routing tag. Empty means the default/non-base
         # orchestrator pool. Workflows tagged "base" are only picked up by the
         # base orchestrator pool.

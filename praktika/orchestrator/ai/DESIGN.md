@@ -46,7 +46,7 @@ cascade cancel would just burn tokens.
 | `provider.py` | The stable contract: `AIProvider` ABC (event hooks) + `Observation` / `Turn` / `Usage` dataclasses + a name→class registry (`register`, `resolve`). |
 | `mock.py` | `MockProvider` — implements `on_job_failure` with a no-op `Turn`, zero usage, no network. |
 | `trace.py` | `TraceLogger` (stdout + `TEMP_DIR/ai/turns.jsonl`) and `UsageLedger` (run totals — the cost seam). |
-| `__init__.py` | `Advisor` (delta detection, event routing, records turns) + `build_observation` + `Advisor.maybe_create` factory. |
+| `__init__.py` | `OrchestratorAI` (delta detection, event routing, records turns) + `build_observation` + `OrchestratorAI.maybe_create` factory. |
 
 ## The provider contract
 
@@ -94,26 +94,27 @@ class AnthropicProvider(AIProvider):
 ```
 
 Register it in `provider.py` (next to the mock) and set
-`AI_PROVIDER = "anthropic"` in `ci/settings/settings.py`.
+`Workflow.Config.orchestrator_ai.provider = "anthropic"` on the workflow that
+should use it.
 
 ## Configuration
 
-`praktika/settings.py` (library defaults — AI off):
+`praktika/workflow.py` (`Workflow.OrchestratorAI.Config`, defaults shown below):
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `AI_ORCHESTRATION_ENABLED` | `False` | Master switch. When off, `maybe_create` returns `None` and the loop is unchanged. |
-| `AI_PROVIDER` | `"mock"` | Registered provider name. If it can't be resolved or instantiated by the running runtime (an older orchestrator that predates the provider, or a provider whose SDK isn't installed), `maybe_create` logs and returns `None` — the advisor is disabled, never a crash. |
-| `AI_MODEL` | `""` | Provider-specific model id; empty = provider default. |
+| `enabled` | `False` | Master switch. When off, `maybe_create` returns `None` and the loop is unchanged. |
+| `provider` | `"mock"` | Registered provider name. If it can't be resolved or instantiated by the running runtime (an older orchestrator that predates the provider, or a provider whose SDK isn't installed), `maybe_create` logs and returns `None` — the advisor is disabled, never a crash. |
+| `model` | `""` | Provider-specific model id; empty = provider default. |
 
 The advisor is advisory and best-effort: neither a disabled switch, an
 unresolvable provider, nor a session-setup error may break core orchestration.
 
-This repo (`ci/settings/settings.py`) sets `AI_ORCHESTRATION_ENABLED = True`
-and `AI_PROVIDER = "bedrock"`. Because the orchestrator runs the *published*
-runtime wheel (not the PR's praktika code), a runtime that predates a provider
-just disables the advisor for that run rather than failing CI — publish a
-runtime that registers the provider before relying on it.
+This repo enables AI per workflow via `Workflow.Config.orchestrator_ai`. Because the
+orchestrator runs the *published* runtime wheel (not the PR's praktika code), a
+runtime that predates a provider just disables the advisor for that run rather
+than failing CI — publish a runtime that registers the provider before relying
+on it.
 
 ## Tracing & cost
 
@@ -144,7 +145,7 @@ folded into `Turn.reasoning` for the trace.
 
 ## Action dispatch
 
-`Advisor._dispatch` applies the first actionable decision after a turn is
+`OrchestratorAI._dispatch` applies the first actionable decision after a turn is
 recorded. An error `Turn` never dispatches, and the provider's decision is
 authoritative — there is no separate enable flag. Wired today:
 

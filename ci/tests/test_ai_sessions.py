@@ -125,16 +125,16 @@ def test_round_context_for_prompt(tmp_path):
 # ---------------------------------------------------------- budget stub
 
 
-def test_budget_cost_cap(tmp_path):
+def test_budget_token_cap(tmp_path):
     m = _mgr(tmp_path)
-    m.session.budget["cost_cap_usd"] = 0.01
+    m.session.budget["token_cap"] = 10
     m.begin_run("run-1", "sha1", {})
     ok, _ = m.can_continue_round()
     assert ok is True
     m.observe_turn(_obs([{"name": "B", "status": "failure"}]), _turn(cost=0.05))
     ok, reason = m.can_continue_round()
     assert ok is False
-    assert "cost cap" in reason
+    assert "token cap" in reason
 
 
 def test_record_edit_without_round_is_noop(tmp_path):

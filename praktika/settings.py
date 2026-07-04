@@ -57,27 +57,6 @@ class _Settings:
     HEARTBEAT_TIMEOUT_S = 300
 
     ######################################
-    #    AI orchestration settings       #
-    ######################################
-    # Master switch for the AI advisor. Off by default: the orchestrator loop
-    # is unchanged unless a project opts in. See praktika/orchestrator/ai.
-    AI_ORCHESTRATION_ENABLED: bool = False
-    # AI provider: a registered name ("mock", "anthropic"), or — to plug in a
-    # custom provider without touching praktika — an AIProvider subclass or a
-    # ready AIProvider instance assigned in the project settings.py. Resolved by
-    # ai/provider.py:resolve_provider. "mock" does nothing.
-    AI_PROVIDER = "mock"
-    # Provider-specific model id; empty means the provider's default.
-    AI_MODEL: str = ""
-    # Session store backend: "auto" (S3 in CI, local fs in local mode), "s3",
-    # or "local". See ai/store.py.
-    AI_SESSION_STORE: str = "auto"
-    # Budget guardrails (0 = disabled). Enforced by SessionManager (stubs for now):
-    # per-PR cumulative cost cap, and max CI-run iterations per AI round.
-    AI_PR_COST_CAP_USD: float = 0.0
-    AI_ROUND_MAX_ITERATIONS: int = 0
-
-    ######################################
     #   S3 (artifact storage) settings   #
     ######################################
     S3_ARTIFACT_BUCKET: str = ""
@@ -223,12 +202,6 @@ _USER_DEFINED_SETTINGS = [
     "CI_DB_READ_URL",
     "TEST_FAILURE_PATTERNS",
     "PRAKTIKA_BASE_VENV",
-    "AI_ORCHESTRATION_ENABLED",
-    "AI_PROVIDER",
-    "AI_MODEL",
-    "AI_SESSION_STORE",
-    "AI_PR_COST_CAP_USD",
-    "AI_ROUND_MAX_ITERATIONS",
 ]
 
 

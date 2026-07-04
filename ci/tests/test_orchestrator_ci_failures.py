@@ -108,10 +108,6 @@ def _patch_common(monkeypatch, check, attempts=3):
     monkeypatch.setattr(
         "praktika.orchestrator.check_run.CheckRun.start", lambda *a, **k: check
     )
-    # AI off so maybe_create returns None and isn't the thing under test.
-    monkeypatch.setattr(
-        "praktika.settings.Settings.AI_ORCHESTRATION_ENABLED", False, raising=False
-    )
     monkeypatch.setattr(
         "praktika.settings.Settings.MAX_RETRIES_ORCHESTRATOR", attempts, raising=False
     )

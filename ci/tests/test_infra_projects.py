@@ -1585,9 +1585,9 @@ def test_orchestrator_pool_can_configure_allowed_push_branches_from_ext():
 
 def test_orchestrator_pool_appends_ext_iam_statements_to_role_policy():
     stmt = {
-        "Sid": "BedrockMantleInference",
+        "Sid": "BedrockRuntimeInference",
         "Effect": "Allow",
-        "Action": ["bedrock-mantle:CreateInference"],
+        "Action": ["bedrock:InvokeModel"],
         "Resource": "*",
     }
     with_stmt = OrchestratorPool(
@@ -1611,7 +1611,7 @@ def test_orchestrator_pool_appends_ext_iam_statements_to_role_policy():
         in with_stmt.ec2_role.inline_policies["WorkflowOrchestratorAccess"]["Statement"]
     )
     assert all(
-        s.get("Sid") != "BedrockMantleInference"
+        s.get("Sid") != "BedrockRuntimeInference"
         for s in without_stmt.ec2_role.inline_policies["WorkflowOrchestratorAccess"][
             "Statement"
         ]
@@ -1632,8 +1632,8 @@ def test_projects_grant_bedrock_to_both_orchestrator_pools():
             ]
         ]
 
-    assert "BedrockMantleInference" in _sids(_orchestrator_pool)
-    assert "BedrockMantleInference" in _sids(_orchestrator_pool_base)
+    assert "BedrockRuntimeInference" in _sids(_orchestrator_pool)
+    assert "BedrockRuntimeInference" in _sids(_orchestrator_pool_base)
 
 
 def test_native_configs_accept_ext_maps():

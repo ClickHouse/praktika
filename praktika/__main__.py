@@ -249,9 +249,8 @@ def create_parser():
         help=(
             "Override a Settings value for this run (repeatable). KEY is the "
             "Settings attribute name as in the config, e.g. --settings "
-            "AI_ORCHESTRATION_ENABLED=true --settings AI_PROVIDER=bedrock. "
-            "Handy for enabling the AI advisor on a local run without editing "
-            "settings.py."
+            "AWS_REGION=eu-north-1. Workflow-level AI configuration lives on "
+            "Workflow.Config.orchestrator_ai rather than Settings."
         ),
     )
 

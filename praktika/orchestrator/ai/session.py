@@ -94,7 +94,7 @@ class SessionManifest:
     round_ids: List[str] = field(default_factory=list)
     run_ids: List[str] = field(default_factory=list)
     usage: dict = field(default_factory=_empty_usage)
-    budget: dict = field(default_factory=dict)  # {cost_cap_usd, round_max_iterations}
+    budget: dict = field(default_factory=dict)  # {token_cap, max_rounds}
 
 
 # --------------------------------------------------------------- index (stub)
@@ -128,10 +128,11 @@ class LoggingIndex:
 class SessionManager:
     """Owns the durable AI log for one PR and the current run within it."""
 
-    def __init__(self, repo, pr, store, index=None, console=None):
+    def __init__(self, repo, pr, store, ai_config=None, index=None, console=None):
         self.repo = repo
         self.pr = _slug(pr)
         self.store = store
+        self.ai_config = ai_config
         self.index = index or LoggingIndex()
         self.console = console or TraceLogger(run_id=None)
         self._base = f"ai-sessions/pr/{self.pr}"
@@ -140,11 +141,11 @@ class SessionManager:
         self._round = None  # RoundManifest for the open round, if any
 
     @classmethod
-    def from_event(cls, event, run_id, local_mode, console=None):
+    def from_event(cls, event, run_id, local_mode, ai_config=None, console=None):
         repo = event.get("repo", "")
         pr = event.get("pr_number") or f"branch-{event.get('head_ref', '')}"
         store = make_store(local_mode)
-        return cls(repo, pr, store, console=console)
+        return cls(repo, pr, store, ai_config=ai_config, console=console)
 
     # ------------------------------------------------------------ keys
 
@@ -173,9 +174,9 @@ class SessionManager:
             repo=self.repo,
             pr=self.pr,
             budget={
-                "cost_cap_usd": float(getattr(Settings, "AI_PR_COST_CAP_USD", 0.0) or 0.0),
-                "round_max_iterations": int(
-                    getattr(Settings, "AI_ROUND_MAX_ITERATIONS", 0) or 0
+                "token_cap": int(getattr(self.ai_config, "pr_token_cap", 0) or 0),
+                "max_rounds": int(
+                    getattr(self.ai_config, "max_rounds", 0) or 0
                 ),
             },
         )
@@ -248,7 +249,7 @@ class SessionManager:
     def observe_turn(self, observation, turn):
         """Record one advisor turn: implicit round open, append, roll up cost.
 
-        This is the single entry point the Advisor calls per workflow update.
+        This is the single entry point the OrchestratorAI calls per workflow update.
         """
         failing = [c for c in observation.changed if c.get("status") in ("failure", "cancelled")]
         if failing and self._round is None and self.session.open_round_id is None:
@@ -349,13 +350,23 @@ class SessionManager:
 
     def can_continue_round(self):
         """Cheap budget gate. Returns (ok, reason). Lenient stub for now."""
-        cap = float(self.session.budget.get("cost_cap_usd", 0.0) or 0.0)
-        spent = float(self.session.usage.get("cost_usd", 0.0) or 0.0)
+        cap = int(self.session.budget.get("token_cap", 0) or 0)
+        spent = int(self.session.usage.get("input_tokens", 0) or 0) + int(
+            self.session.usage.get("output_tokens", 0) or 0
+        )
         if cap and spent >= cap:
-            return False, f"PR cost cap reached (${spent:.4f} >= ${cap:.4f})"
-        max_iter = int(self.session.budget.get("round_max_iterations", 0) or 0)
-        if self._round is not None and max_iter and len(self._round.run_ids) >= max_iter:
-            return False, f"round iteration cap reached ({len(self._round.run_ids)} >= {max_iter})"
+            return False, f"PR token cap reached ({spent} >= {cap})"
+        max_rounds = int(
+            self.session.budget.get(
+                "max_rounds", self.session.budget.get("round_max_iterations", 0)
+            )
+            or 0
+        )
+        if self._round is not None and max_rounds and len(self._round.run_ids) >= max_rounds:
+            return False, (
+                f"round iteration cap reached "
+                f"({len(self._round.run_ids)} >= {max_rounds})"
+            )
         return True, ""
 
     # ------------------------------------------------------------ fetch

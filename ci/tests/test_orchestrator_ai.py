@@ -2,9 +2,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from praktika import Workflow
 from praktika.orchestrator import ai
 from praktika.orchestrator.ai import (
-    Advisor,
+    OrchestratorAI,
     _apply_edits,
     _patch_commit_message,
     build_observation,
@@ -51,6 +52,10 @@ EVENT = {
 }
 
 
+def _workflow_ai(**kwargs):
+    return Workflow.OrchestratorAI.Config(**kwargs)
+
+
 # --------------------------------------------------------------- registry
 
 
@@ -67,24 +72,39 @@ def test_registry_unknown_raises():
 
 
 def test_maybe_create_disabled_returns_none(monkeypatch):
-    monkeypatch.setattr(ai.Settings, "AI_ORCHESTRATION_ENABLED", False, raising=False)
-    assert Advisor.maybe_create(run_id="r1") is None
+    assert OrchestratorAI.maybe_create(
+        run_id="r1",
+        workflow_config=SimpleNamespace(orchestrator_ai=_workflow_ai(enabled=False)),
+    ) is None
 
 
 def test_maybe_create_enabled_returns_advisor(monkeypatch):
-    monkeypatch.setattr(ai.Settings, "AI_ORCHESTRATION_ENABLED", True, raising=False)
-    monkeypatch.setattr(ai.Settings, "AI_PROVIDER", "mock", raising=False)
-    advisor = Advisor.maybe_create(run_id="r1", local_mode=True)
-    assert isinstance(advisor, Advisor)
+    advisor = OrchestratorAI.maybe_create(
+        run_id="r1",
+        local_mode=True,
+        workflow_config=SimpleNamespace(
+            orchestrator_ai=_workflow_ai(enabled=True, provider="mock")
+        ),
+    )
+    assert isinstance(advisor, OrchestratorAI)
     assert isinstance(advisor._provider, MockProvider)
 
 
 def test_maybe_create_unknown_provider_disables(monkeypatch):
     # An older runtime that doesn't register the configured provider must
     # disable the advisor, not crash orchestration (see PR #130 hang).
-    monkeypatch.setattr(ai.Settings, "AI_ORCHESTRATION_ENABLED", True, raising=False)
-    monkeypatch.setattr(ai.Settings, "AI_PROVIDER", "bedrock-from-the-future", raising=False)
-    assert Advisor.maybe_create(run_id="r1", local_mode=True) is None
+    assert (
+        OrchestratorAI.maybe_create(
+            run_id="r1",
+            local_mode=True,
+            workflow_config=SimpleNamespace(
+                orchestrator_ai=_workflow_ai(
+                    enabled=True, provider="bedrock-from-the-future"
+                )
+            ),
+        )
+        is None
+    )
 
 
 # --------------------------------------------------------------- mock provider
@@ -187,9 +207,11 @@ def test_build_observation_does_not_mutate_changed():
 
 
 def test_turn_fires_only_on_new_failure(monkeypatch):
-    monkeypatch.setattr(ai.Settings, "AI_ORCHESTRATION_ENABLED", True, raising=False)
-    monkeypatch.setattr(ai.Settings, "AI_PROVIDER", "mock", raising=False)
-    advisor = Advisor.maybe_create(run_id="r1", local_mode=True)
+    advisor = OrchestratorAI.maybe_create(
+        run_id="r1",
+        local_mode=True,
+        workflow_config=SimpleNamespace(orchestrator_ai=_workflow_ai(enabled=True, provider="mock")),
+    )
 
     a = _job("A", "running")
     b = _job("B", "pending")
@@ -217,9 +239,11 @@ def test_turn_fires_only_on_new_failure(monkeypatch):
 def test_skipped_and_cancelled_do_not_fire(monkeypatch):
     # Skipped/cancelled are terminal but route to no hook — they carry no
     # problem to act on, so they never consult the model.
-    monkeypatch.setattr(ai.Settings, "AI_ORCHESTRATION_ENABLED", True, raising=False)
-    monkeypatch.setattr(ai.Settings, "AI_PROVIDER", "mock", raising=False)
-    advisor = Advisor.maybe_create(run_id="r1", local_mode=True)
+    advisor = OrchestratorAI.maybe_create(
+        run_id="r1",
+        local_mode=True,
+        workflow_config=SimpleNamespace(orchestrator_ai=_workflow_ai(enabled=True, provider="mock")),
+    )
 
     a = _job("A", "skipped")
     b = _job("B", "cancelled")
@@ -229,9 +253,11 @@ def test_skipped_and_cancelled_do_not_fire(monkeypatch):
 
 
 def test_advisory_only_no_mutation_and_zero_cost(monkeypatch):
-    monkeypatch.setattr(ai.Settings, "AI_ORCHESTRATION_ENABLED", True, raising=False)
-    monkeypatch.setattr(ai.Settings, "AI_PROVIDER", "mock", raising=False)
-    advisor = Advisor.maybe_create(run_id="r1", local_mode=True)
+    advisor = OrchestratorAI.maybe_create(
+        run_id="r1",
+        local_mode=True,
+        workflow_config=SimpleNamespace(orchestrator_ai=_workflow_ai(enabled=True, provider="mock")),
+    )
 
     a = _job("A", "failure", started_at=1.0, finished_at=2.0)
     state = _state([a])
@@ -244,9 +270,11 @@ def test_advisory_only_no_mutation_and_zero_cost(monkeypatch):
 
 
 def test_provider_error_does_not_raise(monkeypatch):
-    monkeypatch.setattr(ai.Settings, "AI_ORCHESTRATION_ENABLED", True, raising=False)
-    monkeypatch.setattr(ai.Settings, "AI_PROVIDER", "mock", raising=False)
-    advisor = Advisor.maybe_create(run_id="r1", local_mode=True)
+    advisor = OrchestratorAI.maybe_create(
+        run_id="r1",
+        local_mode=True,
+        workflow_config=SimpleNamespace(orchestrator_ai=_workflow_ai(enabled=True, provider="mock")),
+    )
 
     def boom(observation):
         raise RuntimeError("provider exploded")
@@ -347,7 +375,7 @@ def _fake_resp(text, **usage):
 
 
 class _FakeClient:
-    """Stands in for anthropic.Anthropic / AnthropicBedrockMantle."""
+    """Stands in for anthropic.Anthropic / AnthropicBedrock."""
 
     def __init__(self, resp):
         self.calls = []
@@ -633,9 +661,11 @@ def test_parse_empty_root_cause_left_out():
 
 
 def test_cancel_run_decision_cancels_the_run(monkeypatch):
-    monkeypatch.setattr(ai.Settings, "AI_ORCHESTRATION_ENABLED", True, raising=False)
-    monkeypatch.setattr(ai.Settings, "AI_PROVIDER", "mock", raising=False)
-    advisor = Advisor.maybe_create(run_id="r1", local_mode=True)
+    advisor = OrchestratorAI.maybe_create(
+        run_id="r1",
+        local_mode=True,
+        workflow_config=SimpleNamespace(orchestrator_ai=_workflow_ai(enabled=True, provider="mock")),
+    )
 
     state = _state([_job("Build", "failure")])
     state.cancelled = False
@@ -649,9 +679,11 @@ def test_cancel_run_decision_cancels_the_run(monkeypatch):
 
 
 def test_non_cancel_decision_leaves_run_alone(monkeypatch):
-    monkeypatch.setattr(ai.Settings, "AI_ORCHESTRATION_ENABLED", True, raising=False)
-    monkeypatch.setattr(ai.Settings, "AI_PROVIDER", "mock", raising=False)
-    advisor = Advisor.maybe_create(run_id="r1", local_mode=True)
+    advisor = OrchestratorAI.maybe_create(
+        run_id="r1",
+        local_mode=True,
+        workflow_config=SimpleNamespace(orchestrator_ai=_workflow_ai(enabled=True, provider="mock")),
+    )
 
     state = _state([_job("Build", "failure")])
     state.cancelled = False
@@ -665,9 +697,11 @@ def test_non_cancel_decision_leaves_run_alone(monkeypatch):
 
 
 def test_error_turn_does_not_cancel(monkeypatch):
-    monkeypatch.setattr(ai.Settings, "AI_ORCHESTRATION_ENABLED", True, raising=False)
-    monkeypatch.setattr(ai.Settings, "AI_PROVIDER", "mock", raising=False)
-    advisor = Advisor.maybe_create(run_id="r1", local_mode=True)
+    advisor = OrchestratorAI.maybe_create(
+        run_id="r1",
+        local_mode=True,
+        workflow_config=SimpleNamespace(orchestrator_ai=_workflow_ai(enabled=True, provider="mock")),
+    )
 
     state = _state([_job("Build", "failure")])
     state.cancelled = False
@@ -687,7 +721,7 @@ def test_bedrock_defaults_and_region(monkeypatch):
     monkeypatch.setattr(psettings.Settings, "AWS_REGION", "eu-test-1", raising=False)
     p = BedrockProvider()
     assert p.name == "bedrock"
-    assert p.resolved_model() == "anthropic.claude-opus-4-8"
+    assert p.resolved_model() == "global.anthropic.claude-opus-4-8"
     assert p._region() == "eu-test-1"
 
 
@@ -696,24 +730,25 @@ def test_bedrock_explicit_region_wins():
 
 
 def test_bedrock_decide_costs_with_prefixed_model():
-    p = BedrockProvider(model="anthropic.claude-opus-4-8")
+    p = BedrockProvider(model="global.anthropic.claude-opus-4-8")
     p._client = _FakeClient(
         _fake_resp('{"reasoning": "r", "decision": []}', input_tokens=10, output_tokens=4)
     )
     turn = p.on_job_failure(Observation())
     assert turn.error is None
     assert turn.usage.provider == "bedrock"
-    assert turn.usage.model == "anthropic.claude-opus-4-8"
-    # opus pricing resolved through the anthropic. prefix
+    assert turn.usage.model == "global.anthropic.claude-opus-4-8"
+    # opus pricing resolved through the inference-profile prefix
     assert turn.usage.cost_usd == round((10 * 5.0 + 4 * 25.0) / 1_000_000, 6)
 
 
 def test_error_turn_stamps_resolved_model(monkeypatch):
     # A provider that fails before a call still names the model it would use.
-    monkeypatch.setattr(ai.Settings, "AI_ORCHESTRATION_ENABLED", True, raising=False)
-    monkeypatch.setattr(ai.Settings, "AI_PROVIDER", "bedrock", raising=False)
-    monkeypatch.setattr(ai.Settings, "AI_MODEL", "", raising=False)
-    advisor = Advisor.maybe_create(run_id="r1", local_mode=True)
+    advisor = OrchestratorAI.maybe_create(
+        run_id="r1",
+        local_mode=True,
+        workflow_config=SimpleNamespace(orchestrator_ai=_workflow_ai(enabled=True, provider="bedrock")),
+    )
 
     def boom(observation):
         raise RuntimeError("no creds")
@@ -723,7 +758,7 @@ def test_error_turn_stamps_resolved_model(monkeypatch):
     turn = advisor.on_workflow_update(_state([_job("A", "failure")]), EVENT)
     assert turn.error is not None
     assert turn.usage.provider == "bedrock"
-    assert turn.usage.model == "anthropic.claude-opus-4-8"
+    assert turn.usage.model == "global.anthropic.claude-opus-4-8"
 
 
 # ---------------------------------------------- cancel_and_patch: edit application
@@ -842,9 +877,11 @@ class _FakeSession:
 
 
 def _patch_advisor(monkeypatch, patcher, session):
-    monkeypatch.setattr(ai.Settings, "AI_ORCHESTRATION_ENABLED", True, raising=False)
-    monkeypatch.setattr(ai.Settings, "AI_PROVIDER", "mock", raising=False)
-    advisor = Advisor.maybe_create(run_id="r1", local_mode=True)
+    advisor = OrchestratorAI.maybe_create(
+        run_id="r1",
+        local_mode=True,
+        workflow_config=SimpleNamespace(orchestrator_ai=_workflow_ai(enabled=True, provider="mock")),
+    )
     advisor._patcher = patcher
     advisor._session = session
     return advisor

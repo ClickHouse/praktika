@@ -9,7 +9,7 @@ the observation into a prompt + tool specs, running the SDK's tool-use loop, and
 filling in ``Usage`` / ``Turn`` from the response — without touching
 ``praktika/orchestrator/__init__.py``.
 
-The contract is **event-typed**: the orchestrator (via the ``Advisor``) calls a
+The contract is **event-typed**: the orchestrator (via the ``OrchestratorAI``) calls a
 hook named for the lifecycle event that fired — ``on_job_failure`` when a job
 fails, ``on_job_success`` when one passes, ``on_run_start`` / ``on_run_finish``
 around the run. Every hook is a **no-op by default** (returns ``None`` → no
@@ -125,10 +125,15 @@ def _event_cell(observation):
     return _md_cell(", ".join(parts) or "(update)")
 
 
+# The decision column carries the model's rationale, so give it a generous
+# budget (the event column stays short). GitHub wraps long cells.
+_DECISION_CELL_LIMIT = 800
+
+
 def _decision_cell(turn):
-    """Summarize the model's turn: decision type(s) + a short detail (or error)."""
+    """Summarize the model's turn: decision type(s) + detail (or the error)."""
     if getattr(turn, "error", None):
-        return _md_cell(f"⚠ error: {turn.error}")
+        return _md_cell(f"⚠ error: {turn.error}", limit=_DECISION_CELL_LIMIT)
     decision = getattr(turn, "decision", None) or []
     types = [d.get("type", "?") for d in decision if isinstance(d, dict)]
     if not types:
@@ -138,7 +143,7 @@ def _decision_cell(turn):
         (d.get("detail", "") for d in decision if isinstance(d, dict) and d.get("detail")),
         "",
     )
-    return _md_cell(f"{label} — {detail}") if detail else label
+    return _md_cell(f"{label} — {detail}", limit=_DECISION_CELL_LIMIT) if detail else label
 
 
 class AIProvider(ABC):
@@ -307,19 +312,19 @@ def resolve(name) -> type:
 
 
 def resolve_provider(spec, model="") -> "AIProvider":
-    """Turn an ``AI_PROVIDER`` setting into a ready ``AIProvider`` instance.
+    """Turn a workflow AI provider spec into a ready ``AIProvider`` instance.
 
     ``spec`` may be:
 
-    * an ``AIProvider`` **instance** — used as-is (a user wired up their own
-      provider object in ``settings.py``; ``model`` is whatever they gave it),
+    * an ``AIProvider`` **instance** — used as-is (a workflow wired up its own
+      provider object; ``model`` is whatever it was given),
     * an ``AIProvider`` **subclass** — instantiated with ``model``,
     * a registered **name** (str) — looked up in the registry, then
       instantiated with ``model``.
 
-    The instance/subclass paths are how a project plugs in a custom provider
+    The instance/subclass paths are how a workflow plugs in a custom provider
     without touching this package — assign the object (or class) to
-    ``AI_PROVIDER`` in ``ci/settings/settings.py``.
+    ``Workflow.Config.orchestrator_ai.provider``.
     """
     if isinstance(spec, AIProvider):
         return spec

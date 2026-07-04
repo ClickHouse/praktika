@@ -1,6 +1,6 @@
 """AI advisor for the orchestrator (skeleton).
 
-The orchestrator drives an ``Advisor`` through the run's lifecycle. As the
+The orchestrator drives an ``OrchestratorAI`` through the run's lifecycle. As the
 workflow state advances (job results land), the advisor classifies what changed
 and routes it to the matching **provider hook** — ``on_job_failure`` when a job
 fails, ``on_job_success`` when one passes, plus ``on_run_start`` /
@@ -15,7 +15,7 @@ flags the run cancelled and the orchestrator loop tears it down;
 ``cancel_and_patch`` applies the model's edits, commits + pushes them via the
 injected patcher (triggering a fresh run), and cancels the superseded run.
 The default provider is ``mock``, which does nothing. Disabled by default
-(``Settings.AI_ORCHESTRATION_ENABLED``).
+(``Workflow.Config.orchestrator_ai.enabled``).
 
 Real providers (``anthropic`` / ``bedrock``) implement ``on_job_failure`` only,
 running a tool-use loop so the model can investigate the failure before deciding
@@ -24,8 +24,6 @@ and the checked-out PR source (``grep_repo`` / ``read_file``, rooted at the repo
 """
 import difflib
 import os
-
-from praktika.settings import Settings
 
 from .provider import Observation, Turn, Usage, resolve_provider
 from .session import SessionManager
@@ -59,6 +57,12 @@ _RESULT_OK_STATUSES = {"OK", "SKIPPED", "XFAIL", "PENDING", "RUNNING"}
 _MAX_FAILED_SUBRESULTS = 20
 _MAX_INFO_CHARS = 500
 _MAX_LINKS = 10
+
+
+def _get_ai_config(workflow_config):
+    if workflow_config is None:
+        return None
+    return getattr(workflow_config, "orchestrator_ai", None)
 
 
 def _clean_links(links):
@@ -276,7 +280,7 @@ def _patch_commit_message(detail, round_id=""):
     return "\n".join(lines)
 
 
-class Advisor:
+class OrchestratorAI:
     """Routes workflow lifecycle events to the provider's hooks and records turns."""
 
     def __init__(self, provider, console, session=None, event=None, patcher=None):
@@ -296,9 +300,10 @@ class Advisor:
 
     @classmethod
     def maybe_create(
-        cls, event=None, run_id=None, local_mode=False, patcher=None, ai_check=None
+        cls, event=None, run_id=None, local_mode=False, patcher=None, ai_check=None,
+        workflow_config=None
     ):
-        """Build an Advisor from Settings, or return None if AI is disabled.
+        """Build an OrchestratorAI from workflow AI config, or return None if disabled.
 
         Also opens (or rejoins) the durable per-PR AI session and registers
         this CI run with it. Session setup is best-effort: if it fails the
@@ -317,10 +322,11 @@ class Advisor:
         provider whose SDK isn't installed — the advisor is disabled (returns
         None) rather than crashing the run.
         """
-        if not getattr(Settings, "AI_ORCHESTRATION_ENABLED", False):
+        ai_config = _get_ai_config(workflow_config)
+        if ai_config is None or not getattr(ai_config, "enabled", False):
             return None
-        spec = getattr(Settings, "AI_PROVIDER", "mock") or "mock"
-        model = getattr(Settings, "AI_MODEL", "") or ""
+        spec = getattr(ai_config, "provider", "mock") or "mock"
+        model = getattr(ai_config, "model", "") or ""
         try:
             provider = resolve_provider(spec, model=model)
         except Exception as e:
@@ -340,7 +346,8 @@ class Advisor:
         if event is not None:
             try:
                 session = SessionManager.from_event(
-                    event, run_id=run_id, local_mode=local_mode, console=console
+                    event, run_id=run_id, local_mode=local_mode,
+                    ai_config=ai_config, console=console
                 )
                 session.begin_run(
                     run_id=run_id or "", sha=event.get("head_sha", ""), event=event
@@ -529,3 +536,4 @@ def _job_outcomes(state):
     if state is None:
         return []
     return [{"name": js.name, "status": _status_value(js)} for js in state.jobs.values()]
+
