@@ -325,7 +325,7 @@ def test_parse_non_list_decision_coerced_empty():
 def test_price_per_mtok_prefix_tolerant():
     assert _price_per_mtok("claude-opus-4-8") == (5.0, 25.0)
     assert _price_per_mtok("anthropic.claude-opus-4-8") == (5.0, 25.0)
-    assert _price_per_mtok("eu.anthropic.claude-sonnet-4-6") == (3.0, 15.0)
+    assert _price_per_mtok("eu.anthropic.claude-sonnet-5") == (3.0, 15.0)
     assert _price_per_mtok("unknown-model") == (0.0, 0.0)
 
 
@@ -986,3 +986,69 @@ def test_make_ai_patcher_none_when_inputs_missing():
     assert _make_ai_patcher("repo", "", "sha", "tok") is None
     assert _make_ai_patcher("repo", "ref", "sha", None) is None
     assert callable(_make_ai_patcher("repo", "ref", "sha", "tok"))
+
+
+# ---------------------------------------------- provider consult + check tracking
+
+
+def test_consult_tracks_observation_turn_and_updates_check():
+    calls = []
+    p = MockProvider(model="m")
+    p.attach_check_updater(lambda status, summary: calls.append((status, summary)))
+    obs = Observation(changed=[{"name": "Build", "status": "failure"}], summary="s")
+
+    turn = p.consult("job_failure", obs)
+
+    assert turn is not None
+    assert len(p.observations) == 1 and len(p.turns) == 1
+    # check went in-progress (observation sent) then neutral (turn received)
+    assert [s for s, _ in calls] == ["in_progress", "neutral"]
+    # the neutral table carries the triggering event + the decision
+    summary = calls[-1][1]
+    assert "Build: failure" in summary
+    assert "propose_fix" in summary
+
+
+def test_consult_noop_hook_skips_tracking_and_check():
+    calls = []
+    p = MockProvider(model="m")
+    p.attach_check_updater(lambda s, x: calls.append(s))
+    # on_job_success is the inherited no-op -> nothing sent to the model
+    assert p.consult("job_success", Observation(changed=[{"name": "A", "status": "success"}])) is None
+    assert calls == []
+    assert p.observations == [] and p.turns == []
+
+
+def test_consult_exception_becomes_error_turn_and_closes_check():
+    calls = []
+    p = MockProvider(model="m")
+    p.attach_check_updater(lambda s, x: calls.append(s))
+    p.on_job_failure = lambda obs: (_ for _ in ()).throw(RuntimeError("kaboom"))
+
+    turn = p.consult("job_failure", Observation(changed=[{"name": "A", "status": "failure"}]))
+
+    assert turn.error and "kaboom" in turn.error
+    assert calls == ["in_progress", "neutral"]  # never left spinning
+
+
+def test_finalize_check_closes_a_mid_flight_check():
+    calls = []
+    p = MockProvider(model="m")
+    p.attach_check_updater(lambda s, x: calls.append(s))
+    p.track_observation(Observation(changed=[{"name": "A", "status": "failure"}]))
+    assert calls == ["in_progress"]
+    p.finalize_check()
+    assert calls == ["in_progress", "neutral"]
+    p.finalize_check()  # idempotent — already closed
+    assert calls == ["in_progress", "neutral"]
+
+
+def test_check_updater_errors_never_break_consult():
+    def boom(status, summary):
+        raise RuntimeError("check api down")
+
+    p = MockProvider(model="m")
+    p.attach_check_updater(boom)
+    # A failing check update must not stop the turn from being produced.
+    turn = p.consult("job_failure", Observation(changed=[{"name": "A", "status": "failure"}]))
+    assert turn is not None and turn.error is None

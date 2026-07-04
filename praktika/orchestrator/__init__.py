@@ -415,8 +415,16 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
                     )
                 else:
                     patcher = None
+                # The "AI Advisor" check mirrors the advisor's observations and
+                # decisions (CI only; created lazily on the first consultation).
+                ai_check = (
+                    _make_ai_check_updater(gh_token, repo, head_sha)
+                    if not local_mode
+                    else None
+                )
                 advisor = Advisor.maybe_create(
-                    event=event, run_id=run_id, local_mode=local_mode, patcher=patcher
+                    event=event, run_id=run_id, local_mode=local_mode,
+                    patcher=patcher, ai_check=ai_check,
                 )
 
                 phase = "planning"
@@ -522,6 +530,35 @@ def _resolve_gh_token(gh_token):
     """
     getter = getattr(gh_token, "get", None)
     return getter() if callable(getter) else gh_token
+
+
+def _make_ai_check_updater(gh_token, repo, head_sha):
+    """Build the ``updater(status, summary_md)`` the AI advisor mirrors to.
+
+    Returns a callable that maintains a dedicated **AI Advisor** GitHub check:
+    ``status="in_progress"`` while an observation is out to the model,
+    ``"neutral"`` once the turn lands. The check run is created **lazily on first
+    use** (the first model consultation), so green runs never show one. Returns
+    None when there's nothing to authenticate with.
+    """
+    if not (gh_token and repo and head_sha):
+        return None
+    from .check_run import CheckRun
+
+    state = {"check": None}
+
+    def update(status, summary):
+        out = {"title": "AI Advisor", "summary": summary}
+        if state["check"] is None:
+            state["check"] = CheckRun.start(
+                gh_token, repo, head_sha, "AI Advisor", with_cancel_action=False
+            )
+        if status == "in_progress":
+            state["check"].update(status="in_progress", output=out)
+        else:
+            state["check"].update(status="completed", conclusion="neutral", output=out)
+
+    return update
 
 
 def _make_ai_patcher(repo, head_ref, head_sha, gh_token):

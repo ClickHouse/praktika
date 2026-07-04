@@ -295,7 +295,9 @@ class Advisor:
         self._last_status = {}
 
     @classmethod
-    def maybe_create(cls, event=None, run_id=None, local_mode=False, patcher=None):
+    def maybe_create(
+        cls, event=None, run_id=None, local_mode=False, patcher=None, ai_check=None
+    ):
         """Build an Advisor from Settings, or return None if AI is disabled.
 
         Also opens (or rejoins) the durable per-PR AI session and registers
@@ -304,7 +306,9 @@ class Advisor:
 
         ``patcher`` is the orchestrator-supplied commit+push callback used to
         apply a ``cancel_and_patch`` decision; when None (local mode / fork PR /
-        no token) such a decision stays advisory.
+        no token) such a decision stays advisory. ``ai_check`` is the AI Advisor
+        check updater the provider mirrors observations/turns to (None disables
+        the check).
 
         The advisor is advisory and must never break core orchestration, so
         provider resolution is best-effort too: if the configured
@@ -325,6 +329,7 @@ class Advisor:
                 f"{type(e).__name__}: {e}"
             )
             return None
+        provider.attach_check_updater(ai_check)
         console = TraceLogger(run_id=run_id)
         print(
             f"[AI   ] advisor enabled: provider={provider.name} "
@@ -361,32 +366,16 @@ class Advisor:
                 changed.append(entry)
         return changed
 
-    def _safe_call(self, hook, observation):
-        """Invoke one provider hook, returning its ``Turn`` or ``None``.
+    def _consult(self, event, observation, state):
+        """Dispatch a lifecycle ``event`` to the provider and, if it produced a
+        turn, record + dispatch it.
 
-        ``None`` is the hook's no-op signal (the provider doesn't react to this
-        event) — nothing is recorded. Any exception from a real hook is turned
-        into an error ``Turn`` so a provider bug can never take down the
-        orchestration loop.
+        ``provider.consult`` owns the model call plus its bracketing (observation
+        /turn tracking, the AI Advisor check, and turning a provider exception
+        into an error ``Turn``). Returns the recorded ``Turn``, or ``None`` when
+        the hook opted out (no model call, no ledger entry, no persisted turn).
         """
-        try:
-            return hook(observation)
-        except Exception as e:
-            return Turn(
-                error=f"{type(e).__name__}: {e}",
-                usage=Usage(
-                    provider=getattr(self._provider, "name", ""),
-                    model=self._provider.resolved_model(),
-                ),
-            )
-
-    def _consult(self, hook, observation, state):
-        """Call a provider hook and, if it produced a turn, record + dispatch it.
-
-        Returns the recorded ``Turn``, or ``None`` when the hook opted out (no
-        model call, no ledger entry, no persisted turn).
-        """
-        turn = self._safe_call(hook, observation)
+        turn = self._provider.consult(event, observation)
         if turn is None:
             return None
         self._ledger.add(turn.usage)
@@ -402,12 +391,10 @@ class Advisor:
     def on_run_start(self, state, event):
         """Lifecycle hook: the run just started, before any job is terminal.
 
-        Routes to ``provider.on_run_start`` — a no-op for today's providers, so
-        this costs nothing unless a provider opts into the event.
+        Routes to ``on_run_start`` — a no-op for today's providers, so this costs
+        nothing unless a provider opts into the event.
         """
-        return self._consult(
-            self._provider.on_run_start, build_observation(state, event, []), state
-        )
+        return self._consult("run_start", build_observation(state, event, []), state)
 
     def on_workflow_update(self, state, event):
         """Hook called from the orchestrator loop after each ``state.wait()``.
@@ -427,15 +414,11 @@ class Advisor:
         turn = None
         if failures:
             turn = self._consult(
-                self._provider.on_job_failure,
-                build_observation(state, event, failures),
-                state,
+                "job_failure", build_observation(state, event, failures), state
             )
         if successes:
             self._consult(
-                self._provider.on_job_success,
-                build_observation(state, event, successes),
-                state,
+                "job_success", build_observation(state, event, successes), state
             )
         return turn
 
@@ -520,10 +503,10 @@ class Advisor:
         """
         if state is not None:
             self._consult(
-                self._provider.on_run_finish,
-                build_observation(state, self._event, []),
-                state,
+                "run_finish", build_observation(state, self._event, []), state
             )
+        # Don't leave the AI Advisor check spinning if a round-trip died mid-flight.
+        self._provider.finalize_check()
         self._console.summary(self._ledger)
         if self._session is not None:
             self._session.finalize_run(

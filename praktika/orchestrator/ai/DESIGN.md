@@ -72,8 +72,13 @@ A hook that consults a model:
 4. returns a `Turn` with `reasoning` and (later) a populated `decision`;
    or returns `None` to opt out for this event.
 
-None of that touches `praktika/orchestrator/__init__.py`. `Advisor._safe_call`
-wraps each hook so a provider bug becomes an error `Turn`, never a crashed run.
+None of that touches `praktika/orchestrator/__init__.py`. The advisor never
+calls a hook directly — it goes through `AIProvider.consult(event, obs)`, which
+brackets the hook with observation/turn tracking (feeding the **AI Advisor**
+GitHub check: in-progress while an observation is out, neutral once the turn
+lands) and turns a provider exception into an error `Turn`, so a provider bug
+never crashes the run. Hooks stay pure model logic; an unimplemented hook is a
+no-op that consult skips (no tracking, no check).
 
 ### Adding a provider
 

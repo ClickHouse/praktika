@@ -13,7 +13,7 @@ no-ops.
 The ``anthropic`` SDK is an *optional* dependency: it is imported lazily inside
 ``on_job_failure`` so merely registering this provider never forces the import.
 If the SDK or ``ANTHROPIC_API_KEY`` is missing, the hook raises — and
-``Advisor._safe_call`` converts that into an error ``Turn``, so a missing
+``AIProvider.consult`` converts that into an error ``Turn``, so a missing
 dependency degrades the advisor to a no-op instead of crashing the orchestrator.
 """
 import json
@@ -437,6 +437,8 @@ class AnthropicProvider(AIProvider):
         return self._client
 
     def on_job_failure(self, observation) -> Turn:
+        # Pure model logic — observation/turn tracking and the AI Advisor check
+        # are handled by AIProvider.consult, which brackets this call.
         client = self._get_client()
         model = self.resolved_model()
 

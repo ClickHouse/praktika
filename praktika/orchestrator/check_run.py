@@ -28,19 +28,20 @@ class CheckRun:
         return resp.json() if resp.content else {}
 
     @classmethod
-    def start(cls, token, repo, head_sha, name, details_url=None):
+    def start(cls, token, repo, head_sha, name, details_url=None, with_cancel_action=True):
         body = {
             "name": name,
             "head_sha": head_sha,
             "status": "in_progress",
-            "actions": [
+        }
+        if with_cancel_action:
+            body["actions"] = [
                 {
                     "label": "Cancel",
                     "description": "Cancel this CI run",
                     "identifier": "cancel",
                 }
-            ],
-        }
+            ]
         if details_url is not None:
             body["details_url"] = details_url
         data = cls._api(
@@ -70,8 +71,12 @@ class CheckRun:
             body,
         )
 
-    def update(self, output=None, details_url=None):
+    def update(self, output=None, details_url=None, status=None, conclusion=None):
         body = {}
+        if status is not None:
+            body["status"] = status
+        if conclusion is not None:
+            body["conclusion"] = conclusion
         if output is not None:
             body["output"] = output
         if details_url is not None:
