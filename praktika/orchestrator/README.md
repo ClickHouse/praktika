@@ -256,7 +256,12 @@ redeploy. `$Latest` is not honored at runtime.
 ## What works
 
 - Webhook -> Lambda -> SQS -> orchestrator pickup -> clone -> orchestrate
-- Per-workflow `PR` GitHub check run with the full execution plan as output
+- Per-workflow `PR` GitHub check run with the full execution plan as output,
+  the orchestrator instance id, lifecycle phase, and `attempt N/M`; always
+  finalized (never left `in_progress`) even on a startup crash
+- Infra-failure handling: a startup/infra crash exits `INFRA_EXIT_CODE` and the
+  controller retries on a fresh orchestrator instance, bounded by SQS receive
+  count — a real red build (`rc=1`) is not retried (see `PROTOCOL.md`)
 - Per-job GitHub check runs (`queued` at plan time, `in_progress` on kick,
   `success`/`skipped` on completion)
 - DAG-aware execution loop (`WorkflowState.get_ready` / `kick` / `wait`)

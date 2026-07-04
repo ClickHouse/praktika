@@ -289,6 +289,12 @@ class SessionManager:
         self._persist_round()
         self._persist_session()
 
+    def current_round_id(self):
+        """The open round's id (for commit trailers), or "" when none is open."""
+        if self._round is not None:
+            return self._round.round_id
+        return self.session.open_round_id or ""
+
     def record_edit(self, patch_text, commit_sha="", files=None):
         """Record an AI-produced edit (diff + resulting commit) under the round.
 

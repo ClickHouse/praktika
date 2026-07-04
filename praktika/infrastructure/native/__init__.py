@@ -4,7 +4,6 @@ from .github_token_minter import GitHubTokenMinter
 from .image_builder import (
     create_awslinux_image_builder_config,
     create_image_test_component,
-    create_praktika_venv_config,
     create_ubuntu_image_builder_config,
 )
 from .orchestrator_pool import OrchestratorPool
@@ -29,4 +28,3 @@ class Components:
         create_ubuntu_image_builder_config
     )
     create_image_test_component = staticmethod(create_image_test_component)
-    create_praktika_venv_config = staticmethod(create_praktika_venv_config)

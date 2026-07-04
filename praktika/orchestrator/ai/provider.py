@@ -4,14 +4,23 @@ This module defines the *stable contract* between the orchestrator loop and
 whatever model decides what to do. The loop never imports an SDK directly; it
 hands a serializable ``Observation`` to an ``AIProvider`` and gets back a
 ``Turn``. A real provider (Anthropic, OpenAI, ...) is added by subclassing
-``AIProvider``, formatting the observation into a prompt + tool specs, running
-the SDK's tool-use loop, and filling in ``Usage`` / ``Turn`` from the response —
-without touching ``praktika/orchestrator/__init__.py``.
+``AIProvider``, implementing the lifecycle hook(s) it cares about — formatting
+the observation into a prompt + tool specs, running the SDK's tool-use loop, and
+filling in ``Usage`` / ``Turn`` from the response — without touching
+``praktika/orchestrator/__init__.py``.
 
-For the current skeleton the only registered provider is ``mock`` (see
-``mock.py``), which returns a no-op ``Turn``.
+The contract is **event-typed**: the orchestrator (via the ``Advisor``) calls a
+hook named for the lifecycle event that fired — ``on_job_failure`` when a job
+fails, ``on_job_success`` when one passes, ``on_run_start`` / ``on_run_finish``
+around the run. Every hook is a **no-op by default** (returns ``None`` → no
+model call, no recorded turn), so a provider implements only the events it
+reacts to. Today's real providers implement ``on_job_failure`` only: a green
+job never reaches the model.
+
+For the current skeleton the only registered provider beyond the real ones is
+``mock`` (see ``mock.py``), which returns a no-op ``Turn`` on failure.
 """
-from abc import ABC, abstractmethod
+from abc import ABC
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -54,7 +63,9 @@ class Observation:
 
     event: dict = field(default_factory=dict)  # type, action, pr_number, head_sha, ...
     jobs: List[dict] = field(default_factory=list)  # [{name, status, duration_s, info?}]
-    changed: List[dict] = field(default_factory=list)  # jobs that became terminal this turn
+    # jobs that became terminal this turn; failed ones also carry a compact
+    # Result digest under `result` ({status, info?, failed[], errors?}).
+    changed: List[dict] = field(default_factory=list)
     summary: str = ""  # state.md_status_summary()
 
     def to_dict(self):
@@ -92,17 +103,49 @@ class Turn:
 
 
 class AIProvider(ABC):
-    """Base class for anything that decides what to do on a workflow update."""
+    """Base class for anything that reacts to workflow lifecycle events.
+
+    The orchestrator routes each event to the matching hook below. All hooks
+    default to a **no-op** (``return None``), so a subclass implements only the
+    events it cares about; an unimplemented event never reaches the model and
+    records no turn. A hook returns a ``Turn`` (reasoning + decision + usage)
+    when it actually consults the model, or ``None`` to opt out for this event.
+    """
 
     name: str = ""
 
     def __init__(self, model=""):
         self.model = model or ""
 
-    @abstractmethod
-    def decide(self, observation: Observation) -> Turn:
-        """Inspect the observation and return a Turn (reasoning + decision + usage)."""
-        raise NotImplementedError
+    def resolved_model(self) -> str:
+        """The model id this provider will actually use for a call.
+
+        Falls back to a subclass ``DEFAULT_MODEL`` when ``model`` is unset, so
+        accounting (incl. error Turns built before a call runs) names the real
+        model rather than an empty string.
+        """
+        return self.model or getattr(self, "DEFAULT_MODEL", "")
+
+    # ----------------------------------------------------------- event hooks
+    # Each receives the Observation for its event and returns a Turn, or None
+    # (the default) to opt out — no model call, nothing recorded. Override only
+    # the hooks the provider acts on.
+
+    def on_run_start(self, observation: Observation) -> Optional[Turn]:
+        """The run just started (no job is terminal yet)."""
+        return None
+
+    def on_job_failure(self, observation: Observation) -> Optional[Turn]:
+        """One or more jobs failed this turn (``changed`` carries their digests)."""
+        return None
+
+    def on_job_success(self, observation: Observation) -> Optional[Turn]:
+        """One or more jobs passed this turn."""
+        return None
+
+    def on_run_finish(self, observation: Observation) -> Optional[Turn]:
+        """The run reached a terminal state."""
+        return None
 
 
 # name -> AIProvider subclass. Populated below; new providers register here.
@@ -126,8 +169,33 @@ def resolve(name) -> type:
         )
 
 
+def resolve_provider(spec, model="") -> "AIProvider":
+    """Turn an ``AI_PROVIDER`` setting into a ready ``AIProvider`` instance.
+
+    ``spec`` may be:
+
+    * an ``AIProvider`` **instance** — used as-is (a user wired up their own
+      provider object in ``settings.py``; ``model`` is whatever they gave it),
+    * an ``AIProvider`` **subclass** — instantiated with ``model``,
+    * a registered **name** (str) — looked up in the registry, then
+      instantiated with ``model``.
+
+    The instance/subclass paths are how a project plugs in a custom provider
+    without touching this package — assign the object (or class) to
+    ``AI_PROVIDER`` in ``ci/settings/settings.py``.
+    """
+    if isinstance(spec, AIProvider):
+        return spec
+    if isinstance(spec, type) and issubclass(spec, AIProvider):
+        return spec(model=model)
+    return resolve(spec)(model=model)
+
+
 # Register built-in providers. Imported here (not at module top) to avoid a
 # circular import: mock.py imports the dataclasses from this module.
 from . import mock as _mock  # noqa: E402
+from . import anthropic as _anthropic  # noqa: E402
 
 register(_mock.MockProvider)
+register(_anthropic.AnthropicProvider)
+register(_anthropic.BedrockProvider)

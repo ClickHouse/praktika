@@ -58,6 +58,24 @@ For deployment security considerations, see [SECURITY.md](./SECURITY.md).
 - Consistent test Docker image versioning: images rebuild automatically when inputs change, and versions stay pinned to code state across branches
 - CI DB integration: job results, test results, timings, and related metadata are written automatically
 
+**AI orchestration**
+- Provider-agnostic AI advisor wired into the orchestrator loop: when a job
+  result lands, the model gets a snapshot of the run plus the failing job's
+  Result digest and investigates with sandboxed tools — reading job logs
+  (allowlisted URLs) and the checked-out PR source (`grep_repo` / `read_file`) —
+  then returns one constrained action:
+  - **continue** — nothing actionable; let the run proceed
+  - **drop run** (`cancel_run`) — a failure makes the rest of the run pointless;
+    the orchestrator tears it down
+  - **patch** (`cancel_and_patch`) — a clear, fixable defect: the model's exact
+    edits are applied to the PR, committed and pushed as the GitHub App bot via
+    the Git Data API (verified commit), and the superseded run is cancelled so
+    the fresh run validates the fix
+- Durable per-PR sessions persist every turn, decision, edit, and token/cost
+  across CI runs — the AI's memory, so it doesn't retry a fix that already failed
+- Bedrock / Anthropic providers (plus a no-op mock); enabled and configured via
+  `Settings.AI_ORCHESTRATION_ENABLED` / `AI_PROVIDER` / `AI_MODEL`
+
 **GitHub side**
 - Webhook ingestion via AWS Lambda
 - `pull_request` and `push` pipeline triggers
@@ -93,14 +111,20 @@ For deployment security considerations, see [SECURITY.md](./SECURITY.md).
   For future AI-edit sessions, prefer keeping parent 2 of the merge commit
   stable across automatic commits so Praktika can reuse CI cache state and
   avoid rerunning jobs that already passed earlier in the same session.
+- **One workflow per orchestrator, parallelized** — when an event matches
+  several workflows, dispatch one message (and one GitHub check / instance)
+  per workflow instead of running them sequentially in a single orchestrator
+  process. Today they share one process and one exit code, so a single
+  `overall_rc` has to collapse all their outcomes (infra failure outranks an
+  ordinary failure) for the controller's retry decision — a temporary hack
+  that goes away once each workflow runs independently.
 - **Config and Finish stages on the orchestrator** — run the auto-injected
   setup/teardown jobs in-process instead of consuming a runner slot
-- **AI-assisted orchestrator loop** — allow the orchestrator to call a
-  provider-agnostic AI decision hook at each execution-graph advance. The hook
-  should receive the current workflow state and return constrained actions such
-  as continuing normally, reordering runnable jobs within dependency and
-  resource limits, canceling the workflow, or canceling and starting an
-  automated fix attempt.
+- **Native AI code review** — a standalone reviewer that reviews the PR diff
+  independently of the advisor and emits structured findings, in a format the
+  advisor can then consume and act on (e.g. surface, drop run, or patch). The
+  reviewer and the advisor stay decoupled — the reviewer produces the result,
+  the advisor decides what to do with it
 - **Centralized event routing** — have MainCI walk every workflow's active
   triggers (events, branch filters, cron schedules) and publish a routing
   table the webhook lambda consumes, so the lambda knows which branches to

@@ -1,12 +1,17 @@
 from praktika.infrastructure.cloud import CloudInfrastructure
-from praktika.infrastructure import Components, Storage, VPC
+from praktika.infrastructure import Components, ImageBuilder, Storage, VPC
 from ci.settings.settings import SECRET_CI_DB_CONNECTION
 
 
 _PRAKTIKA_PACKAGE_BASE_URL = (
     "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages"
 )
-_PRAKTIKA_BASE_VERSION = "0.1.4"
+_PRAKTIKA_BASE_VERSION = "0.1.6"
+# The baked AMI venv pins an exact Praktika version so image builds are
+# reproducible and a version bump forces a fresh AMI (see _image_builders).
+_PRAKTIKA_BASE_WHL = (
+    f"{_PRAKTIKA_PACKAGE_BASE_URL}/praktika-{_PRAKTIKA_BASE_VERSION}-py3-none-any.whl"
+)
 # The latest praktika wheel is published to a fixed, version-less S3 location so
 # that runner/orchestrator user-data and image recipes never need editing on a
 # version bump. The "0.0.0" is a placeholder: pip requires a PEP 440-valid
@@ -17,7 +22,7 @@ _PRAKTIKA_BASE_VERSION = "0.1.4"
 _PRAKTIKA_LATEST_WHL_NAME = "praktika-0.0.0-py3-none-any.whl"
 _PRAKTIKA_WHL = f"{_PRAKTIKA_PACKAGE_BASE_URL}/latest/{_PRAKTIKA_LATEST_WHL_NAME}"
 
-_PRAKTIKA_CONTROLLER_BASE_VERSION = "0.1.1"
+_PRAKTIKA_CONTROLLER_BASE_VERSION = "0.1.3"
 _PRAKTIKA_CONTROLLER_BASE_WHL = (
     f"{_PRAKTIKA_PACKAGE_BASE_URL}/"
     f"praktika_controller-{_PRAKTIKA_CONTROLLER_BASE_VERSION}-py3-none-any.whl"
@@ -32,33 +37,27 @@ _PRAKTIKA_CONTROLLER_WHL = (
 _RUNTIME_BASE_VENV = "praktika-runtime"
 
 
-def _component_factory(*names):
-    for name in names:
-        factory = getattr(Components, name, None)
-        if factory:
-            return factory
-    raise AttributeError(f"Components has none of these factories: {names}")
-
-
-_create_praktika_venv_config = _component_factory(
-    "create_praktika_venv_config",
-    "praktika_venv_config",
-)
-_create_awslinux_image_builder_config = _component_factory(
-    "create_awslinux_image_builder_config",
-    "image_builder_config",
-)
-_create_ubuntu_image_builder_config = _component_factory(
-    "create_ubuntu_image_builder_config",
-    "ubuntu_image_builder_config",
-)
-
-
 def _runtime_prebuilt_venvs():
+    # The `infrastructure` extra pulls Praktika's runtime deps
+    # (boto3/PyJWT/cryptography/requests) automatically; pytest and the Bedrock
+    # AI SDK are optional extras the runner/orchestrator need, so list them
+    # explicitly. The orchestrator's AI advisor (AI_PROVIDER="bedrock") imports
+    # `anthropic[bedrock]` lazily at decide() time; baking it into this shared
+    # venv keeps it present on every AMI — including the base pool, which has no
+    # boot-time user_data to pip-install into (harmless on job runners).
     return [
-        _create_praktika_venv_config(
-            _RUNTIME_BASE_VENV,
-            _PRAKTIKA_BASE_VERSION,
+        ImageBuilder.PrebuiltVenv(
+            name=_RUNTIME_BASE_VENV,
+            packages=[
+                "pytest>=7.0.0",
+                "pytest-reportlog>=0.4.0",
+                "anthropic[bedrock]",
+                f"praktika[infrastructure] @ {_PRAKTIKA_BASE_WHL}",
+            ],
+            description=(
+                "Shared Python base venv: Praktika (+infrastructure extra), "
+                "pytest, and the Bedrock AI SDK"
+            ),
         ),
     ]
 
@@ -76,25 +75,27 @@ def _custom_image_tests():
 
 
 def _image_builders():
-    ci_version = "1.0.11"
-    ubuntu_ci_version = "1.0.8"
+    # Bump on any change to the baked venv contents (see _runtime_prebuilt_venvs)
+    # so Image Builder produces a fresh AMI.
+    ci_version = "1.0.12"
+    ubuntu_ci_version = "1.0.9"
 
     return [
-        _create_awslinux_image_builder_config(
+        Components.create_awslinux_image_builder_config(
             name="ci-arm64-image",
             version=ci_version,
             controller_package=_PRAKTIKA_CONTROLLER_BASE_WHL,
             prebuilt_venvs=_runtime_prebuilt_venvs(),
             instance_types=["t4g.small"],
         ),
-        _create_awslinux_image_builder_config(
+        Components.create_awslinux_image_builder_config(
             name="ci-x86_64-image",
             version=ci_version,
             controller_package=_PRAKTIKA_CONTROLLER_BASE_WHL,
             prebuilt_venvs=_runtime_prebuilt_venvs(),
             instance_types=["t3.small"],
         ),
-        _create_ubuntu_image_builder_config(
+        Components.create_ubuntu_image_builder_config(
             name="ci-ubuntu-x86_64-image",
             version=ubuntu_ci_version,
             controller_package=_PRAKTIKA_CONTROLLER_BASE_WHL,
@@ -232,6 +233,17 @@ _runner_pools = [
     ),
 ]
 
+# The AI advisor (AI_PROVIDER="bedrock") reaches Claude through Bedrock's Mantle
+# API, which the orchestrator's instance role must be allowed to invoke. Both
+# orchestrator pools share one role and get the grant (the base pool doesn't run
+# the advisor today, but the permission is harmless there).
+_ORCHESTRATOR_BEDROCK_IAM_STATEMENT = {
+    "Sid": "BedrockMantleInference",
+    "Effect": "Allow",
+    "Action": ["bedrock-mantle:CreateInference"],
+    "Resource": "*",
+}
+
 _orchestrator_pool = Components.OrchestratorPool(
     name="workflow-orchestrator",
     instance_type="t4g.small",
@@ -240,6 +252,7 @@ _orchestrator_pool = Components.OrchestratorPool(
     max_size=10,
     capacity_reserve=0,
     image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
+    ext={"iam_statements": [_ORCHESTRATOR_BEDROCK_IAM_STATEMENT]},
     user_data="\n".join(
         [
             "#!/usr/bin/env bash",
@@ -268,6 +281,7 @@ _orchestrator_pool_base = Components.OrchestratorPool(
     max_size=10,
     capacity_reserve=2,
     image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
+    ext={"iam_statements": [_ORCHESTRATOR_BEDROCK_IAM_STATEMENT]},
 )
 
 _cidb_cluster = Components.CIDBCluster(
@@ -278,7 +292,7 @@ _cidb_cluster = Components.CIDBCluster(
 PROJECTS = [
     CloudInfrastructure.Config(
         name="praktika",
-        min_praktika_version="0.1.4",
+        min_praktika_version="0.1.6",
         vpcs=[
             VPC.Config(
                 subnets=[

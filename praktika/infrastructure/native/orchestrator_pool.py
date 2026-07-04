@@ -152,6 +152,13 @@ class OrchestratorPool:
             for branch in allowed_push_branches
         ), "ext['allowed_push_branches'] must contain only non-empty strings"
         allowed_push_branches = [branch.strip() for branch in allowed_push_branches]
+        # Extra IAM policy statements appended to WorkflowOrchestratorAccess, so a
+        # project can grant pool-specific permissions (e.g. the AI advisor's
+        # Bedrock access) from its config without editing this shared class.
+        extra_iam_statements = self.ext.get("iam_statements", [])
+        assert isinstance(extra_iam_statements, list) and all(
+            isinstance(stmt, dict) for stmt in extra_iam_statements
+        ), "ext['iam_statements'] must be a list of IAM policy statement dicts"
         assert (
             self.max_size >= self.capacity_reserve
         ), f"max_size={self.max_size} must be >= capacity_reserve={self.capacity_reserve}"
@@ -237,6 +244,7 @@ class OrchestratorPool:
                             ],
                             "Resource": "arn:aws:logs:*:*:*",
                         },
+                        *extra_iam_statements,
                     ],
                 }
             },

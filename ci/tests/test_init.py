@@ -19,7 +19,7 @@ from praktika.project_init import (
     _validate_aws_profile,
 )
 from praktika.settings import Settings
-from praktika.version import current_praktika_version
+from praktika.version import compat_version, current_praktika_version
 
 
 EXPECTED_GITHUB_TOKEN_MINTER_PERMISSIONS = {
@@ -399,17 +399,17 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
             builder.prebuilt_venvs[0].name
             == f"praktika-runtime-{current_praktika_version()}"
         )
-        assert {
-            "boto3",
-            "PyJWT",
-            "cryptography",
-            "requests",
-            "pytest>=7.0.0",
-        }.issubset(builder.prebuilt_venvs[0].packages)
+        packages = builder.prebuilt_venvs[0].packages
+        assert "pytest>=7.0.0" in packages
+        # Praktika's runtime deps (boto3/PyJWT/cryptography/requests) come from
+        # the `infrastructure` extra rather than being enumerated.
+        assert any(
+            pkg.startswith("praktika[infrastructure] @ ") for pkg in packages
+        )
+        # The scaffolding installs from the floating major.minor compat alias.
+        compat = compat_version(current_praktika_version())
         assert (
-            builder.prebuilt_venvs[0]
-            .packages[-1]
-            .endswith(f"/praktika-{current_praktika_version()}-py3-none-any.whl")
+            packages[-1].endswith(f"/{compat}/praktika-0.0.0-py3-none-any.whl")
         )
     assert cloud.orchestrator_pool.vpc_name == f"{project_slug}-vpc"
     assert cloud.orchestrator_pool.launch_template.vpc_name == f"{project_slug}-vpc"

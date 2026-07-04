@@ -68,6 +68,43 @@ def _normalize_job_name_for_s3(name):
     return name.replace(" ", "_").replace("/", "_")
 
 
+def _build_check_output(result, rc, instance_id="", report_url=""):
+    """Render a job's Result as the ``output`` dict for a check-run
+    completion. ``result`` is a ``praktika.Result`` reconstructed from the
+    completion payload (the runner ships it in ``final.json``). Returns
+    None on any failure so the caller can fall back to a bodyless
+    completion."""
+    try:
+        text = result.to_markdown(report_url=report_url)
+        # Check API caps output.text at ~64 KB.
+        limit = 60_000
+        if len(text) > limit:
+            text = text[:limit] + "\n\n_… (truncated)_\n"
+        dur = f" in {int(result.duration)}s" if result.duration else ""
+        if rc != 0 and result.is_ok():
+            # The runner process crashed after writing an OK result to disk —
+            # OOM, disk-full, SIGKILL, etc. Report ERROR so the summary matches
+            # the failure conclusion and the cause is clearly not the job logic.
+            displayed_status = "ERROR"
+            text = f"Runner process exited with rc={rc} after reporting OK — likely OOM or disk-full.\n\n{text}"
+        else:
+            displayed_status = result.status
+        if displayed_status == "FAIL":
+            displayed_status = "FAILED"
+        summary = f"**{displayed_status}**{dur}"
+        if report_url:
+            summary += f" — [CI Report]({report_url})"
+        if instance_id:
+            summary += f" — runner `{instance_id}`"
+            text = f"**Runner instance:** `{instance_id}`" + (
+                f"\n\n{text}" if text else ""
+            )
+        return {"title": displayed_status, "summary": summary, "text": text}
+    except Exception as e:
+        print(f"  [warn] could not render job Result as MD: {type(e).__name__}: {e}")
+        return None
+
+
 def _is_missing_s3_key_error(exc):
     """Best-effort check for a missing S3 object without importing botocore."""
     if isinstance(exc, KeyError):
@@ -222,6 +259,10 @@ class JobState:
         self.last_heartbeat_ts = None
         self.runner_instance_id = None
         self.last_heartbeat_phase = None
+        # Raw job Result (plain dict) as shipped in the completion payload.
+        # Populated by sweep_completions; rendered into the check-run output
+        # and retained for AI observation.
+        self.result = None
 
     @property
     def name(self):
@@ -682,15 +723,39 @@ class WorkflowState:
                 wc = env.get("WORKFLOW_CONFIG")
                 if isinstance(wc, dict):
                     self.apply_workflow_config(wc)
-            output = payload.get("check_output")
-            if not isinstance(output, dict):
-                output = None
             details_url = payload.get("details_url")
             if not isinstance(details_url, str):
                 details_url = None
             instance_id = payload.get("instance_id")
             if isinstance(instance_id, str) and instance_id.strip():
                 js.runner_instance_id = instance_id.strip()
+            # The runner ships the raw job Result in the payload. Stash it on
+            # the JobState for AI observation, then render it into the
+            # check-run output here (the orchestrator owns the check
+            # lifecycle).
+            output = None
+            result_dict = payload.get("result")
+            if isinstance(result_dict, dict):
+                js.result = result_dict
+                try:
+                    from copy import deepcopy
+
+                    from ..result import Result
+
+                    # from_dict mutates its argument, so reconstruct from a
+                    # copy to keep js.result a plain, serializable dict.
+                    result = Result.from_dict(deepcopy(result_dict))
+                    output = _build_check_output(
+                        result,
+                        rc,
+                        instance_id=js.runner_instance_id or "",
+                        report_url=details_url or "",
+                    )
+                except Exception as e:
+                    print(
+                        f"  [warn] could not render Result for {js.name!r}: "
+                        f"{type(e).__name__}: {e}"
+                    )
             js.finish(success=(rc == 0), output=output, details_url=details_url)
 
     def sweep_liveness(self, now=None):

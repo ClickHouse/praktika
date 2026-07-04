@@ -41,6 +41,10 @@ class _Settings:
     ######################################
     MAX_RETRIES_S3 = 3
     MAX_RETRIES_GH = 3
+    # How many times the orchestrator retries its startup (AI advisor +
+    # workflow plan build) on an infra error before giving up and finalizing
+    # the check as failed. The job loop itself is never retried.
+    MAX_RETRIES_ORCHESTRATOR = 3
     # Runner controller heartbeat write interval, in seconds. Each runner
     # writes heartbeat.json for its current job at this cadence.
     HEARTBEAT_INTERVAL_S = 30
@@ -58,8 +62,11 @@ class _Settings:
     # Master switch for the AI advisor. Off by default: the orchestrator loop
     # is unchanged unless a project opts in. See praktika/orchestrator/ai.
     AI_ORCHESTRATION_ENABLED: bool = False
-    # Registered provider name (see ai/provider.py registry). "mock" does nothing.
-    AI_PROVIDER: str = "mock"
+    # AI provider: a registered name ("mock", "anthropic"), or — to plug in a
+    # custom provider without touching praktika — an AIProvider subclass or a
+    # ready AIProvider instance assigned in the project settings.py. Resolved by
+    # ai/provider.py:resolve_provider. "mock" does nothing.
+    AI_PROVIDER = "mock"
     # Provider-specific model id; empty means the provider's default.
     AI_MODEL: str = ""
     # Session store backend: "auto" (S3 in CI, local fs in local mode), "s3",
@@ -190,6 +197,7 @@ _USER_DEFINED_SETTINGS = [
     "PYTHON_PACKET_MANAGER",
     "MAX_RETRIES_S3",
     "MAX_RETRIES_GH",
+    "MAX_RETRIES_ORCHESTRATOR",
     "HEARTBEAT_INTERVAL_S",
     "RUNNER_PICKUP_TIMEOUT_S",
     "HEARTBEAT_TIMEOUT_S",

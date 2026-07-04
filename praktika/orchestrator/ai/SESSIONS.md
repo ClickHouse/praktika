@@ -20,8 +20,8 @@ PR     (pr key)         session.json          rounds/runs index, cumulative cost
 - **Round log** — one AI problem-solving episode: edit → push → rerun → observe
   → edit … across many CI runs, until a run goes green (resolved), budget runs
   out (abandoned), or a human pushes (superseded). (`round_log(round_id)`)
-- **Turn** — what the existing `Advisor` already produces on each workflow
-  update.
+- **Turn** — what the `Advisor` produces when it consults the provider (today,
+  when a job fails).
 
 ## Round boundaries are implicit
 
@@ -92,8 +92,8 @@ SessionManager.from_event(event, run_id, local_mode)  # pick store, load/create 
   .cost_summary()                       # per-PR + per-round
 ```
 
-`Advisor` (per run) calls `begin_run` once at creation, `observe_turn` per
-workflow update, and `finalize_run` at the end. The advisor never touches the
+`Advisor` (per run) calls `begin_run` once at creation, `observe_turn` for each
+recorded turn (today, on a job failure), and `finalize_run` at the end. The advisor never touches the
 store or the index directly.
 
 ## Configuration
@@ -110,6 +110,8 @@ store or the index directly.
   exercised end-to-end by the **mock** provider (which makes no real decision
   but produces a structured, non-actionable one so the flow is visible).
 - The **index** is a logging stub — the CIDB writer is the next step.
-- `record_edit` is wired but unused until a provider can actually edit/push.
+- `record_edit` is now written by the `cancel_and_patch` dispatch (the advisor
+  applies the model's edits, commits+pushes, and logs the diff+commit here); the
+  no-op mock still never calls it.
 - Budget checks are simple stubs.
 - AI-authored-push detection (human-takeover) is manifest-based for now.

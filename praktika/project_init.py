@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from .interactive import UserPrompt
-from .version import current_praktika_version
+from .version import compat_version, current_praktika_version
 
 
 PRAKTIKA_MARKERS = {
@@ -506,20 +506,32 @@ def _infrastructure_template(answers: InitAnswers) -> str:
     return textwrap.dedent(
         f"""\
         from ci.settings.settings import PROJECT_NAME, PRAKTIKA_BASE_VENV
-        from praktika.infrastructure import Components, Storage, VPC
+        from praktika.infrastructure import Components, ImageBuilder, Storage, VPC
         from praktika.infrastructure.cloud import CloudInfrastructure
 
 
         # until published in pip
         _PRAKTIKA_CONTROLLER_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_controller-0.1.1-py3-none-any.whl"
+        # Floating compat alias: the latest backwards-compatible patch in the
+        # {compat_version(current_praktika_version())} branch, so the project picks up BC bug fixes
+        # without re-pinning on every Praktika release.
+        _PRAKTIKA_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/{compat_version(current_praktika_version())}/praktika-0.0.0-py3-none-any.whl"
 
 
         def _image_builders():
             image_recipe_version = "1.0.0"
             prebuilt_venvs = [
-                Components.create_praktika_venv_config(
-                    PRAKTIKA_BASE_VENV,
-                    "{current_praktika_version()}",
+                # The `infrastructure` extra pulls Praktika's runtime deps
+                # (boto3/PyJWT/cryptography/requests) automatically; pytest is
+                # an optional extra the runner needs, so list it explicitly.
+                ImageBuilder.PrebuiltVenv(
+                    name=PRAKTIKA_BASE_VENV,
+                    packages=[
+                        "pytest>=7.0.0",
+                        "pytest-reportlog>=0.4.0",
+                        f"praktika[infrastructure] @ {{_PRAKTIKA_WHL}}",
+                    ],
+                    description="Praktika runtime venv (infrastructure extra + pytest)",
                 ),
             ]
             custom_image_tests = [
