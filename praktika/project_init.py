@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from .interactive import UserPrompt
-from .version import current_praktika_version
+from .version import compat_version, current_praktika_version
 
 
 PRAKTIKA_MARKERS = {
@@ -31,6 +31,7 @@ class InitAnswers:
     aws_profile: str
     is_oss: bool = False
     image_base: str = "awslinux"
+    enable_ai_capabilities: bool = False
 
     @property
     def project_slug(self) -> str:
@@ -389,6 +390,11 @@ def _prompt_for_answers(
     image_base = "awslinux"
     if "infrastructure" in selected_components:
         image_base = _prompt_image_base()
+    enable_ai_capabilities = False
+    if "workflows" in selected_components:
+        enable_ai_capabilities = UserPrompt.confirm(
+            "Enable AI capabilities for the pull request workflow?"
+        )
     return InitAnswers(
         project_name=project_name,
         main_branch=main_branch,
@@ -398,6 +404,7 @@ def _prompt_for_answers(
         aws_profile=aws_profile,
         is_oss=is_oss,
         image_base=image_base,
+        enable_ai_capabilities=enable_ai_capabilities,
     )
 
 
@@ -445,6 +452,20 @@ def _settings_template(answers: InitAnswers) -> str:
 
 def _pull_request_workflow_template(answers: InitAnswers) -> str:
     command = 'python3 -c \'print("hello from praktika")\''
+    ai_orchestrator = ""
+    if answers.enable_ai_capabilities:
+        ai_orchestrator = textwrap.indent(
+            textwrap.dedent(
+                """\
+                ai_orchestrator=Workflow.OrchestratorAI.Config(
+                    enabled=True,
+                    provider="bedrock",
+                    model="global.anthropic.claude-sonnet-5",
+                ),
+                """
+            ),
+            "        ",
+        )
     return textwrap.dedent(
         f"""\
         from praktika import Job, Workflow
@@ -456,6 +477,7 @@ def _pull_request_workflow_template(answers: InitAnswers) -> str:
                 name="Pull Request CI",
                 event=Workflow.Event.PULL_REQUEST,
                 base_branches=["{answers.main_branch}"],
+{ai_orchestrator if ai_orchestrator else ""}
                 jobs=[
                     Job.Config(
                         name="Smoke Test",
@@ -503,23 +525,49 @@ def _main_ci_workflow_template(answers: InitAnswers) -> str:
 
 
 def _infrastructure_template(answers: InitAnswers) -> str:
+    optional_ai_package = ""
+    optional_ai_permissions = ""
+    optional_ai_ext = ""
+    if answers.enable_ai_capabilities:
+        optional_ai_package = '                "anthropic[bedrock]",\n'
+        optional_ai_permissions = """\
+        _ORCHESTRATOR_BEDROCK_IAM_STATEMENT = {
+            "Sid": "BedrockRuntimeInference",
+            "Effect": "Allow",
+            "Action": ["bedrock:InvokeModel"],
+            "Resource": "*",
+        }
+"""
+        optional_ai_ext = '\n                ext={"iam_statements": [_ORCHESTRATOR_BEDROCK_IAM_STATEMENT]},'
     return textwrap.dedent(
         f"""\
         from ci.settings.settings import PROJECT_NAME, PRAKTIKA_BASE_VENV
-        from praktika.infrastructure import Components, Storage, VPC
+        from praktika.infrastructure import Components, ImageBuilder, Storage, VPC
         from praktika.infrastructure.cloud import CloudInfrastructure
 
 
         # until published in pip
         _PRAKTIKA_CONTROLLER_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_controller-0.1.1-py3-none-any.whl"
+        # Floating compat alias: the latest backwards-compatible patch in the
+        # {compat_version(current_praktika_version())} branch, so the project picks up BC bug fixes
+        # without re-pinning on every Praktika release.
+        _PRAKTIKA_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/{compat_version(current_praktika_version())}/praktika-0.0.0-py3-none-any.whl"
 
 
         def _image_builders():
             image_recipe_version = "1.0.0"
             prebuilt_venvs = [
-                Components.create_praktika_venv_config(
-                    PRAKTIKA_BASE_VENV,
-                    "{current_praktika_version()}",
+                # The `infrastructure` extra pulls Praktika's runtime deps
+                # (boto3/PyJWT/cryptography/requests) automatically; pytest is
+                # an optional extra the runner needs, so list it explicitly.
+                ImageBuilder.PrebuiltVenv(
+                    name=PRAKTIKA_BASE_VENV,
+                    packages=[
+                        "pytest>=7.0.0",
+                        "pytest-reportlog>=0.4.0",
+{optional_ai_package}                        f"praktika[infrastructure] @ {{_PRAKTIKA_WHL}}",
+                    ],
+                    description="Praktika runtime venv (infrastructure extra + pytest)",
                 ),
             ]
             custom_image_tests = [
@@ -565,6 +613,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
         )
         _IMAGE_BUILDERS = _image_builders()
         _IMAGE_BUILDERS_BY_NAME = {{builder.name: builder for builder in _IMAGE_BUILDERS}}
+{optional_ai_permissions}
 
         PROJECTS = [
             CloudInfrastructure.Config(
@@ -594,7 +643,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                     max_size=50,
                     volume_size_gb=100,
                     capacity_reserve=1,
-                    image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
+                    image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],{optional_ai_ext}
                 ),
                 runner_pools=[
                     Components.RunnerPool(
@@ -665,7 +714,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
             )
         ]
         """
-    )
+    ).lstrip()
 
 
 def _render_files(answers: InitAnswers) -> Dict[str, Dict[Path, str] | str]:

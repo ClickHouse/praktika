@@ -241,6 +241,18 @@ def create_parser():
     )
     wf_parser.add_argument("--ci", action="store_true", default=False,
         help="CI mode: authenticate to GitHub and post check runs")
+    wf_parser.add_argument(
+        "--settings",
+        action="append",
+        default=None,
+        metavar="KEY=VALUE",
+        help=(
+            "Override a Settings value for this run (repeatable). KEY is the "
+            "Settings attribute name as in the config, e.g. --settings "
+            "AWS_REGION=eu-north-1. Workflow-level AI configuration lives on "
+            "Workflow.Config.ai_orchestrator rather than Settings."
+        ),
+    )
 
     job_parser = orch_sub.add_parser(
         "job", help="Run a single job from a task JSON"

@@ -4,7 +4,6 @@ from praktika.infrastructure.image_builder import ImageBuilder
 from praktika.infrastructure.launch_template import LaunchTemplate
 from praktika.infrastructure.native.image_builder import (
     create_image_test_component,
-    create_praktika_venv_config,
     create_ubuntu_image_builder_config,
 )
 from praktika.infrastructure.native.orchestrator_pool import OrchestratorPool
@@ -489,7 +488,7 @@ def test_ubuntu_image_builder_factory_uses_valid_component_names(monkeypatch):
         name="silk-ci-arm64-image",
         version="1.2.3",
         controller_package="praktika-controller",
-        prebuilt_venvs=[create_praktika_venv_config("praktika-runtime-0.1.2", "0.1.2")],
+        prebuilt_venvs=[ImageBuilder.PrebuiltVenv(name="praktika-runtime-0.1.2")],
         components=[
             create_image_test_component(
                 name="project.image/test",

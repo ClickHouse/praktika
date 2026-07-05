@@ -47,41 +47,19 @@ def _current_instance_id():
     return (os.environ.get("INSTANCE_ID") or "").strip()
 
 
-def _build_check_output(job_name, rc, instance_id="", report_url=""):
-    """Load the job's dumped Result from TEMP_DIR and render it as the
-    ``output`` dict for a completion PATCH. Returns None on any failure
-    so the caller can fall back to a bodyless completion."""
+def _read_job_result(job_name):
+    """Load the job's dumped Result from TEMP_DIR and return it as a plain
+    dict for the completion payload. The orchestrator reconstructs it to
+    render the check-run output and retains the raw structure for AI
+    observation. Returns None on any failure so the caller can still
+    report rc."""
     try:
         from ..result import Result
 
         result = Result.from_fs(job_name)
-        text = result.to_markdown(report_url=report_url)
-        # Check API caps output.text at ~64 KB.
-        limit = 60_000
-        if len(text) > limit:
-            text = text[:limit] + "\n\n_… (truncated)_\n"
-        dur = f" in {int(result.duration)}s" if result.duration else ""
-        if rc != 0 and result.is_ok():
-            # The runner process crashed after writing an OK result to disk —
-            # OOM, disk-full, SIGKILL, etc. Report ERROR so the summary matches
-            # the failure conclusion and the cause is clearly not the job logic.
-            displayed_status = "ERROR"
-            text = f"Runner process exited with rc={rc} after reporting OK — likely OOM or disk-full.\n\n{text}"
-        else:
-            displayed_status = result.status
-        if displayed_status == "FAIL":
-            displayed_status = "FAILED"
-        summary = f"**{displayed_status}**{dur}"
-        if report_url:
-            summary += f" — [CI Report]({report_url})"
-        if instance_id:
-            summary += f" — runner `{instance_id}`"
-            text = f"**Runner instance:** `{instance_id}`" + (
-                f"\n\n{text}" if text else ""
-            )
-        return {"title": displayed_status, "summary": summary, "text": text}
+        return Result.to_dict(result)
     except Exception as e:
-        print(f"  [warn] could not render job Result as MD: {type(e).__name__}: {e}")
+        print(f"  [warn] could not read job Result: {type(e).__name__}: {e}")
         return None
 
 
@@ -312,9 +290,7 @@ def run_job(task, gh_token=None, local=False):
         report_url = Info().get_job_report_url()
     except Exception:
         report_url = ""
-    check_output = _build_check_output(
-        job_name, rc, instance_id=instance_id, report_url=report_url
-    )
+    result_dict = _read_job_result(job_name)
 
     # Snapshot whatever the job wrote into environment.json and ship it back
     # to the orchestrator. Config Workflow drops a RunConfig in there as
@@ -324,12 +300,10 @@ def run_job(task, gh_token=None, local=False):
     # GHA would have assembled from step outputs.
     env_snapshot = _read_env_file()
 
-    # Report the final state to the orchestrator via S3 (phase 2 of the
-    # liveness work): the orchestrator's wait() polls runs/<run_id>/<job>/
-    # final.json and advances the DAG from there. S3 is durable, so a
-    # restart of the orchestrator after this write still picks the result
-    # up. The per-run SQS queue is retained only for the lambda → cancel
-    # path until it moves to S3 in a follow-up.
+    # Report the final state to the orchestrator via S3: the orchestrator's
+    # wait() polls runs/<run_id>/<job>/final.json and advances the DAG from
+    # there. S3 is durable, so a restart of the orchestrator after this write
+    # still picks the result up.
     final_bucket = task.get("final_state_s3_bucket", "")
     final_key = task.get("final_state_s3_key", "")
     if final_bucket and final_key and not local:
@@ -350,8 +324,8 @@ def run_job(task, gh_token=None, local=False):
                 body["environment"] = env_snapshot
             if instance_id:
                 body["instance_id"] = instance_id
-            if check_output is not None:
-                body["check_output"] = check_output
+            if result_dict is not None:
+                body["result"] = result_dict
             if report_url:
                 body["details_url"] = report_url
             s3.put_object(

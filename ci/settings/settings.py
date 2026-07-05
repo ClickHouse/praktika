@@ -33,11 +33,6 @@ RUNNER_PICKUP_TIMEOUT_S = 3600
 # Maximum time a RUNNING job may go without a fresh heartbeat.
 HEARTBEAT_TIMEOUT_S = 300
 
-# AI orchestration (skeleton). Enabled with the no-op mock provider so the
-# advisor flow runs end-to-end; the mock makes no decisions and costs nothing.
-AI_ORCHESTRATION_ENABLED = True
-AI_PROVIDER = "mock"
-
 PRAKTIKA_BASE_VENV = "praktika-runtime"
 GH_AUTH_LAMBDA_NAME = "praktika-gh-token"
 GH_AUTH_LAMBDA_REGION = AWS_REGION

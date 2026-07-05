@@ -41,6 +41,10 @@ class _Settings:
     ######################################
     MAX_RETRIES_S3 = 3
     MAX_RETRIES_GH = 3
+    # How many times the orchestrator retries its startup (AI advisor +
+    # workflow plan build) on an infra error before giving up and finalizing
+    # the check as failed. The job loop itself is never retried.
+    MAX_RETRIES_ORCHESTRATOR = 3
     # Runner controller heartbeat write interval, in seconds. Each runner
     # writes heartbeat.json for its current job at this cadence.
     HEARTBEAT_INTERVAL_S = 30
@@ -51,24 +55,6 @@ class _Settings:
     # Maximum time, in seconds, a RUNNING job may go without a fresh heartbeat
     # after the first heartbeat has been observed.
     HEARTBEAT_TIMEOUT_S = 300
-
-    ######################################
-    #    AI orchestration settings       #
-    ######################################
-    # Master switch for the AI advisor. Off by default: the orchestrator loop
-    # is unchanged unless a project opts in. See praktika/orchestrator/ai.
-    AI_ORCHESTRATION_ENABLED: bool = False
-    # Registered provider name (see ai/provider.py registry). "mock" does nothing.
-    AI_PROVIDER: str = "mock"
-    # Provider-specific model id; empty means the provider's default.
-    AI_MODEL: str = ""
-    # Session store backend: "auto" (S3 in CI, local fs in local mode), "s3",
-    # or "local". See ai/store.py.
-    AI_SESSION_STORE: str = "auto"
-    # Budget guardrails (0 = disabled). Enforced by SessionManager (stubs for now):
-    # per-PR cumulative cost cap, and max CI-run iterations per AI round.
-    AI_PR_COST_CAP_USD: float = 0.0
-    AI_ROUND_MAX_ITERATIONS: int = 0
 
     ######################################
     #   S3 (artifact storage) settings   #
@@ -191,6 +177,7 @@ _USER_DEFINED_SETTINGS = [
     "PYTHON_PACKET_MANAGER",
     "MAX_RETRIES_S3",
     "MAX_RETRIES_GH",
+    "MAX_RETRIES_ORCHESTRATOR",
     "HEARTBEAT_INTERVAL_S",
     "RUNNER_PICKUP_TIMEOUT_S",
     "HEARTBEAT_TIMEOUT_S",
@@ -216,12 +203,6 @@ _USER_DEFINED_SETTINGS = [
     "CI_DB_READ_URL",
     "TEST_FAILURE_PATTERNS",
     "PRAKTIKA_BASE_VENV",
-    "AI_ORCHESTRATION_ENABLED",
-    "AI_PROVIDER",
-    "AI_MODEL",
-    "AI_SESSION_STORE",
-    "AI_PR_COST_CAP_USD",
-    "AI_ROUND_MAX_ITERATIONS",
 ]
 
 

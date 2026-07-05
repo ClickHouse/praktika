@@ -119,6 +119,7 @@ def _make_state(
         js.finished_at = None
         js.filter_reason = None
         js.last_heartbeat_ts = None
+        js.result = None
         js._workflow_state = state
         state.jobs[name] = js
 
@@ -137,7 +138,7 @@ def _put_final(
     *,
     rc,
     environment=None,
-    check_output=None,
+    result=None,
     details_url=None,
     instance_id=None,
 ):
@@ -145,13 +146,28 @@ def _put_final(
     payload = {"type": "job_completion", "job_name": job_name, "rc": rc, "ts": time.time()}
     if environment is not None:
         payload["environment"] = environment
-    if check_output is not None:
-        payload["check_output"] = check_output
+    if result is not None:
+        payload["result"] = result
     if details_url is not None:
         payload["details_url"] = details_url
     if instance_id is not None:
         payload["instance_id"] = instance_id
     fake_s3.put("test-bucket", key, json.dumps(payload).encode())
+
+
+def _result_payload(name, status="OK"):
+    """Minimal serialized Result (Result.to_dict shape) for completion tests."""
+    return {
+        "name": name,
+        "status": status,
+        "start_time": None,
+        "duration": 12.0,
+        "results": [],
+        "files": [],
+        "links": [],
+        "info": "",
+        "ext": {},
+    }
 
 
 def test_final_state_advances_queued_to_success():
@@ -163,19 +179,22 @@ def test_final_state_advances_queued_to_success():
     assert state.jobs["A"].rc == 0
 
 
-def test_final_state_completes_check_from_payload():
+def test_final_state_renders_check_from_result_payload():
+    """The orchestrator renders the check-run output from the Result shipped
+    in the payload, stashes the raw Result on the JobState (for AI
+    observation), and completes the check with the rendered output."""
     s3 = _FakeS3()
     state = _make_state(["A"], s3)
     check = _FakeCheck()
     state.jobs["A"].check = check
-    output = {"title": "A", "summary": "ok", "text": "details"}
+    result = _result_payload("A", status="OK")
     details_url = "https://example.com/report"
     _put_final(
         s3,
         "run42",
         "A",
         rc=0,
-        check_output=output,
+        result=result,
         details_url=details_url,
         instance_id="i-runner",
     )
@@ -183,8 +202,33 @@ def test_final_state_completes_check_from_payload():
     state.sweep_completions()
 
     assert state.jobs["A"].runner_instance_id == "i-runner"
+    # Raw Result retained verbatim for AI observation.
+    assert state.jobs["A"].result == result
+    assert len(check.completed) == 1
+    completed = check.completed[0]
+    assert completed["conclusion"] == "success"
+    assert completed["details_url"] == details_url
+    output = completed["output"]
+    assert output["title"] == "OK"
+    assert "**OK**" in output["summary"]
+    assert details_url in output["summary"]
+    assert "runner `i-runner`" in output["summary"]
+
+
+def test_final_state_without_result_completes_bodyless():
+    """A payload with no Result still finishes the job (bodyless check)."""
+    s3 = _FakeS3()
+    state = _make_state(["A"], s3)
+    check = _FakeCheck()
+    state.jobs["A"].check = check
+    _put_final(s3, "run42", "A", rc=0)
+
+    state.sweep_completions()
+
+    assert state.jobs["A"].status == JobStatus.SUCCESS
+    assert state.jobs["A"].result is None
     assert check.completed == [
-        {"conclusion": "success", "output": output, "details_url": details_url}
+        {"conclusion": "success", "output": None, "details_url": None}
     ]
 
 

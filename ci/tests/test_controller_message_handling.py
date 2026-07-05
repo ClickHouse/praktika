@@ -294,6 +294,108 @@ def test_poll_deletes_after_infra_failure_final_state_at_max_receives(monkeypatc
     assert "delete" in events
 
 
+def _workflow_sqs(events, receive_count, stop_after_first):
+    class _SQS:
+        def get_queue_url(self, QueueName):
+            return {"QueueUrl": "queue-url"}
+
+        def get_queue_attributes(self, QueueUrl, AttributeNames):
+            return {"Attributes": {"VisibilityTimeout": "30"}}
+
+        def receive_message(self, **_kwargs):
+            events.append("receive")
+            if events.count("receive") == 1:
+                return {
+                    "Messages": [
+                        {
+                            "ReceiptHandle": "receipt",
+                            "Body": json.dumps(
+                                {"type": "pull_request", "pr_number": 130}
+                            ),
+                            "Attributes": {
+                                "ApproximateReceiveCount": str(receive_count)
+                            },
+                        }
+                    ]
+                }
+            if stop_after_first:
+                raise _Done()
+            return {"Messages": []}
+
+        def delete_message(self, **_kwargs):
+            events.append("delete")
+
+        def change_message_visibility(self, **kwargs):
+            events.append(("visibility", kwargs["VisibilityTimeout"]))
+
+    return _SQS()
+
+
+def _setup_workflow_poll(monkeypatch, sqs):
+    monkeypatch.setitem(
+        sys.modules,
+        "boto3",
+        types.SimpleNamespace(client=lambda *_args, **_kwargs: sqs),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_resolve_role_and_queue",
+        lambda: (controller.ROLE_WORKFLOW, "workflow-orchestrator-base"),
+    )
+    monkeypatch.setattr(controller, "configure_logging", lambda *_args: _Log())
+    monkeypatch.setattr(controller, "_prepare_runner_for_task", lambda *_args: "")
+    monkeypatch.setattr(controller, "VisibilityHeartbeat", _NoopVisibilityHeartbeat)
+    monkeypatch.setattr(
+        controller,
+        "handle_workflow",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            controller.InfraOrchestrationError("infra")
+        ),
+    )
+
+
+def test_poll_workflow_infra_failure_terminates_for_fresh_retry(monkeypatch):
+    # Before the cap: release the message and replace this instance so a fresh
+    # orchestrator retries.
+    events = []
+    sqs = _workflow_sqs(events, receive_count=2, stop_after_first=False)
+    _setup_workflow_poll(monkeypatch, sqs)
+
+    def fake_terminate(**kwargs):
+        events.append(("terminate", kwargs["reason"]))
+
+    monkeypatch.setattr(
+        controller, "terminate_instance_for_replacement", fake_terminate
+    )
+
+    controller.poll()  # returns right after terminating
+
+    assert "delete" not in events
+    assert ("visibility", 0) in events
+    assert events[-1][0] == "terminate"
+    assert "workflow infra failure" in events[-1][1]
+
+
+def test_poll_workflow_infra_failure_gives_up_at_max_receives(monkeypatch):
+    # At the cap: drop the message (the orchestrator already finalized its own
+    # check as failed on this attempt) and do NOT churn another instance.
+    events = []
+    sqs = _workflow_sqs(events, receive_count=3, stop_after_first=True)
+    _setup_workflow_poll(monkeypatch, sqs)
+
+    monkeypatch.setattr(
+        controller,
+        "terminate_instance_for_replacement",
+        lambda **kwargs: events.append(("terminate", kwargs.get("reason"))),
+    )
+
+    with pytest.raises(_Done):
+        controller.poll()
+
+    assert "delete" in events
+    assert not any(e[0] == "terminate" for e in events if isinstance(e, tuple))
+
+
 def test_cancel_watchdog_terminates_process_group(monkeypatch):
     calls = []
 

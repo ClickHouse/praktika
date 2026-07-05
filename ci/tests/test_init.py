@@ -19,7 +19,7 @@ from praktika.project_init import (
     _validate_aws_profile,
 )
 from praktika.settings import Settings
-from praktika.version import current_praktika_version
+from praktika.version import compat_version, current_praktika_version
 
 
 EXPECTED_GITHUB_TOKEN_MINTER_PERMISSIONS = {
@@ -221,7 +221,7 @@ def test_prompt_aws_account_id_retries_with_available_account_ids(monkeypatch, c
 
 
 def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeypatch):
-    confirm_answers = iter([True, False])
+    confirm_answers = iter([True, False, False])
     string_answers = iter(
         [
             "main",
@@ -297,6 +297,7 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
         "Main CI",
     }
     workflows_by_name = {workflow.name: workflow for workflow in workflows}
+    assert workflows_by_name["Pull Request CI"].ai_orchestrator is None
     assert all(workflow.enable_cache for workflow in workflows)
     assert (
         workflows_by_name["Pull Request CI"].jobs[0].command
@@ -399,17 +400,18 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
             builder.prebuilt_venvs[0].name
             == f"praktika-runtime-{current_praktika_version()}"
         )
-        assert {
-            "boto3",
-            "PyJWT",
-            "cryptography",
-            "requests",
-            "pytest>=7.0.0",
-        }.issubset(builder.prebuilt_venvs[0].packages)
+        packages = builder.prebuilt_venvs[0].packages
+        assert "pytest>=7.0.0" in packages
+        assert "anthropic[bedrock]" not in packages
+        # Praktika's runtime deps (boto3/PyJWT/cryptography/requests) come from
+        # the `infrastructure` extra rather than being enumerated.
+        assert any(
+            pkg.startswith("praktika[infrastructure] @ ") for pkg in packages
+        )
+        # The scaffolding installs from the floating major.minor compat alias.
+        compat = compat_version(current_praktika_version())
         assert (
-            builder.prebuilt_venvs[0]
-            .packages[-1]
-            .endswith(f"/praktika-{current_praktika_version()}-py3-none-any.whl")
+            packages[-1].endswith(f"/{compat}/praktika-0.0.0-py3-none-any.whl")
         )
     assert cloud.orchestrator_pool.vpc_name == f"{project_slug}-vpc"
     assert cloud.orchestrator_pool.launch_template.vpc_name == f"{project_slug}-vpc"
@@ -447,7 +449,7 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
 def test_run_init_interactive_supports_oss_storage_and_ubuntu_images(
     tmp_path, monkeypatch
 ):
-    confirm_answers = iter([True, True])
+    confirm_answers = iter([True, True, True])
     project_slug = tmp_path.name.replace("_", "-")
     string_answers = iter(
         [
@@ -493,6 +495,12 @@ def test_run_init_interactive_supports_oss_storage_and_ubuntu_images(
     assert "Components.create_image_test_component(" in infra_text
     assert "Components.create_awslinux_image_builder_config(" not in infra_text
     assert 'name="artifacts-eu-north-1"' in infra_text
+    assert "ai_orchestrator=Workflow.OrchestratorAI.Config(" in (
+        tmp_path / "ci/workflows/pull_request.py"
+    ).read_text(encoding="utf8")
+    assert '"anthropic[bedrock]"' in infra_text
+    assert '"Action": ["bedrock:InvokeModel"]' in infra_text
+    assert 'ext={"iam_statements": [_ORCHESTRATOR_BEDROCK_IAM_STATEMENT]}' in infra_text
     assert "allowed_ssm_parameters=[]" in infra_text
     assert "allowed_secrets=[]" in infra_text
     assert 'allowed_s3_prefixes=["artifacts-eu-north-1"]' in infra_text
@@ -618,6 +626,7 @@ def test_run_init_interactive_auto_creates_missing_settings_and_workflow(
     assert prompts == [
         "Create ci/infrastructure/projects.py? Required only for standalone Praktika CI (not GitHub Actions), and only if this repo should manage the infrastructure.",
         "Is this an OSS project that should use public artifact storage?",
+        "Enable AI capabilities for the pull request workflow?",
     ]
 
 

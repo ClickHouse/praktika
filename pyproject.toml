@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "praktika"
-version = "0.1.5"
+version = "0.1.6"
 description = "CI Infrastructure Toolbox"
 requires-python = ">=3.8"
 license = "Apache-2.0"
@@ -48,11 +48,23 @@ infrastructure = [
     "cryptography>=42.0.0",
     "requests>=2.25.0",
 ]
+# AI orchestration with the built-in "anthropic" provider (first-party API).
+# Optional: the SDK is imported lazily, so the advisor degrades to an error Turn
+# if it's absent.
+ai = [
+    "anthropic>=0.69.0",
+]
+# AI orchestration via the "bedrock" provider (Amazon Bedrock, AWS auth). Adds
+# the SDK's Bedrock client deps (boto3) on top of `ai`.
+bedrock = [
+    "anthropic[bedrock]>=0.69.0",
+]
 all = [
     "boto3>=1.18.0",
     "PyJWT>=2.4.0",
     "cryptography>=42.0.0",
     "requests>=2.25.0",
+    "anthropic[bedrock]>=0.69.0",
 ]
 dev = [
     "coverage>=7.0.0,<8",

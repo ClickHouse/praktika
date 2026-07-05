@@ -40,6 +40,16 @@ SUPPORTED_ROLES = {ROLE_WORKFLOW, ROLE_RUNNER}
 INFRA_FAILURE_MAX_RECEIVES = int(
     os.environ.get("PRAKTIKA_INFRA_FAILURE_MAX_RECEIVES", "3")
 )
+# Exit code the orchestrator uses for a startup/infra failure (workflow never
+# ran) — must match praktika.orchestrator.INFRA_EXIT_CODE. Distinct from rc=1
+# (the DAG ran and jobs legitimately failed) so we retry on a fresh instance
+# only for genuine infra faults, not for ordinary red builds.
+INFRA_EXIT_CODE = 100
+
+
+class InfraOrchestrationError(RuntimeError):
+    """Raised when the orchestrator subprocess exits with INFRA_EXIT_CODE, so
+    the poll loop releases the message and replaces the instance for a retry."""
 
 
 def _instance_runtime_tags() -> tuple[str, str]:
@@ -89,9 +99,13 @@ def _resolve_runtime(clone_dir: str, log):
     return base_venv, venv_dir
 
 
-def _praktika_env(venv_dir: str, queue_name: str) -> dict[str, str]:
+def _praktika_env(venv_dir: str, queue_name: str, attempt: str = "") -> dict[str, str]:
     env = venv_env(venv_dir)
     env["PRAKTIKA_CONTROLLER_QUEUE"] = queue_name
+    if attempt:
+        # Surfaced on the GitHub check so cross-instance infra retries are
+        # visible (e.g. "attempt 2/3").
+        env["PRAKTIKA_ATTEMPT"] = attempt
     return env
 
 
@@ -173,7 +187,7 @@ def _prepare_runner_for_task(role: str, log) -> str:
         return f"workdir cleanup failed: {type(e).__name__}: {e}"
 
 
-def handle_workflow(event, log, queue_name: str):
+def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
     wf_type = event.get("type", "unknown")
     log.info("Processing: %s", wf_type)
 
@@ -211,18 +225,28 @@ def handle_workflow(event, log, queue_name: str):
     with open(event_file, "w", encoding="utf-8") as f:
         json.dump(event, f, indent=2)
 
+    attempt = f"{receive_count}/{INFRA_FAILURE_MAX_RECEIVES}"
     target = f"PR#{pr_number}" if pr_number else f"branch={branch}"
-    log.info("Running orchestrator for %s in %s", target, venv_dir)
+    log.info("Running orchestrator for %s in %s (attempt %s)", target, venv_dir, attempt)
     result = subprocess.run(
         praktika_command(venv_dir, "orchestrate", "workflow", event_file, "--ci"),
         cwd=clone_dir,
-        env=_praktika_env(venv_dir, queue_name),
+        env=_praktika_env(venv_dir, queue_name, attempt=attempt),
         stderr=subprocess.PIPE,
         text=True,
     )
 
     if result.returncode != 0 and result.stderr:
         log.error(result.stderr.rstrip())
+
+    # A startup/infra failure (workflow never ran) is retryable on a fresh
+    # orchestrator: raise so the poll loop releases the message and replaces
+    # this instance.
+    if result.returncode == INFRA_EXIT_CODE:
+        raise InfraOrchestrationError(
+            f"orchestrator infra failure (rc={INFRA_EXIT_CODE}) on attempt {attempt}: "
+            f"{result.stderr.strip()[:300] if result.stderr else ''}"
+        )
 
     return {
         "status": "ok" if result.returncode == 0 else "error",
@@ -428,7 +452,9 @@ def poll():
                     return
 
                 if role == ROLE_WORKFLOW:
-                    result = handle_workflow(payload, log, queue_name)
+                    result = handle_workflow(
+                        payload, log, queue_name, receive_count=receive_count
+                    )
                 else:
                     result = handle_task(payload, log, queue_name)
         except json.JSONDecodeError:
@@ -440,10 +466,47 @@ def poll():
                 log.exception("Failed to delete malformed message")
         except Exception as exc:
             log.exception("ERROR processing message: %s", type(exc).__name__)
-            if (
+            give_up = receive_count >= INFRA_FAILURE_MAX_RECEIVES
+            if role == ROLE_WORKFLOW:
+                # Workflow infra failure: the orchestrator finalizes its own
+                # GitHub check on every attempt (including this one), so on
+                # give-up we just drop the message. Otherwise release it for
+                # redelivery and replace this instance, so a *fresh*
+                # orchestrator retries — the right cure for instance-local
+                # faults (stale runtime venv, corrupt clone, bad AMI) that an
+                # in-process retry on the same box would just hit again.
+                if give_up:
+                    try:
+                        sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt)
+                        log.info(
+                            "DONE: workflow infra failure, gave up after %s receive(s)",
+                            receive_count,
+                        )
+                    except Exception:
+                        log.exception("Failed to delete message after giving up")
+                else:
+                    try:
+                        sqs.change_message_visibility(
+                            QueueUrl=queue_url,
+                            ReceiptHandle=receipt,
+                            VisibilityTimeout=0,
+                        )
+                    except Exception:
+                        log.exception("Failed to release workflow message for retry")
+                    terminate_instance_for_replacement(
+                        region=REGION,
+                        instance_id=INSTANCE_ID,
+                        log=log,
+                        reason=(
+                            f"workflow infra failure "
+                            f"(attempt {receive_count}/{INFRA_FAILURE_MAX_RECEIVES}): {exc}"
+                        ),
+                    )
+                    return
+            elif (
                 isinstance(payload, dict)
                 and payload.get("type") == "job_task"
-                and receive_count >= INFRA_FAILURE_MAX_RECEIVES
+                and give_up
                 and _write_infra_failure_final(payload, exc, log)
             ):
                 try:

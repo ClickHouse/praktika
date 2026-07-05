@@ -32,6 +32,7 @@ doc_type: reference
 - **Cancel dispatch is routing, not filtering.** UI Cancel hits exactly one queue (`praktika-wf-{pr}-{check_id}`); `synchronize` fans out via `list_queues(QueueNamePrefix="praktika-wf-{pr}-")`. A freshly pushed run hasn't created its queue yet, so the fan-out naturally excludes it.
 - **Re-run (`check_suite` / `check_run.rerequested`) never sends a cancel.** A rerun spawns a new check run (new `run_id`, new queue). There is no previous run for that same queue to cancel into.
 - **Orchestrator owns the queue.** `WorkflowState.__init__` creates it; `WorkflowState.cleanup` (in an `orchestrate` `finally`) deletes it on every exit path — normal, cancelled, or errored.
+- **Infra failures retry on a *fresh* orchestrator, not the same one.** The orchestrator distinguishes "couldn't run the workflow" (startup/infra, `INFRA_EXIT_CODE = 100`) from "ran it, jobs failed" (`rc = 1`) via exit code. On `100` the controller releases the workflow message (visibility → 0) and self-terminates so the ASG launches a replacement, which re-receives the redelivered message — the right cure for instance-local faults (stale runtime venv, corrupt clone, bad AMI) that an in-process retry on the same box would just hit again. Bounded by SQS `ApproximateReceiveCount` vs `PRAKTIKA_INFRA_FAILURE_MAX_RECEIVES` (default 3); past the cap the message is dropped. The orchestrator finalizes its own top-level check as `failure` on **every** attempt (so a crash never leaves the check stuck `in_progress`), and surfaces `attempt N/M`, the orchestrator instance id, and the lifecycle phase (`starting`/`ai_setup`/`planning`/`running`/`finalizing`) in the check output so retries are visible. An `rc = 1` red build is a real result and is **not** retried. (Transient blips are absorbed earlier by a small in-process startup retry, `Settings.MAX_RETRIES_ORCHESTRATOR`.)
 
 ## Limitations {#limitations}
 
@@ -66,6 +67,12 @@ Orchestrator (one instance picks up the message)
         → marks filtered jobs as SKIPPED, posts one aggregate "Skipped Jobs" check
   → completes top-level check run (neutral / failure / cancelled)
   → finally: delete_queue(praktika-wf-{pr}-{run_id})
+  → exit code tells the controller what kind of outcome this was:
+      0   = ran OK
+      1   = ran the DAG, jobs legitimately failed (a real red build)
+      100 = INFRA_EXIT_CODE — could not run the workflow at all
+            (bad/unavailable AI provider, plan build couldn't reach S3/GH,
+            token mint, …). The DAG never started, so no jobs were dispatched.
 
 Job runner
   → picks up job_task from praktika-{runner-type}
@@ -129,15 +136,21 @@ new-push fan-out) and the orchestrator polls them in `sweep_cancel`.
   "pr_number": 55743,
   "head_sha": "abc123",
   "workflow_name": "PR",
-  "environment": { "WORKFLOW_CONFIG": {}, "..." : "..." }
+  "instance_id": "i-0abc...",
+  "details_url": "https://.../json.html?...",
+  "environment": { "WORKFLOW_CONFIG": {}, "..." : "..." },
+  "result": { "name": "Style check", "status": "OK", "results": [], "..." : "..." }
 }
 ```
 
-Written by `orchestrator/job_runner.py` after `Runner.run` returns and the per-job
-check is PATCHed. Read by `WorkflowState.sweep_completions` once per `wait()` cycle.
-Idempotent: `JobState.finish` is a no-op once the job has already moved out of
-RUNNING, so a final.json that arrives after `sweep_liveness` already declared the
-job dead is harmless.
+Written by `orchestrator/job_runner.py` after `Runner.run` returns. It ships the
+job's raw `Result` (serialized via `Result.to_dict`) in `result`; the orchestrator
+reconstructs it in `sweep_completions`, renders the per-job check output
+(`state._build_check_output`), and stashes the raw Result on the `JobState`
+(`js.result`) for AI observation. Read once per `wait()` cycle. Idempotent:
+`JobState.finish` is a no-op once the job has already moved out of RUNNING, so a
+final.json that arrives after `sweep_liveness` already declared the job dead is
+harmless.
 
 ### Cancel signals (Lambda → S3) {#cancel}
 
@@ -226,3 +239,4 @@ running orchestrator that comes back picks the flag up on its next sweep.
 | 10 | Style check runs inside Docker | `docker run` succeeds; per-job check flips `queued` → `in_progress` → `success/failure` |
 | 11 | Runner instance is terminated mid-job | Visibility timeout expires; runner re-queues task; another runner picks it up |
 | 12 | Orchestrator instance is terminated mid-run | SQS visibility timeout expires; other orchestrator re-processes workflow event. The old run's queue is leaked (see Limitations). |
+| 13 | Orchestrator startup/infra failure (e.g. bad AI provider, plan build can't reach S3) | Orchestrator exits `100`, finalizes the top-level check as `failure` with the phase + `attempt N/M`; controller releases the message and self-terminates; a fresh orchestrator retries. After `PRAKTIKA_INFRA_FAILURE_MAX_RECEIVES` attempts the message is dropped (last attempt's check shows the failure). A plain red build (`rc = 1`) is **not** retried. |

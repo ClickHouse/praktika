@@ -3,10 +3,6 @@ from typing import Any, Dict, List, Optional
 
 from ..image_builder import ImageBuilder
 
-PRAKTIKA_PACKAGE_BASE_URL = (
-    "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages"
-)
-
 
 def _write_file_from_base64(path: str, content: str) -> str:
     payload = base64.b64encode(content.encode("utf-8")).decode("ascii")
@@ -286,27 +282,6 @@ def create_image_test_component(
         "description": description,
         "commands": [str(command) for command in commands if str(command).strip()],
     }
-
-
-def create_praktika_venv_config(
-    name: str, praktika_version: str
-) -> ImageBuilder.PrebuiltVenv:
-    return ImageBuilder.PrebuiltVenv(
-        name=name,
-        packages=[
-            "boto3",
-            "PyJWT",
-            "cryptography",
-            "requests",
-            "pytest>=7.0.0",
-            "pytest-reportlog>=0.4.0",
-            f"{PRAKTIKA_PACKAGE_BASE_URL}/praktika-{praktika_version}-py3-none-any.whl",
-        ],
-        description=(
-            "Shared Python base venv with pytest, Praktika runtime deps, "
-            "and Praktika"
-        ),
-    )
 
 
 def create_awslinux_image_builder_config(

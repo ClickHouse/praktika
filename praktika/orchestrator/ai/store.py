@@ -150,11 +150,8 @@ class S3SessionStore(SessionStore):
 
 def make_store(local_mode):
     """Pick a backend: filesystem locally, S3 in CI.
-
-    ``Settings.AI_SESSION_STORE`` ("auto"/"local"/"s3") overrides the default.
     """
-    choice = (getattr(Settings, "AI_SESSION_STORE", "auto") or "auto").strip()
-    if choice == "local" or (choice == "auto" and local_mode):
+    if local_mode:
         # Keys already carry the "ai-sessions/" prefix (it's the S3 namespace,
         # where the bucket is the root), so the local root is just TEMP_DIR.
         return LocalSessionStore(Settings.TEMP_DIR)

@@ -206,23 +206,6 @@ def test_current_infrastructure_config_imports_all_component_groups(monkeypatch)
     assert cloud.cidb_cluster.security_group_names == ["praktika-vpc-sg"]
 
 
-def test_project_component_factory_accepts_previous_factory_names(monkeypatch):
-    from ci.infrastructure import projects
-
-    class _OldComponents:
-        image_builder_config = object()
-
-    monkeypatch.setattr(projects, "Components", _OldComponents)
-
-    assert (
-        projects._component_factory(
-            "create_awslinux_image_builder_config",
-            "image_builder_config",
-        )
-        is _OldComponents.image_builder_config
-    )
-
-
 def test_infrastructure_deploy_validation_accepts_matching_s3_settings(monkeypatch):
     bucket = "silk-artifacts-eu-north-1"
     cloud = CloudInfrastructure.Config(
@@ -1090,7 +1073,7 @@ def test_cloud_project_namespace_does_not_rewrite_controller_local_paths():
             f"packages{_PRAKTIKA_CONTROLLER_LATEST_WHEEL}"
         ),
         prebuilt_venvs=[
-            Components.create_praktika_venv_config("praktika-runtime-0.1.2", "0.1.2")
+            ImageBuilder.PrebuiltVenv(name="praktika-runtime-0.1.2")
         ],
         instance_types=["t4g.small"],
     )
@@ -1299,13 +1282,13 @@ def test_controller_image_builders_are_declared():
             for cmd in runtime_component["commands"]
         )
         assert builder.prebuilt_venvs[0].name == "praktika-runtime"
-        assert {
-            "boto3",
-            "PyJWT",
-            "cryptography",
-            "requests",
-            "pytest>=7.0.0",
-        }.issubset(builder.prebuilt_venvs[0].packages)
+        packages = builder.prebuilt_venvs[0].packages
+        assert "pytest>=7.0.0" in packages
+        # Praktika's runtime deps (boto3/PyJWT/cryptography/requests) come from
+        # the `infrastructure` extra rather than being enumerated.
+        assert any(
+            pkg.startswith("praktika[infrastructure] @ ") for pkg in packages
+        )
         assert (
             _IMAGE_BUILDERS_BY_NAME[name]
             .prebuilt_venvs[0]
@@ -1727,6 +1710,59 @@ def test_orchestrator_pool_can_configure_allowed_push_branches_from_ext():
     assert pool.lambda_config.environments["ALLOWED_PUSH_BRANCHES"] == (
         "develop,release/1.0"
     )
+
+
+def test_orchestrator_pool_appends_ext_iam_statements_to_role_policy():
+    stmt = {
+        "Sid": "BedrockRuntimeInference",
+        "Effect": "Allow",
+        "Action": ["bedrock:InvokeModel"],
+        "Resource": "*",
+    }
+    with_stmt = OrchestratorPool(
+        name="orch",
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        size=1,
+        max_size=1,
+        ext={"iam_statements": [stmt]},
+    )
+    without_stmt = OrchestratorPool(
+        name="orch",
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        size=1,
+        max_size=1,
+    )
+
+    assert (
+        stmt
+        in with_stmt.ec2_role.inline_policies["WorkflowOrchestratorAccess"]["Statement"]
+    )
+    assert all(
+        s.get("Sid") != "BedrockRuntimeInference"
+        for s in without_stmt.ec2_role.inline_policies["WorkflowOrchestratorAccess"][
+            "Statement"
+        ]
+    )
+
+
+def test_projects_grant_bedrock_to_both_orchestrator_pools():
+    from ci.infrastructure.projects import (
+        _orchestrator_pool,
+        _orchestrator_pool_base,
+    )
+
+    def _sids(pool):
+        return [
+            s.get("Sid")
+            for s in pool.ec2_role.inline_policies["WorkflowOrchestratorAccess"][
+                "Statement"
+            ]
+        ]
+
+    assert "BedrockRuntimeInference" in _sids(_orchestrator_pool)
+    assert "BedrockRuntimeInference" in _sids(_orchestrator_pool_base)
 
 
 def test_native_configs_accept_ext_maps():
