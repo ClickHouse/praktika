@@ -77,8 +77,8 @@ def _custom_image_tests():
 def _image_builders():
     # Bump on any change to the baked venv contents (see _runtime_prebuilt_venvs)
     # so Image Builder produces a fresh AMI.
-    ci_version = "1.0.12"
-    ubuntu_ci_version = "1.0.9"
+    ci_version = "1.0.13"
+    ubuntu_ci_version = "1.0.10"
 
     return [
         Components.create_awslinux_image_builder_config(

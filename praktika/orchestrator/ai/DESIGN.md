@@ -94,7 +94,7 @@ class AnthropicProvider(AIProvider):
 ```
 
 Register it in `provider.py` (next to the mock) and set
-`Workflow.Config.orchestrator_ai.provider = "anthropic"` on the workflow that
+`Workflow.Config.ai_orchestrator.provider = "anthropic"` on the workflow that
 should use it.
 
 ## Configuration
@@ -110,7 +110,7 @@ should use it.
 The advisor is advisory and best-effort: neither a disabled switch, an
 unresolvable provider, nor a session-setup error may break core orchestration.
 
-This repo enables AI per workflow via `Workflow.Config.orchestrator_ai`. Because the
+This repo enables AI per workflow via `Workflow.Config.ai_orchestrator`. Because the
 orchestrator runs the *published* runtime wheel (not the PR's praktika code), a
 runtime that predates a provider just disables the advisor for that run rather
 than failing CI — publish a runtime that registers the provider before relying

@@ -74,7 +74,7 @@ def test_registry_unknown_raises():
 def test_maybe_create_disabled_returns_none(monkeypatch):
     assert OrchestratorAI.maybe_create(
         run_id="r1",
-        workflow_config=SimpleNamespace(orchestrator_ai=_workflow_ai(enabled=False)),
+        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=False)),
     ) is None
 
 
@@ -83,7 +83,7 @@ def test_maybe_create_enabled_returns_advisor(monkeypatch):
         run_id="r1",
         local_mode=True,
         workflow_config=SimpleNamespace(
-            orchestrator_ai=_workflow_ai(enabled=True, provider="mock")
+            ai_orchestrator=_workflow_ai(enabled=True, provider="mock")
         ),
     )
     assert isinstance(advisor, OrchestratorAI)
@@ -98,7 +98,7 @@ def test_maybe_create_unknown_provider_disables(monkeypatch):
             run_id="r1",
             local_mode=True,
             workflow_config=SimpleNamespace(
-                orchestrator_ai=_workflow_ai(
+                ai_orchestrator=_workflow_ai(
                     enabled=True, provider="bedrock-from-the-future"
                 )
             ),
@@ -210,7 +210,7 @@ def test_turn_fires_only_on_new_failure(monkeypatch):
     advisor = OrchestratorAI.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(orchestrator_ai=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
     )
 
     a = _job("A", "running")
@@ -242,7 +242,7 @@ def test_skipped_and_cancelled_do_not_fire(monkeypatch):
     advisor = OrchestratorAI.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(orchestrator_ai=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
     )
 
     a = _job("A", "skipped")
@@ -256,7 +256,7 @@ def test_advisory_only_no_mutation_and_zero_cost(monkeypatch):
     advisor = OrchestratorAI.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(orchestrator_ai=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
     )
 
     a = _job("A", "failure", started_at=1.0, finished_at=2.0)
@@ -273,7 +273,7 @@ def test_provider_error_does_not_raise(monkeypatch):
     advisor = OrchestratorAI.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(orchestrator_ai=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
     )
 
     def boom(observation):
@@ -664,7 +664,7 @@ def test_cancel_run_decision_cancels_the_run(monkeypatch):
     advisor = OrchestratorAI.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(orchestrator_ai=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
     )
 
     state = _state([_job("Build", "failure")])
@@ -682,7 +682,7 @@ def test_non_cancel_decision_leaves_run_alone(monkeypatch):
     advisor = OrchestratorAI.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(orchestrator_ai=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
     )
 
     state = _state([_job("Build", "failure")])
@@ -700,7 +700,7 @@ def test_error_turn_does_not_cancel(monkeypatch):
     advisor = OrchestratorAI.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(orchestrator_ai=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
     )
 
     state = _state([_job("Build", "failure")])
@@ -747,7 +747,7 @@ def test_error_turn_stamps_resolved_model(monkeypatch):
     advisor = OrchestratorAI.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(orchestrator_ai=_workflow_ai(enabled=True, provider="bedrock")),
+        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="bedrock")),
     )
 
     def boom(observation):
@@ -880,7 +880,7 @@ def _patch_advisor(monkeypatch, patcher, session):
     advisor = OrchestratorAI.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(orchestrator_ai=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
     )
     advisor._patcher = patcher
     advisor._session = session

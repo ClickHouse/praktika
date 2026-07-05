@@ -85,7 +85,7 @@ class Workflow:
         # If enabled, CI events will be accumulated and stored, allowing users to subscribe to notifications via the Slack Praktika app
         enable_slack_feed: bool = False
         # Per-workflow orchestrator AI configuration. ``None`` disables it.
-        orchestrator_ai: Optional["Workflow.OrchestratorAI.Config"] = None
+        ai_orchestrator: Optional["Workflow.OrchestratorAI.Config"] = None
         # Optional orchestrator routing tag. Empty means the default/non-base
         # orchestrator pool. Workflows tagged "base" are only picked up by the
         # base orchestrator pool.

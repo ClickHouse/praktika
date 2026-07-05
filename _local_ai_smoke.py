@@ -53,7 +53,7 @@ def main():
     }
 
     workflow = SimpleNamespace(
-        orchestrator_ai=Workflow.OrchestratorAI.Config(
+        ai_orchestrator=Workflow.OrchestratorAI.Config(
             enabled=True,
             provider="anthropic",
         )
@@ -65,7 +65,7 @@ def main():
         workflow_config=workflow,
     )
     if advisor is None:
-        raise SystemExit("Advisor disabled — check Workflow.Config.orchestrator_ai")
+        raise SystemExit("Advisor disabled — check Workflow.Config.ai_orchestrator")
 
     state = StubState(
         [

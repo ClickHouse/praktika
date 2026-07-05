@@ -74,7 +74,7 @@ For deployment security considerations, see [SECURITY.md](./SECURITY.md).
 - Durable per-PR sessions persist every turn, decision, edit, and token/cost
   across CI runs — the AI's memory, so it doesn't retry a fix that already failed
 - Bedrock / Anthropic providers (plus a no-op mock); enabled and configured via
-  `Workflow.Config.orchestrator_ai`
+  `Workflow.Config.ai_orchestrator`
 
 **GitHub side**
 - Webhook ingestion via AWS Lambda

@@ -250,7 +250,7 @@ def create_parser():
             "Override a Settings value for this run (repeatable). KEY is the "
             "Settings attribute name as in the config, e.g. --settings "
             "AWS_REGION=eu-north-1. Workflow-level AI configuration lives on "
-            "Workflow.Config.orchestrator_ai rather than Settings."
+            "Workflow.Config.ai_orchestrator rather than Settings."
         ),
     )
 

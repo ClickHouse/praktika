@@ -324,7 +324,7 @@ def resolve_provider(spec, model="") -> "AIProvider":
 
     The instance/subclass paths are how a workflow plugs in a custom provider
     without touching this package — assign the object (or class) to
-    ``Workflow.Config.orchestrator_ai.provider``.
+    ``Workflow.Config.ai_orchestrator.provider``.
     """
     if isinstance(spec, AIProvider):
         return spec

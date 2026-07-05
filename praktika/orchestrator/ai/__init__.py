@@ -15,7 +15,7 @@ flags the run cancelled and the orchestrator loop tears it down;
 ``cancel_and_patch`` applies the model's edits, commits + pushes them via the
 injected patcher (triggering a fresh run), and cancels the superseded run.
 The default provider is ``mock``, which does nothing. Disabled by default
-(``Workflow.Config.orchestrator_ai.enabled``).
+(``Workflow.Config.ai_orchestrator.enabled``).
 
 Real providers (``anthropic`` / ``bedrock``) implement ``on_job_failure`` only,
 running a tool-use loop so the model can investigate the failure before deciding
@@ -62,7 +62,7 @@ _MAX_LINKS = 10
 def _get_ai_config(workflow_config):
     if workflow_config is None:
         return None
-    return getattr(workflow_config, "orchestrator_ai", None)
+    return getattr(workflow_config, "ai_orchestrator", None)
 
 
 def _clean_links(links):
@@ -536,4 +536,3 @@ def _job_outcomes(state):
     if state is None:
         return []
     return [{"name": js.name, "status": _status_value(js)} for js in state.jobs.values()]
-
