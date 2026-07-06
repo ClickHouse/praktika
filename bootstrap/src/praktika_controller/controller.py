@@ -272,6 +272,7 @@ def handle_task(task, log, queue_name: str):
     repo = task.get("repo", "")
     pr_number = task.get("pr_number")
     head_sha = task.get("head_sha", "")
+    always_run = bool(task.get("always_run", False))
     cancel_s3_bucket = task.get("cancel_s3_bucket", "")
     cancel_s3_key = task.get("cancel_s3_key", "")
     heartbeat_s3_bucket = task.get("heartbeat_s3_bucket", "")
@@ -281,7 +282,7 @@ def handle_task(task, log, queue_name: str):
     import boto3
 
     s3 = boto3.client("s3", region_name=REGION)
-    if _s3_key_exists(s3, cancel_s3_bucket, cancel_s3_key, log):
+    if not always_run and _s3_key_exists(s3, cancel_s3_bucket, cancel_s3_key, log):
         log.info(
             "Task %r belongs to a cancelled run, skipping before clone",
             job_name,

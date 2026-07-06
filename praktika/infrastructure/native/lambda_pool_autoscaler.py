@@ -23,6 +23,10 @@ def _calculate_desired_capacity(
     in_flight_messages: int,
     capacity_reserve: int = 0,
 ) -> int:
+    # Scheduled autoscaling is scale-up only. Scale-in is owned by the VMs
+    # themselves after they observe sustained queue idleness from inside the
+    # worker/orchestrator loop. Never return a lower desired capacity here,
+    # even if backlog is currently zero.
     backlog = max(0, int(visible_messages)) + max(0, int(in_flight_messages))
     capacity_reserve = max(0, int(capacity_reserve))
     current_work_capacity = max(0, int(current_desired) - capacity_reserve)
@@ -35,7 +39,7 @@ def _calculate_desired_capacity(
     target_capacity = min(max_size, capacity_reserve + new_work_capacity)
     if target_capacity <= current_desired:
         return current_desired
-    return target_capacity
+    return max(current_desired, target_capacity)
 
 
 def lambda_handler(event, context):
@@ -76,13 +80,17 @@ def lambda_handler(event, context):
         current_desired = int(group["DesiredCapacity"])
         max_size = int(group["MaxSize"])
 
-        new_desired = _calculate_desired_capacity(
+        proposed_desired = _calculate_desired_capacity(
             current_desired=current_desired,
             max_size=max_size,
             visible_messages=visible_messages,
             in_flight_messages=in_flight_messages,
             capacity_reserve=capacity_reserve,
         )
+        # Defensive clamp: even if future _calculate_desired_capacity changes,
+        # this autoscaler must never scale a pool down. VM self-termination is
+        # the only supported scale-in path.
+        new_desired = max(current_desired, proposed_desired)
         scaled = new_desired > current_desired
         if scaled:
             autoscaling.update_auto_scaling_group(

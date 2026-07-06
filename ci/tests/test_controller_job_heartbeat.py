@@ -122,3 +122,66 @@ def test_job_heartbeat_starts_before_runner_setup(monkeypatch, tmp_path):
         "communicate",
         "heartbeat.stop",
     ]
+
+
+def test_cancelled_always_run_job_still_executes(monkeypatch, tmp_path):
+    events = []
+    log = _FakeLog()
+    log.events = events
+    clone_dir = tmp_path / "clone"
+    clone_dir.mkdir()
+
+    monkeypatch.setattr(controller, "Heartbeat", _FakeHeartbeat)
+    monkeypatch.setattr(controller, "CancelWatchdog", _FakeCancelWatchdog)
+    monkeypatch.setattr(controller, "get_github_token", lambda _region: "token")
+    monkeypatch.setattr(controller, "_resolve_runtime", lambda *_: ("base", "/venv"))
+    monkeypatch.setattr(controller, "praktika_command", lambda *_: ["praktika"])
+    monkeypatch.setattr(controller, "_praktika_env", lambda *_: {})
+
+    def fake_run(*_args, **_kwargs):
+        events.append("gh-auth")
+        return types.SimpleNamespace(returncode=0)
+
+    def fake_clone_repo(*_args, **_kwargs):
+        events.append("clone")
+        return str(clone_dir), "actual-sha"
+
+    def fake_popen(*_args, **kwargs):
+        assert kwargs["start_new_session"] is True
+        events.append("popen")
+        return _FakeProc(events)
+
+    monkeypatch.setattr(controller.subprocess, "run", fake_run)
+    monkeypatch.setattr(controller.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(controller, "clone_repo", fake_clone_repo)
+
+    class _FakeS3:
+        def head_object(self, **_kwargs):
+            return {}
+
+    monkeypatch.setitem(
+        sys.modules,
+        "boto3",
+        types.SimpleNamespace(client=lambda *_args, **_kwargs: _FakeS3()),
+    )
+
+    result = controller.handle_task(
+        {
+            "type": "job_task",
+            "repo": "ClickHouse/silk",
+            "pr_number": 69,
+            "head_sha": "sha",
+            "job_name": "Finish Workflow",
+            "always_run": True,
+            "heartbeat_s3_bucket": "bucket",
+            "heartbeat_s3_key": "runs/1/Finish_Workflow/heartbeat.json",
+            "cancel_s3_bucket": "bucket",
+            "cancel_s3_key": "runs/1/cancel",
+        },
+        log,
+        "queue",
+    )
+
+    assert result["status"] == "ok"
+    assert "clone" in events
+    assert "popen" in events

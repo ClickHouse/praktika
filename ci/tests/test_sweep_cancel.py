@@ -3,10 +3,10 @@ cancel-signal detector (phase 2b).
 
 Two channels, both written by the lambda:
   - ``runs/<run_id>/cancel-request`` — manual UI Cancel button.
-  - ``pr/<pr>/cancel-before-<scope>`` carrying ``{ts}`` — fan-out cancel on
-    a new push. Older runs in the same orchestrator scope
-    (``event_ts < cancel-before-ts``) self-cancel; the freshly enqueued run
-    (``event_ts == cancel-before-ts``) stays alive (strict less-than).
+  - ``pr/<pr>/cancel-before-<scope>`` carrying ``{ts, head_sha}`` — fan-out
+    cancel on a new push. Older runs in the same orchestrator scope
+    (``event_ts < cancel-before-ts``) self-cancel only when the marker points
+    to a different SHA; the freshly enqueued run for the same SHA stays alive.
 """
 import io
 import json
@@ -46,6 +46,7 @@ def _make_state(
     run_id="run42",
     pr_number=1,
     event_ts=1000.0,
+    head_sha="a" * 40,
     has_running=True,
     cancel_scope="default",
 ):
@@ -62,6 +63,7 @@ def _make_state(
     )
     state._event_ts = event_ts
     state._pr_number = pr_number
+    state._event = {"head_sha": head_sha}
     state.local_mode = False
     state.cancelled = False
     state._environment = None
@@ -108,9 +110,9 @@ def test_cancel_before_newer_than_event_ts_marks_cancelled():
     s3.put(
         "test-bucket",
         "pr/1/cancel-before-default",
-        json.dumps({"ts": 2000.0}).encode(),
+        json.dumps({"ts": 2000.0, "head_sha": "b" * 40}).encode(),
     )
-    state = _make_state(s3, event_ts=1000.0)
+    state = _make_state(s3, event_ts=1000.0, head_sha="a" * 40)
     state.sweep_cancel()
     assert state.cancelled is True
 
@@ -126,9 +128,9 @@ def test_cancel_before_equal_to_event_ts_does_not_cancel():
     s3.put(
         "test-bucket",
         "pr/1/cancel-before-default",
-        json.dumps({"ts": 2000.0}).encode(),
+        json.dumps({"ts": 2000.0, "head_sha": "a" * 40}).encode(),
     )
-    state = _make_state(s3, event_ts=2000.0)
+    state = _make_state(s3, event_ts=2000.0, head_sha="a" * 40)
     state.sweep_cancel()
     assert state.cancelled is False
 
@@ -139,9 +141,9 @@ def test_cancel_before_older_than_event_ts_does_not_cancel():
     s3.put(
         "test-bucket",
         "pr/1/cancel-before-default",
-        json.dumps({"ts": 500.0}).encode(),
+        json.dumps({"ts": 500.0, "head_sha": "b" * 40}).encode(),
     )
-    state = _make_state(s3, event_ts=1000.0)
+    state = _make_state(s3, event_ts=1000.0, head_sha="a" * 40)
     state.sweep_cancel()
     assert state.cancelled is False
 
@@ -156,11 +158,37 @@ def test_zero_event_ts_skips_cancel_before():
     s3.put(
         "test-bucket",
         "pr/1/cancel-before-default",
-        json.dumps({"ts": 2000.0}).encode(),
+        json.dumps({"ts": 2000.0, "head_sha": "b" * 40}).encode(),
     )
     state = _make_state(s3, event_ts=0.0)
     state.sweep_cancel()
     assert state.cancelled is False
+
+
+def test_cancel_before_same_sha_does_not_cancel():
+    """A same-SHA marker must not cancel the current approved PR head."""
+    s3 = _FakeS3()
+    s3.put(
+        "test-bucket",
+        "pr/1/cancel-before-default",
+        json.dumps({"ts": 2000.0, "head_sha": "a" * 40}).encode(),
+    )
+    state = _make_state(s3, event_ts=1000.0, head_sha="a" * 40)
+    state.sweep_cancel()
+    assert state.cancelled is False
+
+
+def test_cancel_before_without_sha_still_cancels_older_runs():
+    """Backward compatibility for older markers that only carry ts."""
+    s3 = _FakeS3()
+    s3.put(
+        "test-bucket",
+        "pr/1/cancel-before-default",
+        json.dumps({"ts": 2000.0}).encode(),
+    )
+    state = _make_state(s3, event_ts=1000.0, head_sha="a" * 40)
+    state.sweep_cancel()
+    assert state.cancelled is True
 
 
 def test_cancel_before_other_scope_does_not_cancel():

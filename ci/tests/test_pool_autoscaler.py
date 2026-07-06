@@ -104,6 +104,19 @@ def test_calculate_desired_capacity_applies_capacity_reserve_once():
     )
 
 
+def test_calculate_desired_capacity_never_scales_down():
+    assert (
+        _calculate_desired_capacity(
+            current_desired=3,
+            max_size=10,
+            visible_messages=0,
+            in_flight_messages=0,
+            capacity_reserve=0,
+        )
+        == 3
+    )
+
+
 def test_lambda_handler_updates_all_pools_that_need_scaling(monkeypatch):
     class _FakeSQS:
         def get_queue_url(self, QueueName):

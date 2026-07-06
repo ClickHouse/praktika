@@ -252,7 +252,13 @@ _orchestrator_pool = Components.OrchestratorPool(
     max_size=10,
     capacity_reserve=0,
     image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
-    ext={"iam_statements": [_ORCHESTRATOR_BEDROCK_IAM_STATEMENT]},
+    ext={
+        "iam_statements": [_ORCHESTRATOR_BEDROCK_IAM_STATEMENT],
+        "external_pr_autoapprove_paths": [
+            #"**/*"
+            "praktika/*"
+        ],
+    },
     user_data="\n".join(
         [
             "#!/usr/bin/env bash",
