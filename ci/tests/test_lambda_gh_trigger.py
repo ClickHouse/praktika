@@ -133,6 +133,7 @@ def test_external_pr_autoapproves_after_safe_path_change(monkeypatch):
         "head_sha": "b" * 40,
         "approval_check_id": 7,
         "status": "approved",
+        "approved_by": "maintainer",
         "workflow": _pr_payload(external=True)["pull_request"],
     }
     gate_calls = []
@@ -163,7 +164,7 @@ def test_external_pr_autoapproves_after_safe_path_change(monkeypatch):
     assert gate_calls[0][1]["status"] == "completed"
     assert gate_calls[0][1]["conclusion"] == "success"
     assert stored[0][2] == "approved"
-    assert stored[0][3] == "auto"
+    assert stored[0][3] == "maintainer"
     assert len(enqueued) == 1
 
 

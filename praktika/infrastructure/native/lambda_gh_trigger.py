@@ -617,6 +617,9 @@ def _handle_external_pr(workflow: dict, delivery_id: str):
     )
     if autoapproved:
         summary, text = _autoapprove_summary(previous_state)
+        original_approver = (
+            (previous_state.get("approved_by") or "").strip() or "a maintainer"
+        )
         check = _create_gate_check(
             workflow["repo"],
             workflow["pr_number"],
@@ -628,7 +631,12 @@ def _handle_external_pr(workflow: dict, delivery_id: str):
             summary=summary,
             text=text,
         )
-        _store_gate_state(workflow, int(check["id"]), "approved", approved_by="auto")
+        _store_gate_state(
+            workflow,
+            int(check["id"]),
+            "approved",
+            approved_by=original_approver,
+        )
         _enqueue(workflow, delivery_id)
         print(
             f"AUTOAPPROVED: PR#{workflow['pr_number']} sha={workflow['head_sha'][:12]}"
