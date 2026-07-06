@@ -587,6 +587,16 @@ def _store_gate_state(
     return state
 
 
+def _autoapprove_summary(state: dict) -> tuple[str, str]:
+    approved_by = (state.get("approved_by") or "").strip() or "a maintainer"
+    approved_sha = (state.get("head_sha") or "").strip()
+    short_sha = approved_sha[:12] if approved_sha else "unknown"
+    return (
+        f"Only autoapproved paths changed since approval by {approved_by} on commit {short_sha}.",
+        f"Previous approved commit: `{short_sha}`\nApproved by: `{approved_by}`",
+    )
+
+
 def _handle_external_pr(workflow: dict, delivery_id: str):
     token = _get_github_token(
         required_permissions={"checks": "write", "metadata": "read"}
@@ -606,6 +616,7 @@ def _handle_external_pr(workflow: dict, delivery_id: str):
         )
     )
     if autoapproved:
+        summary, text = _autoapprove_summary(previous_state)
         check = _create_gate_check(
             workflow["repo"],
             workflow["pr_number"],
@@ -614,7 +625,8 @@ def _handle_external_pr(workflow: dict, delivery_id: str):
             status="completed",
             conclusion="success",
             title="External PR approval reused",
-            summary="Only autoapproved paths changed since the previous approved commit.",
+            summary=summary,
+            text=text,
         )
         _store_gate_state(workflow, int(check["id"]), "approved", approved_by="auto")
         _enqueue(workflow, delivery_id)
