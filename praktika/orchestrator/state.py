@@ -868,6 +868,7 @@ class WorkflowState:
             "labels": self._event.get("labels", []),
             "workflow_name": self.workflow.name,
             "job_name": job_state.name,
+            "always_run": bool(job_state.job.always_run),
             "runs_on": list(job_state.job.runs_on) if job_state.job.runs_on else [],
             "cancel_s3_bucket": self._cancel_s3_bucket,
             "cancel_s3_key": self._cancel_s3_key,
