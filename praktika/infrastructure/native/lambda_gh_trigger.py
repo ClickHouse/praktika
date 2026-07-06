@@ -55,8 +55,24 @@ def _parse_autoapprove_paths():
     return [str(pattern).strip() for pattern in value if str(pattern).strip()]
 
 
+def _parse_allowed_repositories():
+    raw = os.environ.get("ALLOWED_REPOSITORIES_JSON", "").strip()
+    if not raw:
+        return set()
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        print("WARNING: ALLOWED_REPOSITORIES_JSON is not valid JSON")
+        return set()
+    if not isinstance(value, list):
+        print("WARNING: ALLOWED_REPOSITORIES_JSON must decode to a list")
+        return set()
+    return {str(repo).strip() for repo in value if str(repo).strip()}
+
+
 ALLOWED_PUSH_BRANCHES = _parse_allowed_push_branches()
 EXTERNAL_PR_AUTOAPPROVE_PATHS = _parse_autoapprove_paths()
+ALLOWED_REPOSITORIES = _parse_allowed_repositories()
 
 
 def _cancel_scope(queue_name: str) -> str:
@@ -139,6 +155,10 @@ def _is_external_pr(pr, repo_full_name: str) -> bool:
     return bool(head_repo.get("fork")) or (
         head_full_name and base_full_name and head_full_name != base_full_name
     )
+
+
+def _is_allowed_repository(repo_full_name: str) -> bool:
+    return not ALLOWED_REPOSITORIES or repo_full_name in ALLOWED_REPOSITORIES
 
 
 def _build_workflow(action, payload, event_ts):
@@ -740,8 +760,13 @@ def lambda_handler(event, context):
 
     action = payload.get("action", "")
     sender = payload.get("sender", {}).get("login", "")
+    repo_full_name = payload.get("repository", {}).get("full_name", "")
 
     print(f"EVENT: {gh_event}.{action}  SENDER: {sender}  DELIVERY: {delivery_id}")
+
+    if repo_full_name and not _is_allowed_repository(repo_full_name):
+        print(f"SKIP: repository {repo_full_name} not in allow-list")
+        return {"statusCode": 200, "body": "ok"}
 
     if gh_event == "check_run":
         if action == "requested_action":

@@ -56,6 +56,8 @@ class OrchestratorPool:
 
     `ext["allowed_push_branches"]` controls which GitHub push branch refs the
     webhook Lambda accepts for this pool. The default is `["main"]`.
+    `ext["allowed_repositories"]` optionally restricts the webhook Lambda to a
+    fixed set of repository full names such as `["ClickHouse/praktika"]`.
     `ext["external_pr_autoapprove_paths"]` optionally lists glob patterns that
     may autoapprove a new external-PR head after a previously approved head,
     but only when the new delta touches files entirely within those patterns.
@@ -158,6 +160,15 @@ class OrchestratorPool:
             for branch in allowed_push_branches
         ), "ext['allowed_push_branches'] must contain only non-empty strings"
         allowed_push_branches = [branch.strip() for branch in allowed_push_branches]
+        allowed_repositories = self.ext.get("allowed_repositories", [])
+        assert isinstance(
+            allowed_repositories, list
+        ), "ext['allowed_repositories'] must be a list of repository full names"
+        assert all(
+            isinstance(repo, str) and repo.strip()
+            for repo in allowed_repositories
+        ), "ext['allowed_repositories'] must contain only non-empty strings"
+        allowed_repositories = [repo.strip() for repo in allowed_repositories]
         external_pr_autoapprove_paths = self.ext.get(
             "external_pr_autoapprove_paths", []
         )
@@ -189,11 +200,13 @@ class OrchestratorPool:
             [
                 f"arn:aws:s3:::{artifact_bucket}/runs/*/cancel-request",
                 f"arn:aws:s3:::{artifact_bucket}/pr/*/cancel-before*",
+                f"arn:aws:s3:::{artifact_bucket}/external-pr-approvals/*",
             ]
             if artifact_bucket
             else [
                 "arn:aws:s3:::*/runs/*/cancel-request",
                 "arn:aws:s3:::*/pr/*/cancel-before*",
+                "arn:aws:s3:::*/external-pr-approvals/*",
             ]
         )
 
@@ -306,6 +319,10 @@ class OrchestratorPool:
         self.lambda_config.environments["ALLOWED_PUSH_BRANCHES"] = ",".join(
             allowed_push_branches
         )
+        self.lambda_config.environments["ALLOWED_REPOSITORIES_JSON"] = json.dumps(
+            allowed_repositories,
+            sort_keys=True,
+        )
         self.lambda_config.environments["GH_AUTH_LAMBDA_NAME"] = (
             Settings.GH_AUTH_LAMBDA_NAME or ""
         )
@@ -343,6 +360,11 @@ class OrchestratorPool:
                 "S3CancelSignal": {
                     "Version": "2012-10-17",
                     "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Action": ["s3:ListBucket"],
+                            "Resource": [f"arn:aws:s3:::{artifact_bucket}"],
+                        },
                         {
                             "Effect": "Allow",
                             "Action": ["s3:GetObject", "s3:PutObject"],

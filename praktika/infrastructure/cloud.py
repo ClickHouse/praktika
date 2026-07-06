@@ -733,6 +733,17 @@ class CloudInfrastructure:
             )
             for token_minter in self.github_token_minters:
                 token_minter.apply_defaults(default_repository=self.name)
+            default_allowed_repositories = []
+            for token_minter in self.github_token_minters:
+                for repo in token_minter.repositories:
+                    if repo not in default_allowed_repositories:
+                        default_allowed_repositories.append(repo)
+            if default_allowed_repositories:
+                for pool in self.orchestrator_pools:
+                    pool.ext.setdefault(
+                        "allowed_repositories",
+                        list(default_allowed_repositories),
+                    )
 
             # 1. Namespace all resources for this project.
             # 2. Materialize implicit child components from the high-level
