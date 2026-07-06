@@ -1,5 +1,6 @@
-from dataclasses import dataclass, field
 import copy
+import json
+from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
 from praktika.infrastructure.image_builder import ImageBuilder
@@ -55,6 +56,9 @@ class OrchestratorPool:
 
     `ext["allowed_push_branches"]` controls which GitHub push branch refs the
     webhook Lambda accepts for this pool. The default is `["main"]`.
+    `ext["external_pr_autoapprove_paths"]` optionally lists glob patterns that
+    may autoapprove a new external-PR head after a previously approved head,
+    but only when the new delta touches files entirely within those patterns.
 
     Registered into CloudInfrastructure.Config automatically via its
     orchestrator_pool field.
@@ -154,6 +158,19 @@ class OrchestratorPool:
             for branch in allowed_push_branches
         ), "ext['allowed_push_branches'] must contain only non-empty strings"
         allowed_push_branches = [branch.strip() for branch in allowed_push_branches]
+        external_pr_autoapprove_paths = self.ext.get(
+            "external_pr_autoapprove_paths", []
+        )
+        assert isinstance(
+            external_pr_autoapprove_paths, list
+        ), "ext['external_pr_autoapprove_paths'] must be a list of glob patterns"
+        assert all(
+            isinstance(pattern, str) and pattern.strip()
+            for pattern in external_pr_autoapprove_paths
+        ), "ext['external_pr_autoapprove_paths'] must contain only non-empty strings"
+        external_pr_autoapprove_paths = [
+            pattern.strip() for pattern in external_pr_autoapprove_paths
+        ]
         # Extra IAM policy statements appended to WorkflowOrchestratorAccess, so a
         # project can grant pool-specific permissions (e.g. the AI advisor's
         # Bedrock access) from its config without editing this shared class.
@@ -289,6 +306,15 @@ class OrchestratorPool:
         self.lambda_config.environments["ALLOWED_PUSH_BRANCHES"] = ",".join(
             allowed_push_branches
         )
+        self.lambda_config.environments["GH_AUTH_LAMBDA_NAME"] = (
+            Settings.GH_AUTH_LAMBDA_NAME or ""
+        )
+        self.lambda_config.environments["EXTERNAL_PR_AUTOAPPROVE_PATHS_JSON"] = (
+            json.dumps(
+                external_pr_autoapprove_paths,
+                sort_keys=True,
+            )
+        )
         self.webhook_secret = SecretParameter.Config(
             name=self._webhook_secret_name(),
             description="GitHub webhook secret for the workflow trigger Lambda",
@@ -319,7 +345,7 @@ class OrchestratorPool:
                     "Statement": [
                         {
                             "Effect": "Allow",
-                            "Action": ["s3:PutObject"],
+                            "Action": ["s3:GetObject", "s3:PutObject"],
                             "Resource": [
                                 *artifact_resources,
                             ],

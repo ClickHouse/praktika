@@ -839,6 +839,7 @@ class CloudInfrastructure:
                 self.lambda_functions.append(token_minter.lambda_config)
                 for pool in self.orchestrator_pools:
                     token_minter.grant_invoke(pool.ec2_role)
+                    token_minter.grant_invoke(pool.lambda_role)
                 for pool in self.runner_pools:
                     token_minter.grant_invoke(pool.ec2_role)
             for autoscaler in self.pool_autoscalers:
