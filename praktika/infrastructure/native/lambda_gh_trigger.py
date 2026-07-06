@@ -505,8 +505,14 @@ def _cancel_run(run_id):
         print(f"  [warn] could not write cancel-request: {e}")
 
 
-def _cancel_runs_before(pr_number, event_ts):
-    """New push: write the scoped ``cancel-before`` marker with the new event ts."""
+def _cancel_runs_before(pr_number, event_ts, head_sha=""):
+    """New push: write the scoped ``cancel-before`` marker for older SHAs.
+
+    The marker is PR-scoped, so include both the event timestamp and the new
+    head SHA. The orchestrator only self-cancels when it sees a newer marker
+    for a *different* SHA; this avoids false cancels when an approved external
+    PR re-enqueues the current head after the marker was already written.
+    """
     if not S3_BUCKET:
         print("  [warn] S3_BUCKET not set; cannot write cancel-before")
         return
@@ -515,7 +521,7 @@ def _cancel_runs_before(pr_number, event_ts):
         _s3().put_object(
             Bucket=S3_BUCKET,
             Key=key,
-            Body=json.dumps({"ts": event_ts}).encode(),
+            Body=json.dumps({"ts": event_ts, "head_sha": head_sha or ""}).encode(),
             ContentType="application/json",
         )
         print(f"CANCEL-BEFORE written: s3://{S3_BUCKET}/{key} ts={event_ts:.0f}")
@@ -865,7 +871,9 @@ def lambda_handler(event, context):
     workflow = _build_workflow(action, payload, event_ts)
     if workflow:
         if action == "synchronize":
-            _cancel_runs_before(workflow["pr_number"], event_ts)
+            _cancel_runs_before(
+                workflow["pr_number"], event_ts, workflow.get("head_sha", "")
+            )
         if workflow.get("external_pr"):
             _handle_external_pr(workflow, delivery_id)
         else:

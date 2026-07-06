@@ -650,11 +650,11 @@ class WorkflowState:
           - ``runs/<run_id>/cancel-request`` (manual UI cancel button) —
             lambda writes this on a check_run.requested_action=cancel
             event addressed to a specific run.
-          - ``pr/<pr>/cancel-before-<scope>`` carrying ``{ts}`` (new push)
-            — lambda writes this on synchronize. Every still-running
+          - ``pr/<pr>/cancel-before-<scope>`` carrying ``{ts, head_sha}``
+            (new push) — lambda writes this on synchronize. Every still-running
             orchestrator for the same PR and orchestrator scope with
-            ``event_ts < ts`` self-cancels; the freshly enqueued run has
-            ``event_ts == ts`` and stays alive.
+            ``event_ts < ts`` and a different head SHA self-cancels; the
+            freshly enqueued run for that same SHA stays alive.
 
         Both paths set ``state.cancelled = True``; the main loop handles
         that flag exactly once via ``cancel_unfinished_jobs``, so seeing
@@ -680,9 +680,13 @@ class WorkflowState:
             )
             payload = json.loads(obj["Body"].read())
             cancel_before = float(payload.get("ts", 0))
+            cancel_sha = str(payload.get("head_sha") or "").strip()
         except Exception:
             return
-        if cancel_before > self._event_ts > 0:
+        current_sha = str(self._event.get("head_sha") or "").strip()
+        if cancel_before > self._event_ts > 0 and (
+            not cancel_sha or cancel_sha != current_sha
+        ):
             print(
                 f"[CANCEL] run {self._run_id} (newer event {cancel_before:.0f} > "
                 f"event_ts {self._event_ts:.0f})"

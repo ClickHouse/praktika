@@ -92,6 +92,27 @@ def test_build_workflow_marks_external_pr(monkeypatch):
     assert workflow["head_repo"] == "fork/repo"
 
 
+def test_cancel_runs_before_stores_head_sha(monkeypatch):
+    mod = _reload_lambda(monkeypatch)
+    captured = {}
+
+    class _FakeS3:
+        def put_object(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(mod, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(mod, "_s3", lambda: _FakeS3())
+
+    mod._cancel_runs_before(17, 123.5, "a" * 40)
+
+    assert captured["Bucket"] == "bucket"
+    assert captured["Key"] == "pr/17/cancel-before-default"
+    assert json.loads(captured["Body"].decode()) == {
+        "ts": 123.5,
+        "head_sha": "a" * 40,
+    }
+
+
 def test_external_pr_creates_gate_check_instead_of_enqueuing(monkeypatch):
     mod = _reload_lambda(monkeypatch)
     payload = _pr_payload(external=True)
@@ -141,7 +162,9 @@ def test_external_pr_autoapproves_after_safe_path_change(monkeypatch):
     enqueued = []
 
     monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
-    monkeypatch.setattr(mod, "_cancel_runs_before", lambda pr_number, event_ts: None)
+    monkeypatch.setattr(
+        mod, "_cancel_runs_before", lambda pr_number, event_ts, head_sha="": None
+    )
     monkeypatch.setattr(mod, "_get_github_token", lambda required_permissions=None: "tok")
     monkeypatch.setattr(mod, "_load_approval_state", lambda repo, pr_number: previous_state)
     monkeypatch.setattr(mod, "_supersede_previous_gate", lambda state, token: None)
