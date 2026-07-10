@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from shlex import quote
-from threading import Thread
+from threading import Event, Thread
 from types import SimpleNamespace
 from typing import Any, Dict, Iterator, List, Optional, Type, TypeVar, Union
 
@@ -639,6 +639,11 @@ class Utils:
         return base64_string
 
     @staticmethod
+    def from_base64(value):
+        assert isinstance(value, str), f"TODO: not supported for {type(value)}"
+        return base64.b64decode(value.encode("utf-8")).decode("utf-8")
+
+    @staticmethod
     def is_hex(s):
         try:
             int(s, 16)
@@ -1035,20 +1040,28 @@ class TeePopen:
         self.terminated_by_sigkill = False
         self.log_rolling_buffer = deque(maxlen=100)
         self.preserve_stdio = preserve_stdio
+        self.finished = Event()
 
     def _check_timeout(self) -> None:
         if self.timeout is None:
             return
-        time.sleep(self.timeout)
+        if self.finished.wait(self.timeout):
+            return
+        if self.process.poll() is not None:
+            return
         print(f"WARNING: Timeout exceeded [{self.timeout}] for [{self.process.pid}]")
         self.timeout_exceeded = True
 
-        if self.timeout_shell_cleanup:
-            Shell.check(self.timeout_shell_cleanup, verbose=True)
-            return
-
         self.send_signal(signal.SIGTERM)
         print(f"Send SIGTERM to [{self.process.pid}]")
+
+        if self.timeout_shell_cleanup:
+            Thread(
+                target=Shell.check,
+                args=(self.timeout_shell_cleanup,),
+                kwargs={"verbose": True, "timeout": 120},
+                daemon=True,
+            ).start()
         time_wait = 0
 
         while self.process.poll() is None and time_wait < 100:
@@ -1110,15 +1123,18 @@ class TeePopen:
             self.log_file.close()
 
     def wait(self) -> int:
-        # If preserving stdio, we don't have our own stdout pipe; just wait
-        if not self.preserve_stdio and self.process.stdout is not None:
-            for line in self.process.stdout:
-                sys.stdout.write(line)
+        try:
+            # If preserving stdio, we don't have our own stdout pipe; just wait
+            if not self.preserve_stdio and self.process.stdout is not None:
+                for line in self.process.stdout:
+                    sys.stdout.write(line)
 
-                if self.log_file:
-                    self.log_file.write(line)
-                self.log_rolling_buffer.append(line)
-        return self.process.wait()
+                    if self.log_file:
+                        self.log_file.write(line)
+                    self.log_rolling_buffer.append(line)
+            return self.process.wait()
+        finally:
+            self.finished.set()
 
     def poll(self):
         return self.process.poll()
