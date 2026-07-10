@@ -72,7 +72,7 @@ permissions: write-all\
 name: {NAME}
 on:
   schedule:{CRON_TEMPLATES}
-  workflow_dispatch:
+  workflow_dispatch:{DISPATCH_INPUTS_BLOCK}
 
 concurrency:
   group: ${{{{{{{{ github.workflow }}}}}}}}
@@ -332,7 +332,10 @@ class PullRequestPushYamlGen:
                 secrets_envs.append(
                     YamlGenerator.Templates.TEMPLATE_SETUP_ENV_VARS.format(VAR_NAME=var)
                 )
-            if self.workflow_config.event == Workflow.Event.DISPATCH:
+            if (
+                self.workflow_config.event == Workflow.Event.DISPATCH
+                or self.workflow_config.dispatch_inputs
+            ):
                 secrets_envs.append(
                     YamlGenerator.Templates.TEMPLATE_SETUP_ENVS_INPUTS.format(
                         WORKFLOW_INPUTS_FILE=Settings.WORKFLOW_INPUTS_FILE
@@ -415,7 +418,15 @@ class PullRequestPushYamlGen:
                 )
         elif self.workflow_config.event in (Workflow.Event.SCHEDULE,):
             base_template = YamlGenerator.Templates.TEMPLATE_SCHEDULE
-            format_kwargs = {"CRON_TEMPLATES": cron_items}
+            format_kwargs = {
+                "CRON_TEMPLATES": cron_items,
+                # Allow a scheduled workflow to also declare workflow_dispatch
+                # inputs for manual runs; empty when none are declared, so the
+                # generated YAML is unchanged for inputs-less schedules.
+                "DISPATCH_INPUTS_BLOCK": (
+                    f"\n    inputs:{dispatch_inputs}" if dispatch_inputs else ""
+                ),
+            }
             ENV_CHECKOUT_REFERENCE = (
                 YamlGenerator.Templates.TEMPLATE_ENV_CHECKOUT_REF_DEFAULT
             )

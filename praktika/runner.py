@@ -271,6 +271,7 @@ class Runner:
         else:
             print("Read GH Environment from workflow data")
             env = _Environment.from_workflow_data()
+        env.JOB_KV_DATA_BASE_KEYS = list(env.JOB_KV_DATA.keys())
         env.JOB_NAME = job.name
         os.environ["JOB_NAME"] = job.name
         os.environ["CHECK_NAME"] = job.name
@@ -452,6 +453,7 @@ class Runner:
 
         print("INFO: disk status before running a job:")
         Shell.run("df -h")
+        timeout_shell_cleanup = job.timeout_shell_cleanup
         if job.run_in_docker and not no_docker:
             Shell.run("docker system df")
             job.run_in_docker, docker_settings = (
@@ -489,8 +491,8 @@ class Runner:
                     (Path(current_dir).resolve().as_posix() + ":" + job.name).encode()
                 ).hexdigest()[:12]
             )
-            if not job.timeout_shell_cleanup:
-                job.timeout_shell_cleanup = f"docker rm -f {container_name}"
+            if not timeout_shell_cleanup:
+                timeout_shell_cleanup = f"docker rm -f {container_name}"
             workdir = f"--workdir={current_dir}"
             for setting in settings:
                 if setting.startswith("--volume"):
@@ -601,7 +603,7 @@ class Runner:
             env=job_env,
             timeout=job.timeout,
             preserve_stdio=preserve_stdio,
-            timeout_shell_cleanup=job.timeout_shell_cleanup,
+            timeout_shell_cleanup=timeout_shell_cleanup,
         ) as process:
             start_time = Utils.timestamp()
 
@@ -730,6 +732,9 @@ class Runner:
 
         result.update_duration()
         result.set_files([Settings.RUN_LOG], strict=False)
+        if job.force_success and not result.is_ok():
+            print("NOTE: Job has force_success=True - overriding status to OK")
+            result.set_status(Result.Status.OK)
         return result
 
     def _post_run(
@@ -805,11 +810,18 @@ class Runner:
                     result.set_link(link)
 
         # run after post hooks as they might modify workflow kv data
-        job_outputs = env.JOB_KV_DATA
+        base_keys = set(env.JOB_KV_DATA_BASE_KEYS or [])
+        job_outputs = {
+            k: v for k, v in env.JOB_KV_DATA.items() if k not in base_keys
+        }
         print(f"Job's output: [{list(job_outputs.keys())}]")
         if is_initial_job:
             output = dataclasses.asdict(env)
             output["pipeline_status"] = "success"
+            output["PR_BODY"] = ""
+            output["PR_TITLE"] = ""
+            output["COMMIT_MESSAGE"] = ""
+            output["JOB_KV_DATA"] = Utils.to_base64(json.dumps(env.JOB_KV_DATA))
         else:
             output = job_outputs
         with open(env.JOB_OUTPUT_STREAM, "a", encoding="utf8") as f:
@@ -1284,5 +1296,5 @@ class Runner:
             )
             print(f"=== Post run script finished ===")
 
-        if not post_res or result is None or not result.is_ok():
+        if not post_res or result is None or (not result.is_ok() and not job.force_success):
             sys.exit(1)
