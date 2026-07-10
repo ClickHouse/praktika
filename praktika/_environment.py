@@ -44,9 +44,6 @@ class _Environment(MetaClasses.Serializable):
     TRACEBACKS: List[str] = dataclasses.field(default_factory=list)
     WORKFLOW_JOB_DATA: Dict[str, Any] = dataclasses.field(default_factory=dict)
     JOB_KV_DATA: Dict[str, Any] = dataclasses.field(default_factory=dict)
-    # Keys inherited from the initial job so downstream jobs can emit only
-    # their own additions in `data=` outputs.
-    JOB_KV_DATA_BASE_KEYS: List[str] = dataclasses.field(default_factory=list)
     COMMIT_AUTHORS: List[str] = dataclasses.field(default_factory=list)
     WORKFLOW_CONFIG: Optional[Dict[str, Any]] = None
     name = "environment"
@@ -268,34 +265,8 @@ class _Environment(MetaClasses.Serializable):
         # Job names are normalized in the workflow status file
         normalized_job_name = Utils.normalize_string(Settings.CI_CONFIG_JOB_NAME)
         config_job_data = workflow_status_data.get(normalized_job_name, {})
-        data_str = config_job_data.get("outputs", {}).get("data", "")
-        if isinstance(data_str, str):
-            env_dict = json.loads(data_str) if data_str.strip() else None
-        else:
-            env_dict = data_str
-        if not env_dict or "SHA" not in env_dict:
-            raise RuntimeError(
-                f"Job output [data] of the [{Settings.CI_CONFIG_JOB_NAME}] job is empty or missing. "
-                "The runner likely suppressed it because it matched a secret pattern."
-            )
-
-        kv_data = env_dict.get("JOB_KV_DATA")
-        if isinstance(kv_data, str):
-            env_dict["JOB_KV_DATA"] = (
-                json.loads(Utils.from_base64(kv_data)) if kv_data else {}
-            )
-
-        event_file_path = os.getenv("GITHUB_EVENT_PATH", "")
-        if event_file_path and Path(event_file_path).is_file():
-            with open(event_file_path, "r", encoding="utf-8") as f:
-                github_event = json.load(f)
-            if "pull_request" in github_event:
-                env_dict["PR_BODY"] = github_event["pull_request"]["body"] or ""
-                env_dict["PR_TITLE"] = github_event["pull_request"]["title"] or ""
-            elif github_event.get("head_commit"):
-                env_dict["COMMIT_MESSAGE"] = (
-                    github_event["head_commit"]["message"] or ""
-                )
+        data_str = config_job_data.get("outputs", {}).get("data", "{}")
+        env_dict = json.loads(data_str) if isinstance(data_str, str) else data_str
 
         # Reread instance metadata from the host
         env_dict["INSTANCE_TYPE"] = (

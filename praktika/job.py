@@ -1,8 +1,10 @@
 import copy
 import fnmatch
+import hashlib
 import json
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Iterable, List, Optional
 
 from . import Artifact
@@ -61,14 +63,7 @@ class Job:
 
         always_run: bool = False
 
-        # If True, the job failure does not block PR merge, but the job
-        # is still shown as failed in the CI report.
-        allow_failure: bool = False
-
-        # If True, the job failure is hidden entirely: the CI report shows
-        # green status and the job does not block PR merge. Use for
-        # experimental jobs that are not yet stable enough to be enforced.
-        force_success: bool = False
+        allow_merge_on_failure: bool = False
 
         # Post this job as a commit status for non-Praktika engines. With the
         # Praktika engine this is redundant: the orchestrator uses the GitHub
@@ -234,13 +229,10 @@ class Job:
             res.provides = provides_res
             return res
 
-        def set_allow_failure(self, value=True):
-            res = copy.deepcopy(self)
-            res.allow_failure = value
-            return res
-
         def set_allow_merge_on_failure(self, value=True):
-            return self.set_allow_failure(value)
+            res = copy.deepcopy(self)
+            res.allow_merge_on_failure = value
+            return res
 
         def set_post_hooks(self, post_hooks):
             res = copy.deepcopy(self)
@@ -304,3 +296,15 @@ class Job:
                     print(f"Warning: failed to check git submodules: {e}")
 
             return False
+
+        def __post_init__(self):
+            if self.timeout_shell_cleanup:
+                return
+            if self.run_in_docker:
+                container_name = (
+                    "praktika_"
+                    + hashlib.sha1(
+                        (Path(os.getcwd()).resolve().as_posix() + ":" + self.name).encode()
+                    ).hexdigest()[:12]
+                )
+                self.timeout_shell_cleanup = f"docker rm -f {container_name}"
