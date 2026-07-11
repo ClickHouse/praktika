@@ -1,6 +1,6 @@
 from praktika.infrastructure.cloud import CloudInfrastructure
 from praktika.infrastructure import Components, ImageBuilder, Storage, VPC
-from ci.settings.settings import SECRET_CI_DB_CONNECTION
+from ci.settings.settings import SECRET_CI_DB_CONNECTION, SECRET_DOCKER_REGISTRY
 
 
 _PRAKTIKA_PACKAGE_BASE_URL = (
@@ -108,7 +108,10 @@ def _image_builders():
 
 _IMAGE_BUILDERS = _image_builders()
 _IMAGE_BUILDERS_BY_NAME = {builder.name: builder for builder in _IMAGE_BUILDERS}
-_RUNNER_ALLOWED_SSM_PARAMETERS = [SECRET_CI_DB_CONNECTION]
+_RUNNER_ALLOWED_SSM_PARAMETERS = [
+    SECRET_CI_DB_CONNECTION,
+    SECRET_DOCKER_REGISTRY,
+]
 _RUNNER_ALLOWED_SECRETS = []
 _RUNNER_ALLOWED_S3_PREFIXES = ["artifacts-eu-north-1"]
 _RUNNER_ALLOW_ALL_SSM_PARAMETERS = False
@@ -116,119 +119,103 @@ _RUNNER_ALLOW_ALL_SECRETS = False
 _RUNNER_ALLOW_ALL_S3_PREFIXES = False
 _RUNNER_ALLOW_SSM_DEBUG = False
 
+def _runner_user_data(controller_update_cmd: str) -> str:
+    return "\n".join(
+        [
+            "#!/usr/bin/env bash",
+            "set -xeuo pipefail",
+            "",
+            controller_update_cmd,
+            "# Add any host customization you need above this line.",
+            "/usr/local/bin/praktika-configure-cloudwatch-agent",
+            "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/praktika/amazon-cloudwatch-agent.json -s",
+            (
+                f"/opt/praktika/base-venvs/{_RUNTIME_BASE_VENV}/bin/python "
+                f"-m pip install --force-reinstall {_PRAKTIKA_WHL}"
+            ),
+            "systemctl enable --now praktika-controller",
+            "",
+        ]
+    )
+
+
+def _runner_pool(name: str, instance_type: str, image_builder: str, max_size: int = 10, user_data: str = ""):
+    return Components.RunnerPool(
+        name=name,
+        instance_type=instance_type,
+        scaling=Components.RunnerPool.Scaling.Auto,
+        size=0,
+        max_size=max_size,
+        image_builder=_IMAGE_BUILDERS_BY_NAME[image_builder],
+        allowed_ssm_parameters=list(_RUNNER_ALLOWED_SSM_PARAMETERS),
+        allowed_secrets=list(_RUNNER_ALLOWED_SECRETS),
+        allowed_s3_prefixes=list(_RUNNER_ALLOWED_S3_PREFIXES),
+        allow_all_ssm_parameters=_RUNNER_ALLOW_ALL_SSM_PARAMETERS,
+        allow_all_secrets=_RUNNER_ALLOW_ALL_SECRETS,
+        allow_all_s3_prefixes=_RUNNER_ALLOW_ALL_S3_PREFIXES,
+        allow_ssm_debug=_RUNNER_ALLOW_SSM_DEBUG,
+        user_data=user_data,
+    )
+
+
 _runner_pools = [
-    Components.RunnerPool(
+    _runner_pool(
         name="arm-2xsmall",
         instance_type="t4g.small",
-        scaling=Components.RunnerPool.Scaling.Auto,
-        size=0,
-        max_size=10,
-        image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
-        allowed_ssm_parameters=list(_RUNNER_ALLOWED_SSM_PARAMETERS),
-        allowed_secrets=list(_RUNNER_ALLOWED_SECRETS),
-        allowed_s3_prefixes=list(_RUNNER_ALLOWED_S3_PREFIXES),
-        allow_all_ssm_parameters=_RUNNER_ALLOW_ALL_SSM_PARAMETERS,
-        allow_all_secrets=_RUNNER_ALLOW_ALL_SECRETS,
-        allow_all_s3_prefixes=_RUNNER_ALLOW_ALL_S3_PREFIXES,
-        allow_ssm_debug=_RUNNER_ALLOW_SSM_DEBUG,
-        user_data="\n".join(
-            [
-                "#!/usr/bin/env bash",
-                "set -xeuo pipefail",
-                "",
-                "# Update the controller if changed (to test new version w/o image rebuild)",
-                f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages",
-                "# Add any host customization you need above this line.",
-                "/usr/local/bin/praktika-configure-cloudwatch-agent",
-                "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/praktika/amazon-cloudwatch-agent.json -s",
-                (
-                    f"/opt/praktika/base-venvs/{_RUNTIME_BASE_VENV}/bin/python "
-                    f"-m pip install --force-reinstall {_PRAKTIKA_WHL}"
-                ),
-                "systemctl enable --now praktika-controller",
-                "",
-            ]
+        image_builder="ci-arm64-image",
+        user_data=_runner_user_data(
+            "# Update the controller if changed (to test new version w/o image rebuild)\n"
+            f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages"
         ),
     ),
-    Components.RunnerPool(
+    _runner_pool(
         name="arm-2xsmall-base",
         instance_type="t4g.small",
-        scaling=Components.RunnerPool.Scaling.Auto,
-        size=0,
-        max_size=10,
-        image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
-        allowed_ssm_parameters=list(_RUNNER_ALLOWED_SSM_PARAMETERS),
-        allowed_secrets=list(_RUNNER_ALLOWED_SECRETS),
-        allowed_s3_prefixes=list(_RUNNER_ALLOWED_S3_PREFIXES),
-        allow_all_ssm_parameters=_RUNNER_ALLOW_ALL_SSM_PARAMETERS,
-        allow_all_secrets=_RUNNER_ALLOW_ALL_SECRETS,
-        allow_all_s3_prefixes=_RUNNER_ALLOW_ALL_S3_PREFIXES,
-        allow_ssm_debug=_RUNNER_ALLOW_SSM_DEBUG,
+        image_builder="ci-arm64-image",
     ),
-    Components.RunnerPool(
+    _runner_pool(
         name="amd-2xsmall",
         instance_type="t3.small",
-        scaling=Components.RunnerPool.Scaling.Auto,
-        size=0,
-        max_size=10,
-        image_builder=_IMAGE_BUILDERS_BY_NAME["ci-x86_64-image"],
-        allowed_ssm_parameters=list(_RUNNER_ALLOWED_SSM_PARAMETERS),
-        allowed_secrets=list(_RUNNER_ALLOWED_SECRETS),
-        allowed_s3_prefixes=list(_RUNNER_ALLOWED_S3_PREFIXES),
-        allow_all_ssm_parameters=_RUNNER_ALLOW_ALL_SSM_PARAMETERS,
-        allow_all_secrets=_RUNNER_ALLOW_ALL_SECRETS,
-        allow_all_s3_prefixes=_RUNNER_ALLOW_ALL_S3_PREFIXES,
-        allow_ssm_debug=_RUNNER_ALLOW_SSM_DEBUG,
-        user_data="\n".join(
-            [
-                "#!/usr/bin/env bash",
-                "set -xeuo pipefail",
-                "",
-                "# Update the controller if changed (to test new version w/o image rebuild)",
-                f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages",
-                "# Add any host customization you need above this line.",
-                "/usr/local/bin/praktika-configure-cloudwatch-agent",
-                "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/praktika/amazon-cloudwatch-agent.json -s",
-                (
-                    f"/opt/praktika/base-venvs/{_RUNTIME_BASE_VENV}/bin/python "
-                    f"-m pip install --force-reinstall {_PRAKTIKA_WHL}"
-                ),
-                "systemctl enable --now praktika-controller",
-                "",
-            ]
+        image_builder="ci-x86_64-image",
+        user_data=_runner_user_data(
+            "# Update the controller if changed (to test new version w/o image rebuild)\n"
+            f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages"
         ),
     ),
-    Components.RunnerPool(
+    _runner_pool(
         name="amd-2xsmall-ubuntu",
         instance_type="t3.small",
-        scaling=Components.RunnerPool.Scaling.Auto,
-        size=0,
-        max_size=10,
-        image_builder=_IMAGE_BUILDERS_BY_NAME["ci-ubuntu-x86_64-image"],
-        allowed_ssm_parameters=list(_RUNNER_ALLOWED_SSM_PARAMETERS),
-        allowed_secrets=list(_RUNNER_ALLOWED_SECRETS),
-        allowed_s3_prefixes=list(_RUNNER_ALLOWED_S3_PREFIXES),
-        allow_all_ssm_parameters=_RUNNER_ALLOW_ALL_SSM_PARAMETERS,
-        allow_all_secrets=_RUNNER_ALLOW_ALL_SECRETS,
-        allow_all_s3_prefixes=_RUNNER_ALLOW_ALL_S3_PREFIXES,
-        allow_ssm_debug=_RUNNER_ALLOW_SSM_DEBUG,
-        user_data="\n".join(
-            [
-                "#!/usr/bin/env bash",
-                "set -xeuo pipefail",
-                "",
-                "# Add any host customization you need above this line.",
-                "/usr/local/bin/praktika-configure-cloudwatch-agent",
-                "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/praktika/amazon-cloudwatch-agent.json -s",
-                "# Update the controller if changed (to test new version w/o image rebuild)",
-                f"python3.12 -m pip install --ignore-installed {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages",
-                (
-                    f"/opt/praktika/base-venvs/{_RUNTIME_BASE_VENV}/bin/python "
-                    f"-m pip install --force-reinstall {_PRAKTIKA_WHL}"
-                ),
-                "systemctl enable --now praktika-controller",
-                "",
-            ]
+        image_builder="ci-ubuntu-x86_64-image",
+        user_data=_runner_user_data(
+            "# Update the controller if changed (to test new version w/o image rebuild)\n"
+            f"python3.12 -m pip install --ignore-installed {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages"
+        ),
+    ),
+    _runner_pool(
+        name="pr-arm-2xsmall",
+        instance_type="t4g.small",
+        image_builder="ci-arm64-image",
+        user_data=_runner_user_data(
+            "# Update the controller if changed (to test new version w/o image rebuild)\n"
+            f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages"
+        ),
+    ),
+    _runner_pool(
+        name="pr-amd-2xsmall",
+        instance_type="t3.small",
+        image_builder="ci-x86_64-image",
+        user_data=_runner_user_data(
+            "# Update the controller if changed (to test new version w/o image rebuild)\n"
+            f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages"
+        ),
+    ),
+    _runner_pool(
+        name="pr-amd-2xsmall-ubuntu",
+        instance_type="t3.small",
+        image_builder="ci-ubuntu-x86_64-image",
+        user_data=_runner_user_data(
+            "# Update the controller if changed (to test new version w/o image rebuild)\n"
+            f"python3.12 -m pip install --ignore-installed {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages"
         ),
     ),
 ]

@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from . import Artifact, Job
 from .docker import Docker
@@ -103,6 +103,11 @@ class Workflow:
         enable_exit_code_result: bool = False
         # Job aliases for easy job reference with `praktika run job_alias --test TEST_NAME` in local environment
         job_aliases: Dict[str, str] = field(default_factory=dict)
+        # Backward-compatible extension bucket for future workflow-level knobs.
+        ext: Dict[str, Any] = field(default_factory=dict)
+        # If set, every runs_on label across user-defined and Praktika-injected
+        # jobs is prefixed with this string, except "self-hosted".
+        runs_on_label_prefix: str = ""
 
         def is_event_pull_request(self):
             return self.event == Workflow.Event.PULL_REQUEST

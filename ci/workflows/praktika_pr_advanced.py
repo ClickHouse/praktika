@@ -16,6 +16,7 @@ workflow = Workflow.Config(
     name="Praktika CI Advanced",
     event=Workflow.Event.PULL_REQUEST,
     base_branches=["main"],
+    runs_on_label_prefix="pr-",
     ai_orchestrator=Workflow.OrchestratorAI.Config(
         enabled=True,
         provider="bedrock",
