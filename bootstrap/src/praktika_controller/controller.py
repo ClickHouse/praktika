@@ -419,6 +419,42 @@ def handle_task(task, log, queue_name: str):
             cm_heartbeat.stop()
 
 
+# How long to wait for the ASG to tear the box down before forcing a local
+# shutdown as a fallback, and how often to re-check afterwards.
+TERMINATION_GRACE_S = 120
+TERMINATION_WAIT_POLL_S = 30
+
+
+def _await_termination(log):
+    """Stop polling and block until this instance is terminated.
+
+    We call this right after requesting self-termination. Returning from
+    ``poll()`` instead would let the ``Restart=always`` controller unit relaunch
+    within seconds — long before the async ASG termination tears the box down —
+    and the relaunched controller would poll again and re-receive the message,
+    starting a second attempt on an instance that is already going away
+    (terminating AND retrying at once). Blocking here keeps us from polling
+    until the OS kills the process.
+
+    ASG termination is asynchronous and, rarely, may not take effect (throttled
+    API, hung lifecycle hook). After a grace period, force a local shutdown as a
+    safety net so a wedged instance never lingers polling; shutdown is itself
+    async, so keep blocking afterwards.
+    """
+    log.info("Termination requested; controller stopped polling, waiting to be terminated")
+    time.sleep(TERMINATION_GRACE_S)
+    log.warning(
+        "Still alive %ss after termination request; forcing local shutdown",
+        TERMINATION_GRACE_S,
+    )
+    try:
+        subprocess.Popen(["/sbin/shutdown", "-h", "now"])
+    except Exception:
+        log.exception("Failed to force local shutdown")
+    while True:
+        time.sleep(TERMINATION_WAIT_POLL_S)
+
+
 def poll():
     import boto3
 
@@ -492,7 +528,7 @@ def poll():
                         log=log,
                         reason=cleanup_error,
                     )
-                    return
+                    _await_termination(log)
 
                 if role == ROLE_WORKFLOW:
                     result = handle_workflow(
@@ -545,7 +581,7 @@ def poll():
                             f"(attempt {receive_count}/{INFRA_FAILURE_MAX_RECEIVES}): {exc}"
                         ),
                     )
-                    return
+                    _await_termination(log)
             elif (
                 isinstance(payload, dict)
                 and payload.get("type") == "job_task"

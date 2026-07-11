@@ -11,6 +11,12 @@ class _Done(Exception):
     pass
 
 
+class _Stopped(BaseException):
+    """Sentinel for _await_termination in tests. Subclasses BaseException so it
+    escapes poll()'s ``except Exception`` (the termination wait is reached from
+    inside that try) instead of being swallowed into an infinite retry loop."""
+
+
 class _Log:
     def __init__(self):
         self.events = []
@@ -97,8 +103,16 @@ def test_runner_cleanup_failure_after_receive_releases_message_and_terminates(
     monkeypatch.setattr(
         controller, "terminate_instance_for_replacement", fake_terminate
     )
+    # After terminating, poll() stops polling (blocks until the OS kills the
+    # box) instead of returning; stand in a sentinel so the test can unwind.
+    monkeypatch.setattr(
+        controller,
+        "_await_termination",
+        lambda *_a, **_k: (_ for _ in ()).throw(_Stopped()),
+    )
 
-    controller.poll()
+    with pytest.raises(_Stopped):
+        controller.poll()
 
     assert "delete" not in events
     assert ("visibility", 0) in events
@@ -367,8 +381,17 @@ def test_poll_workflow_infra_failure_terminates_for_fresh_retry(monkeypatch):
     monkeypatch.setattr(
         controller, "terminate_instance_for_replacement", fake_terminate
     )
+    # After terminating, poll() stops polling (blocks until the OS kills the
+    # box) instead of returning; stand in a sentinel so the test can unwind and
+    # to prove a second attempt is never started on this instance.
+    monkeypatch.setattr(
+        controller,
+        "_await_termination",
+        lambda *_a, **_k: (_ for _ in ()).throw(_Stopped()),
+    )
 
-    controller.poll()  # returns right after terminating
+    with pytest.raises(_Stopped):
+        controller.poll()
 
     assert "delete" not in events
     assert ("visibility", 0) in events
