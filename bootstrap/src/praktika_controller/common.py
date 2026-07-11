@@ -491,6 +491,91 @@ def git(args, cwd=None) -> str:
     return result.stdout
 
 
+_GITHUB_API_BASE = "https://api.github.com"
+
+
+def _github_api(method, url, token, body=None, timeout=15):
+    import urllib.request
+
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    request = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        raw = response.read().decode("utf-8")
+        return json.loads(raw) if raw else {}
+
+
+def post_early_check(repo, head_sha, token, name, log=None, details_url=None):
+    """Open an ``in_progress`` check run before the (slow) clone so the PR
+    shows CI immediately and an interrupted clone still leaves a signal.
+
+    Best-effort: returns the check-run id, or ``None`` on any failure (a fork
+    head_sha not in the base repo, a transient API error, …). Posting the
+    early check must never block the workflow.
+    """
+    body = {
+        "name": name,
+        "head_sha": head_sha,
+        "status": "in_progress",
+        "actions": [
+            {
+                "label": "Cancel",
+                "description": "Cancel this CI run",
+                "identifier": "cancel",
+            }
+        ],
+    }
+    if details_url:
+        body["details_url"] = details_url
+    try:
+        data = _github_api(
+            "POST", f"{_GITHUB_API_BASE}/repos/{repo}/check-runs", token, body
+        )
+        check_id = data.get("id")
+        if log is not None:
+            log.info("Opened early check run id=%s name=%r on %s", check_id, name, head_sha[:12])
+        return check_id
+    except Exception as e:
+        if log is not None:
+            log.warning("Could not open early check run (continuing): %s", e)
+        return None
+
+
+def finalize_check(repo, check_id, token, conclusion, title, summary, log=None):
+    """Best-effort: mark an early check run completed. Used when the controller
+    fails before the orchestrator subprocess takes over the check (e.g. the
+    clone or runtime resolution fails), so the PR shows the failure instead of
+    a check stuck ``in_progress``."""
+    if not check_id:
+        return
+    body = {
+        "status": "completed",
+        "conclusion": conclusion,
+        "output": {"title": title, "summary": summary},
+    }
+    try:
+        _github_api(
+            "PATCH",
+            f"{_GITHUB_API_BASE}/repos/{repo}/check-runs/{check_id}",
+            token,
+            body,
+        )
+        if log is not None:
+            log.info("Finalized early check run %s as %s", check_id, conclusion)
+    except Exception as e:
+        if log is not None:
+            log.warning("Could not finalize early check run %s: %s", check_id, e)
+
+
 def clone_repo(
     repo,
     head_sha,
