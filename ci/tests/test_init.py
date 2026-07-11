@@ -290,7 +290,7 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
     builders_by_arch = {
         _builder_arch(builder): builder for builder in cloud.image_builders
     }
-    project_slug = tmp_path.name.lower().replace("_", "-")
+    project_slug = tmp_path.name.lower().replace("-", "_")
 
     assert {workflow.name for workflow in workflows} == {
         "Pull Request CI",
@@ -450,7 +450,7 @@ def test_run_init_interactive_supports_oss_storage_and_ubuntu_images(
     tmp_path, monkeypatch
 ):
     confirm_answers = iter([True, True, True])
-    project_slug = tmp_path.name.replace("_", "-")
+    project_slug = tmp_path.name.lower().replace("-", "_")
     string_answers = iter(
         [
             "main",

@@ -20,23 +20,25 @@ class Validator:
     def validate_infrastructure_deploy(cls, cloud):
         print("---Start validating Infrastructure and settings---")
 
+        # Intra-slug separator is "_" (matches CloudInfrastructure._project_prefix).
+        # Names are normalized the same way, so the prefix boundary is "_" too.
         project_prefix = re.sub(
-            r"-{2,}",
-            "-",
-            re.sub(r"[^a-z0-9]+", "-", (cloud.name or "").lower()),
-        ).strip("-")
+            r"_{2,}",
+            "_",
+            re.sub(r"[^a-z0-9]+", "_", (cloud.name or "").lower()),
+        ).strip("_")
         for group, names in getattr(cloud, "_pre_namespace_names", {}).items():
             for name in names:
                 normalized = re.sub(
-                    r"-{2,}",
-                    "-",
-                    re.sub(r"[^a-z0-9]+", "-", str(name).lstrip("/").lower()),
-                ).strip("-")
+                    r"_{2,}",
+                    "_",
+                    re.sub(r"[^a-z0-9]+", "_", str(name).lstrip("/").lower()),
+                ).strip("_")
                 cls.evaluate_check_simple(
                     not project_prefix
                     or (
                         normalized != project_prefix
-                        and not normalized.startswith(f"{project_prefix}-")
+                        and not normalized.startswith(f"{project_prefix}_")
                     ),
                     f"Infrastructure {group} item name [{name}] already includes "
                     f"project prefix [{project_prefix}]. Use project-local names; "
@@ -133,10 +135,10 @@ class Validator:
             normalized = {}
             for project in projects:
                 normalized_name = re.sub(
-                    r"-{2,}",
-                    "-",
-                    re.sub(r"[^a-z0-9]+", "-", project.name.lower()),
-                ).strip("-")
+                    r"_{2,}",
+                    "_",
+                    re.sub(r"[^a-z0-9]+", "_", project.name.lower()),
+                ).strip("_")
                 cls.evaluate_check_simple(
                     normalized_name,
                     f"Infrastructure project name [{project.name}] must normalize to a non-empty AWS-safe prefix",

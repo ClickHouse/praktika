@@ -9,7 +9,6 @@ class RunnerLabels:
 CI_CONFIG_RUNS_ON = [RunnerLabels.SMALL_ARM]
 
 AWS_REGION = "eu-north-1"
-AWS_ACCOUNT_ID = "420943511422"
 AWS_PROFILE = "Box"
 
 S3_ARTIFACT_BUCKET = "praktika-artifacts-eu-north-1"

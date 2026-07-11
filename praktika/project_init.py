@@ -35,8 +35,12 @@ class InitAnswers:
 
     @property
     def project_slug(self) -> str:
-        slug = re.sub(r"[^a-z0-9]+", "-", self.project_name.strip().lower())
-        slug = re.sub(r"-{2,}", "-", slug).strip("-")
+        # Use "_" (not "-") as the intra-slug separator. The slug is used as
+        # the "{slug}-" resource-name prefix, so a "-" inside the slug would
+        # let one project's scoped IAM wildcard (e.g. "clickhouse-*") also
+        # match another project's resources (e.g. "clickhouse-private-*").
+        slug = re.sub(r"[^a-z0-9]+", "_", self.project_name.strip().lower())
+        slug = re.sub(r"_{2,}", "_", slug).strip("_")
         if not slug:
             raise ValueError("Project name must normalize to a non-empty slug")
         return slug
@@ -430,7 +434,6 @@ def _settings_template(answers: InitAnswers) -> str:
         CI_CONFIG_RUNS_ON = [RunnerLabels.SMALL_ARM]
 
         AWS_REGION = "{answers.aws_region}"
-        AWS_ACCOUNT_ID = "{answers.aws_account_id}"
         AWS_PROFILE = "{answers.aws_profile}"
 
         S3_ARTIFACT_BUCKET = {artifact_bucket_expr}
@@ -547,7 +550,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
 
 
         # until published in pip
-        _PRAKTIKA_CONTROLLER_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_controller-0.1.1-py3-none-any.whl"
+        _PRAKTIKA_CONTROLLER_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_controller-0.1.4-py3-none-any.whl"
         # Floating compat alias: the latest backwards-compatible patch in the
         # {compat_version(current_praktika_version())} branch, so the project picks up BC bug fixes
         # without re-pinning on every Praktika release.

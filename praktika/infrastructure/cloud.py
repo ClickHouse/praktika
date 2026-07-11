@@ -109,8 +109,13 @@ class CloudInfrastructure:
             # Project names are user-facing labels. Resource names need a
             # stable AWS-safe slug so all generated names line up across
             # queues, ASGs, IAM roles, launch templates, etc.
-            prefix = re.sub(r"[^a-z0-9]+", "-", (self.name or "").strip().lower())
-            prefix = re.sub(r"-{2,}", "-", prefix).strip("-")
+            #
+            # Use "_" (not "-") as the intra-slug separator. The slug becomes
+            # the "{slug}-" resource-name prefix, so a "-" inside it would let
+            # one project's scoped IAM wildcard (e.g. "clickhouse-*") also match
+            # another project's resources (e.g. "clickhouse-private-*").
+            prefix = re.sub(r"[^a-z0-9]+", "_", (self.name or "").strip().lower())
+            prefix = re.sub(r"_{2,}", "_", prefix).strip("_")
             if not prefix:
                 raise ValueError("CloudInfrastructure.Config.name must normalize to a non-empty project prefix")
             return prefix
@@ -689,17 +694,23 @@ class CloudInfrastructure:
             for config in self.ec2_instances:
                 config.user_data = self._replace_recursive(getattr(config, "user_data", ""), replacements)
 
+            # The controller reads this tag as PRAKTIKA_PROJECT_SLUG and builds
+            # resource names from it (e.g. "{slug}-gh-token"). It must be the
+            # normalized slug that every other AWS resource is named with, not
+            # the raw (possibly mixed-case) project name.
+            project_slug = self._project_prefix()
+
             for pool in self.runner_pools:
-                pool.launch_template.tags["praktika_project_slug"] = self.name
-                pool.autoscaling_group.tags["praktika_project_slug"] = self.name
+                pool.launch_template.tags["praktika_project_slug"] = project_slug
+                pool.autoscaling_group.tags["praktika_project_slug"] = project_slug
                 pool.ec2_role.inline_policies = self._replace_recursive(pool.ec2_role.inline_policies, replacements)
                 pool.launch_template.tags = self._replace_recursive(pool.launch_template.tags, replacements)
                 pool.launch_template.user_data = self._replace_recursive(pool.launch_template.user_data, replacements)
                 pool.autoscaling_group.tags = self._replace_recursive(pool.autoscaling_group.tags, replacements)
 
             for pool in self.orchestrator_pools:
-                pool.launch_template.tags["praktika_project_slug"] = self.name
-                pool.autoscaling_group.tags["praktika_project_slug"] = self.name
+                pool.launch_template.tags["praktika_project_slug"] = project_slug
+                pool.autoscaling_group.tags["praktika_project_slug"] = project_slug
                 pool.ec2_role.inline_policies = self._replace_recursive(pool.ec2_role.inline_policies, replacements)
                 pool.lambda_role.inline_policies = self._replace_recursive(pool.lambda_role.inline_policies, replacements)
                 pool.lambda_config.environments = self._replace_recursive(pool.lambda_config.environments, replacements)
@@ -866,11 +877,6 @@ class CloudInfrastructure:
                 self.secret_parameters.append(self.cidb_cluster.admin_password_secret)
 
         def _verify_account(self):
-            if not self._settings or not self._settings.AWS_ACCOUNT_ID:
-                raise ValueError(
-                    "Settings.AWS_ACCOUNT_ID is not set. "
-                    "Define it in your ci/settings/*.py to prevent accidental deploys to the wrong account."
-                )
             from botocore.exceptions import (
                 BotoCoreError,
                 ClientError,
@@ -878,12 +884,11 @@ class CloudInfrastructure:
                 ProfileNotFound,
             )
 
-            from ._utils import aws_client
+            from ._utils import aws_client, aws_account_id
 
             profile = self._settings.AWS_PROFILE or "<default>"
             try:
-                sts = aws_client("sts", self._settings.AWS_REGION, "account-check")
-                actual = sts.get_caller_identity()["Account"]
+                actual = aws_account_id(self._settings.AWS_REGION)
             except ProfileNotFound as e:
                 raise SystemExit(
                     f"AWS profile [{profile}] not found: {e}. "
@@ -909,12 +914,19 @@ class CloudInfrastructure:
                 raise SystemExit(
                     f"AWS auth check failed for profile [{profile}]: {e}"
                 )
-            if actual != self._settings.AWS_ACCOUNT_ID:
+            configured = (self._settings.AWS_ACCOUNT_ID or "").strip()
+            if configured and actual != configured:
                 raise RuntimeError(
-                    f"AWS account mismatch: configured={self._settings.AWS_ACCOUNT_ID}, "
+                    f"AWS account mismatch: configured={configured}, "
                     f"actual={actual}. Aborting to prevent accidental changes to the wrong account."
                 )
-            print(f"AWS account verified: {actual} (profile: {profile})")
+            if configured:
+                print(f"AWS account verified: {actual} (profile: {profile})")
+            else:
+                print(
+                    f"AWS account resolved from credentials: {actual} "
+                    f"(profile: {profile}). No configured AWS_ACCOUNT_ID check."
+                )
 
         def _validate_min_praktika_version(self):
             current = current_praktika_version()
