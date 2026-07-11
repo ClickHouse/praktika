@@ -1,4 +1,5 @@
 import base64
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -1710,6 +1711,22 @@ def test_orchestrator_pool_can_configure_allowed_push_branches_from_ext():
     assert pool.lambda_config.environments["ALLOWED_PUSH_BRANCHES"] == (
         "develop,release/1.0"
     )
+
+
+def test_orchestrator_pool_can_configure_allowed_users_from_ext():
+    pool = OrchestratorPool(
+        name="orch",
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        size=1,
+        max_size=1,
+        ext={"allowed_users": ["alice", "bob"]},
+    )
+
+    assert json.loads(pool.lambda_config.environments["ALLOWED_USERS_JSON"]) == [
+        "alice",
+        "bob",
+    ]
 
 
 def test_orchestrator_pool_appends_ext_iam_statements_to_role_policy():

@@ -56,6 +56,8 @@ class OrchestratorPool:
 
     `ext["allowed_push_branches"]` controls which GitHub push branch refs the
     webhook Lambda accepts for this pool. The default is `["main"]`.
+    `ext["allowed_users"]` optionally restricts pull_request webhook events to
+    a fixed set of GitHub logins.
     `ext["allowed_repositories"]` optionally restricts the webhook Lambda to a
     fixed set of repository full names such as `["ClickHouse/praktika"]`.
     `ext["external_pr_autoapprove_paths"]` optionally lists glob patterns that
@@ -169,6 +171,15 @@ class OrchestratorPool:
             for repo in allowed_repositories
         ), "ext['allowed_repositories'] must contain only non-empty strings"
         allowed_repositories = [repo.strip() for repo in allowed_repositories]
+        allowed_users = self.ext.get("allowed_users", [])
+        assert isinstance(
+            allowed_users, list
+        ), "ext['allowed_users'] must be a list of GitHub logins"
+        assert all(
+            isinstance(user, str) and user.strip()
+            for user in allowed_users
+        ), "ext['allowed_users'] must contain only non-empty strings"
+        allowed_users = [user.strip() for user in allowed_users]
         external_pr_autoapprove_paths = self.ext.get(
             "external_pr_autoapprove_paths", []
         )
@@ -321,6 +332,10 @@ class OrchestratorPool:
         )
         self.lambda_config.environments["ALLOWED_REPOSITORIES_JSON"] = json.dumps(
             allowed_repositories,
+            sort_keys=True,
+        )
+        self.lambda_config.environments["ALLOWED_USERS_JSON"] = json.dumps(
+            allowed_users,
             sort_keys=True,
         )
         self.lambda_config.environments["GH_AUTH_LAMBDA_NAME"] = (

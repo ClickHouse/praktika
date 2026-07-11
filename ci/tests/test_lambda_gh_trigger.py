@@ -2,11 +2,15 @@ import importlib
 import json
 
 
-def _reload_lambda(monkeypatch, allowed_push_branches=None):
+def _reload_lambda(monkeypatch, allowed_push_branches=None, allowed_users=None):
     if allowed_push_branches is None:
         monkeypatch.delenv("ALLOWED_PUSH_BRANCHES", raising=False)
     else:
         monkeypatch.setenv("ALLOWED_PUSH_BRANCHES", allowed_push_branches)
+    if allowed_users is None:
+        monkeypatch.delenv("ALLOWED_USERS_JSON", raising=False)
+    else:
+        monkeypatch.setenv("ALLOWED_USERS_JSON", json.dumps(allowed_users))
     mod = importlib.import_module("praktika.infrastructure.native.lambda_gh_trigger")
     return importlib.reload(mod)
 
@@ -90,6 +94,57 @@ def test_build_workflow_marks_external_pr(monkeypatch):
 
     assert workflow["external_pr"] is True
     assert workflow["head_repo"] == "fork/repo"
+
+
+def test_pull_request_sender_can_be_restricted_by_allowed_users(monkeypatch):
+    mod = _reload_lambda(monkeypatch, allowed_users=["trusted"])
+    enqueued = []
+
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(
+        mod,
+        "_enqueue",
+        lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)),
+    )
+
+    mod.lambda_handler(
+        {
+            "headers": {
+                "X-GitHub-Event": "pull_request",
+                "X-GitHub-Delivery": "d-allowed-user",
+            },
+            "body": json.dumps(_pr_payload(external=False)),
+        },
+        None,
+    )
+
+    assert enqueued == []
+
+
+def test_pull_request_sender_allowed_by_allowed_users_is_enqueued(monkeypatch):
+    mod = _reload_lambda(monkeypatch, allowed_users=["contributor"])
+    enqueued = []
+
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(
+        mod,
+        "_enqueue",
+        lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)),
+    )
+
+    mod.lambda_handler(
+        {
+            "headers": {
+                "X-GitHub-Event": "pull_request",
+                "X-GitHub-Delivery": "d-allowed-user",
+            },
+            "body": json.dumps(_pr_payload(external=False)),
+        },
+        None,
+    )
+
+    assert len(enqueued) == 1
+    assert enqueued[0][0]["sender"] == "contributor"
 
 
 def test_cancel_runs_before_stores_head_sha(monkeypatch):
