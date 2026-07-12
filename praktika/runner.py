@@ -39,9 +39,12 @@ _TIMESTAMP_INDENT = len(
 def _job_python_env() -> dict:
     env = os.environ.copy()
 
-    # Keep the runtime environment ahead of the checkout. Jobs still need the
-    # repository on PYTHONPATH for ci.* modules, but praktika itself must resolve
-    # from the selected venv/base image package before "." can shadow it.
+    # Keep the runtime environment ahead of the checkout. Jobs reference their
+    # config as ``ci.*`` modules, so only the repo root ("."; the parent of the
+    # ``ci`` package) belongs on PYTHONPATH — NOT "./ci". Putting "./ci" on the
+    # path makes a bare ``import praktika`` resolve to the repo's vendored
+    # ``ci/praktika`` copy (often stale) instead of the installed package. This
+    # matches the GH Actions path (see yaml_generator: ``export PYTHONPATH=.``).
     site_paths = []
     if hasattr(site, "getsitepackages"):
         site_paths.extend(site.getsitepackages())
@@ -53,9 +56,8 @@ def _job_python_env() -> dict:
         if entry and entry not in pythonpath_entries:
             pythonpath_entries.append(entry)
 
-    for entry in [".", "./ci"]:
-        if entry not in pythonpath_entries:
-            pythonpath_entries.append(entry)
+    if "." not in pythonpath_entries:
+        pythonpath_entries.append(".")
 
     for entry in (env.get("PYTHONPATH") or "").split(os.pathsep):
         if not entry:
@@ -570,7 +572,7 @@ class Runner:
                 settings = rewritten_settings
 
             local_env_flag = f"--env-file {self.LOCAL_ENV_FILE}" if Path(self.LOCAL_ENV_FILE).exists() else ""
-            cmd = f"docker run {tty} --rm --name {container_name} {'--user $(id -u):$(id -g)' if not from_root else ''} -e PYTHONUNBUFFERED=1 -e PYTHONSAFEPATH=1 -e PYTHONPATH=.:./ci {local_env_flag} --volume {host_dir_q}:{current_dir} {extra_mounts} {gh_mount} {workdir} {' '.join(settings)} {docker} {job.command}"
+            cmd = f"docker run {tty} --rm --name {container_name} {'--user $(id -u):$(id -g)' if not from_root else ''} -e PYTHONUNBUFFERED=1 -e PYTHONSAFEPATH=1 -e PYTHONPATH=. {local_env_flag} --volume {host_dir_q}:{current_dir} {extra_mounts} {gh_mount} {workdir} {' '.join(settings)} {docker} {job.command}"
         else:
             cmd = job.command
         job_env = _job_python_env()
@@ -842,11 +844,15 @@ class Runner:
             output["JOB_KV_DATA"] = Utils.to_base64(json.dumps(env.JOB_KV_DATA))
         else:
             output = job_outputs
-        with open(env.JOB_OUTPUT_STREAM, "a", encoding="utf8") as f:
-            print(
-                f"data={json.dumps(output)}",
-                file=f,
-            )
+        # JOB_OUTPUT_STREAM is GitHub Actions' $GITHUB_OUTPUT; it is empty in
+        # praktika-native (SQS) mode. Only write it when set, otherwise open("")
+        # raises FileNotFoundError and fails the job in _post_run.
+        if env.JOB_OUTPUT_STREAM:
+            with open(env.JOB_OUTPUT_STREAM, "a", encoding="utf8") as f:
+                print(
+                    f"data={json.dumps(output)}",
+                    file=f,
+                )
 
         ci_db = None
         if workflow.enable_cidb:
@@ -1022,11 +1028,13 @@ class Runner:
                 pass
             else:
                 pipeline_status = "failure"
-        with open(env.JOB_OUTPUT_STREAM, "a", encoding="utf8") as f:
-            print(
-                f"pipeline_status={pipeline_status}",
-                file=f,
-            )
+        # Empty in praktika-native mode (see the JOB_OUTPUT_STREAM note above).
+        if env.JOB_OUTPUT_STREAM:
+            with open(env.JOB_OUTPUT_STREAM, "a", encoding="utf8") as f:
+                print(
+                    f"pipeline_status={pipeline_status}",
+                    file=f,
+                )
 
         # Send Slack notifications after workflow status is finalized by HtmlRunnerHooks.post_run()
         if workflow.enable_slack_feed and (

@@ -806,6 +806,59 @@ def test_runner_pool_allow_lists_are_project_namespaced():
     ]
 
 
+def test_runner_pool_readonly_s3_prefixes_grant_read_not_write():
+    pool = RunnerPool(
+        name="runner",
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        scaling=RunnerPool.Scaling.Auto,
+        size=0,
+        max_size=1,
+        allowed_s3_prefixes=["builds/runs"],
+        allowed_s3_prefixes_readonly=["builds/REFs", "reports/REFs"],
+    )
+
+    read_only = _statement_by_sid(pool, "AllowedS3ReadOnly")
+    assert "s3:PutObject" not in read_only["Action"]
+    assert "s3:GetObject" in read_only["Action"]
+    assert "s3:ListBucket" in read_only["Action"]
+    assert read_only["Resource"] == [
+        "arn:aws:s3:::builds",
+        "arn:aws:s3:::builds/REFs",
+        "arn:aws:s3:::builds/REFs/*",
+        "arn:aws:s3:::reports",
+        "arn:aws:s3:::reports/REFs",
+        "arn:aws:s3:::reports/REFs/*",
+    ]
+    # The read/write prefixes stay in their own statement and still allow writes.
+    assert "s3:PutObject" in _statement_by_sid(pool, "AllowedS3ReadWrite")["Action"]
+
+
+def test_runner_pool_readonly_s3_prefixes_are_project_namespaced():
+    cloud = CloudInfrastructure.Config(
+        name="sandbox",
+        image_builders=[],
+        runner_pools=[
+            RunnerPool(
+                name="runner",
+                instance_type="t4g.small",
+                vpc_name="praktika-ci",
+                scaling=RunnerPool.Scaling.Auto,
+                size=0,
+                max_size=1,
+                allowed_s3_prefixes_readonly=["refs-bucket/REFs"],
+            )
+        ],
+    )
+    pool = cloud.runner_pools[0]
+    assert pool.allowed_s3_prefixes_readonly == ["sandbox-refs-bucket/REFs"]
+    assert _statement_by_sid(pool, "AllowedS3ReadOnly")["Resource"] == [
+        "arn:aws:s3:::sandbox-refs-bucket",
+        "arn:aws:s3:::sandbox-refs-bucket/REFs",
+        "arn:aws:s3:::sandbox-refs-bucket/REFs/*",
+    ]
+
+
 def test_runner_pool_allow_all_is_scoped_to_project_namespace():
     # allow_all_* grants every resource in the project's "{slug}-"/"{slug}/"
     # namespace, NOT the whole account (Settings.PROJECT_SLUG == "praktika").
@@ -1471,7 +1524,8 @@ def test_ubuntu_runner_pool_uses_ubuntu_image_builder():
     assert any("--ignore-installed" in command for command in runtime_commands)
     assert not any("--force-reinstall" in command for command in runtime_commands)
     assert [lt.name for lt in builder.launch_templates] == [
-        "amd-2xsmall-ubuntu-lt"
+        "amd-2xsmall-ubuntu-lt",
+        "pr-amd-2xsmall-ubuntu-lt",
     ]
 
 
@@ -1481,18 +1535,19 @@ def test_project_image_builders_register_expected_launch_templates():
     ] == [
         "arm-2xsmall-lt",
         "arm-2xsmall-base-lt",
+        "pr-arm-2xsmall-lt",
         "workflow-orchestrator-lt",
         "workflow-orchestrator-base-lt",
     ]
     assert [
         lt.name for lt in _IMAGE_BUILDERS_BY_NAME["ci-x86_64-image"].launch_templates
-    ] == ["amd-2xsmall-lt"]
+    ] == ["amd-2xsmall-lt", "pr-amd-2xsmall-lt"]
     assert [
         lt.name
         for lt in _IMAGE_BUILDERS_BY_NAME[
             "ci-ubuntu-x86_64-image"
         ].launch_templates
-    ] == ["amd-2xsmall-ubuntu-lt"]
+    ] == ["amd-2xsmall-ubuntu-lt", "pr-amd-2xsmall-ubuntu-lt"]
 
 
 def test_all_image_builders_stay_private():
@@ -1567,7 +1622,8 @@ def test_project_runner_pools_allow_only_required_ssm_parameters():
             "Effect": "Allow",
             "Action": ["ssm:GetParameter", "ssm:GetParameters"],
             "Resource": [
-                f"arn:aws:ssm:*:*:parameter/{_RUNNER_ALLOWED_SSM_PARAMETERS[0]}"
+                f"arn:aws:ssm:*:*:parameter/{param}"
+                for param in _RUNNER_ALLOWED_SSM_PARAMETERS
             ],
         }
         assert all(
@@ -1628,9 +1684,11 @@ def test_non_base_runner_pools_patch_praktika_into_shared_base_venv():
 
     ubuntu = next(pool for pool in _runner_pools if pool.name == "amd-2xsmall-ubuntu")
     ubuntu_user_data = ubuntu.launch_template.user_data
+    # The controller wheel is reinstalled first (before the CloudWatch agent is
+    # configured and the controller service starts).
     assert (
-        ubuntu_user_data.index("praktika-configure-cloudwatch-agent")
-        < ubuntu_user_data.index(_PRAKTIKA_CONTROLLER_LATEST_WHEEL)
+        ubuntu_user_data.index(_PRAKTIKA_CONTROLLER_LATEST_WHEEL)
+        < ubuntu_user_data.index("praktika-configure-cloudwatch-agent")
     )
     assert (
         "python3.12 -m pip install --ignore-installed"
@@ -1651,6 +1709,7 @@ def test_shared_arm64_images_are_used_by_runner_and_orchestrator_pools():
     assert [lt.name for lt in builder.launch_templates] == [
         "arm-2xsmall-lt",
         "arm-2xsmall-base-lt",
+        "pr-arm-2xsmall-lt",
         "workflow-orchestrator-lt",
         "workflow-orchestrator-base-lt",
     ]

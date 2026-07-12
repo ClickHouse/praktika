@@ -345,9 +345,19 @@ class JobState:
 
         print(f"[KICK ] {self.name:70s} runs_on={runs_on}  -> {target}")
         if not ws._dispatch(self, target):
-            # Dispatch failed (e.g. SQS error) — fail the job; nothing else
-            # will ever drive it forward.
-            self.finish(success=False)
+            # Dispatch failed (e.g. SQS error, missing queue) — fail the job;
+            # nothing else will ever drive it forward. Pass an explicit output
+            # so the terminal check doesn't keep the earlier "QUEUED" summary.
+            self.finish(
+                success=False,
+                output={
+                    "title": "DISPATCH FAILED",
+                    "summary": (
+                        f"Failed to dispatch job to runner pool `{target}` "
+                        f"(its SQS queue is missing or unreachable)."
+                    ),
+                },
+            )
 
     def finish(self, success=True, output=None, details_url=None):
         """Transition in-flight jobs -> SUCCESS/FAILURE and emit a finish line.
@@ -437,7 +447,14 @@ class JobState:
         self.status = JobStatus.CANCELLED
         if was_in_flight:
             self.finished_at = time.time()
-            self._update_check(lambda c: c.complete("cancelled"))
+            # Pass an explicit output so the terminal check reflects the
+            # cancellation instead of keeping the earlier "QUEUED" summary.
+            self._update_check(
+                lambda c: c.complete(
+                    "cancelled",
+                    output={"title": "CANCELLED", "summary": f"CANCELLED: {reason}."},
+                )
+            )
         print(f"[CANCL] {self.name:70s} ({reason})")
 
 

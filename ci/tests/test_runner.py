@@ -53,9 +53,10 @@ def test_job_python_env_prefers_runtime_paths_before_repo_paths(monkeypatch, tmp
 
     assert env["PYTHONSAFEPATH"] == "1"
     assert "." in pythonpath
-    assert "./ci" in pythonpath
+    # "./ci" must NOT be on the path: it would let a bare `import praktika`
+    # resolve to the repo's vendored ci/praktika instead of the installed one.
+    assert "./ci" not in pythonpath
     assert str(other_path) in pythonpath
-    assert pythonpath.index(".") < pythonpath.index("./ci")
     assert str(tmp_path) in pythonpath
 
     site_paths = [
@@ -188,6 +189,37 @@ class TestRunner(unittest.TestCase):
             ),
             f"Expected job.log under <workflow>/<job>/, got: {result.links}",
         )
+
+    def test_runner_crash_is_recorded_in_job_result(self):
+        """A crash inside Runner.run (e.g. _post_run) must land an ERROR
+        Result with the traceback, so the orchestrator's check-run / report
+        shows the failure instead of a bare, info-less error."""
+        from unittest import mock
+
+        from praktika.orchestrator import job_runner
+        from praktika.result import Result
+
+        task = {
+            "workflow_name": "DummyRunnerTest",
+            "job_name": "dummy",
+            "pr_number": 1,
+            "base_ref": "main",
+            "head_ref": "test-branch",
+            "head_sha": "0" * 40,
+            "repo": "test-org/test-repo",
+        }
+        self._bootstrap_workflow_state(task)
+
+        def boom(*_a, **_k):
+            raise FileNotFoundError(2, "No such file or directory", "")
+
+        with mock.patch.object(job_runner.Runner, "run", boom):
+            rc = job_runner.run_job(task, gh_token=None, local=True)
+
+        self.assertEqual(rc, 1)
+        result = Result.from_fs("dummy")
+        self.assertEqual(result.status, Result.Status.ERROR)
+        self.assertIn("Runner crashed", result.info)
 
     def test_exit_code_result_synthesizes_ok_on_zero_exit(self):
         """enable_exit_code_result=True + script that exits 0 without

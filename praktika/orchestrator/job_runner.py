@@ -63,6 +63,32 @@ def _read_job_result(job_name):
         return None
 
 
+def _record_job_error(job_name, error_text):
+    """Ensure the job's Result reflects a runner-side crash.
+
+    A crash in the run pipeline (e.g. inside ``_post_run``, before it uploads
+    the log and finalizes the Result) would otherwise leave ``final.json`` with
+    a stale/empty Result — so the orchestrator's check-run and the report show
+    a bare failure with no explanation. Load-or-create the Result, mark it
+    ERROR, and attach the traceback so the error survives into the check.
+    """
+    try:
+        from ..result import Result
+
+        try:
+            result = Result.from_fs(job_name)
+        except Exception:
+            result = Result.create_new(job_name, Result.Status.ERROR)
+        result.set_status(Result.Status.ERROR)
+        result.set_info(f"Runner crashed before completing the job:\n{error_text}")
+        result.dump()
+    except Exception as e:
+        print(
+            f"  [warn] could not record job error into Result: "
+            f"{type(e).__name__}: {e}"
+        )
+
+
 def _build_ci_environment(task, job_name=None, job=None, local_run=False):
     """Construct a `_Environment` from our SQS task and dump it to
     ``ci/tmp/environment.json`` so that ``_Environment.get()`` returns it
@@ -284,6 +310,10 @@ def run_job(task, gh_token=None, local=False):
         rc = 1
         print(f"Runner.run raised: {type(e).__name__}: {e}")
         traceback.print_exc()
+        # Surface the crash in the report / GH check: without this the failure
+        # is only in stderr and the orchestrator completes the check with no
+        # explanation (the job's Result was never finalized/dumped).
+        _record_job_error(job_name, traceback.format_exc())
 
     try:
         from ..info import Info
