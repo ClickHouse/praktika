@@ -855,7 +855,14 @@ class Runner:
                 )
 
         ci_db = None
-        if workflow.enable_cidb:
+        if workflow.enable_cidb and not Settings.SECRET_CI_DB_CONNECTION:
+            # Clear, non-fatal message instead of a cryptic
+            # "Failed to find secret []" from get_secret("").
+            print(
+                "NOTE: CIDB is enabled but Settings.SECRET_CI_DB_CONNECTION is "
+                "not set — skipping CIDB insert."
+            )
+        elif workflow.enable_cidb:
             print("Insert results to CIDB")
             try:
                 conn_secret = workflow.get_secret(Settings.SECRET_CI_DB_CONNECTION)

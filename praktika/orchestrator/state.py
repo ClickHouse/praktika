@@ -130,9 +130,15 @@ def _record_value(record, key, default=None):
 
 
 def _queue_for_runs_on(runs_on):
-    """First non-empty ``runs_on`` label → ``<project-slug>-<label>`` queue name."""
+    """First meaningful ``runs_on`` label → ``<project-slug>-<label>`` queue name.
+
+    "self-hosted" is a GitHub-Actions runner-group label with no meaning to the
+    praktika engine, so it is skipped — the pool/size label is what maps to a
+    queue (e.g. ``["self-hosted", "style-checker-aarch64"]`` →
+    ``<slug>-style-checker-aarch64``).
+    """
     for label in runs_on or ():
-        if label:
+        if label and label != "self-hosted":
             return f"{_queue_prefix()}{label}"
     return None
 

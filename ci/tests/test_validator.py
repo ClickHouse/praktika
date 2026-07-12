@@ -22,9 +22,11 @@ def _run_validator_for_workflow(monkeypatch, workflow):
     Validator.validate()
 
 
-def test_validator_rejects_job_commit_status_for_praktika_workflow(
+def test_validator_allows_job_commit_status_for_praktika_workflow(
     monkeypatch, capsys
 ):
+    # enable_commit_status is harmless on the Praktika engine (it uses the
+    # Checks API regardless), so validation must not reject it.
     workflow = Workflow.Config(
         name="native",
         event=Workflow.Event.PULL_REQUEST,
@@ -38,12 +40,10 @@ def test_validator_rejects_job_commit_status_for_praktika_workflow(
         ],
     )
 
-    with pytest.raises(SystemExit):
-        _run_validator_for_workflow(monkeypatch, workflow)
+    _run_validator_for_workflow(monkeypatch, workflow)
 
     out = capsys.readouterr().out
-    assert ".enable_commit_status is redundant for Praktika engine workflows" in out
-    assert "GitHub Checks API is used" in out
+    assert ".enable_commit_status is redundant" not in out
 
 
 def test_validator_rejects_failure_commit_status_for_praktika_workflow(

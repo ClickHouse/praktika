@@ -200,18 +200,28 @@ class Validator:
                     workflow.name,
                 )
                 if workflow.engine != Workflow.Engine.GH_ACTIONS:
+                    # "self-hosted" is a GitHub-Actions runner-group label with
+                    # no meaning to the praktika engine (which routes by the
+                    # pool/size label); ignore it when counting.
+                    effective_runs_on = [
+                        label for label in (job.runs_on or []) if label != "self-hosted"
+                    ]
                     cls.evaluate_check(
-                        len(job.runs_on) == 1,
-                        f"Non-GHActions workflow jobs must have exactly one runs_on label, got [{job.runs_on}] for [{job.name}]",
+                        len(effective_runs_on) == 1,
+                        f"Non-GHActions workflow jobs must have exactly one runs_on "
+                        f"label (excluding 'self-hosted'), got [{job.runs_on}] for [{job.name}]",
                         workflow.name,
                     )
-                if workflow.engine == Workflow.Engine.PRAKTIKA:
-                    cls.evaluate_check(
-                        not job.enable_commit_status,
-                        ".enable_commit_status is redundant for Praktika engine workflows: the GitHub Checks API is used and always publishes workflow/job check status",
-                        workflow.name,
-                        job.name,
-                    )
+                # NOTE: disabled — `enable_commit_status` is harmless on the
+                # Praktika engine (it just uses the Checks API regardless), so
+                # don't fail validation when a job carries the flag.
+                # if workflow.engine == Workflow.Engine.PRAKTIKA:
+                #     cls.evaluate_check(
+                #         not job.enable_commit_status,
+                #         ".enable_commit_status is redundant for Praktika engine workflows: the GitHub Checks API is used and always publishes workflow/job check status",
+                #         workflow.name,
+                #         job.name,
+                #     )
                 cls.evaluate_check(
                     "PARAMETER" not in job.command,
                     f"Job parametrization config issue: job name [{job.name}], job command: [{job.command}]",
