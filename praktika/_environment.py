@@ -330,7 +330,7 @@ class _Environment(MetaClasses.Serializable):
         Messages are collected during job execution and later written to both
         the job and workflow ``Result.ext`` as ``{"message": str, "from": str}``
         entries.  Grouping of duplicate messages is done at the rendering level
-        in ``json.html``.
+        in ``praktika.html``.
         Prefer the typed wrappers ``add_workflow_warning/error/note``.
         """
         self.REPORT_MESSAGES.append(

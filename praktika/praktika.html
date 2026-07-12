@@ -1607,7 +1607,7 @@
                     const statusValue = result["status"] ? result["status"].toLowerCase() : "";
 
                     if (result._downstreamHref) {
-                        // Downstream result: link to private json.html via proxy
+                        // Downstream result: link to private praktika.html via proxy
                         const link = document.createElement('a');
                         link.href = result._downstreamHref;
                         link.textContent = '🔗 ' + value;
@@ -2229,7 +2229,7 @@
             const originalName = r.name;
             const copy = Object.assign({}, r);
             copy.name = originalName;
-            copy._downstreamHref = `${privateBaseUrl}/json.html?PR=${encodeURIComponent(private_pr_number)}&sha=${encodeURIComponent(private_sha)}&name_0=PR&name_1=${encodeURIComponent(originalName)}`;
+            copy._downstreamHref = `${privateBaseUrl}/praktika.html?PR=${encodeURIComponent(private_pr_number)}&sha=${encodeURIComponent(private_sha)}&name_0=PR&name_1=${encodeURIComponent(originalName)}`;
 
             // Rewrite links: replace origin+bucket prefix with proxy base URL.
             // privateBaseUrl is e.g. https://proxy/bucket-name, extract /bucket-name

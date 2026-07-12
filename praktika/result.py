@@ -90,7 +90,7 @@ class Result(MetaClasses.Serializable):
         FLAKY = "flaky"
         REPRODUCIBLE = "reproducible"
 
-    # Default hints rendered as a hover tooltip in json.html.
+    # Default hints rendered as a hover tooltip in praktika.html.
     # Looked up automatically when set_label is called without an explicit hint.
     LABEL_HINTS = {
         Label.OK_ON_RETRY: "Test failed initially but passed on retry",
@@ -1325,7 +1325,7 @@ class ResultInfo:
 class _ResultS3:
 
     # Map the ``kind`` field used in ``_Environment.REPORT_MESSAGES`` to the
-    # ``ext`` bucket rendered by ``json.html``. Unknown kinds fall into notes.
+    # ``ext`` bucket rendered by ``praktika.html``. Unknown kinds fall into notes.
     _REPORT_MESSAGE_KIND_TO_EXT_KEY = {
         "warning": "warnings",
         "error": "errors",

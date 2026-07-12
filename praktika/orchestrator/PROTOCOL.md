@@ -137,7 +137,7 @@ new-push fan-out) and the orchestrator polls them in `sweep_cancel`.
   "head_sha": "abc123",
   "workflow_name": "PR",
   "instance_id": "i-0abc...",
-  "details_url": "https://.../json.html?...",
+  "details_url": "https://.../praktika.html?...",
   "environment": { "WORKFLOW_CONFIG": {}, "..." : "..." },
   "result": { "name": "Style check", "status": "OK", "results": [], "..." : "..." }
 }

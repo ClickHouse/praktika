@@ -6,7 +6,7 @@ Whenever the user asks to investigate, address, or fix CI failures — or refers
 
 ### Determining PR, sha, and workflow name
 
-**From a Praktika report URL** (e.g. `https://praktika-artifacts-eu-north-1.s3.amazonaws.com/json.html?PR=124&sha=abc123&name_0=Praktika%20CI`):
+**From a Praktika report URL** (e.g. `https://praktika-artifacts-eu-north-1.s3.amazonaws.com/praktika.html?PR=124&sha=abc123&name_0=Praktika%20CI`):
 - Extract `PR`, `sha`, `name_0` from query params
 - Normalize `name_0`: lowercase + spaces → underscores (e.g. `"Praktika CI"` → `"praktika_ci"`)
 

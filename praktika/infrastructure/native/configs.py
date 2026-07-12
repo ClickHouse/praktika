@@ -45,7 +45,7 @@ ORCHESTRATOR_ROLE_NAME = "workflow-orchestrator-role"
 ORCHESTRATOR_INSTANCE_PROFILE_NAME = "workflow-orchestrator-profile"
 
 report_page_config = ReportPage.Config(
-    path=str(Path(__file__).parent.parent.parent / "json.html"),
+    path=str(Path(__file__).parent.parent.parent / "praktika.html"),
 )
 
 GH_TRIGGER_ROLE_NAME = "gh-trigger-role"
