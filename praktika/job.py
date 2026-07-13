@@ -70,9 +70,9 @@ class Job:
         # experimental jobs that are not yet stable enough to be enforced.
         force_success: bool = False
 
-        # Post this job as a commit status for non-Praktika engines. With the
-        # Praktika engine this is redundant: the orchestrator uses the GitHub
-        # Checks API and always publishes workflow/job check status.
+        # GitHub Actions engine only: post this job as a commit status.
+        # Ignored (no-op) on the Praktika engine, which always publishes
+        # workflow/job status via the GitHub Checks API.
         enable_commit_status: bool = False
 
         enable_gh_auth: bool = False

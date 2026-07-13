@@ -171,12 +171,16 @@ class Validator:
                 f"Invalid engine [{workflow.engine}], must be one of {_VALID_ENGINES}",
                 workflow.name,
             )
-            if workflow.engine == Workflow.Engine.PRAKTIKA:
-                cls.evaluate_check(
-                    not workflow.enable_commit_status_on_failure,
-                    ".enable_commit_status_on_failure is redundant for Praktika engine workflows: the GitHub Checks API is used and always publishes workflow/job check status",
-                    workflow.name,
-                )
+            # NOTE: disabled — like job.enable_commit_status, the workflow-level
+            # enable_commit_status_on_failure is harmless on the Praktika engine
+            # (the Checks API is used regardless), so don't fail validation when
+            # a workflow carries the flag.
+            # if workflow.engine == Workflow.Engine.PRAKTIKA:
+            #     cls.evaluate_check(
+            #         not workflow.enable_commit_status_on_failure,
+            #         ".enable_commit_status_on_failure is redundant for Praktika engine workflows: the GitHub Checks API is used and always publishes workflow/job check status",
+            #         workflow.name,
+            #     )
             if Settings.USE_CUSTOM_GH_AUTH and workflow.enable_report:
                 if not Settings.GH_AUTH_LAMBDA_NAME:
                     secret = workflow.get_secret(Settings.SECRET_GH_APP)
@@ -364,12 +368,19 @@ class Validator:
                     ), f"All artifacts must be of S3 type if enable_cache|enable_html=True, artifact [{artifact.name}], type [{artifact.type}], workflow [{workflow.name}]"
 
             if workflow.dockers and not workflow.disable_dockers_build:
-                assert (
-                    Settings.SECRET_DOCKER_REGISTRY
-                ), f"Settings.SECRET_DOCKER_REGISTRY must be provided if workflow has dockers, workflow [{workflow.name}]"
-                assert workflow.get_secret(
-                    Settings.SECRET_DOCKER_REGISTRY
-                ), f"Secret [{Settings.SECRET_DOCKER_REGISTRY}] must have configuration in workflow.secrets, workflow [{workflow.name}]"
+                assert Settings.SECRET_DOCKER_REGISTRY, (
+                    f"Settings.SECRET_DOCKER_REGISTRY must be set when the workflow "
+                    f"manages docker images (.dockers is set and "
+                    f".disable_dockers_build is False): praktika logs in to the "
+                    f"registry to build/push them. Point it at a secret whose value "
+                    f'is {{"username": ..., "password": ...}}. Workflow [{workflow.name}]'
+                )
+                assert workflow.get_secret(Settings.SECRET_DOCKER_REGISTRY), (
+                    f"Docker registry secret [{Settings.SECRET_DOCKER_REGISTRY}] "
+                    f"(Settings.SECRET_DOCKER_REGISTRY) is not registered in the "
+                    f"workflow's secrets. Add it to the project SECRETS so the "
+                    f"workflow can resolve it. Workflow [{workflow.name}]"
+                )
 
             if workflow.enable_open_issues_check:
                 cls.evaluate_check(
