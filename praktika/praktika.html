@@ -2111,6 +2111,28 @@
                 .replace(/_+$/, '');
         }
 
+        function shouldIncludeWorkflowSegment(workflowName) {
+            const normalized = (workflowName || '').trim().toLowerCase();
+            if (!normalized) {
+                return false;
+            }
+            // Keep PR/Main/Master paths stable without a workflow segment:
+            // these are the workflows we usually inspect across commits, so the
+            // result URL should not depend on a specific workflow name. Other
+            // workflows keep the segment so scheduled/ad-hoc runs remain split.
+            return !normalized.startsWith('pr')
+                && !normalized.startsWith('main')
+                && !normalized.startsWith('master');
+        }
+
+        function buildResultPath(baseUrl, suffix, shaValue, workflowName, taskName) {
+            let path = `${baseUrl}/${suffix}/${encodeURIComponent(shaValue)}`;
+            if (shouldIncludeWorkflowSegment(workflowName)) {
+                path += `/${encodeURIComponent(normalizeTaskName(workflowName))}`;
+            }
+            return `${path}/result_${taskName}.json`;
+        }
+
         // Use base_url from param if provided, else fallback to old logic
         let baseUrl = base_url;
         if (!baseUrl) {
@@ -2140,18 +2162,20 @@
         const shaToLoad = (sha === 'latest') ? runtimeCache.commits[runtimeCache.commits.length - 1]?.sha : sha;
 
         const task0 = normalizeTaskName(nameParams[0]);
-        // S3 layout includes the normalized workflow name:
+        // S3 layout is either:
         // <suffix>/<sha>/<normalized_workflow>/result_<job>.json
-        const workflowSegment = encodeURIComponent(task0);
+        // or, for PR/Main/Master workflows:
+        // <suffix>/<sha>/result_<job>.json
+        const workflowName = nameParams[0];
 
         const fetchTasks = [];
         if (nameParams.length > 1) {
             const task1 = normalizeTaskName(nameParams[1]);
-            const path1 = `${baseUrl}/${suffix}/${encodeURIComponent(shaToLoad)}/${workflowSegment}/result_${task1}.json`;
+            const path1 = buildResultPath(baseUrl, suffix, shaToLoad, workflowName, task1);
             fetchTasks.push(fetchJson(path1));
         }
 
-        const path0 = `${baseUrl}/${suffix}/${encodeURIComponent(shaToLoad)}/${workflowSegment}/result_${task0}.json`;
+        const path0 = buildResultPath(baseUrl, suffix, shaToLoad, workflowName, task0);
         fetchTasks.push(fetchJson(path0));
 
         // Run fetchJson calls in parallel

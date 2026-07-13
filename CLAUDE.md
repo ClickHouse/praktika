@@ -16,8 +16,10 @@ Whenever the user asks to investigate, address, or fix CI failures — or refers
 
 ### Building the JSON URL
 
+This fetch flow is only for PR workflows:
+
 ```
-https://praktika-artifacts-eu-north-1.s3.amazonaws.com/PRs/{PR}/{sha}/{normalized}/result_{normalized}.json
+https://praktika-artifacts-eu-north-1.s3.amazonaws.com/PRs/{PR}/{sha}/result_pr.json
 ```
 
 Fetch this URL with WebFetch.
