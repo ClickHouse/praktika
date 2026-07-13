@@ -76,7 +76,32 @@ def _capture_check_queues(monkeypatch):
         checks.append(record)
         return _PostedCheck(record)
 
+    def fake_create_completed(
+        token, repo, head_sha, name, conclusion, output=None, details_url=None
+    ):
+        # Skipped jobs post their terminal state in a single call. Record the
+        # conclusion under the same "completed" shape the queue()->complete()
+        # path used, so tests assert on one surface regardless of which path
+        # a job took.
+        record = {
+            "token": token,
+            "repo": repo,
+            "head_sha": head_sha,
+            "name": name,
+            "output": output,
+            "completed": [
+                {
+                    "conclusion": conclusion,
+                    "output": output,
+                    "details_url": details_url,
+                }
+            ],
+        }
+        checks.append(record)
+        return _PostedCheck(record)
+
     monkeypatch.setattr(state_mod.JobCheckRun, "queue", fake_queue)
+    monkeypatch.setattr(state_mod.JobCheckRun, "create_completed", fake_create_completed)
     return checks
 
 

@@ -188,6 +188,34 @@ class JobCheckRun:
         )
         return cls(token, repo, data["id"], name)
 
+    @classmethod
+    def create_completed(
+        cls, token, repo, head_sha, name, conclusion, output=None, details_url=None
+    ):
+        """Create a check run already in its terminal state in one POST.
+
+        Used for jobs that never run (skipped) so the check posts its final
+        conclusion directly, rather than the queue()->complete() two-call
+        dance that briefly surfaces a pending check before flipping it.
+        """
+        body = {
+            "name": name,
+            "head_sha": head_sha,
+            "status": "completed",
+            "conclusion": conclusion,
+        }
+        if output is not None:
+            body["output"] = output
+        if details_url is not None:
+            body["details_url"] = details_url
+        data = cls._api(
+            "POST",
+            f"https://api.github.com/repos/{repo}/check-runs",
+            token,
+            body,
+        )
+        return cls(token, repo, data["id"], name)
+
     def __init__(self, token, repo, id, name):
         self.token = token
         self.repo = repo
@@ -313,6 +341,35 @@ class JobState:
                 f"{type(e).__name__}: {e}"
             )
 
+    def _create_completed_check(self, conclusion, output=None, details_url=None):
+        """Post the GitHub check run directly in its terminal state.
+
+        For jobs that never run (skipped), this posts the final conclusion in
+        a single API call instead of queue()->complete(), which would briefly
+        show a pending check before flipping it.
+        """
+        if self.check is not None:
+            return
+        ws = self._workflow_state
+        if ws is None or not ws.can_post_checks:
+            return
+        check_name = f"{ws.workflow.name} / {self.name}"
+        try:
+            self.check = JobCheckRun.create_completed(
+                ws._gh_token,
+                ws._repo,
+                ws._head_sha,
+                check_name,
+                conclusion,
+                output=output,
+                details_url=details_url,
+            )
+        except Exception as e:
+            print(
+                f"  [warn] could not post {conclusion} check for {check_name!r}: "
+                f"{type(e).__name__}: {e}"
+            )
+
     def kick(self):
         """Transition READY -> QUEUED, post the pending check, and dispatch
         to the runner.
@@ -402,9 +459,8 @@ class JobState:
         self.status = JobStatus.SKIPPED
         self.filter_reason = reason
         if post_check:
-            self._create_check()
-            self._update_check(
-                lambda c: c.complete("skipped", output=output, details_url=details_url)
+            self._create_completed_check(
+                "skipped", output=output, details_url=details_url
             )
         suffix = f" ({reason})" if reason else ""
         print(f"[SKIP ] {self.name:70s}{suffix}")
