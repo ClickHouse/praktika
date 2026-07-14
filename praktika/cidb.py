@@ -14,10 +14,10 @@ except ImportError as ex:
     if not Info().is_local_run:
         raise ex
     else:
-            print(
-                "WARNING: 'requests' module is not installed: "
-                f"{ex}. CIDB will not work - ok for local runs only."
-            )
+        print(
+            "WARNING: 'requests' module is not installed: "
+            f"{ex}. CIDB will not work - ok for local runs only."
+        )
 
 from .result import Result
 from .settings import Settings

@@ -6,7 +6,7 @@ from ci.settings.settings import SECRET_CI_DB_CONNECTION, SECRET_DOCKER_REGISTRY
 _PRAKTIKA_PACKAGE_BASE_URL = (
     "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages"
 )
-_PRAKTIKA_BASE_VERSION = "0.1.6"
+_PRAKTIKA_BASE_VERSION = "0.1.9"
 # The baked AMI venv pins an exact Praktika version so image builds are
 # reproducible and a version bump forces a fresh AMI (see _image_builders).
 _PRAKTIKA_BASE_WHL = (
@@ -77,8 +77,8 @@ def _custom_image_tests():
 def _image_builders():
     # Bump on any change to the baked venv contents (see _runtime_prebuilt_venvs)
     # so Image Builder produces a fresh AMI.
-    ci_version = "1.0.13"
-    ubuntu_ci_version = "1.0.10"
+    ci_version = "1.0.14"
+    ubuntu_ci_version = "1.0.11"
 
     return [
         Components.create_awslinux_image_builder_config(
