@@ -269,6 +269,84 @@ class TestRunner(unittest.TestCase):
         finally:
             os.environ.pop("PYTHONPATH", None)
 
+    def test_docker_job_mounts_installed_package_dir(self):
+        Path(_TEST_TEMP_DIR).mkdir(parents=True, exist_ok=True)
+
+        import sys
+        import types
+        from unittest import mock
+
+        with mock.patch.dict(sys.modules, {"requests": types.ModuleType("requests")}):
+            from praktika import runner
+
+            captured = {}
+
+            class DummyTeePopen:
+                def __init__(self, command, **kwargs):
+                    captured["command"] = command
+                    self.timeout_exceeded = False
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc_val, exc_tb):
+                    return False
+
+                def wait(self):
+                    return 0
+
+                def get_latest_log(self, max_lines=20):
+                    return ""
+
+            staged_package_dir = Path(runner._staged_praktika_package_dir())
+            staged_praktika_package = staged_package_dir / "praktika"
+            job = SimpleNamespace(
+                name="docker-job",
+                run_in_docker="example/image:latest",
+                timeout=1,
+                timeout_shell_cleanup=None,
+                enable_gh_auth=False,
+                command="echo ok",
+            )
+            workflow = SimpleNamespace(name="workflow")
+
+            with mock.patch.object(runner, "TeePopen", DummyTeePopen), mock.patch.object(
+                runner.Shell, "check", lambda *args, **kwargs: False
+            ), mock.patch.object(
+                runner.Shell, "run", lambda *args, **kwargs: None
+            ), mock.patch.object(
+                runner.Result,
+                "from_fs",
+                staticmethod(
+                    lambda *args, **kwargs: SimpleNamespace(
+                        is_completed=lambda: True,
+                        is_running=lambda: False,
+                        is_error=lambda: False,
+                        dump=lambda: None,
+                    )
+                ),
+            ), mock.patch.object(
+                runner._Environment,
+                "get",
+                staticmethod(
+                    lambda: SimpleNamespace(
+                        WORKFLOW_CONFIG=None,
+                        dump=lambda: None,
+                    )
+                ),
+            ):
+                rc = runner.Runner()._run(workflow=workflow, job=job, no_docker=False)
+
+            self.assertEqual(rc, 0)
+            self.assertTrue(staged_package_dir.is_dir())
+            self.assertTrue(staged_praktika_package.is_dir())
+            self.assertIn(
+                f"--volume {staged_package_dir}:{staged_package_dir}",
+                captured["command"],
+            )
+            self.assertIn(f"-e PYTHONPATH={staged_package_dir}", captured["command"])
+            self.assertNotIn("PYTHONPATH=.", captured["command"])
+
     def test_exit_code_result_synthesizes_fail_on_nonzero_exit(self):
         """enable_exit_code_result=True + script that exits non-zero
         without dumping a Result -> synthesized FAIL Result with the
