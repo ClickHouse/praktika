@@ -98,10 +98,21 @@ def _put_heartbeat(fake_s3, run_id, job_name, ts, **fields):
 class _FakeCheck:
     def __init__(self):
         self.in_progress = []
+        self.updated = []
         self.completed = []
 
     def set_in_progress(self, output=None, details_url=None):
         self.in_progress.append({"output": output, "details_url": details_url})
+
+    def update(self, output=None, details_url=None, status=None, conclusion=None):
+        self.updated.append(
+            {
+                "output": output,
+                "details_url": details_url,
+                "status": status,
+                "conclusion": conclusion,
+            }
+        )
 
     def complete(self, conclusion, output=None, details_url=None):
         self.completed.append(
@@ -253,6 +264,45 @@ def test_heartbeat_sets_check_in_progress_with_runner_id():
                 "summary": "RUNNING on runner `i-runner`. Phase: `cloning`.",
             },
             "details_url": None,
+        }
+    ]
+
+
+def test_running_heartbeat_refreshes_check_output_on_phase_change():
+    s3 = _FakeS3()
+    state = _make_queued_state(["A"], {"A": RUNNER_PICKUP_TIMEOUT_S + 5}, s3)
+    check = _FakeCheck()
+    state.jobs["A"].check = check
+    state.jobs["A"].status = JobStatus.RUNNING
+    state.jobs["A"].last_heartbeat_ts = time.time() - 10
+    state.jobs["A"].last_heartbeat_phase = "cloning"
+    state.jobs["A"].runner_instance_id = "i-runner"
+    key = f"runs/run42/{_normalize_job_name_for_s3('A')}/heartbeat.json"
+    s3.put(
+        "test-bucket",
+        key,
+        json.dumps(
+            {
+                "ts": time.time() - 1,
+                "status": "running",
+                "instance_id": "i-runner",
+                "phase": "running_job",
+            }
+        ).encode(),
+    )
+
+    state.sweep_liveness()
+
+    assert state.jobs["A"].last_heartbeat_phase == "running_job"
+    assert check.updated == [
+        {
+            "output": {
+                "title": "RUNNING",
+                "summary": "RUNNING on runner `i-runner`. Phase: `running_job`.",
+            },
+            "details_url": None,
+            "status": "in_progress",
+            "conclusion": None,
         }
     ]
 

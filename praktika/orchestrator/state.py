@@ -869,6 +869,7 @@ class WorkflowState:
                 hb = json.loads(body)
                 ts = float(hb.get("ts", 0))
                 if ts > 0:
+                    prev_phase = js.last_heartbeat_phase
                     js.last_heartbeat_ts = ts
                     phase = str(hb.get("phase") or "").strip()
                     if phase:
@@ -887,6 +888,23 @@ class WorkflowState:
                         if phase:
                             output["summary"] += f" Phase: `{phase}`."
                         js._update_check(lambda c: c.set_in_progress(output=output))
+                    elif (
+                        phase
+                        and phase != prev_phase
+                        and js.check is not None
+                    ):
+                        output = {
+                            "title": "RUNNING",
+                            "summary": "RUNNING: runner picked up the job.",
+                        }
+                        if js.runner_instance_id:
+                            output["summary"] = (
+                                f"RUNNING on runner `{js.runner_instance_id}`."
+                            )
+                        output["summary"] += f" Phase: `{phase}`."
+                        js._update_check(
+                            lambda c: c.update(status="in_progress", output=output)
+                        )
                         duration = now - (js.started_at or now)
                         print(f"[PICK ] {js.name:70s} ({duration:.1f}s)")
             except Exception as e:

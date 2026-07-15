@@ -583,6 +583,14 @@ class Runner:
             host_dir_q = shlex.quote(host_dir)
             package_dir_q = shlex.quote(staged_package_dir)
             current_dir_q = shlex.quote(current_dir)
+            # PYTHONPATH must carry BOTH: the staged Praktika package dir (so a
+            # bare `import praktika` resolves to the installed copy, not the
+            # repo's vendored ci/praktika) AND the checkout root (so the repo's
+            # own `ci.*` modules are importable). Staged dir first so Praktika
+            # always wins; the checkout root is the container workdir mount.
+            container_pythonpath_q = shlex.quote(
+                f"{staged_package_dir}:{current_dir}"
+            )
 
             # Rewrite relative host paths in user-supplied --volume settings
             # so that they resolve correctly when PRAKTIKA_HOST_WORKDIR is set
@@ -602,7 +610,7 @@ class Runner:
                 settings = rewritten_settings
 
             local_env_flag = f"--env-file {self.LOCAL_ENV_FILE}" if Path(self.LOCAL_ENV_FILE).exists() else ""
-            cmd = f"docker run {tty} --rm --name {container_name} {'--user $(id -u):$(id -g)' if not from_root else ''} -e PYTHONUNBUFFERED=1 -e PYTHONSAFEPATH=1 -e PYTHONPATH={package_dir_q} {local_env_flag} --volume {host_dir_q}:{current_dir_q} --volume {package_dir_q}:{package_dir_q} {extra_mounts} {gh_mount} --workdir={current_dir_q} {' '.join(settings)} {docker} {job.command}"
+            cmd = f"docker run {tty} --rm --name {container_name} {'--user $(id -u):$(id -g)' if not from_root else ''} -e PYTHONUNBUFFERED=1 -e PYTHONSAFEPATH=1 -e PYTHONPATH={container_pythonpath_q} {local_env_flag} --volume {host_dir_q}:{current_dir_q} --volume {package_dir_q}:{package_dir_q} {extra_mounts} {gh_mount} --workdir={current_dir_q} {' '.join(settings)} {docker} {job.command}"
         else:
             cmd = job.command
         job_env = _job_python_env()

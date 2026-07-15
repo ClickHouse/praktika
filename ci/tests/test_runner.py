@@ -344,7 +344,14 @@ class TestRunner(unittest.TestCase):
                 f"--volume {staged_package_dir}:{staged_package_dir}",
                 captured["command"],
             )
-            self.assertIn(f"-e PYTHONPATH={staged_package_dir}", captured["command"])
+            # Staged Praktika dir first (so `import praktika` resolves to the
+            # installed copy, not the repo's vendored ci/praktika), then the
+            # checkout root so the repo's own `ci.*` modules are importable.
+            self.assertIn(
+                f"-e PYTHONPATH={staged_package_dir}:{os.getcwd()}",
+                captured["command"],
+            )
+            # Never the bare relative "." form.
             self.assertNotIn("PYTHONPATH=.", captured["command"])
 
     def test_exit_code_result_synthesizes_fail_on_nonzero_exit(self):
