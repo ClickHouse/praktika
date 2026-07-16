@@ -1303,7 +1303,12 @@ class Runner:
                         name=name, command=check, env=_job_python_env()
                     )
                 )
-            prehook_result = Result.create_from(name="Pre Hooks", results=results_, stopwatch=sw_)
+            prehook_result = Result.create_from(
+                name="Pre Hooks",
+                results=results_,
+                stopwatch=sw_,
+                with_info_from_results=True,
+            )
 
         if res:
             print(f"=== Run script [{job.name}], workflow [{workflow.name}] ===")
@@ -1371,7 +1376,12 @@ class Runner:
                     )
                 )
                 result.results.append(
-                    Result.create_from(name="Post Hooks", results=results_, stopwatch=sw_)
+                    Result.create_from(
+                        name="Post Hooks",
+                        results=results_,
+                        stopwatch=sw_,
+                        with_info_from_results=True,
+                    )
                 )
                 print("=== Post hooks finished ===")
 

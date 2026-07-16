@@ -110,3 +110,27 @@ def test_assets_live_in_ext():
 
     assert result.ext["assets"] == ["./asset.txt"]
     assert "assets" not in Result.to_dict(result)
+
+
+# --- with_info_from_results: hook failure reason must reach the aggregate node ---
+# Regression guard for the "Pre Hooks / Post Hooks" empty test_context_raw bug:
+# CIDB reads Result.info from the aggregate node, so a failing sub-hook's error
+# message (e.g. "ERROR: Change category is missing or invalid") must be lifted
+# into the parent when with_info_from_results=True.
+
+
+def test_create_from_lifts_child_info_when_requested():
+    subs = [
+        Result("hook_ok", Result.Status.OK),
+        Result("hook_bad", Result.Status.FAIL, info="ERROR: something is wrong"),
+    ]
+    r = Result.create_from(name="Pre Hooks", results=subs, with_info_from_results=True)
+    assert r.status == Result.Status.FAIL
+    assert "ERROR: something is wrong" in r.info
+    assert "hook_bad" in r.info
+
+
+def test_create_from_omits_child_info_by_default():
+    subs = [Result("hook_bad", Result.Status.FAIL, info="ERROR: something is wrong")]
+    r = Result.create_from(name="Pre Hooks", results=subs)
+    assert r.info == ""
