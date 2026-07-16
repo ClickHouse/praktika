@@ -39,12 +39,16 @@ def _make_fake_result(status, is_ok, duration=10):
 
 def test_job_runner_check_output_includes_instance_id():
     output = _build_check_output(
-        _make_fake_result("OK", True, duration=42), 0, instance_id="i-runner456"
+        _make_fake_result("OK", True, duration=42),
+        0,
+        instance_id="i-runner456",
+        runner_pool="arm-2xsmall",
     )
 
     assert output["title"] == "OK"
-    assert "runner `i-runner456`" in output["summary"]
+    assert "runner `i-runner456` in pool `arm-2xsmall`" in output["summary"]
     assert "**Runner instance:** `i-runner456`" in output["text"]
+    assert "**Runner pool:** `arm-2xsmall`" in output["text"]
     assert "job markdown" in output["text"]
 
 

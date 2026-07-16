@@ -261,7 +261,11 @@ def test_heartbeat_sets_check_in_progress_with_runner_id():
         {
             "output": {
                 "title": "RUNNING",
-                "summary": "RUNNING on runner `i-runner`. Phase: `cloning`.",
+                "summary": "RUNNING on runner `i-runner` in pool `default`. Phase: `cloning`.",
+                "text": (
+                    "**Runner instance:** `i-runner`\n\n"
+                    "**Runner pool:** `default`"
+                ),
             },
             "details_url": None,
         }
@@ -298,7 +302,11 @@ def test_running_heartbeat_refreshes_check_output_on_phase_change():
         {
             "output": {
                 "title": "RUNNING",
-                "summary": "RUNNING on runner `i-runner`. Phase: `running_job`.",
+                "summary": "RUNNING on runner `i-runner` in pool `default`. Phase: `running_job`.",
+                "text": (
+                    "**Runner instance:** `i-runner`\n\n"
+                    "**Runner pool:** `default`"
+                ),
             },
             "details_url": None,
             "status": "in_progress",
