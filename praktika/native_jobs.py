@@ -13,6 +13,7 @@ from .cidb import CIDB
 from .digest import Digest
 from .docker import Docker
 from .gh import GH
+from .git import Git
 from .hook_cache import CacheRunnerHooks
 from .hook_html import HtmlRunnerHooks
 from .info import Info
@@ -702,6 +703,27 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
                 env.COMMIT_AUTHORS = list(commit_authors)
                 env.JOB_KV_DATA["commit_authors"] = list(commit_authors)
                 env.dump()
+        elif not env.COMMIT_AUTHORS:
+            # A push event already has COMMIT_AUTHORS seeded from the webhook
+            # payload by `_Environment.from_env`, so only fill it here when it is
+            # still empty (workflow_dispatch / scheduled runs, e.g. releases).
+            # Those have no PR author, so the Slack feed would notify no one and a
+            # failure would be silent; fall back to the head commit's author so
+            # failures still reach a human. Never overwrite an already-populated
+            # author set — that would drop the full authors of a multi-commit push.
+            author_email = ""
+            try:
+                head_email = Shell.get_output(
+                    f"git log -1 --format='%ae' {env.SHA}", verbose=True
+                ).strip()
+                if head_email and "@" in head_email and "+" not in head_email:
+                    author_email = head_email
+            except Exception as e:
+                print(f"WARNING: Failed to get head commit author: {e}")
+            authors = [author_email] if author_email else []
+            env.COMMIT_AUTHORS = authors
+            env.JOB_KV_DATA["commit_authors"] = authors
+            env.dump()
 
     print(f"WorkflowRuntimeConfig: [{workflow_config.to_json(pretty=True)}]")
     workflow_config.dump()
