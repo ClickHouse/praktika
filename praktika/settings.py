@@ -102,7 +102,7 @@ class _Settings:
     S3_REPORT_BUCKET: str = ""
     # Optional: upstream report bucket to merge issue catalogs from (e.g. "clickhouse-test-reports")
     S3_UPSTREAM_REPORT_BUCKET: str = ""
-    HTML_PAGE_FILE: str = "./ci/praktika/json.html"
+    HTML_PAGE_FILE: str = "./ci/praktika/praktika.html"
     S3_BUCKET_TO_HTTP_ENDPOINT: Optional[Dict[str, str]] = None
     TEXT_CONTENT_EXTENSIONS: Iterable[str] = frozenset([".txt", ".log"])
     # Compress if text file size exceeds this threshold (in MB, 0 - disable compression)

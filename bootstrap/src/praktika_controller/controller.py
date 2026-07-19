@@ -17,8 +17,10 @@ from praktika_controller.common import (
     clean_work_root,
     clone_repo,
     configure_logging,
+    finalize_check,
     get_github_token,
     imds_token,
+    post_early_check,
     instance_tag,
     resolve_praktika_base_venv,
     terminate_instance_for_replacement,
@@ -45,6 +47,10 @@ INFRA_FAILURE_MAX_RECEIVES = int(
 # (the DAG ran and jobs legitimately failed) so we retry on a fresh instance
 # only for genuine infra faults, not for ordinary red builds.
 INFRA_EXIT_CODE = 100
+# Provisional name for the check run opened before the clone (the real
+# workflow name isn't known until the repo config is read). The orchestrator
+# renames it to the matched workflow's name once it takes over.
+EARLY_CHECK_NAME = "CI"
 
 
 class InfraOrchestrationError(RuntimeError):
@@ -99,13 +105,22 @@ def _resolve_runtime(clone_dir: str, log):
     return base_venv, venv_dir
 
 
-def _praktika_env(venv_dir: str, queue_name: str, attempt: str = "") -> dict[str, str]:
+def _praktika_env(
+    venv_dir: str,
+    queue_name: str,
+    attempt: str = "",
+    bootstrap_check_id=None,
+) -> dict[str, str]:
     env = venv_env(venv_dir)
     env["PRAKTIKA_CONTROLLER_QUEUE"] = queue_name
     if attempt:
         # Surfaced on the GitHub check so cross-instance infra retries are
         # visible (e.g. "attempt 2/3").
         env["PRAKTIKA_ATTEMPT"] = attempt
+    if bootstrap_check_id:
+        # The orchestrator adopts this pre-clone check run instead of opening
+        # a fresh one.
+        env["PRAKTIKA_BOOTSTRAP_CHECK_RUN_ID"] = str(bootstrap_check_id)
     return env
 
 
@@ -208,22 +223,47 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
         check=True,
     )
 
-    clone_dir, actual_sha = clone_repo(
-        repo,
-        head_sha,
-        pr_number,
-        gh_token,
-        work_dir=WORK_DIR,
-        branch=branch,
-        log=log,
-    )
+    # Open a check run *before* the clone so the PR shows CI immediately and an
+    # interrupted clone still leaves a signal. The orchestrator subprocess
+    # adopts this id and renames it to the matched workflow.
+    early_check_id = None
+    if head_sha:
+        early_check_id = post_early_check(
+            repo, head_sha, gh_token, EARLY_CHECK_NAME, log=log
+        )
 
-    base_venv, venv_dir = _resolve_runtime(clone_dir, log)
+    try:
+        clone_dir, actual_sha = clone_repo(
+            repo,
+            head_sha,
+            pr_number,
+            gh_token,
+            work_dir=WORK_DIR,
+            branch=branch,
+            log=log,
+        )
 
-    event_file = os.path.join(clone_dir, "ci", "tmp", "event.json")
-    os.makedirs(os.path.dirname(event_file), exist_ok=True)
-    with open(event_file, "w", encoding="utf-8") as f:
-        json.dump(event, f, indent=2)
+        base_venv, venv_dir = _resolve_runtime(clone_dir, log)
+
+        event_file = os.path.join(clone_dir, "ci", "tmp", "event.json")
+        os.makedirs(os.path.dirname(event_file), exist_ok=True)
+        with open(event_file, "w", encoding="utf-8") as f:
+            json.dump(event, f, indent=2)
+    except BaseException as e:
+        # Failure before the orchestrator subprocess takes over the check
+        # (clone, runtime resolution, disk). Finalize the early check so the PR
+        # shows the failure rather than a check stuck in_progress. The poll loop
+        # still handles retry/replacement as before.
+        finalize_check(
+            repo,
+            early_check_id,
+            gh_token,
+            "failure",
+            "CI failed to start",
+            f"Orchestrator could not start the workflow before cloning: {e}",
+            log=log,
+        )
+        raise
 
     attempt = f"{receive_count}/{INFRA_FAILURE_MAX_RECEIVES}"
     target = f"PR#{pr_number}" if pr_number else f"branch={branch}"
@@ -231,7 +271,9 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
     result = subprocess.run(
         praktika_command(venv_dir, "orchestrate", "workflow", event_file, "--ci"),
         cwd=clone_dir,
-        env=_praktika_env(venv_dir, queue_name, attempt=attempt),
+        env=_praktika_env(
+            venv_dir, queue_name, attempt=attempt, bootstrap_check_id=early_check_id
+        ),
         stderr=subprocess.PIPE,
         text=True,
     )
@@ -377,6 +419,42 @@ def handle_task(task, log, queue_name: str):
             cm_heartbeat.stop()
 
 
+# How long to wait for the ASG to tear the box down before forcing a local
+# shutdown as a fallback, and how often to re-check afterwards.
+TERMINATION_GRACE_S = 120
+TERMINATION_WAIT_POLL_S = 30
+
+
+def _await_termination(log):
+    """Stop polling and block until this instance is terminated.
+
+    We call this right after requesting self-termination. Returning from
+    ``poll()`` instead would let the ``Restart=always`` controller unit relaunch
+    within seconds — long before the async ASG termination tears the box down —
+    and the relaunched controller would poll again and re-receive the message,
+    starting a second attempt on an instance that is already going away
+    (terminating AND retrying at once). Blocking here keeps us from polling
+    until the OS kills the process.
+
+    ASG termination is asynchronous and, rarely, may not take effect (throttled
+    API, hung lifecycle hook). After a grace period, force a local shutdown as a
+    safety net so a wedged instance never lingers polling; shutdown is itself
+    async, so keep blocking afterwards.
+    """
+    log.info("Termination requested; controller stopped polling, waiting to be terminated")
+    time.sleep(TERMINATION_GRACE_S)
+    log.warning(
+        "Still alive %ss after termination request; forcing local shutdown",
+        TERMINATION_GRACE_S,
+    )
+    try:
+        subprocess.Popen(["/sbin/shutdown", "-h", "now"])
+    except Exception:
+        log.exception("Failed to force local shutdown")
+    while True:
+        time.sleep(TERMINATION_WAIT_POLL_S)
+
+
 def poll():
     import boto3
 
@@ -450,7 +528,7 @@ def poll():
                         log=log,
                         reason=cleanup_error,
                     )
-                    return
+                    _await_termination(log)
 
                 if role == ROLE_WORKFLOW:
                     result = handle_workflow(
@@ -503,7 +581,7 @@ def poll():
                             f"(attempt {receive_count}/{INFRA_FAILURE_MAX_RECEIVES}): {exc}"
                         ),
                     )
-                    return
+                    _await_termination(log)
             elif (
                 isinstance(payload, dict)
                 and payload.get("type") == "job_task"

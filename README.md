@@ -94,6 +94,12 @@ For deployment security considerations, see [SECURITY.md](./SECURITY.md).
 - API Gateway plus Lambda webhook receiver for inbound Git events
 - CI DB integration for analytics: every job and test result can be streamed to a CI DB, and Praktika can also provision its own native CI DB component (`Components.CIDBCluster`) or use an existing endpoint via `Settings.SECRET_CI_DB_CONNECTION`
 
+## High priority / blockers
+- **Job cancel / job rerun** — cancel an in-flight job from the GitHub UI and re-run a single failed job without rerunning the whole workflow
+- **Native DockerHub proxy component** — stand up an in-VPC DockerHub pull-through cache for runner pools so image pulls stay local and do not depend on the legacy cross-VPC proxy
+- **Ephemeral merge-commit PR runs** — run pull-request CI against an ephemeral merge commit by default instead of the branch head, with an explicit opt-in mode for testing the raw head commit when needed
+- **In-flight Praktika install** — install Praktika at run time, ideally through `Workflow.Config`, so current-repo CI can test the version from `.` and other projects can opt into always using the latest Praktika version instead of a pinned or baked runner-image version
+
 ## Roadmap
 **Execution engine**
 - **Approve and Run alternative for forks in OSS** — provide a standalone-engine
@@ -132,6 +138,10 @@ For deployment security considerations, see [SECURITY.md](./SECURITY.md).
   workflow encoding that in the lambda by hand
 - **Remove AWS CLI dependency from CI runtime** — Praktika runtime code should
   use boto3 APIs directly instead of shelling out to `aws`
+- **In-flight Praktika install** — install Praktika at run time, ideally
+  through `Workflow.Config`, so current-repo CI can test the version from `.`
+  and other projects can opt into always using the latest Praktika version
+  instead of a pinned or baked runner-image version
 
 **Infrastructure / deployment**
 - **Incremental deploys with component hashes** — compute a stable hash for
@@ -157,9 +167,9 @@ For deployment security considerations, see [SECURITY.md](./SECURITY.md).
 - **Private-access gateway (VPN)** — reach the HTML report and CI DB when
   those run on private endpoints; optionally also SSH to runner instances
   for debugging
-- **S3-backed Docker proxy** — create a native component that caches Docker
-  image pulls in S3 so runners get fast, local pulls without registry rate
-  limiting
+- **Native DockerHub proxy component** — create an in-VPC DockerHub
+  pull-through cache for runner pools so Docker image pulls stay local, avoid
+  DockerHub rate limits, and do not depend on the legacy cross-VPC proxy
 
 **Report / UX**
 - **Pre/post-hook results in report** — move hook sub-results out of

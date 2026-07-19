@@ -156,9 +156,10 @@ class RunnerPool:
 
     Runtime SSM Parameter Store, Secrets Manager, and S3 access are opt-in
     through `allowed_ssm_parameters`, `allowed_secrets`, and
-    `allowed_s3_prefixes`. Bare names are project namespaced by
-    CloudInfrastructure.Config; full ARNs are preserved as-is. Each resource
-    type also has an explicit `allow_all_*` escape hatch.
+    `allowed_s3_prefixes` (read+write); `allowed_s3_prefixes_readonly` grants
+    read-only S3 access (GetObject/ListBucket, no writes). Bare names are
+    project namespaced by CloudInfrastructure.Config; full ARNs are preserved
+    as-is. Each resource type also has an explicit `allow_all_*` escape hatch.
 
     SSM debugging is opt-in through `allow_ssm_debug`. When enabled, the
     runner instance role gets only the instance-side SSM Agent permissions
@@ -201,6 +202,9 @@ class RunnerPool:
     allowed_ssm_parameters: List[str] = field(default_factory=list)
     allowed_secrets: List[str] = field(default_factory=list)
     allowed_s3_prefixes: List[str] = field(default_factory=list)
+    # Read-only S3 prefixes: GetObject/ListBucket only, no writes. Same
+    # bare-name/ARN handling as `allowed_s3_prefixes`.
+    allowed_s3_prefixes_readonly: List[str] = field(default_factory=list)
     allow_all_ssm_parameters: bool = False
     allow_all_secrets: bool = False
     allow_all_s3_prefixes: bool = False
@@ -282,6 +286,14 @@ class RunnerPool:
                     ]
                 )
             )
+            readonly_s3_resources = _unique(
+                [
+                    resource
+                    for prefix in self.allowed_s3_prefixes_readonly
+                    if prefix and prefix.strip()
+                    for resource in _s3_prefix_resources(prefix)
+                ]
+            )
             runner_statements = [
                 {
                     "Sid": "SQSReceiveDelete",
@@ -332,6 +344,21 @@ class RunnerPool:
                             "s3:ListMultipartUploadParts",
                         ],
                         "Resource": allowed_s3_resources,
+                    }
+                )
+            if readonly_s3_resources:
+                runner_statements.append(
+                    {
+                        "Sid": "AllowedS3ReadOnly",
+                        "Effect": "Allow",
+                        "Action": [
+                            "s3:GetObject",
+                            "s3:GetObjectTagging",
+                            "s3:HeadObject",
+                            "s3:ListBucket",
+                            "s3:GetBucketLocation",
+                        ],
+                        "Resource": readonly_s3_resources,
                     }
                 )
             if allowed_ssm_parameter_resources:

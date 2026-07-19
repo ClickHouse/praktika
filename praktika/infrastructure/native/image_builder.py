@@ -256,7 +256,10 @@ def _image_test_component(
             [
                 f"test -x {path}/bin/python",
                 f"{path}/bin/python -m pip show praktika",
-                f'{path}/bin/python -c "import boto3, jwt, cryptography, requests, pytest"',
+                # Only assert Praktika's own runtime deps (from the
+                # `infrastructure` extra). pytest and other packages are
+                # optional, project-chosen extras — not guaranteed in the venv.
+                f'{path}/bin/python -c "import boto3, jwt, cryptography, requests"',
             ]
         )
     return {

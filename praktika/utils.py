@@ -24,7 +24,7 @@ from threading import Event, Thread
 from types import SimpleNamespace
 from typing import Any, Dict, Iterator, List, Optional, Type, TypeVar, Union
 
-T = TypeVar("T", bound="Serializable")
+T = TypeVar("T", bound="MetaClasses.Serializable")
 
 
 class MetaClasses:
@@ -305,7 +305,7 @@ class Shell:
 
         # Force kill if still running
         if process.poll() is None:
-            print(f"WARNING: Process still running after SIGTERM, sending SIGKILL")
+            print("WARNING: Process still running after SIGTERM, sending SIGKILL")
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
@@ -425,7 +425,7 @@ class Shell:
                     err in err_line for err_line in err_output for err in retry_errors
                 ):
                     if verbose:
-                        print(f"No retryable errors found, stopping retries")
+                        print("No retryable errors found, stopping retries")
                     break
 
                 if verbose:
@@ -447,7 +447,7 @@ class Shell:
                     else:
                         print(f"Retry {retry+1}/{retries}: exception {e}")
                         if retry == retries - 1:
-                            print(f"ERROR: Final attempt failed, no more retries left.")
+                            print("ERROR: Final attempt failed, no more retries left.")
                 if proc:
                     proc.kill()
                 if retry == retries - 1:
@@ -802,6 +802,15 @@ class Utils:
                     strict=True,
                 )
         return path_out
+
+    @staticmethod
+    def fix_ownership_after_docker(path, docker_image: str) -> None:
+        uid = os.getuid()
+        gid = os.getgid()
+        Shell.run(
+            f"docker run --rm --user root --volume {path}:{path} {docker_image} chown -R {uid}:{gid} {path}",
+            verbose=True,
+        )
 
     @classmethod
     def encrypt(cls, path: str, key_path: str, aes_key_path: str) -> str:

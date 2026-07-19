@@ -1,3 +1,6 @@
+from functools import lru_cache
+
+
 def aws_client(service: str, region: str, context: str = "", **kwargs):
     """Create a boto3 client with an explicit region — never falls back to boto3 default.
 
@@ -19,3 +22,10 @@ def aws_client(service: str, region: str, context: str = "", **kwargs):
         session = boto3.Session(profile_name=Settings.AWS_PROFILE, region_name=region)
         return session.client(service, **kwargs)
     return boto3.client(service, region_name=region, **kwargs)
+
+
+@lru_cache(maxsize=16)
+def aws_account_id(region: str) -> str:
+    """Return the AWS account id for the current credentials."""
+    sts = aws_client("sts", region, "account-id")
+    return sts.get_caller_identity()["Account"]

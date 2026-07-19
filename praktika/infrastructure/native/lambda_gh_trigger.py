@@ -70,9 +70,25 @@ def _parse_allowed_repositories():
     return {str(repo).strip() for repo in value if str(repo).strip()}
 
 
+def _parse_allowed_users():
+    raw = os.environ.get("ALLOWED_USERS_JSON", "").strip()
+    if not raw:
+        return set()
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        print("WARNING: ALLOWED_USERS_JSON is not valid JSON")
+        return set()
+    if not isinstance(value, list):
+        print("WARNING: ALLOWED_USERS_JSON must decode to a list")
+        return set()
+    return {str(user).strip() for user in value if str(user).strip()}
+
+
 ALLOWED_PUSH_BRANCHES = _parse_allowed_push_branches()
 EXTERNAL_PR_AUTOAPPROVE_PATHS = _parse_autoapprove_paths()
 ALLOWED_REPOSITORIES = _parse_allowed_repositories()
+ALLOWED_USERS = _parse_allowed_users()
 
 
 def _cancel_scope(queue_name: str) -> str:
@@ -180,7 +196,7 @@ def _build_workflow(action, payload, event_ts):
         "sender": payload.get("sender", {}).get("login", ""),
         "title": pr.get("title", ""),
         "draft": pr.get("draft", False),
-        "labels": [l.get("name", "") for l in pr.get("labels", [])],
+        "labels": [label.get("name", "") for label in pr.get("labels", [])],
         "external_pr": _is_external_pr(pr, repo),
         "head_repo": pr.get("head", {}).get("repo", {}).get("full_name", ""),
     }
@@ -236,8 +252,11 @@ def _build_rerun_workflow(check_obj, payload, event_ts):
         "title": "",
         "draft": False,
         "labels": [],
+        # check_suite / check_run payloads don't carry the PR head repo's
+        # full name, so a rerun is treated as an internal PR (external_pr is
+        # False and head_repo is the base repo). Keep both consistent.
         "external_pr": False,
-        "head_repo": "",
+        "head_repo": repo,
     }
     return workflow, pr_number
 
@@ -866,6 +885,9 @@ def lambda_handler(event, context):
 
     if ALLOWED_SENDERS and sender not in ALLOWED_SENDERS:
         print(f"SKIP: sender {sender} not in allowed list")
+        return {"statusCode": 200, "body": "ok"}
+    if ALLOWED_USERS and sender not in ALLOWED_USERS:
+        print(f"SKIP: PR sender {sender} not in allowed users")
         return {"statusCode": 200, "body": "ok"}
 
     workflow = _build_workflow(action, payload, event_ts)

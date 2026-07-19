@@ -58,6 +58,31 @@ class CheckRun:
         self.id = id
         self.name = name
 
+    def retitle(self, name, details_url=None, with_cancel_action=True):
+        """Adopt a check run opened before the workflow name was known
+        (e.g. the controller's pre-clone bootstrap check): rename it to the
+        real workflow name, keep it ``in_progress``, and re-attach the Cancel
+        action and report URL. Idempotent PATCH on the same check-run id."""
+        body = {"name": name, "status": "in_progress"}
+        if with_cancel_action:
+            body["actions"] = [
+                {
+                    "label": "Cancel",
+                    "description": "Cancel this CI run",
+                    "identifier": "cancel",
+                }
+            ]
+        if details_url is not None:
+            body["details_url"] = details_url
+        self._api(
+            "PATCH",
+            f"https://api.github.com/repos/{self.repo}/check-runs/{self.id}",
+            self.token,
+            body,
+        )
+        self.name = name
+        return self
+
     def complete(self, conclusion, output=None, details_url=None):
         body = {"status": "completed", "conclusion": conclusion}
         if output is not None:

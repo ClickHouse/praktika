@@ -165,7 +165,7 @@ class _Environment(MetaClasses.Serializable):
                         if LINKED_PR_NUMBER
                         else ""
                     )
-                except:
+                except Exception:
                     LINKED_PR_NUMBER = 0
                     CHANGE_URL = ""
 
@@ -330,7 +330,7 @@ class _Environment(MetaClasses.Serializable):
         Messages are collected during job execution and later written to both
         the job and workflow ``Result.ext`` as ``{"message": str, "from": str}``
         entries.  Grouping of duplicate messages is done at the rendering level
-        in ``json.html``.
+        in ``praktika.html``.
         Prefer the typed wrappers ``add_workflow_warning/error/note``.
         """
         self.REPORT_MESSAGES.append(
@@ -356,7 +356,7 @@ class _Environment(MetaClasses.Serializable):
                 env = cls.from_workflow_data()
                 env.dump()
                 return env
-            except FileNotFoundError as e:
+            except FileNotFoundError:
                 # For workflows without Config job
                 print(
                     f"NOTE: Workflow context file [{Settings.WORKFLOW_STATUS_FILE}] does not exist - read context from GH event"
@@ -405,6 +405,18 @@ class _Environment(MetaClasses.Serializable):
             self.PR_NUMBER, self.BRANCH, self.SHA, self.WORKFLOW_NAME, latest
         )
 
+    @staticmethod
+    def _should_include_workflow_name_in_s3_prefix(workflow_name: str) -> bool:
+        workflow_name = (workflow_name or "").strip().lower()
+        if not workflow_name:
+            return False
+        # Keep PR/Main/Master result paths stable without a workflow segment:
+        # those flows are usually the ones we inspect or re-run across commits,
+        # so the artifact path should not depend on which workflow name happened
+        # to produce the run. Other workflows keep their workflow segment so
+        # scheduled or ad-hoc runs can stay isolated by workflow name.
+        return not workflow_name.startswith(("pr", "main", "master"))
+
     @classmethod
     def get_s3_prefix_static(cls, pr_number, branch, sha, workflow_name="", latest=False):
         from .utils import Utils
@@ -416,10 +428,10 @@ class _Environment(MetaClasses.Serializable):
             prefix = f"REFs/{branch}"
         assert sha or latest
         if latest:
-            prefix += f"/latest"
+            prefix += "/latest"
         elif sha:
             prefix += f"/{sha}"
-        if workflow_name:
+        if cls._should_include_workflow_name_in_s3_prefix(workflow_name):
             prefix += f"/{Utils.normalize_string(workflow_name)}"
         return prefix
 

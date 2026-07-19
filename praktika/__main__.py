@@ -1,4 +1,5 @@
 import argparse
+import shlex
 import sys
 
 from .project_init import run_init_interactive
@@ -142,6 +143,16 @@ def create_parser():
         help="Prefix each output line with a [YYYY-MM-DD HH:MM:SS] timestamp",
         action="store_true",
         default=False,
+    )
+    run_parser.add_argument(
+        "--workflow-input",
+        help=(
+            "Workflow dispatch inputs as comma-separated name=value pairs "
+            "(e.g. ref=main,type=patch,dry-run=true). Written to workflow_inputs.json "
+            "so that jobs can read them via Info.get_workflow_input_value"
+        ),
+        type=str,
+        default=None,
     )
 
     subparsers.add_parser(
@@ -359,7 +370,7 @@ def main(argv=None):
             for workflow in workflows:
                 print(
                     f"Workflow [{workflow.name}] has jobs:\n"
-                    "  \"" + f'"\n  "'.join([job.name for job in workflow.jobs]) + '"'
+                    '  "' + '"\n  "'.join([job.name for job in workflow.jobs]) + '"'
                     )
             Utils.exit_with_error("Job name is required to run a job.")
 
@@ -389,7 +400,13 @@ def main(argv=None):
                 local_job_run=not args.ci,
                 no_docker=args.no_docker,
                 param=args.param,
-                test=" ".join(args.test),
+                # Quote each --test value individually: an integration test
+                # node ID can contain spaces, parentheses and quotes when the
+                # test is parametrized with SQL (e.g.
+                # `test.py::t[SELECT now() FROM numbers(2)]`). The runner
+                # interpolates this string into a shell command, so each value
+                # must survive as a single, unmangled argument.
+                test=" ".join(shlex.quote(t) for t in args.test),
                 pr=args.pr,
                 branch=args.branch,
                 sha=args.sha,
@@ -399,6 +416,7 @@ def main(argv=None):
                 path_1=args.path_1,
                 workers=args.workers,
                 timestamp=args.timestamp,
+                workflow_input=args.workflow_input,
             )
     else:
         parser.print_help()

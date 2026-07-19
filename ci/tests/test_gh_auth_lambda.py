@@ -131,5 +131,8 @@ def test_gh_auth_redacts_lambda_error_payload(monkeypatch):
         assert False, "expected lambda auth failure"
     except RuntimeError as e:
         message = str(e)
-        assert "payload redacted" in message
+        # The error surfaces whitelisted diagnostics (FunctionError, StatusCode,
+        # errorType/errorMessage) via _describe_lambda_failure, but never the raw
+        # lambda payload — so the token must not leak into the message.
+        assert "FunctionError=Unhandled" in message
         assert "should-not-leak" not in message

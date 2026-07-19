@@ -339,6 +339,11 @@
             text-decoration: underline;
         }
 
+        .status-column a {
+            text-decoration: underline;
+            cursor: pointer;
+        }
+
         th, td {
             padding: 8px;
             border: 1px solid var(--table-border-color);
@@ -512,10 +517,10 @@
         const status_ = status.toLowerCase();
 
         const isFailure =
-            (status_.includes('fail') || status_.includes('error') || status_.includes('dropped') || status_ === 'xpass')
+            (status_.includes('fail') || status_.includes('error') || status_.includes('dropped') || status_ === 'xpass' || status_ === 'slower')
             && status_ !== 'xfail';
         const isWarning =
-            status_.includes('pending') || status_.includes('running');
+            status_.includes('pending') || status_.includes('running') || status_ === 'unstable';
 
         if (filter === 'failures') {
             return isFailure;
@@ -663,14 +668,21 @@
         const statusLower = (status || '').toLowerCase();
         if (statusLower.includes('error')) return 0;
         if (statusLower.includes('fail') && statusLower !== 'xfail') return 1;
-        if (statusLower === 'xpass') return 2;
-        if (statusLower.includes('running')) return 3;
-        if (statusLower.includes('dropped')) return 4;
-        if (statusLower.includes('pending')) return 5;
-        if (statusLower === 'ok' || statusLower.includes('success')) return 6;
-        if (statusLower === 'xfail') return 7;
-        if (statusLower.includes('skipped')) return 8;
-        return 9;
+        // Perf-comparison per-query statuses (compare.sh emits slower/unstable/success).
+        if (statusLower === 'slower') return 1;
+        if (statusLower === 'unstable') return 2;
+        // Keep UNKNOWN right under the errors/failures: these are tests whose real
+        // result was lost (e.g. demoted when the run aborted), so they are the rows
+        // worth looking at first, not buried below all the OK rows.
+        if (statusLower.includes('unknown')) return 2;
+        if (statusLower === 'xpass') return 3;
+        if (statusLower.includes('running')) return 4;
+        if (statusLower.includes('dropped')) return 5;
+        if (statusLower.includes('pending')) return 6;
+        if (statusLower === 'ok' || statusLower.includes('success')) return 7;
+        if (statusLower === 'xfail') return 8;
+        if (statusLower.includes('skipped')) return 9;
+        return 10;
     }
 
     function formatTimestamp(timestamp, showDate = true) {
@@ -691,16 +703,20 @@
     }
 
     function formatDuration(durationInSeconds, detailed = false) {
-        // Check if the duration is empty, null, or not a number
-        if (!durationInSeconds || isNaN(durationInSeconds)) {
+        // Treat null/undefined/non-numeric as "unknown"; a literal 0 is a
+        // real measurement and flows through the precision ladder below
+        // (otherwise sub-millisecond perf-comparison rows showed up as the
+        // misleading placeholder "00s").
+        if (durationInSeconds === null || durationInSeconds === undefined) {
+            return '00s';
+        }
+        const duration = parseFloat(durationInSeconds);
+        if (isNaN(duration)) {
             return '00s';
         }
 
-        // Ensure duration is a floating-point number
-        const duration = parseFloat(durationInSeconds);
-
-        if (detailed) {
-            // Format in the detailed format with hours, minutes, and seconds
+        if (detailed && duration >= 1) {
+            // H/M/S format for job-level totals (e.g. "1h 23m 45s").
             const hours = Math.floor(duration / 3600);
             const minutes = Math.floor((duration % 3600) / 60);
             const seconds = Math.floor(duration % 60);
@@ -710,20 +726,31 @@
             const formattedSeconds = `${String(seconds).padStart(2, '0')}s`;
 
             return `${formattedHours}${formattedMinutes}${formattedSeconds}`.trim();
-        } else {
-            if (duration < 1) {
-                // Sub-second durations: show milliseconds
-                return `${Math.floor(duration * 1000)}ms`;
-            }
-            // Format in the default format with seconds and milliseconds
-            const seconds = Math.floor(duration);
-            const milliseconds = Math.floor((duration % 1) * 1000);
-
-            const formattedSeconds = String(seconds);
-            const formattedMilliseconds = String(milliseconds).padStart(2, 0).slice(-2);
-
-            return `${formattedSeconds}.${formattedMilliseconds}`;
         }
+
+        // Sub-second precision ladder: drop to a smaller unit when the
+        // next-coarser one would round to zero. Covers true zero too.
+        if (duration < 0.00001) {
+            // < 0.01ms — integer nanoseconds.
+            return `${Math.round(duration * 1e9)}ns`;
+        }
+        if (duration < 0.001) {
+            // < 1ms but >= 0.01ms — two decimals in ms.
+            return `${(duration * 1000).toFixed(2)}ms`;
+        }
+        if (duration < 1) {
+            // Sub-second: integer milliseconds.
+            return `${Math.floor(duration * 1000)}ms`;
+        }
+
+        // >= 1s and not detailed: seconds with two-digit milliseconds.
+        const seconds = Math.floor(duration);
+        const milliseconds = Math.floor((duration % 1) * 1000);
+
+        const formattedSeconds = String(seconds);
+        const formattedMilliseconds = String(milliseconds).padStart(2, 0).slice(-2);
+
+        return `${formattedSeconds}.${formattedMilliseconds}`;
     }
 
     // Function to determine status class based on value
@@ -805,6 +832,9 @@
         element.style.verticalAlign = 'middle';
     }
 
+    // Render the current Result's own labels in the sidebar. Without this the
+    // labels of a drilled-into job would only be visible in the parent
+    // overview row, never on the job's own page.
     function addLabelsWidget(ext) {
         const labels = normalizeLabels(ext?.labels, ext?.hlabels);
         if (!Array.isArray(labels) || labels.length === 0) return;
@@ -1592,22 +1622,26 @@
 
                 if (column === 'status') {
                     const value_ = value ? value.toLowerCase() : "";
-                    const span = document.createElement('span');
-                    span.className = getStatusClass(value_);
-                    span.textContent = value_;
+                    const clickable = (result.info && result.info.trim() !== "") || (Array.isArray(result.links) && result.links.length > 0) || (Array.isArray(result.results) && result.results.length > 0);
+                    const statusEl = clickable ? document.createElement('a') : document.createElement('span');
+                    statusEl.className = getStatusClass(value_);
+                    statusEl.textContent = value_;
                     td.classList.add('status-column');
                     row.dataset.status = value_;
-                    if ((result.info && result.info.trim() !== "") || (Array.isArray(result.links) && result.links.length > 0) || (Array.isArray(result.results) && result.results.length > 0)) {
-                        span.style.cursor = "pointer";
-                        span.addEventListener('click', () => toggleInfoRow(row, result.info, result.results, result.links));
+                    if (clickable) {
+                        statusEl.href = '#';
+                        statusEl.addEventListener('click', (e) => {
+                            e.preventDefault();
+                            toggleInfoRow(row, result.info, result.results, result.links);
+                        });
                     }
-                    td.appendChild(span);
+                    td.appendChild(statusEl);
                     row.style.display = shouldShowRow(filter, row.dataset.status) ? '' : 'none';
                 } else if (column === 'name') {
                     const statusValue = result["status"] ? result["status"].toLowerCase() : "";
 
                     if (result._downstreamHref) {
-                        // Downstream result: link to private json.html via proxy
+                        // Downstream result: link to private praktika.html via proxy
                         const link = document.createElement('a');
                         link.href = result._downstreamHref;
                         link.textContent = '🔗 ' + value;
@@ -2084,7 +2118,7 @@
             !persistentStorage.updatedAt ||
             now > persistentStorage.updatedAt + HALF_DAY
         ) {
-            const url = `https://d1k2gkhrlfqv31.cloudfront.net/${bucketName}/statistics/statistics.json.gz`;
+            const url = `https://s3.amazonaws.com/${bucketName}/statistics/statistics.json.gz`;
 
             try {
                 const response = await fetch(url);
@@ -2109,6 +2143,28 @@
                 .replace(/[^a-z0-9]/g, '_')
                 .replace(/_+/g, '_')
                 .replace(/_+$/, '');
+        }
+
+        function shouldIncludeWorkflowSegment(workflowName) {
+            const normalized = (workflowName || '').trim().toLowerCase();
+            if (!normalized) {
+                return false;
+            }
+            // Keep PR/Main/Master paths stable without a workflow segment:
+            // these are the workflows we usually inspect across commits, so the
+            // result URL should not depend on a specific workflow name. Other
+            // workflows keep the segment so scheduled/ad-hoc runs remain split.
+            return !normalized.startsWith('pr')
+                && !normalized.startsWith('main')
+                && !normalized.startsWith('master');
+        }
+
+        function buildResultPath(baseUrl, suffix, shaValue, workflowName, taskName) {
+            let path = `${baseUrl}/${suffix}/${encodeURIComponent(shaValue)}`;
+            if (shouldIncludeWorkflowSegment(workflowName)) {
+                path += `/${encodeURIComponent(normalizeTaskName(workflowName))}`;
+            }
+            return `${path}/result_${taskName}.json`;
         }
 
         // Use base_url from param if provided, else fallback to old logic
@@ -2140,18 +2196,20 @@
         const shaToLoad = (sha === 'latest') ? runtimeCache.commits[runtimeCache.commits.length - 1]?.sha : sha;
 
         const task0 = normalizeTaskName(nameParams[0]);
-        // S3 layout includes the normalized workflow name:
+        // S3 layout is either:
         // <suffix>/<sha>/<normalized_workflow>/result_<job>.json
-        const workflowSegment = encodeURIComponent(task0);
+        // or, for PR/Main/Master workflows:
+        // <suffix>/<sha>/result_<job>.json
+        const workflowName = nameParams[0];
 
         const fetchTasks = [];
         if (nameParams.length > 1) {
             const task1 = normalizeTaskName(nameParams[1]);
-            const path1 = `${baseUrl}/${suffix}/${encodeURIComponent(shaToLoad)}/${workflowSegment}/result_${task1}.json`;
+            const path1 = buildResultPath(baseUrl, suffix, shaToLoad, workflowName, task1);
             fetchTasks.push(fetchJson(path1));
         }
 
-        const path0 = `${baseUrl}/${suffix}/${encodeURIComponent(shaToLoad)}/${workflowSegment}/result_${task0}.json`;
+        const path0 = buildResultPath(baseUrl, suffix, shaToLoad, workflowName, task0);
         fetchTasks.push(fetchJson(path0));
 
         // Run fetchJson calls in parallel
@@ -2229,7 +2287,7 @@
             const originalName = r.name;
             const copy = Object.assign({}, r);
             copy.name = originalName;
-            copy._downstreamHref = `${privateBaseUrl}/json.html?PR=${encodeURIComponent(private_pr_number)}&sha=${encodeURIComponent(private_sha)}&name_0=PR&name_1=${encodeURIComponent(originalName)}`;
+            copy._downstreamHref = `${privateBaseUrl}/praktika.html?PR=${encodeURIComponent(private_pr_number)}&sha=${encodeURIComponent(private_sha)}&name_0=PR&name_1=${encodeURIComponent(originalName)}`;
 
             // Rewrite links: replace origin+bucket prefix with proxy base URL.
             // privateBaseUrl is e.g. https://proxy/bucket-name, extract /bucket-name

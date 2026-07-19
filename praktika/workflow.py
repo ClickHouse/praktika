@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from . import Artifact, Job
 from .docker import Docker
@@ -62,9 +62,9 @@ class Workflow:
         enable_automerge: bool = False
         enable_merge_ready_status: bool = False
         enable_gh_summary_comment: bool = False
-        # Post commit statuses for failed jobs on non-Praktika engines. With
-        # the Praktika engine this is redundant: the orchestrator uses the
-        # GitHub Checks API and always publishes workflow/job check status.
+        # GitHub Actions engine only: post commit statuses for failed jobs.
+        # Ignored (no-op) on the Praktika engine, which always publishes
+        # workflow/job status via the GitHub Checks API.
         enable_commit_status_on_failure: bool = False
         enable_cidb: bool = False
         enable_merge_commit: bool = False
@@ -103,6 +103,11 @@ class Workflow:
         enable_exit_code_result: bool = False
         # Job aliases for easy job reference with `praktika run job_alias --test TEST_NAME` in local environment
         job_aliases: Dict[str, str] = field(default_factory=dict)
+        # Backward-compatible extension bucket for future workflow-level knobs.
+        ext: Dict[str, Any] = field(default_factory=dict)
+        # If set, every runs_on label across user-defined and Praktika-injected
+        # jobs is prefixed with this string, except "self-hosted".
+        runs_on_label_prefix: str = ""
 
         def is_event_pull_request(self):
             return self.event == Workflow.Event.PULL_REQUEST
@@ -183,3 +188,4 @@ class Workflow:
             is_required: bool
             default_value: str
             options: Optional[List] = None
+            is_boolean: bool = False

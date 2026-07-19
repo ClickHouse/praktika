@@ -63,6 +63,32 @@ def _read_job_result(job_name):
         return None
 
 
+def _record_job_error(job_name, error_text):
+    """Ensure the job's Result reflects a runner-side crash.
+
+    A crash in the run pipeline (e.g. inside ``_post_run``, before it uploads
+    the log and finalizes the Result) would otherwise leave ``final.json`` with
+    a stale/empty Result — so the orchestrator's check-run and the report show
+    a bare failure with no explanation. Load-or-create the Result, mark it
+    ERROR, and attach the traceback so the error survives into the check.
+    """
+    try:
+        from ..result import Result
+
+        try:
+            result = Result.from_fs(job_name)
+        except Exception:
+            result = Result.create_new(job_name, Result.Status.ERROR)
+        result.set_status(Result.Status.ERROR)
+        result.set_info(f"Runner crashed before completing the job:\n{error_text}")
+        result.dump()
+    except Exception as e:
+        print(
+            f"  [warn] could not record job error into Result: "
+            f"{type(e).__name__}: {e}"
+        )
+
+
 def _build_ci_environment(task, job_name=None, job=None, local_run=False):
     """Construct a `_Environment` from our SQS task and dump it to
     ``ci/tmp/environment.json`` so that ``_Environment.get()`` returns it
@@ -91,7 +117,6 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
     TODO — missing, need Lambda / webhook enhancement:
         PR_BODY       — PR description body (not in our webhook payload)
         EVENT_TIME    — PR updated_at timestamp (not captured by Lambda)
-        FORK_NAME     — real fork repo for cross-fork PRs (we default to REPOSITORY)
     """
     from .. import Workflow
     from .._environment import _Environment
@@ -99,6 +124,24 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
     from ..utils import Shell
 
     repo = task.get("repo", "")
+    # GitHub event type ("pull_request", "push", ...). Required: do not guess a
+    # default — mislabeling a push as a PR (or vice versa) silently skips
+    # push-only steps like image publishing and corrupts CIDB records.
+    event_type = task.get("event_type", "")
+    assert event_type, f"task is missing 'event_type': {task}"
+    if event_type == Workflow.Event.PULL_REQUEST:
+        # Real head repo for the PR. Required and never defaulted to the base
+        # repo: doing so would make a fork PR look like an internal one and
+        # bypass the trust checks that key off FORK_NAME == REPOSITORY.
+        head_repo = task.get("head_repo", "")
+        assert head_repo, (
+            f"pull_request task is missing 'head_repo'; refusing to treat it as "
+            f"an internal PR: {task}"
+        )
+    else:
+        # push / dispatch / cron: the ref lives in the base repo itself, so
+        # there is no separate head repo.
+        head_repo = repo
     pr_number = task.get("pr_number") or 0  # set to 0 for non-pr event (push, dispatch, cron)
     sha = task.get("head_sha", "")
 
@@ -167,7 +210,7 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
             BASE_BRANCH=task.get("base_ref", ""),
             SHA=sha,
             PR_NUMBER=pr_number,
-            EVENT_TYPE=Workflow.Event.PULL_REQUEST,
+            EVENT_TYPE=event_type,
             EVENT_TIME="",
             JOB_OUTPUT_STREAM=job_output,
             EVENT_FILE_PATH=f"{Settings.TEMP_DIR}/event.json",
@@ -181,7 +224,7 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
             PR_BODY="",
             PR_TITLE=task.get("title", ""),
             USER_LOGIN=task.get("sender", ""),
-            FORK_NAME=repo,
+            FORK_NAME=head_repo,
             COMMIT_MESSAGE=commit_message,
             PR_LABELS=task.get("labels", []),
             COMMIT_AUTHORS=commit_authors,
@@ -284,6 +327,10 @@ def run_job(task, gh_token=None, local=False):
         rc = 1
         print(f"Runner.run raised: {type(e).__name__}: {e}")
         traceback.print_exc()
+        # Surface the crash in the report / GH check: without this the failure
+        # is only in stderr and the orchestrator completes the check with no
+        # explanation (the job's Result was never finalized/dumped).
+        _record_job_error(job_name, traceback.format_exc())
 
     try:
         from ..info import Info

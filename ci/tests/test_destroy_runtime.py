@@ -72,7 +72,7 @@ class _FakeAutoscaling:
         return {
             "AutoScalingGroups": [
                 {
-                    "AutoScalingGroupName": "cloud-ci-infra-runner",
+                    "AutoScalingGroupName": "cloud_ci_infra-runner",
                     "Instances": [{"InstanceId": "i-runner"}],
                 },
                 {"AutoScalingGroupName": "other-runner"},
@@ -93,7 +93,7 @@ class _FakeEC2:
     def describe_launch_templates(self):
         return {
             "LaunchTemplates": [
-                {"LaunchTemplateName": "cloud-ci-infra-runner-lt"},
+                {"LaunchTemplateName": "cloud_ci_infra-runner-lt"},
                 {"LaunchTemplateName": "other-runner-lt"},
             ]
         }
@@ -106,7 +106,7 @@ class _FakeEC2:
             "Images": [
                 {
                     "ImageId": "ami-runtime",
-                    "Name": "cloud-ci-infra-runner-20240101",
+                    "Name": "cloud_ci_infra-runner-20240101",
                     "BlockDeviceMappings": [
                         {"Ebs": {"SnapshotId": "snap-runtime"}}
                     ],
@@ -133,13 +133,13 @@ class _FakeEC2:
                         {
                             "InstanceId": "i-runner",
                             "Tags": [
-                                {"Key": "Name", "Value": "cloud-ci-infra-runner"}
+                                {"Key": "Name", "Value": "cloud_ci_infra-runner"}
                             ],
                         },
                         {
                             "InstanceId": "i-cidb",
                             "Tags": [
-                                {"Key": "Name", "Value": "cloud-ci-infra-cidb-01"}
+                                {"Key": "Name", "Value": "cloud_ci_infra-cidb-01"}
                             ],
                         }
                     ]
@@ -155,7 +155,7 @@ class _FakeEC2:
             "Hosts": [
                 {
                     "HostId": "h-runtime",
-                    "Tags": [{"Key": "Name", "Value": "cloud-ci-infra-host"}],
+                    "Tags": [{"Key": "Name", "Value": "cloud_ci_infra-host"}],
                 }
             ]
         }
@@ -168,7 +168,7 @@ class _FakeEC2:
             "Vpcs": [
                 {
                     "VpcId": "vpc-runtime",
-                    "Tags": [{"Key": "Name", "Value": "cloud-ci-infra-vpc"}],
+                    "Tags": [{"Key": "Name", "Value": "cloud_ci_infra-vpc"}],
                 },
                 {
                     "VpcId": "vpc-other",
@@ -183,7 +183,7 @@ class _FakeEC2:
             [],
         )
         names = next((f["Values"] for f in Filters if f["Name"] == "tag:Name"), [])
-        if resource_types == ["vpc"] and names == ["cloud-ci-infra-vpc"]:
+        if resource_types == ["vpc"] and names == ["cloud_ci_infra-vpc"]:
             return {"Tags": [{"ResourceId": "vpc-runtime"}]}
         return {"Tags": []}
 
@@ -223,7 +223,7 @@ class _FakeEC2:
         return {
             "SecurityGroups": [
                 {"GroupId": "sg-default", "GroupName": "default"},
-                {"GroupId": "sg-runtime", "GroupName": "cloud-ci-infra-vpc-sg"},
+                {"GroupId": "sg-runtime", "GroupName": "cloud_ci_infra-vpc-sg"},
             ]
         }
 
@@ -280,9 +280,9 @@ class _FakeLambda:
     def list_functions(self):
         return {
             "Functions": [
-                {"FunctionName": "cloud-ci-infra-pool-autoscaler"},
-                {"FunctionName": "cloud-ci-infra-gh-token"},
-                {"FunctionName": "cloud-ci-infra-workflow-orchestrator"},
+                {"FunctionName": "cloud_ci_infra-pool-autoscaler"},
+                {"FunctionName": "cloud_ci_infra-gh-token"},
+                {"FunctionName": "cloud_ci_infra-workflow-orchestrator"},
                 {"FunctionName": "other-workflow-orchestrator"},
             ]
         }
@@ -312,7 +312,7 @@ class _FakeAPIGateway:
         return {
             "Items": [
                 {
-                    "Name": "cloud-ci-infra-workflow-orchestrator-API",
+                    "Name": "cloud_ci_infra-workflow-orchestrator-API",
                     "ApiId": "api-1",
                 }
             ]
@@ -332,7 +332,7 @@ class _FakeImageBuilder:
     def list_image_pipelines(self):
         return {
             "imagePipelineList": [
-                {"name": "cloud-ci-infra-image", "arn": "arn:pipeline"}
+                {"name": "cloud_ci_infra-image", "arn": "arn:pipeline"}
             ]
         }
 
@@ -369,7 +369,7 @@ class _FakeImageBuilderWithoutPaginator(_FakeImageBuilder):
             return {"imageRecipeSummaryList": []}
         return {
             "imageRecipeSummaryList": [
-                {"name": "cloud-ci-infra-recipe", "arn": "arn:recipe"}
+                {"name": "cloud_ci_infra-recipe", "arn": "arn:recipe"}
             ],
             "nextToken": "page-2",
         }
@@ -380,13 +380,13 @@ class _FakeImageBuilderWithRecipeVersions(_FakeImageBuilder):
         return {
             "imageRecipeSummaryList": [
                 {
-                    "name": "cloud-ci-infra-image-recipe",
-                    "arn": "arn:aws:imagebuilder:test:123:image-recipe/cloud-ci-infra-image-recipe/1.0.0",
+                    "name": "cloud_ci_infra-image-recipe",
+                    "arn": "arn:aws:imagebuilder:test:123:image-recipe/cloud_ci_infra-image-recipe/1.0.0",
                     "semanticVersion": "1.0.0",
                 },
                 {
-                    "name": "cloud-ci-infra-image-recipe",
-                    "arn": "arn:aws:imagebuilder:test:123:image-recipe/cloud-ci-infra-image-recipe/1.0.1",
+                    "name": "cloud_ci_infra-image-recipe",
+                    "arn": "arn:aws:imagebuilder:test:123:image-recipe/cloud_ci_infra-image-recipe/1.0.1",
                     "semanticVersion": "1.0.1",
                 },
             ]
@@ -398,8 +398,8 @@ class _FakeImageBuilderWithComponentBuilds(_FakeImageBuilder):
         return {
             "componentVersionList": [
                 {
-                    "name": "cloud-ci-infra-praktika-runtime-venv",
-                    "arn": "arn:aws:imagebuilder:test:123:component/cloud-ci-infra-praktika-runtime-venv/1.0.0",
+                    "name": "cloud_ci_infra-praktika-runtime-venv",
+                    "arn": "arn:aws:imagebuilder:test:123:component/cloud_ci_infra-praktika-runtime-venv/1.0.0",
                     "version": "1.0.0",
                 }
             ]
@@ -410,7 +410,7 @@ class _FakeImageBuilderWithComponentBuilds(_FakeImageBuilder):
         return {
             "componentSummaryList": [
                 {
-                    "name": "cloud-ci-infra-praktika-runtime-venv",
+                    "name": "cloud_ci_infra-praktika-runtime-venv",
                     "arn": f"{componentVersionArn}/1",
                     "version": "1.0.0",
                 }
@@ -432,12 +432,12 @@ class _FakeIAM:
         return {
             "InstanceProfiles": [
                 {
-                    "InstanceProfileName": "cloud-ci-infra-runner-profile",
-                    "Roles": [{"RoleName": "cloud-ci-infra-runner-role"}],
+                    "InstanceProfileName": "cloud_ci_infra-runner-profile",
+                    "Roles": [{"RoleName": "cloud_ci_infra-runner-role"}],
                 },
                 {
-                    "InstanceProfileName": "cloud-ci-infra-cidb-profile",
-                    "Roles": [{"RoleName": "cloud-ci-infra-cidb-role"}],
+                    "InstanceProfileName": "cloud_ci_infra-cidb-profile",
+                    "Roles": [{"RoleName": "cloud_ci_infra-cidb-role"}],
                 },
             ]
         }
@@ -451,11 +451,11 @@ class _FakeIAM:
     def list_roles(self):
         return {
             "Roles": [
-                {"RoleName": "cloud-ci-infra-runner-role"},
-                {"RoleName": "cloud-ci-infra-pool-autoscaler-role"},
-                {"RoleName": "cloud-ci-infra-gh-token-role"},
-                {"RoleName": "cloud-ci-infra-gh-trigger-role"},
-                {"RoleName": "cloud-ci-infra-cidb-role"},
+                {"RoleName": "cloud_ci_infra-runner-role"},
+                {"RoleName": "cloud_ci_infra-pool-autoscaler-role"},
+                {"RoleName": "cloud_ci_infra-gh-token-role"},
+                {"RoleName": "cloud_ci_infra-gh-trigger-role"},
+                {"RoleName": "cloud_ci_infra-cidb-role"},
             ]
         }
 
@@ -492,7 +492,7 @@ class _FakeS3:
         return _Paginator(getattr(self, op))
 
     def list_buckets(self):
-        return {"Buckets": [{"Name": "cloud-ci-infra-artifacts"}]}
+        return {"Buckets": [{"Name": "cloud_ci_infra-artifacts"}]}
 
     def list_objects_v2(self, Bucket):
         return {"Contents": []}
@@ -550,28 +550,28 @@ def test_destroy_runtime_removes_recreatable_resources_but_keeps_stateful_ones(m
 
     cloud.destroy_runtime()
 
-    assert "asg:cloud-ci-infra-runner" in calls
-    assert "lt:cloud-ci-infra-runner-lt" in calls
-    assert "sqs:cloud-ci-infra-runner" in calls
-    assert "event:cloud-ci-infra-pool-autoscaler-schedule" in calls
-    assert "lambda:cloud-ci-infra-pool-autoscaler" in calls
-    assert "lambda:cloud-ci-infra-gh-token" in calls
-    assert "lambda:cloud-ci-infra-workflow-orchestrator" in calls
+    assert "asg:cloud_ci_infra-runner" in calls
+    assert "lt:cloud_ci_infra-runner-lt" in calls
+    assert "sqs:cloud_ci_infra-runner" in calls
+    assert "event:cloud_ci_infra-pool-autoscaler-schedule" in calls
+    assert "lambda:cloud_ci_infra-pool-autoscaler" in calls
+    assert "lambda:cloud_ci_infra-gh-token" in calls
+    assert "lambda:cloud_ci_infra-workflow-orchestrator" in calls
     assert "ib-pipeline:arn:pipeline" in calls
     assert "ami:ami-runtime" in calls
     assert "snapshot:snap-runtime" in calls
-    assert "profile:cloud-ci-infra-runner-profile" in calls
-    assert "role:cloud-ci-infra-runner-role" in calls
+    assert "profile:cloud_ci_infra-runner-profile" in calls
+    assert "role:cloud_ci_infra-runner-role" in calls
     assert "vpc:vpc-runtime" in calls
-    assert "role:cloud-ci-infra-gh-trigger-role" not in calls
-    assert "profile:cloud-ci-infra-cidb-profile" not in calls
-    assert "role:cloud-ci-infra-cidb-role" not in calls
+    assert "role:cloud_ci_infra-gh-trigger-role" not in calls
+    assert "profile:cloud_ci_infra-cidb-profile" not in calls
+    assert "role:cloud_ci_infra-cidb-role" not in calls
     assert "ec2:describe_instances" not in calls
     assert "api:api-1" not in calls
     assert "host:h-runtime" not in calls
-    assert "ssm:cloud-ci-infra-secret" not in calls
-    assert "ssm:/cloud-ci-infra-secret" not in calls
-    assert "s3:cloud-ci-infra-artifacts" not in calls
+    assert "ssm:cloud_ci_infra-secret" not in calls
+    assert "ssm:/cloud_ci_infra-secret" not in calls
+    assert "s3:cloud_ci_infra-artifacts" not in calls
 
 
 def test_destroy_all_expands_to_project_prefixed_stateful_and_webhook_resources(monkeypatch):
@@ -579,17 +579,17 @@ def test_destroy_all_expands_to_project_prefixed_stateful_and_webhook_resources(
 
     cloud.destroy_all()
 
-    assert "lambda:cloud-ci-infra-workflow-orchestrator" in calls
+    assert "lambda:cloud_ci_infra-workflow-orchestrator" in calls
     assert "api:api-1" in calls
     assert "ec2:describe_instances" in calls
     assert "ec2:terminate:i-runner" not in calls
     assert "ec2:terminate:i-cidb" in calls
-    assert "profile:cloud-ci-infra-cidb-profile" in calls
-    assert "role:cloud-ci-infra-cidb-role" in calls
+    assert "profile:cloud_ci_infra-cidb-profile" in calls
+    assert "role:cloud_ci_infra-cidb-role" in calls
     assert "host:h-runtime" in calls
-    assert "ssm:cloud-ci-infra-secret" in calls
-    assert "ssm:/cloud-ci-infra-secret" in calls
-    assert "s3:cloud-ci-infra-artifacts" in calls
+    assert "ssm:cloud_ci_infra-secret" in calls
+    assert "ssm:/cloud_ci_infra-secret" in calls
+    assert "s3:cloud_ci_infra-artifacts" in calls
 
 
 def test_destroy_all_does_not_prompt_for_instances_owned_by_deleted_asgs(monkeypatch):
@@ -606,9 +606,9 @@ def test_destroy_all_does_not_prompt_for_instances_owned_by_deleted_asgs(monkeyp
 
     cloud.destroy_all()
 
-    assert "Delete 'AutoScalingGroup cloud-ci-infra-runner'?" in prompts
-    assert "Delete 'EC2Instance cloud-ci-infra-runner (i-runner)'?" not in prompts
-    assert "Delete 'EC2Instance cloud-ci-infra-cidb-01 (i-cidb)'?" in prompts
+    assert "Delete 'AutoScalingGroup cloud_ci_infra-runner'?" in prompts
+    assert "Delete 'EC2Instance cloud_ci_infra-runner (i-runner)'?" not in prompts
+    assert "Delete 'EC2Instance cloud_ci_infra-cidb-01 (i-cidb)'?" in prompts
     assert "ec2:terminate:i-runner" not in calls
     assert "ec2:terminate:i-cidb" in calls
 
@@ -628,8 +628,8 @@ def test_destroy_runtime_batches_sqs_confirmation(monkeypatch):
     cloud.destroy_runtime(only=["SQS"])
 
     assert prompts == ["Delete all 2 SQS queues?"]
-    assert "sqs:cloud-ci-infra-runner" in calls
-    assert "sqs:cloud-ci-infra-runner-dlq" in calls
+    assert "sqs:cloud_ci_infra-runner" in calls
+    assert "sqs:cloud_ci_infra-runner-dlq" in calls
 
 
 def test_destroy_runtime_only_images_deletes_amis_without_imagebuilder(monkeypatch):
@@ -640,7 +640,7 @@ def test_destroy_runtime_only_images_deletes_amis_without_imagebuilder(monkeypat
     assert "ami:ami-runtime" in calls
     assert "snapshot:snap-runtime" in calls
     assert "ib-pipeline:arn:pipeline" not in calls
-    assert "asg:cloud-ci-infra-runner" not in calls
+    assert "asg:cloud_ci_infra-runner" not in calls
 
 
 def test_destroy_runtime_imagebuilder_fallback_uses_lowercase_next_token(monkeypatch):
@@ -678,23 +678,23 @@ def test_destroy_runtime_imagebuilder_recipe_prompts_batch_versions(monkeypatch)
     cloud.destroy_runtime(only=["ImageBuilder"])
 
     assert (
-        "Delete all 2 versions of ImageBuilderRecipe cloud-ci-infra-image-recipe?"
+        "Delete all 2 versions of ImageBuilderRecipe cloud_ci_infra-image-recipe?"
         in prompts
     )
     assert (
-        "Delete 'ImageBuilderRecipe cloud-ci-infra-image-recipe (1.0.0)'?"
+        "Delete 'ImageBuilderRecipe cloud_ci_infra-image-recipe (1.0.0)'?"
         not in prompts
     )
     assert (
-        "Delete 'ImageBuilderRecipe cloud-ci-infra-image-recipe (1.0.1)'?"
+        "Delete 'ImageBuilderRecipe cloud_ci_infra-image-recipe (1.0.1)'?"
         not in prompts
     )
     assert (
-        "ib-recipe:arn:aws:imagebuilder:test:123:image-recipe/cloud-ci-infra-image-recipe/1.0.0"
+        "ib-recipe:arn:aws:imagebuilder:test:123:image-recipe/cloud_ci_infra-image-recipe/1.0.0"
         in calls
     )
     assert (
-        "ib-recipe:arn:aws:imagebuilder:test:123:image-recipe/cloud-ci-infra-image-recipe/1.0.1"
+        "ib-recipe:arn:aws:imagebuilder:test:123:image-recipe/cloud_ci_infra-image-recipe/1.0.1"
         in calls
     )
 
@@ -720,12 +720,12 @@ def test_destroy_runtime_imagebuilder_deletes_component_build_versions(monkeypat
 
     component_version_arn = (
         "arn:aws:imagebuilder:test:123:component/"
-        "cloud-ci-infra-praktika-runtime-venv/1.0.0"
+        "cloud_ci_infra-praktika-runtime-venv/1.0.0"
     )
     assert f"ib-component-version:{component_version_arn}" in calls
     assert f"ib-component:{component_version_arn}/1" in calls
     assert (
-        "Delete 'ImageBuilderComponent cloud-ci-infra-praktika-runtime-venv (1.0.0/1)'?"
+        "Delete 'ImageBuilderComponent cloud_ci_infra-praktika-runtime-venv (1.0.0/1)'?"
         in prompts
     )
 

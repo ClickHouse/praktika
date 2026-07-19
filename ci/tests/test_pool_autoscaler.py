@@ -199,10 +199,10 @@ def test_cloud_infrastructure_registers_pool_autoscaler():
     )
 
     assert any(
-        config.name == "test-cloud-pool-autoscaler" for config in cloud.lambda_functions
+        config.name == "test_cloud-pool-autoscaler" for config in cloud.lambda_functions
     )
     assert any(
-        role.name == "test-cloud-pool-autoscaler-role" for role in cloud.iam_roles
+        role.name == "test_cloud-pool-autoscaler-role" for role in cloud.iam_roles
     )
 
 
@@ -231,7 +231,7 @@ def test_cloud_infrastructure_creates_implicit_runner_autoscaler():
     )
 
     autoscalers = [
-        l for l in cloud.lambda_functions if l.name == "test-cloud-pool-autoscaler"
+        l for l in cloud.lambda_functions if l.name == "test_cloud-pool-autoscaler"
     ]
     assert len(autoscalers) == 1
     autoscaler = autoscalers[0]
@@ -260,12 +260,12 @@ def test_cloud_infrastructure_creates_implicit_orchestrator_autoscaler():
     )
 
     autoscalers = [
-        l for l in cloud.lambda_functions if l.name == "test-cloud-pool-autoscaler"
+        l for l in cloud.lambda_functions if l.name == "test_cloud-pool-autoscaler"
     ]
     assert len(autoscalers) == 1
     autoscaler = autoscalers[0]
     env = autoscaler.environments["POOLS_CONFIG_JSON"]
     assert '"name":"workflow-orchestrator"' in env
-    assert '"queue_name":"test-cloud-workflow-orchestrator"' in env
-    assert '"asg_name":"test-cloud-workflow-orchestrator"' in env
+    assert '"queue_name":"test_cloud-workflow-orchestrator"' in env
+    assert '"asg_name":"test_cloud-workflow-orchestrator"' in env
     assert '"capacity_reserve":2' in env

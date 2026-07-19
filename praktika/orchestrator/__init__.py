@@ -4,8 +4,6 @@ import re
 import sys
 import time
 from collections import defaultdict, deque
-from dataclasses import dataclass
-from typing import Optional
 
 from ..mangle import _get_artifact_to_providing_job_map, _get_workflows
 from ..settings import Settings
@@ -274,6 +272,7 @@ def orchestrate(
     run_id=None,
     ci=True,
     workflow_name=None,
+    bootstrap_check_id=None,
 ):
     """Single orchestrator entry-point used by both the SQS runner and the CLI.
 
@@ -304,6 +303,15 @@ def orchestrate(
         except Exception as e:
             raise RuntimeError(f"Failed to mint GH token for CI orchestration: {e}") from e
 
+    # The controller opens a bootstrap check run *before* the (slow) clone so
+    # the PR shows CI immediately and an interrupted clone still leaves a
+    # signal. Adopt it here now that the workflow name is known, instead of
+    # opening a fresh check.
+    if check is None and ci and gh_token and bootstrap_check_id:
+        from .check_run import CheckRun
+
+        check = CheckRun(gh_token, event.get("repo", ""), bootstrap_check_id, "CI")
+
     workflows = find_workflows_for_event(event, workflow_name=workflow_name)
     if not workflows:
         print("No matching workflows, exiting")
@@ -328,13 +336,21 @@ def orchestrate(
     # in any workflow outranks an ordinary failure (1) — the controller then
     # retries the whole event on a fresh instance. 0 < 1 < INFRA_EXIT_CODE.
     overall_rc = 0
-    for workflow in workflows:
-        rc = _orchestrate_single(workflow, event, gh_token=gh_token, local_mode=not ci)
+    for i, workflow in enumerate(workflows):
+        rc = _orchestrate_single(
+            workflow,
+            event,
+            gh_token=gh_token,
+            local_mode=not ci,
+            # Only the first workflow adopts the single bootstrap check; any
+            # further matched workflows open their own named checks.
+            existing_check=check if i == 0 else None,
+        )
         overall_rc = max(overall_rc, rc)
     return overall_rc
 
 
-def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
+def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existing_check=None):
     """Run one workflow: open a check run, execute the DAG, close the check.
 
     Returns 0 on success, 1 on crash.
@@ -358,7 +374,12 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False):
     check = None
     if gh_token:
         try:
-            check = CheckRun.start(gh_token, repo, head_sha, workflow.name, details_url=report_url)
+            if existing_check is not None:
+                # Adopt the controller's pre-clone bootstrap check: rename it
+                # to this workflow and reuse the same check-run id.
+                check = existing_check.retitle(workflow.name, details_url=report_url)
+            else:
+                check = CheckRun.start(gh_token, repo, head_sha, workflow.name, details_url=report_url)
         except Exception as e:
             raise RuntimeError(
                 f"Failed to open initial check run for [{workflow.name}]: {e}"
@@ -697,6 +718,7 @@ def _build_event(args):
         "type": args.event_type,
         "action": "synchronize",
         "repo": repo,
+        "head_repo": repo,
         "head_sha": head_sha,
         "head_ref": head_ref,
         "base_ref": args.base_ref,
@@ -784,8 +806,14 @@ def run(event_file=None, args=None):
         event = _build_event(args)
     ci = getattr(args, "ci", False)
     workflow_name = getattr(args, "name", None)
+    bootstrap_check_id = os.environ.get("PRAKTIKA_BOOTSTRAP_CHECK_RUN_ID", "").strip() or None
     try:
-        rc = orchestrate(event, ci=ci, workflow_name=workflow_name)
+        rc = orchestrate(
+            event,
+            ci=ci,
+            workflow_name=workflow_name,
+            bootstrap_check_id=bootstrap_check_id,
+        )
     except Exception:
         import traceback
 

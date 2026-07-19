@@ -68,7 +68,7 @@ def _normalize_job_name_for_s3(name):
     return name.replace(" ", "_").replace("/", "_")
 
 
-def _build_check_output(result, rc, instance_id="", report_url=""):
+def _build_check_output(result, rc, instance_id="", runner_pool="", report_url=""):
     """Render a job's Result as the ``output`` dict for a check-run
     completion. ``result`` is a ``praktika.Result`` reconstructed from the
     completion payload (the runner ships it in ``final.json``). Returns
@@ -98,6 +98,11 @@ def _build_check_output(result, rc, instance_id="", report_url=""):
             summary += f" — runner `{instance_id}`"
             text = f"**Runner instance:** `{instance_id}`" + (
                 f"\n\n{text}" if text else ""
+            )
+        if runner_pool:
+            summary += f" in pool `{runner_pool}`"
+            text = f"{text}\n\n**Runner pool:** `{runner_pool}`" if text else (
+                f"**Runner pool:** `{runner_pool}`"
             )
         return {"title": displayed_status, "summary": summary, "text": text}
     except Exception as e:
@@ -130,9 +135,15 @@ def _record_value(record, key, default=None):
 
 
 def _queue_for_runs_on(runs_on):
-    """First non-empty ``runs_on`` label → ``<project-slug>-<label>`` queue name."""
+    """First meaningful ``runs_on`` label → ``<project-slug>-<label>`` queue name.
+
+    "self-hosted" is a GitHub-Actions runner-group label with no meaning to the
+    praktika engine, so it is skipped — the pool/size label is what maps to a
+    queue (e.g. ``["self-hosted", "style-checker-aarch64"]`` →
+    ``<slug>-style-checker-aarch64``).
+    """
     for label in runs_on or ():
-        if label:
+        if label and label != "self-hosted":
             return f"{_queue_prefix()}{label}"
     return None
 
@@ -174,6 +185,34 @@ class JobCheckRun:
         body = {"name": name, "head_sha": head_sha, "status": "queued"}
         if output is not None:
             body["output"] = output
+        data = cls._api(
+            "POST",
+            f"https://api.github.com/repos/{repo}/check-runs",
+            token,
+            body,
+        )
+        return cls(token, repo, data["id"], name)
+
+    @classmethod
+    def create_completed(
+        cls, token, repo, head_sha, name, conclusion, output=None, details_url=None
+    ):
+        """Create a check run already in its terminal state in one POST.
+
+        Used for jobs that never run (skipped) so the check posts its final
+        conclusion directly, rather than the queue()->complete() two-call
+        dance that briefly surfaces a pending check before flipping it.
+        """
+        body = {
+            "name": name,
+            "head_sha": head_sha,
+            "status": "completed",
+            "conclusion": conclusion,
+        }
+        if output is not None:
+            body["output"] = output
+        if details_url is not None:
+            body["details_url"] = details_url
         data = cls._api(
             "POST",
             f"https://api.github.com/repos/{repo}/check-runs",
@@ -307,6 +346,35 @@ class JobState:
                 f"{type(e).__name__}: {e}"
             )
 
+    def _create_completed_check(self, conclusion, output=None, details_url=None):
+        """Post the GitHub check run directly in its terminal state.
+
+        For jobs that never run (skipped), this posts the final conclusion in
+        a single API call instead of queue()->complete(), which would briefly
+        show a pending check before flipping it.
+        """
+        if self.check is not None:
+            return
+        ws = self._workflow_state
+        if ws is None or not ws.can_post_checks:
+            return
+        check_name = f"{ws.workflow.name} / {self.name}"
+        try:
+            self.check = JobCheckRun.create_completed(
+                ws._gh_token,
+                ws._repo,
+                ws._head_sha,
+                check_name,
+                conclusion,
+                output=output,
+                details_url=details_url,
+            )
+        except Exception as e:
+            print(
+                f"  [warn] could not post {conclusion} check for {check_name!r}: "
+                f"{type(e).__name__}: {e}"
+            )
+
     def kick(self):
         """Transition READY -> QUEUED, post the pending check, and dispatch
         to the runner.
@@ -345,9 +413,19 @@ class JobState:
 
         print(f"[KICK ] {self.name:70s} runs_on={runs_on}  -> {target}")
         if not ws._dispatch(self, target):
-            # Dispatch failed (e.g. SQS error) — fail the job; nothing else
-            # will ever drive it forward.
-            self.finish(success=False)
+            # Dispatch failed (e.g. SQS error, missing queue) — fail the job;
+            # nothing else will ever drive it forward. Pass an explicit output
+            # so the terminal check doesn't keep the earlier "QUEUED" summary.
+            self.finish(
+                success=False,
+                output={
+                    "title": "DISPATCH FAILED",
+                    "summary": (
+                        f"Failed to dispatch job to runner pool `{target}` "
+                        f"(its SQS queue is missing or unreachable)."
+                    ),
+                },
+            )
 
     def finish(self, success=True, output=None, details_url=None):
         """Transition in-flight jobs -> SUCCESS/FAILURE and emit a finish line.
@@ -386,9 +464,8 @@ class JobState:
         self.status = JobStatus.SKIPPED
         self.filter_reason = reason
         if post_check:
-            self._create_check()
-            self._update_check(
-                lambda c: c.complete("skipped", output=output, details_url=details_url)
+            self._create_completed_check(
+                "skipped", output=output, details_url=details_url
             )
         suffix = f" ({reason})" if reason else ""
         print(f"[SKIP ] {self.name:70s}{suffix}")
@@ -437,7 +514,14 @@ class JobState:
         self.status = JobStatus.CANCELLED
         if was_in_flight:
             self.finished_at = time.time()
-            self._update_check(lambda c: c.complete("cancelled"))
+            # Pass an explicit output so the terminal check reflects the
+            # cancellation instead of keeping the earlier "QUEUED" summary.
+            self._update_check(
+                lambda c: c.complete(
+                    "cancelled",
+                    output={"title": "CANCELLED", "summary": f"CANCELLED: {reason}."},
+                )
+            )
         print(f"[CANCL] {self.name:70s} ({reason})")
 
 
@@ -753,6 +837,7 @@ class WorkflowState:
                         result,
                         rc,
                         instance_id=js.runner_instance_id or "",
+                        runner_pool=", ".join(js.job.runs_on) if js.job.runs_on else "",
                         report_url=details_url or "",
                     )
                 except Exception as e:
@@ -782,6 +867,7 @@ class WorkflowState:
         now = now if now is not None else time.time()
         for js in running:
             runs_on = ", ".join(js.job.runs_on) if js.job.runs_on else "default"
+            runner_pool = runs_on
             key = self._heartbeat_s3_key(js.name)
             heartbeat_missing = False
             try:
@@ -790,6 +876,7 @@ class WorkflowState:
                 hb = json.loads(body)
                 ts = float(hb.get("ts", 0))
                 if ts > 0:
+                    prev_phase = js.last_heartbeat_phase
                     js.last_heartbeat_ts = ts
                     phase = str(hb.get("phase") or "").strip()
                     if phase:
@@ -804,10 +891,53 @@ class WorkflowState:
                             "summary": "RUNNING: runner picked up the job.",
                         }
                         if js.runner_instance_id:
-                            output["summary"] = f"RUNNING on runner `{instance_id}`."
+                            output["summary"] = (
+                                f"RUNNING on runner `{instance_id}` in pool "
+                                f"`{runner_pool}`."
+                            )
                         if phase:
                             output["summary"] += f" Phase: `{phase}`."
+                        output["text"] = (
+                            f"**Runner instance:** `{instance_id}`"
+                            if js.runner_instance_id
+                            else ""
+                        )
+                        if runner_pool:
+                            output["text"] += (
+                                f"\n\n**Runner pool:** `{runner_pool}`"
+                                if output["text"]
+                                else f"**Runner pool:** `{runner_pool}`"
+                            )
                         js._update_check(lambda c: c.set_in_progress(output=output))
+                    elif (
+                        phase
+                        and phase != prev_phase
+                        and js.check is not None
+                    ):
+                        output = {
+                            "title": "RUNNING",
+                            "summary": "RUNNING: runner picked up the job.",
+                        }
+                        if js.runner_instance_id:
+                            output["summary"] = (
+                                f"RUNNING on runner `{js.runner_instance_id}` in pool "
+                                f"`{runner_pool}`."
+                            )
+                        output["summary"] += f" Phase: `{phase}`."
+                        output["text"] = (
+                            f"**Runner instance:** `{js.runner_instance_id}`"
+                            if js.runner_instance_id
+                            else ""
+                        )
+                        if runner_pool:
+                            output["text"] += (
+                                f"\n\n**Runner pool:** `{runner_pool}`"
+                                if output["text"]
+                                else f"**Runner pool:** `{runner_pool}`"
+                            )
+                        js._update_check(
+                            lambda c: c.update(status="in_progress", output=output)
+                        )
                         duration = now - (js.started_at or now)
                         print(f"[PICK ] {js.name:70s} ({duration:.1f}s)")
             except Exception as e:
@@ -862,7 +992,9 @@ class WorkflowState:
         """
         task = {
             "type": "job_task",
+            "event_type": self._event.get("type", ""),
             "repo": self._event.get("repo", ""),
+            "head_repo": self._event.get("head_repo", ""),
             "pr_number": self._event.get("pr_number"),
             "head_sha": self._event.get("head_sha", ""),
             "head_ref": self._event.get("head_ref", ""),

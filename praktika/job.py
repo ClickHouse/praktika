@@ -1,9 +1,9 @@
 import copy
-import fnmatch
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Iterable, List, Optional
+from pathlib import PurePosixPath
+from typing import Any, List, Optional
 
 from . import Artifact
 from .utils import Shell, Utils
@@ -70,9 +70,9 @@ class Job:
         # experimental jobs that are not yet stable enough to be enforced.
         force_success: bool = False
 
-        # Post this job as a commit status for non-Praktika engines. With the
-        # Praktika engine this is redundant: the orchestrator uses the GitHub
-        # Checks API and always publishes workflow/job check status.
+        # GitHub Actions engine only: post this job as a commit status.
+        # Ignored (no-op) on the Praktika engine, which always publishes
+        # workflow/job status via the GitHub Checks API.
         enable_commit_status: bool = False
 
         enable_gh_auth: bool = False
@@ -282,9 +282,9 @@ class Job:
                     # Check if included
                     for include in self.digest_config.include_paths:
                         include_norm = os.path.normpath(include)
-                        if fnmatch.fnmatch(file, include_norm) or file.startswith(
-                            include_norm + os.sep
-                        ):
+                        if PurePosixPath("/" + file).match(
+                            "/" + include_norm
+                        ) or file.startswith(include_norm + os.sep):
                             return True
 
             # Optionally check for submodule changes

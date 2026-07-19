@@ -19,6 +19,27 @@ except (ImportError, AssertionError):
 
 from praktika.utils import Shell
 
+# `gh auth login --with-token` validates the token against api.github.com. A single
+# transient GitHub API 5xx/timeout there would otherwise hard-fail the whole job.
+# Retry only on transport-class errors; auth errors (e.g. HTTP 401 bad token) stay fatal.
+_GH_AUTH_RETRY_ERRORS = [
+    "HTTP 500",
+    "HTTP 502",
+    "HTTP 503",
+    "HTTP 504",
+    "HTTP 429",
+    "Service Unavailable",
+    "Bad Gateway",
+    "Gateway Timeout",
+    "Too Many Requests",
+    "Internal Server Error",
+    "i/o timeout",
+    "TLS handshake timeout",
+    "connection reset by peer",
+    "connection refused",
+    "EOF",
+]
+
 
 _PERMISSION_LEVELS = {
     "none": 0,
@@ -29,6 +50,31 @@ _PERMISSION_LEVELS = {
 
 
 class GHAuth:
+    @staticmethod
+    def _describe_lambda_failure(response, data) -> str:
+        details = []
+        function_error = response.get("FunctionError")
+        if function_error:
+            details.append(f"FunctionError={function_error}")
+        status_code = response.get("StatusCode")
+        if status_code is not None:
+            details.append(f"StatusCode={status_code}")
+        executed_version = response.get("ExecutedVersion")
+        if executed_version:
+            details.append(f"ExecutedVersion={executed_version}")
+
+        if isinstance(data, dict):
+            if data.get("statusCode") is not None:
+                details.append(f"statusCode={data.get('statusCode')}")
+            if data.get("errorType"):
+                details.append(f"errorType={data.get('errorType')}")
+            if data.get("errorMessage"):
+                details.append(f"errorMessage={data.get('errorMessage')}")
+            if data.get("stackTrace"):
+                details.append("stackTrace=present")
+
+        return ", ".join(details) if details else "no diagnostic details available"
+
     @classmethod
     def _validate_permissions(cls, permissions, required_permissions):
         if not required_permissions:
@@ -68,21 +114,33 @@ class GHAuth:
             Payload=b"{}",
         )
         payload = response["Payload"].read().decode("utf-8")
-        data = json.loads(payload)
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                "GH auth lambda returned non-JSON payload "
+                f"[{payload[:200]}]: {e}"
+            ) from e
         if "FunctionError" in response:
-            raise RuntimeError("GH auth lambda failed (payload redacted)")
+            raise RuntimeError(
+                "GH auth lambda failed "
+                f"({cls._describe_lambda_failure(response, data)})"
+            )
         if isinstance(data, dict) and "statusCode" in data:
             if int(data.get("statusCode", 500)) >= 400:
                 raise RuntimeError(
-                    f"GH auth lambda returned statusCode={data.get('statusCode')} "
-                    "(body redacted)"
+                    "GH auth lambda returned error "
+                    f"({cls._describe_lambda_failure(response, data)})"
                 )
             body = data.get("body", "{}")
             data = json.loads(body) if isinstance(body, str) else body
         token = data.get("token")
         expires_at_iso = data.get("expires_at")
         if not token:
-            raise RuntimeError("GH auth lambda returned no token (payload redacted)")
+            raise RuntimeError(
+                "GH auth lambda returned no token "
+                f"({cls._describe_lambda_failure(response, data)})"
+            )
         cls._validate_permissions(data.get("permissions"), required_permissions)
         if expires_at_iso:
             expires_at = datetime.fromisoformat(
@@ -166,6 +224,8 @@ class GHAuth:
             "gh auth login --with-token",
             stdin_str=f"{access_token}\n",
             strict=True,
+            retries=4,
+            retry_errors=_GH_AUTH_RETRY_ERRORS,
         )
 
     @classmethod

@@ -79,7 +79,7 @@ class GH:
                 raise RuntimeError(
                     f"Failed to extract repository name from remote URL [{repo_url}]"
                 )
-            sha = Shell.get_output(f"git rev-parse HEAD", strict=True)
+            sha = Shell.get_output("git rev-parse HEAD", strict=True)
 
         assert repo_name
         print(repo_name)
@@ -797,7 +797,7 @@ class GH:
         else:
             if not only_update:
                 cmd = f"gh pr comment {pr} --body-file {temp_file_path}"
-                print(f"Create new comment")
+                print("Create new comment")
                 res = cls.do_command_with_retries(cmd)
             else:
                 print(
@@ -856,7 +856,7 @@ class GH:
             pr_data = json.loads(output)
             title = pr_data["title"]
             body = pr_data["body"]
-            labels = [l["name"] for l in pr_data["labels"]]
+            labels = [label["name"] for label in pr_data["labels"]]
         except Exception:
             print("ERROR: Failed to get PR data")
             traceback.print_exc()
@@ -942,6 +942,43 @@ class GH:
             f"-f description={safe_description} -f context={safe_context}"
         )
         return cls.do_command_with_retries(command)
+
+    @classmethod
+    def get_commit_statuses(
+        cls, sha="", repo=""
+    ) -> Optional[Dict[str, "GH.CommitStatus"]]:
+        """
+        Fetch commit statuses for the given commit SHA and return the latest
+        status for each context. Returns ``None`` if the status list cannot be
+        retrieved or parsed.
+        """
+        repo = repo or _Environment.get().REPOSITORY
+        sha = sha or _Environment.get().SHA
+
+        output = cls.get_output_with_retries(
+            f"gh api repos/{repo}/commits/{sha}/statuses --paginate"
+        )
+        if not output:
+            print("ERROR: Failed to fetch commit statuses")
+            return None
+        try:
+            statuses_list = json.loads(output)
+        except json.JSONDecodeError as ex:
+            print(f"ERROR: Failed to parse commit statuses: {ex}")
+            return None
+        status_map: Dict[str, GH.CommitStatus] = {}
+
+        for status in statuses_list:
+            context = status["context"]
+            if context not in status_map:
+                status_map[context] = GH.CommitStatus(
+                    state=status["state"],
+                    description=status.get("description", ""),
+                    url=status.get("target_url", ""),
+                    context=context,
+                )
+
+        return status_map
 
     @classmethod
     def post_foreign_commit_status(
@@ -1061,6 +1098,40 @@ class GH:
                 os.unlink(temp_file_path)
         return None
 
+    @classmethod
+    def get_pr_url_by_branch(cls, branch, repo=None):
+        """URL of the PR whose head is `branch`, or '' if there genuinely is none.
+
+        On the rerun-safety path (changelog / version-bump PR reuse), a transient
+        `gh pr list` failure must NOT be mistaken for "no PR exists" — that would
+        create a duplicate PR or let merge_prs run with an empty URL after the
+        release is already published. So the lookup is retried and raises on a
+        persistent failure. A successful `gh pr list --json` always prints at
+        least `[]`, so an empty result from the retried read means the command
+        itself failed; genuinely no PR is an empty JSON array.
+        """
+        if not repo:
+            repo = _Environment.get().REPOSITORY
+        safe_repo = shlex.quote(repo)
+        safe_branch = shlex.quote(branch)
+        for state in ("open", "merged"):
+            cmd = (
+                f"gh pr list --repo {safe_repo} --head {safe_branch}"
+                f" --state {state} --json url"
+            )
+            raw = cls.get_output_with_retries(cmd)
+            if not raw:
+                raise RuntimeError(
+                    f"gh pr list failed for branch [{branch}] in repo [{repo}] "
+                    f"(state {state}) after retries; refusing to treat a failed "
+                    f"lookup as 'no PR'"
+                )
+            prs = json.loads(raw)
+            if prs:
+                return prs[0]["url"]
+            print(f"No {state} PR found for branch [{branch}]")
+        return ""
+
     _STATUS_TO_GH = {
         Result.Status.OK: Result.GHStatus.SUCCESS,
         Result.Status.FAIL: Result.GHStatus.FAILURE,
@@ -1115,7 +1186,7 @@ class GH:
         sha: str = ""
         start_time: Optional[float] = None
         duration: Optional[float] = None
-        failed_results: List["ResultSummaryForGH"] = dataclasses.field(
+        failed_results: List["GH.ResultSummaryForGH"] = dataclasses.field(
             default_factory=list
         )
         info: str = ""

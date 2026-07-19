@@ -53,9 +53,10 @@ def test_job_python_env_prefers_runtime_paths_before_repo_paths(monkeypatch, tmp
 
     assert env["PYTHONSAFEPATH"] == "1"
     assert "." in pythonpath
-    assert "./ci" in pythonpath
+    # "./ci" must NOT be on the path: it would let a bare `import praktika`
+    # resolve to the repo's vendored ci/praktika instead of the installed one.
+    assert "./ci" not in pythonpath
     assert str(other_path) in pythonpath
-    assert pythonpath.index(".") < pythonpath.index("./ci")
     assert str(tmp_path) in pythonpath
 
     site_paths = [
@@ -156,6 +157,10 @@ class TestRunner(unittest.TestCase):
             "job_name": "dummy",
             # PR-event shape: pr_number + base_ref + sha.
             "pr_number": 1,
+            # Required by _build_ci_environment: event_type is never defaulted,
+            # and a pull_request task must carry head_repo (internal PR -> == repo).
+            "event_type": "pull_request",
+            "head_repo": "test-org/test-repo",
             "base_ref": "main",
             "head_ref": "test-branch",
             "head_sha": "0" * 40,
@@ -189,6 +194,41 @@ class TestRunner(unittest.TestCase):
             f"Expected job.log under <workflow>/<job>/, got: {result.links}",
         )
 
+    def test_runner_crash_is_recorded_in_job_result(self):
+        """A crash inside Runner.run (e.g. _post_run) must land an ERROR
+        Result with the traceback, so the orchestrator's check-run / report
+        shows the failure instead of a bare, info-less error."""
+        from unittest import mock
+
+        from praktika.orchestrator import job_runner
+        from praktika.result import Result
+
+        task = {
+            "workflow_name": "DummyRunnerTest",
+            "job_name": "dummy",
+            "pr_number": 1,
+            # Required by _build_ci_environment: event_type is never defaulted,
+            # and a pull_request task must carry head_repo (internal PR -> == repo).
+            "event_type": "pull_request",
+            "head_repo": "test-org/test-repo",
+            "base_ref": "main",
+            "head_ref": "test-branch",
+            "head_sha": "0" * 40,
+            "repo": "test-org/test-repo",
+        }
+        self._bootstrap_workflow_state(task)
+
+        def boom(*_a, **_k):
+            raise FileNotFoundError(2, "No such file or directory", "")
+
+        with mock.patch.object(job_runner.Runner, "run", boom):
+            rc = job_runner.run_job(task, gh_token=None, local=True)
+
+        self.assertEqual(rc, 1)
+        result = Result.from_fs("dummy")
+        self.assertEqual(result.status, Result.Status.ERROR)
+        self.assertIn("Runner crashed", result.info)
+
     def test_exit_code_result_synthesizes_ok_on_zero_exit(self):
         """enable_exit_code_result=True + script that exits 0 without
         dumping a Result -> synthesized OK Result, run_job rc=0."""
@@ -199,6 +239,10 @@ class TestRunner(unittest.TestCase):
             "workflow_name": "DummyExitCodeResultTest",
             "job_name": "exit_ok",
             "pr_number": 1,
+            # Required by _build_ci_environment: event_type is never defaulted,
+            # and a pull_request task must carry head_repo (internal PR -> == repo).
+            "event_type": "pull_request",
+            "head_repo": "test-org/test-repo",
             "base_ref": "main",
             "head_ref": "test-branch",
             "head_sha": "0" * 40,
@@ -223,6 +267,10 @@ class TestRunner(unittest.TestCase):
             "workflow_name": "DummyExitCodeResultTest",
             "job_name": "exit_ok",
             "pr_number": 1,
+            # Required by _build_ci_environment: event_type is never defaulted,
+            # and a pull_request task must carry head_repo (internal PR -> == repo).
+            "event_type": "pull_request",
+            "head_repo": "test-org/test-repo",
             "base_ref": "main",
             "head_ref": "test-branch",
             "head_sha": "0" * 40,
@@ -237,6 +285,91 @@ class TestRunner(unittest.TestCase):
         finally:
             os.environ.pop("PYTHONPATH", None)
 
+    def test_docker_job_mounts_installed_package_dir(self):
+        Path(_TEST_TEMP_DIR).mkdir(parents=True, exist_ok=True)
+
+        import sys
+        import types
+        from unittest import mock
+
+        with mock.patch.dict(sys.modules, {"requests": types.ModuleType("requests")}):
+            from praktika import runner
+
+            captured = {}
+
+            class DummyTeePopen:
+                def __init__(self, command, **kwargs):
+                    captured["command"] = command
+                    self.timeout_exceeded = False
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc_val, exc_tb):
+                    return False
+
+                def wait(self):
+                    return 0
+
+                def get_latest_log(self, max_lines=20):
+                    return ""
+
+            staged_package_dir = Path(runner._staged_praktika_package_dir())
+            staged_praktika_package = staged_package_dir / "praktika"
+            job = SimpleNamespace(
+                name="docker-job",
+                run_in_docker="example/image:latest",
+                timeout=1,
+                timeout_shell_cleanup=None,
+                enable_gh_auth=False,
+                command="echo ok",
+            )
+            workflow = SimpleNamespace(name="workflow")
+
+            with mock.patch.object(runner, "TeePopen", DummyTeePopen), mock.patch.object(
+                runner.Shell, "check", lambda *args, **kwargs: False
+            ), mock.patch.object(
+                runner.Shell, "run", lambda *args, **kwargs: None
+            ), mock.patch.object(
+                runner.Result,
+                "from_fs",
+                staticmethod(
+                    lambda *args, **kwargs: SimpleNamespace(
+                        is_completed=lambda: True,
+                        is_running=lambda: False,
+                        is_error=lambda: False,
+                        dump=lambda: None,
+                    )
+                ),
+            ), mock.patch.object(
+                runner._Environment,
+                "get",
+                staticmethod(
+                    lambda: SimpleNamespace(
+                        WORKFLOW_CONFIG=None,
+                        dump=lambda: None,
+                    )
+                ),
+            ):
+                rc = runner.Runner()._run(workflow=workflow, job=job, no_docker=False)
+
+            self.assertEqual(rc, 0)
+            self.assertTrue(staged_package_dir.is_dir())
+            self.assertTrue(staged_praktika_package.is_dir())
+            self.assertIn(
+                f"--volume {staged_package_dir}:{staged_package_dir}",
+                captured["command"],
+            )
+            # Staged Praktika dir first (so `import praktika` resolves to the
+            # installed copy, not the repo's vendored ci/praktika), then the
+            # checkout root so the repo's own `ci.*` modules are importable.
+            self.assertIn(
+                f"-e PYTHONPATH={staged_package_dir}:{os.getcwd()}",
+                captured["command"],
+            )
+            # Never the bare relative "." form.
+            self.assertNotIn("PYTHONPATH=.", captured["command"])
+
     def test_exit_code_result_synthesizes_fail_on_nonzero_exit(self):
         """enable_exit_code_result=True + script that exits non-zero
         without dumping a Result -> synthesized FAIL Result with the
@@ -248,6 +381,10 @@ class TestRunner(unittest.TestCase):
             "workflow_name": "DummyExitCodeResultTest",
             "job_name": "exit_fail",
             "pr_number": 1,
+            # Required by _build_ci_environment: event_type is never defaulted,
+            # and a pull_request task must carry head_repo (internal PR -> == repo).
+            "event_type": "pull_request",
+            "head_repo": "test-org/test-repo",
             "base_ref": "main",
             "head_ref": "test-branch",
             "head_sha": "0" * 40,
@@ -284,6 +421,8 @@ class TestRunner(unittest.TestCase):
         task = {
             "workflow_name": "DummyRunnerTest",
             "job_name": Settings.CI_CONFIG_JOB_NAME,
+            # Non-PR (Config Workflow) run: push event, no head_repo needed.
+            "event_type": "push",
             "head_ref": "test-branch",
             "head_sha": "0" * 40,
             "repo": "test-org/test-repo",
