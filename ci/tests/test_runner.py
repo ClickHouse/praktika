@@ -157,6 +157,10 @@ class TestRunner(unittest.TestCase):
             "job_name": "dummy",
             # PR-event shape: pr_number + base_ref + sha.
             "pr_number": 1,
+            # Required by _build_ci_environment: event_type is never defaulted,
+            # and a pull_request task must carry head_repo (internal PR -> == repo).
+            "event_type": "pull_request",
+            "head_repo": "test-org/test-repo",
             "base_ref": "main",
             "head_ref": "test-branch",
             "head_sha": "0" * 40,
@@ -203,6 +207,10 @@ class TestRunner(unittest.TestCase):
             "workflow_name": "DummyRunnerTest",
             "job_name": "dummy",
             "pr_number": 1,
+            # Required by _build_ci_environment: event_type is never defaulted,
+            # and a pull_request task must carry head_repo (internal PR -> == repo).
+            "event_type": "pull_request",
+            "head_repo": "test-org/test-repo",
             "base_ref": "main",
             "head_ref": "test-branch",
             "head_sha": "0" * 40,
@@ -231,6 +239,10 @@ class TestRunner(unittest.TestCase):
             "workflow_name": "DummyExitCodeResultTest",
             "job_name": "exit_ok",
             "pr_number": 1,
+            # Required by _build_ci_environment: event_type is never defaulted,
+            # and a pull_request task must carry head_repo (internal PR -> == repo).
+            "event_type": "pull_request",
+            "head_repo": "test-org/test-repo",
             "base_ref": "main",
             "head_ref": "test-branch",
             "head_sha": "0" * 40,
@@ -255,6 +267,10 @@ class TestRunner(unittest.TestCase):
             "workflow_name": "DummyExitCodeResultTest",
             "job_name": "exit_ok",
             "pr_number": 1,
+            # Required by _build_ci_environment: event_type is never defaulted,
+            # and a pull_request task must carry head_repo (internal PR -> == repo).
+            "event_type": "pull_request",
+            "head_repo": "test-org/test-repo",
             "base_ref": "main",
             "head_ref": "test-branch",
             "head_sha": "0" * 40,
@@ -365,6 +381,10 @@ class TestRunner(unittest.TestCase):
             "workflow_name": "DummyExitCodeResultTest",
             "job_name": "exit_fail",
             "pr_number": 1,
+            # Required by _build_ci_environment: event_type is never defaulted,
+            # and a pull_request task must carry head_repo (internal PR -> == repo).
+            "event_type": "pull_request",
+            "head_repo": "test-org/test-repo",
             "base_ref": "main",
             "head_ref": "test-branch",
             "head_sha": "0" * 40,
@@ -401,6 +421,8 @@ class TestRunner(unittest.TestCase):
         task = {
             "workflow_name": "DummyRunnerTest",
             "job_name": Settings.CI_CONFIG_JOB_NAME,
+            # Non-PR (Config Workflow) run: push event, no head_repo needed.
+            "event_type": "push",
             "head_ref": "test-branch",
             "head_sha": "0" * 40,
             "repo": "test-org/test-repo",

@@ -57,6 +57,61 @@ def test_aws_ssm_parameter_lookup_uses_boto3(monkeypatch):
     ]
 
 
+def test_aws_ssm_parameter_lookup_defaults_to_settings_region(monkeypatch):
+    clients = {}
+
+    def fake_client(service_name, region_name=None):
+        client = _SSMClient()
+        clients[service_name] = (region_name, client)
+        return client
+
+    monkeypatch.setattr("boto3.client", fake_client)
+    monkeypatch.setattr("praktika.settings.Settings.AWS_REGION", "eu-west-3", raising=False)
+
+    value = Secret.Config(
+        name="cidb-connection",
+        type=Secret.Type.AWS_SSM_PARAMETER,
+    ).get_value()
+
+    region, client = clients["ssm"]
+    assert value == "single-value"
+    assert region == "eu-west-3"
+    assert client.calls == [
+        (
+            "get_parameter",
+            {"Name": "cidb-connection", "WithDecryption": True},
+        )
+    ]
+
+
+def test_aws_ssm_parameter_lookup_defaults_to_aws_env_region(monkeypatch):
+    clients = {}
+
+    def fake_client(service_name, region_name=None):
+        client = _SSMClient()
+        clients[service_name] = (region_name, client)
+        return client
+
+    monkeypatch.setattr("boto3.client", fake_client)
+    monkeypatch.setattr("praktika.settings.Settings.AWS_REGION", "", raising=False)
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "ap-south-1")
+
+    value = Secret.Config(
+        name="cidb-connection",
+        type=Secret.Type.AWS_SSM_PARAMETER,
+    ).get_value()
+
+    region, client = clients["ssm"]
+    assert value == "single-value"
+    assert region == "ap-south-1"
+    assert client.calls == [
+        (
+            "get_parameter",
+            {"Name": "cidb-connection", "WithDecryption": True},
+        )
+    ]
+
+
 def test_aws_ssm_parameters_preserve_requested_order(monkeypatch):
     client = _SSMClient()
     monkeypatch.setattr("boto3.client", lambda *args, **kwargs: client)
