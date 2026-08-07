@@ -6,7 +6,8 @@ def test_liveness_timeout_defaults():
 
     assert settings.HEARTBEAT_INTERVAL_S == 30
     assert settings.RUNNER_PICKUP_TIMEOUT_S == 3600
-    assert settings.HEARTBEAT_TIMEOUT_S == 300
+    assert settings.HEARTBEAT_STALL_S == 300
+    assert settings.HEARTBEAT_TIMEOUT_S == 900
 
 
 def test_liveness_timeouts_are_user_overridable(tmp_path):
@@ -16,6 +17,7 @@ def test_liveness_timeouts_are_user_overridable(tmp_path):
             [
                 "HEARTBEAT_INTERVAL_S = 11",
                 "RUNNER_PICKUP_TIMEOUT_S = 22",
+                "HEARTBEAT_STALL_S = 25",
                 "HEARTBEAT_TIMEOUT_S = 33",
             ]
         ),
@@ -27,4 +29,5 @@ def test_liveness_timeouts_are_user_overridable(tmp_path):
 
     assert settings.HEARTBEAT_INTERVAL_S == 11
     assert settings.RUNNER_PICKUP_TIMEOUT_S == 22
+    assert settings.HEARTBEAT_STALL_S == 25
     assert settings.HEARTBEAT_TIMEOUT_S == 33

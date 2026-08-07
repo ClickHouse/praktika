@@ -414,8 +414,13 @@ class RunnerPool:
             tags=runtime_tags,
             praktika_resource_tag="runner",
         )
+        # Held below HEARTBEAT_TIMEOUT_S (minus a re-run's startup-to-first-
+        # heartbeat cost) so a job whose runner died mid-job is redelivered and
+        # re-heartbeats before the orchestrator declares it dead. A live job
+        # stays hidden regardless of this base value because the runner's
+        # VisibilityHeartbeat re-arms it while the controller lives.
         self.queue = SQSQueue.Config(
             name=queue_name,
-            visibility_timeout=1800,
+            visibility_timeout=600,
             message_retention=86400,
         )

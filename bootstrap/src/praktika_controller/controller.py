@@ -260,7 +260,7 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
     }
 
 
-def handle_task(task, log, queue_name: str):
+def handle_task(task, log, queue_name: str, receive_count: int = 1):
     task_type = task.get("type", "unknown")
     job_name = task.get("job_name", "?")
     log.info("Processing task: %s job=%r", task_type, job_name)
@@ -295,7 +295,11 @@ def handle_task(task, log, queue_name: str):
             heartbeat_s3_bucket,
             heartbeat_s3_key,
             heartbeat_interval_s,
-            fields={"instance_id": INSTANCE_ID, "phase": "picked_up"},
+            fields={
+                "instance_id": INSTANCE_ID,
+                "phase": "picked_up",
+                "attempt": receive_count,
+            },
             log=log,
         )
         if heartbeat_s3_bucket and heartbeat_s3_key
@@ -457,7 +461,9 @@ def poll():
                         payload, log, queue_name, receive_count=receive_count
                     )
                 else:
-                    result = handle_task(payload, log, queue_name)
+                    result = handle_task(
+                        payload, log, queue_name, receive_count=receive_count
+                    )
         except json.JSONDecodeError:
             log.exception("ERROR processing message: malformed JSON")
             try:

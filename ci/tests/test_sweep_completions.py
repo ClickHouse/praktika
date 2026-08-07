@@ -119,6 +119,8 @@ def _make_state(
         js.finished_at = None
         js.filter_reason = None
         js.last_heartbeat_ts = None
+        js.attempt = 1
+        js.stale_flagged = False
         js.result = None
         js._workflow_state = state
         state.jobs[name] = js
