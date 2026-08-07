@@ -50,12 +50,27 @@ def _queue_prefix():
 #     mid-job after pickup.
 # Pickup grace covers queue/ASG delays before any runner has emitted a heartbeat.
 # Heartbeat timeout is intentionally longer than the heartbeat interval so
-# transient S3/read delays do not kill a live runner.
+# transient S3/read delays do not kill a live runner. It is also held above the
+# runner queue's visibility timeout plus a re-run's startup cost: a runner that
+# dies mid-job leaves its job_task to reappear once the visibility window
+# lapses, a fresh runner re-runs it against the same heartbeat/final S3 keys,
+# and the re-run's first heartbeat resets last_heartbeat_ts before this timeout
+# elapses. A dead runner is thus recovered by SQS redelivery, not by the
+# orchestrator; the job fails only when redelivery stops producing heartbeats
+# (genuinely stuck, or dead-lettered past the queue's maxReceiveCount). The
+# pickup path has no such recovery - an un-received job_task is still queued.
+#
+# The RUNNING path is two-stage. At HEARTBEAT_STALL_S a silent runner is flagged
+# unresponsive - the check says a retry is pending - but the job is not failed;
+# only at the longer HEARTBEAT_TIMEOUT_S is it declared dead. The stall stage
+# surfaces the loss quickly while the timeout budgets redelivery plus a cold
+# runner launch to re-heartbeat first.
 HEARTBEAT_INTERVAL_S = int(getattr(Settings, "HEARTBEAT_INTERVAL_S", 30) or 30)
 RUNNER_PICKUP_TIMEOUT_S = int(
     getattr(Settings, "RUNNER_PICKUP_TIMEOUT_S", 3600) or 3600
 )
-HEARTBEAT_TIMEOUT_S = int(getattr(Settings, "HEARTBEAT_TIMEOUT_S", 300) or 300)
+HEARTBEAT_STALL_S = int(getattr(Settings, "HEARTBEAT_STALL_S", 300) or 300)
+HEARTBEAT_TIMEOUT_S = int(getattr(Settings, "HEARTBEAT_TIMEOUT_S", 900) or 900)
 
 # wait() blocks for this long between S3 sweeps. Kept short so the
 # orchestrator reacts quickly to cancel signals and finished jobs (no
@@ -259,6 +274,14 @@ class JobState:
         self.last_heartbeat_ts = None
         self.runner_instance_id = None
         self.last_heartbeat_phase = None
+        # SQS ApproximateReceiveCount the runner stamps on each heartbeat. It
+        # bumps when a dead runner's job_task is redelivered and re-run; the
+        # sweep surfaces the bump as a [RETRY] line and in the check output.
+        self.attempt = 1
+        # Set once the heartbeat gap crosses HEARTBEAT_STALL_S (runner flagged
+        # unresponsive, awaiting redelivery); cleared when a fresh heartbeat
+        # arrives. Keeps the [STALE] line and check update one-shot per stall.
+        self.stale_flagged = False
         # Raw job Result (plain dict) as shipped in the completion payload.
         # Populated by sweep_completions; rendered into the check-run output
         # and retained for AI observation.
@@ -369,7 +392,8 @@ class JobState:
         )
         duration = self.finished_at - (self.started_at or self.finished_at)
         tag = "[DONE ]" if success else "[FAIL ]"
-        print(f"{tag} {self.name:70s} ({duration:.1f}s)")
+        attempt_note = f" (attempt {self.attempt})" if self.attempt > 1 else ""
+        print(f"{tag} {self.name:70s} ({duration:.1f}s){attempt_note}")
 
     def skip(self, reason="", output=None, details_url=None, post_check=False):
         """Transition PENDING -> SKIPPED.
@@ -791,25 +815,56 @@ class WorkflowState:
                 ts = float(hb.get("ts", 0))
                 if ts > 0:
                     js.last_heartbeat_ts = ts
+                    was_stale = js.stale_flagged
+                    js.stale_flagged = False
                     phase = str(hb.get("phase") or "").strip()
                     if phase:
                         js.last_heartbeat_phase = phase
                     instance_id = str(hb.get("instance_id") or "").strip()
                     if instance_id:
                         js.runner_instance_id = instance_id
+                    attempt = int(hb.get("attempt") or js.attempt)
+                    runner_note = f" on runner `{instance_id}`" if instance_id else ""
                     if js.status == JobStatus.QUEUED:
+                        js.attempt = attempt
                         js.status = JobStatus.RUNNING
-                        output = {
-                            "title": "RUNNING",
-                            "summary": "RUNNING: runner picked up the job.",
-                        }
-                        if js.runner_instance_id:
-                            output["summary"] = f"RUNNING on runner `{instance_id}`."
+                        summary = "RUNNING: runner picked up the job."
+                        if instance_id:
+                            summary = f"RUNNING on runner `{instance_id}`."
                         if phase:
-                            output["summary"] += f" Phase: `{phase}`."
-                        js._update_check(lambda c: c.set_in_progress(output=output))
+                            summary += f" Phase: `{phase}`."
+                        if attempt > 1:
+                            summary += f" Attempt {attempt}."
+                        output = {"title": "RUNNING", "summary": summary}
+                        js._update_check(lambda c, o=output: c.set_in_progress(output=o))
                         duration = now - (js.started_at or now)
                         print(f"[PICK ] {js.name:70s} ({duration:.1f}s)")
+                    elif attempt > js.attempt:
+                        # A redelivered job_task re-ran on a fresh runner after
+                        # the previous one was lost. Surface it rather than let
+                        # the check silently ride through the recovery.
+                        js.attempt = attempt
+                        summary = (
+                            f"RUNNING: re-running{runner_note} after the previous "
+                            f"runner was lost (attempt {attempt})."
+                        )
+                        output = {"title": "RUNNING", "summary": summary}
+                        js._update_check(lambda c, o=output: c.set_in_progress(output=o))
+                        duration = now - (js.started_at or now)
+                        print(
+                            f"[RETRY] {js.name:70s} ({duration:.1f}s) previous runner "
+                            f"lost; re-running{runner_note} (attempt {attempt})"
+                        )
+                    elif was_stale:
+                        # Same runner resumed after being flagged unresponsive -
+                        # clear the pending-retry note on the check.
+                        summary = f"RUNNING{runner_note}: heartbeat resumed."
+                        if phase:
+                            summary += f" Phase: `{phase}`."
+                        output = {"title": "RUNNING", "summary": summary}
+                        js._update_check(lambda c, o=output: c.set_in_progress(output=o))
+                        duration = now - (js.started_at or now)
+                        print(f"[ALIVE] {js.name:70s} ({duration:.1f}s) heartbeat resumed")
             except Exception as e:
                 if _is_missing_s3_key_error(e):
                     # Heartbeat file may not exist yet. If pickup grace
@@ -850,6 +905,23 @@ class WorkflowState:
                             f"timeout={HEARTBEAT_TIMEOUT_S}s)"
                         )
                     js.fail_dead(reason)
+                elif age_since_hb > HEARTBEAT_STALL_S and not js.stale_flagged:
+                    js.stale_flagged = True
+                    runner = js.runner_instance_id
+                    where = f"runner `{runner}`" if runner else f"pool `{runs_on}`"
+                    summary = (
+                        f"RUNNING: {where} unresponsive for {int(age_since_hb)}s; "
+                        f"awaiting automatic retry (fails at {HEARTBEAT_TIMEOUT_S}s)."
+                    )
+                    output = {
+                        "title": "RUNNING (runner unresponsive)",
+                        "summary": summary,
+                    }
+                    js._update_check(lambda c, o=output: c.set_in_progress(output=o))
+                    print(
+                        f"[STALE] {js.name:70s} ({int(age_since_hb)}s) {where} "
+                        f"unresponsive; awaiting retry"
+                    )
 
     # ---------------------------------------------------------- dispatch
 
@@ -1126,7 +1198,17 @@ class WorkflowState:
         for js in self.jobs.values():
             counts[js.status] += 1
         bits = [f"{counts[s]} {s.value}" for s in JobStatus if counts[s]]
-        return ", ".join(bits) or "no jobs"
+        summary = ", ".join(bits) or "no jobs"
+        retried = sum(1 for js in self.jobs.values() if js.attempt > 1)
+        unresponsive = sum(1 for js in self.jobs.values() if js.stale_flagged)
+        notes = []
+        if retried:
+            notes.append(f"{retried} retried")
+        if unresponsive:
+            notes.append(f"{unresponsive} runner-unresponsive")
+        if notes:
+            summary += " (" + ", ".join(notes) + ")"
+        return summary
 
     def md_status(self):
         """Markdown snapshot of the current run state for the top-level
@@ -1147,8 +1229,8 @@ class WorkflowState:
         lines.append("")
         lines.append(f"**Status:** {self.md_status_summary()}")
         lines.append("")
-        lines.append("| Job | Status | Duration |")
-        lines.append("|---|---|---|")
+        lines.append("| Job | Status | Duration | Notes |")
+        lines.append("|---|---|---|---|")
         now = time.time()
         for js in self.jobs.values():
             if js.started_at:
@@ -1156,5 +1238,11 @@ class WorkflowState:
                 dur = f"{int(end - js.started_at)}s"
             else:
                 dur = "—"
-            lines.append(f"| `{js.name}` | {js.status.value} | {dur} |")
+            note_bits = []
+            if js.attempt > 1:
+                note_bits.append(f"attempt {js.attempt}")
+            if js.stale_flagged:
+                note_bits.append("runner unresponsive")
+            note = ", ".join(note_bits) or "—"
+            lines.append(f"| `{js.name}` | {js.status.value} | {dur} | {note} |")
         return "\n".join(lines)

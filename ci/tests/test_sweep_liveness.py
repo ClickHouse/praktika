@@ -23,6 +23,7 @@ import pytest
 
 from praktika.orchestrator import state as state_mod
 from praktika.orchestrator.state import (
+    HEARTBEAT_STALL_S,
     HEARTBEAT_TIMEOUT_S,
     JobState,
     JobStatus,
@@ -83,6 +84,8 @@ def _make_queued_state(job_names, started_at_offsets, fake_s3, run_id="run42"):
         js.last_heartbeat_ts = None
         js.last_heartbeat_phase = None
         js.runner_instance_id = None
+        js.attempt = 1
+        js.stale_flagged = False
         js._workflow_state = state
         state.jobs[name] = js
     return state
@@ -255,6 +258,89 @@ def test_heartbeat_sets_check_in_progress_with_runner_id():
             "details_url": None,
         }
     ]
+
+
+def test_attempt_bump_surfaces_retry(capsys):
+    """A redelivered re-run (higher SQS receive count) is surfaced, not silent."""
+    s3 = _FakeS3()
+    state = _make_queued_state(["A"], {"A": 5}, s3)
+    check = _FakeCheck()
+    state.jobs["A"].check = check
+
+    _put_heartbeat(
+        s3, "run42", "A", time.time() - 1, instance_id="i-runner-1", attempt=1
+    )
+    state.sweep_liveness()
+    assert state.jobs["A"].status == JobStatus.RUNNING
+    assert state.jobs["A"].attempt == 1
+
+    _put_heartbeat(
+        s3, "run42", "A", time.time(), instance_id="i-runner-2", attempt=2
+    )
+    state.sweep_liveness()
+
+    assert state.jobs["A"].attempt == 2
+    assert "[RETRY]" in capsys.readouterr().out
+    assert check.in_progress[-1] == {
+        "output": {
+            "title": "RUNNING",
+            "summary": (
+                "RUNNING: re-running on runner `i-runner-2` after the previous "
+                "runner was lost (attempt 2)."
+            ),
+        },
+        "details_url": None,
+    }
+
+
+def test_stall_flags_unresponsive_without_failing_then_recovers(capsys):
+    """Between STALL and TIMEOUT the job is flagged, not failed; a fresh
+    heartbeat clears it."""
+    s3 = _FakeS3()
+    state = _make_queued_state(["A"], {"A": 5}, s3)
+    check = _FakeCheck()
+    state.jobs["A"].check = check
+
+    _put_heartbeat(s3, "run42", "A", time.time() - 1, instance_id="i-1", attempt=1)
+    state.sweep_liveness()
+    assert state.jobs["A"].status == JobStatus.RUNNING
+
+    _put_heartbeat(
+        s3, "run42", "A", time.time() - (HEARTBEAT_STALL_S + 30), instance_id="i-1"
+    )
+    state.sweep_liveness()
+    assert state.jobs["A"].status == JobStatus.RUNNING
+    assert state.jobs["A"].stale_flagged is True
+    out = capsys.readouterr().out
+    assert "[STALE]" in out
+    assert check.in_progress[-1]["output"]["title"] == "RUNNING (runner unresponsive)"
+
+    _put_heartbeat(s3, "run42", "A", time.time(), instance_id="i-1", attempt=1)
+    state.sweep_liveness()
+    assert state.jobs["A"].status == JobStatus.RUNNING
+    assert state.jobs["A"].stale_flagged is False
+    assert "[ALIVE]" in capsys.readouterr().out
+
+
+def test_top_level_report_surfaces_retry_and_stall():
+    """The workflow-level summary and table flag retried and unresponsive jobs."""
+    s3 = _FakeS3()
+    state = _make_queued_state(["A", "B"], {"A": 20, "B": 20}, s3)
+    state._event = {"type": "push", "action": ""}
+    state._head_sha = "deadbeefcafe"
+    state.jobs["A"].status = JobStatus.RUNNING
+    state.jobs["A"].attempt = 2
+    state.jobs["B"].status = JobStatus.RUNNING
+    state.jobs["B"].stale_flagged = True
+
+    summary = state.md_status_summary()
+    assert "1 retried" in summary
+    assert "1 runner-unresponsive" in summary
+
+    table = state.md_status()
+    assert "| Job | Status | Duration | Notes |" in table
+    assert "attempt 2" in table
+    assert "runner unresponsive" in table
 
 
 def test_stale_heartbeat_marks_dead():

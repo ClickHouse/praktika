@@ -8,7 +8,7 @@ from praktika import Artifact, Docker, Job, Secret, Workflow
 from ci.settings.settings import RunnerLabels
 from praktika.settings import Settings
 
-_HEAD_PRAKTIKA_VERSION = "0.1.8"
+_HEAD_PRAKTIKA_VERSION = "0.1.9"
 
 artifact = Artifact.Config(name="greet", type=Artifact.Type.S3, path="./artifact.txt")
 
@@ -29,7 +29,10 @@ workflow = Workflow.Config(
                 "python3 -c \"import importlib.metadata as m; "
                 f"praktika=m.version('praktika'); "
                 "print('praktika=', praktika); "
-                f"assert praktika == '{_HEAD_PRAKTIKA_VERSION}', praktika\""
+                f"assert praktika == '{_HEAD_PRAKTIKA_VERSION}', praktika\"; "
+                # TEMP: hold the job open so a runner can be terminated mid-job
+                # to exercise dead-runner redelivery/recovery. Remove before merge.
+                "echo 'sleeping 600s for dead-runner test'; sleep 600"
             ),
         ),
         Job.Config(

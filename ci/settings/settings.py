@@ -30,8 +30,13 @@ USE_CUSTOM_GH_AUTH = True
 HEARTBEAT_INTERVAL_S = 30
 # Maximum time a dispatched job may stay QUEUED before a runner heartbeat.
 RUNNER_PICKUP_TIMEOUT_S = 3600
-# Maximum time a RUNNING job may go without a fresh heartbeat.
-HEARTBEAT_TIMEOUT_S = 300
+# RUNNING liveness is two-stage. HEARTBEAT_STALL_S: flag the runner
+# unresponsive and show a pending retry on the check, without failing it.
+HEARTBEAT_STALL_S = 300
+# HEARTBEAT_TIMEOUT_S: hard-fail deadline, held well above the runner queue
+# visibility timeout so a job whose runner died mid-job is redelivered and
+# re-heartbeats first; the gap budgets redelivery plus a cold ASG launch.
+HEARTBEAT_TIMEOUT_S = 900
 
 PRAKTIKA_BASE_VENV = "praktika-runtime"
 GH_AUTH_LAMBDA_NAME = "praktika-gh-token"
