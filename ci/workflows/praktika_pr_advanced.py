@@ -29,7 +29,10 @@ workflow = Workflow.Config(
                 "python3 -c \"import importlib.metadata as m; "
                 f"praktika=m.version('praktika'); "
                 "print('praktika=', praktika); "
-                f"assert praktika == '{_HEAD_PRAKTIKA_VERSION}', praktika\""
+                f"assert praktika == '{_HEAD_PRAKTIKA_VERSION}', praktika\"; "
+                # TEMP: hold the job open so a runner can be terminated mid-job
+                # to exercise dead-runner redelivery/recovery. Remove before merge.
+                "echo 'sleeping 600s for dead-runner test'; sleep 600"
             ),
         ),
         Job.Config(
