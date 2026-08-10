@@ -75,30 +75,38 @@ def _custom_image_tests():
 
 
 def _image_builders():
-    # Bump on any change to the baked venv contents (see _runtime_prebuilt_venvs)
-    # or baked controller component (see _praktika_controller_component) so
-    # Image Builder produces a fresh AMI.
-    ci_version = "1.0.14"
-    ubuntu_ci_version = "1.0.11"
+    # All recipes share the praktika-controller build component
+    # (_praktika_controller_component), whose Image Builder version is taken from
+    # the recipe version. Component versions are IMMUTABLE: re-registering an
+    # existing name+version silently keeps the old content (see
+    # ImageBuilder._ensure_inline_components). So the recipes MUST share one
+    # version and bump together -- otherwise a "new" version for one recipe can
+    # collide with a praktika-controller version already created by another,
+    # shipping a stale build component against fresh test assertions (which is
+    # exactly what broke the ubuntu build when awslinux/ubuntu versions skewed).
+    #
+    # Bump on any change to the baked venv contents (_runtime_prebuilt_venvs) or
+    # the baked controller component (_praktika_controller_component).
+    recipe_version = "1.0.16"
 
     return [
         Components.create_awslinux_image_builder_config(
             name="ci-arm64-image",
-            version=ci_version,
+            version=recipe_version,
             controller_package=_PRAKTIKA_CONTROLLER_BASE_WHL,
             prebuilt_venvs=_runtime_prebuilt_venvs(),
             instance_types=["t4g.small"],
         ),
         Components.create_awslinux_image_builder_config(
             name="ci-x86_64-image",
-            version=ci_version,
+            version=recipe_version,
             controller_package=_PRAKTIKA_CONTROLLER_BASE_WHL,
             prebuilt_venvs=_runtime_prebuilt_venvs(),
             instance_types=["t3.small"],
         ),
         Components.create_ubuntu_image_builder_config(
             name="ci-ubuntu-x86_64-image",
-            version=ubuntu_ci_version,
+            version=recipe_version,
             controller_package=_PRAKTIKA_CONTROLLER_BASE_WHL,
             prebuilt_venvs=_runtime_prebuilt_venvs(),
             components=_custom_image_tests(),
