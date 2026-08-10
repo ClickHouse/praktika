@@ -575,6 +575,53 @@ def test_runner_pool_can_opt_in_to_ssm_debug_permissions():
     ]
 
 
+def test_runner_pool_system_logs_tag_is_off_by_default():
+    pool = RunnerPool(
+        name="runner",
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        scaling=RunnerPool.Scaling.Auto,
+        size=0,
+        max_size=1,
+    )
+    assert "praktika_system_logs" not in pool.launch_template.tags
+    assert "praktika_system_logs" not in pool.autoscaling_group.tags
+
+
+def test_runner_pool_ext_system_logs_sets_activation_tag():
+    pool = RunnerPool(
+        name="runner",
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        scaling=RunnerPool.Scaling.Auto,
+        size=0,
+        max_size=1,
+        ext={"system_logs": True},
+    )
+    assert pool.launch_template.tags["praktika_system_logs"] == "1"
+    assert pool.autoscaling_group.tags["praktika_system_logs"] == "1"
+
+
+def test_orchestrator_pool_ext_system_logs_sets_activation_tag():
+    off = OrchestratorPool(
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        size=1,
+        max_size=1,
+    )
+    assert "praktika_system_logs" not in off.launch_template.tags
+
+    on = OrchestratorPool(
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        size=1,
+        max_size=1,
+        ext={"system_logs": True},
+    )
+    assert on.launch_template.tags["praktika_system_logs"] == "1"
+    assert on.autoscaling_group.tags["praktika_system_logs"] == "1"
+
+
 def test_runner_pool_with_image_builder_keeps_runner_role_without_ssm_agent_permissions():
     pool = RunnerPool(
         name="runner",
@@ -1342,6 +1389,48 @@ def test_controller_image_builders_are_declared():
             '"log_group_name": "/${PRAKTIKA_PROJECT_SLUG}/praktika-controller"'
             in cloudwatch_configure
         )
+        # System-log streamer: kernel/systemd/OOM evidence shipped to a
+        # separate stream so an OOM-killed controller leaves a trace.
+        assert '"file_path": "/var/log/praktika-system.log"' in cloudwatch_configure
+        assert (
+            '"log_group_name": "/${PRAKTIKA_PROJECT_SLUG}/praktika-system"'
+            in cloudwatch_configure
+        )
+        system_log_stream = _decode_embedded_file(
+            next(
+                cmd
+                for cmd in agent_component["commands"]
+                if "/usr/local/bin/praktika-system-log-stream" in cmd
+                and "printf" in cmd
+            )
+        )
+        assert "journalctl" in system_log_stream
+        assert "_TRANSPORT=kernel" in system_log_stream
+        assert "systemd-oomd" in system_log_stream
+        system_logs_unit = _decode_embedded_file(
+            next(
+                cmd
+                for cmd in agent_component["commands"]
+                if "/etc/systemd/system/praktika-system-logs.service" in cmd
+                and "printf" in cmd
+            )
+        )
+        assert (
+            "ExecStart=/usr/local/bin/praktika-system-log-stream" in system_logs_unit
+        )
+        assert (
+            "StandardOutput=append:/var/log/praktika-system.log" in system_logs_unit
+        )
+        # Baked into every image but NOT enabled at build time; activation is
+        # per-pool at boot via the praktika_system_logs instance tag, handled by
+        # the cloudwatch configure script.
+        assert not any(
+            "systemctl enable" in cmd and "praktika-system-logs" in cmd
+            for cmd in agent_component["commands"]
+        )
+        assert "praktika_system_logs" in cloudwatch_configure
+        assert "systemctl enable --now praktika-system-logs" in cloudwatch_configure
+        assert "systemctl disable --now praktika-system-logs" in cloudwatch_configure
 
 
 def test_ubuntu_runner_pool_uses_ubuntu_image_builder():
