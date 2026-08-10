@@ -76,9 +76,10 @@ def _custom_image_tests():
 
 def _image_builders():
     # Bump on any change to the baked venv contents (see _runtime_prebuilt_venvs)
-    # so Image Builder produces a fresh AMI.
-    ci_version = "1.0.13"
-    ubuntu_ci_version = "1.0.10"
+    # or baked controller component (see _praktika_controller_component) so
+    # Image Builder produces a fresh AMI.
+    ci_version = "1.0.14"
+    ubuntu_ci_version = "1.0.11"
 
     return [
         Components.create_awslinux_image_builder_config(
@@ -258,6 +259,10 @@ _orchestrator_pool = Components.OrchestratorPool(
             #"**/*"
             "praktika/*"
         ],
+        # Ship kernel/OOM/systemd-kill evidence to /praktika/praktika-system so
+        # a silently killed controller (e.g. OOM) leaves a trace. See
+        # docs/logging.md.
+        "system_logs": True,
     },
     user_data="\n".join(
         [
@@ -287,7 +292,11 @@ _orchestrator_pool_base = Components.OrchestratorPool(
     max_size=10,
     capacity_reserve=2,
     image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
-    ext={"iam_statements": [_ORCHESTRATOR_BEDROCK_IAM_STATEMENT]},
+    ext={
+        "iam_statements": [_ORCHESTRATOR_BEDROCK_IAM_STATEMENT],
+        # See docs/logging.md; captures OOM/kill traces for the controller.
+        "system_logs": True,
+    },
 )
 
 _cidb_cluster = Components.CIDBCluster(

@@ -165,6 +165,11 @@ class RunnerPool:
     needed to register, receive commands/sessions, and reply. It still cannot
     issue SSM commands or start sessions against any runner.
 
+    `ext["system_logs"]` (truthy) tags instances so the baked
+    praktika-system-logs streamer runs at boot, shipping kernel/OOM/systemd-kill
+    evidence to the `/{slug}/praktika-system` CloudWatch log group. Off by
+    default; see docs/logging.md.
+
     All three AWS components are created at construction time and registered
     into CloudInfrastructure.Config automatically via its runner_pools list.
 
@@ -384,6 +389,10 @@ class RunnerPool:
             "praktika_scaling": self.scaling,
             "praktika_capacity_reserve": str(self.capacity_reserve),
         }
+        if self.ext.get("system_logs"):
+            # Activates the baked praktika-system-logs streamer at boot so
+            # kernel/OOM/systemd-kill evidence is shipped to CloudWatch.
+            runtime_tags["praktika_system_logs"] = "1"
         self.launch_template = LaunchTemplate.Config(
             name=launch_template_name,
             image_id=self.ami_id,
