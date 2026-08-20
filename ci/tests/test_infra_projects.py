@@ -34,6 +34,7 @@ from praktika.infrastructure.native.github_token_minter import GitHubTokenMinter
 from praktika.infrastructure.native.orchestrator_pool import OrchestratorPool
 from praktika.infrastructure.native.pool_autoscaler import PoolAutoscaler
 from praktika.infrastructure.native.runner_pool import RunnerPool
+from praktika.infrastructure.native.s3_proxy import S3Proxy
 from praktika.infrastructure.secret_parameter import SecretParameter
 from praktika.infrastructure.sqs_queue import SQSQueue
 from praktika.validator import Validator
@@ -1876,3 +1877,116 @@ def test_native_configs_accept_ext_maps():
     assert cidb.ext == {"owner": "ci"}
     assert cloud.ext == {"owner": "ci"}
     assert '"ext"' not in autoscaler.lambda_config.environments["POOLS_CONFIG_JSON"]
+
+
+def _s3_proxy_cloud(**proxy_kwargs):
+    return CloudInfrastructure.Config(
+        name="sandbox",
+        image_builders=[],
+        vpcs=[VPC.Config(subnets=[VPC.Subnet(availability_zone="eu-north-1a")])],
+        storages=[
+            Storage.Config(name="artifacts", retention_days=30, public=False),
+            Storage.Config(name="builds", retention_days=30, public=False),
+        ],
+        s3_proxy=S3Proxy(**proxy_kwargs),
+    )
+
+
+def test_s3_proxy_resources_are_project_namespaced_and_registered():
+    cloud = _s3_proxy_cloud()
+    proxy = cloud.s3_proxy
+
+    assert proxy.name == "sandbox-s3-proxy"
+    assert proxy.ec2_role.name == "sandbox-s3-proxy-role"
+    assert proxy.instance_profile.name == "sandbox-s3-proxy-profile"
+    assert proxy.instance_profile.role_name == "sandbox-s3-proxy-role"
+    assert proxy.launch_template.name == "sandbox-s3-proxy-lt"
+    assert proxy.launch_template.iam_instance_profile_name == "sandbox-s3-proxy-profile"
+    assert proxy.autoscaling_group.name == "sandbox-s3-proxy"
+    assert proxy.autoscaling_group.launch_template_name == "sandbox-s3-proxy-lt"
+    # Self-healing single instance.
+    assert (
+        proxy.autoscaling_group.min_size,
+        proxy.autoscaling_group.max_size,
+        proxy.autoscaling_group.desired_capacity,
+    ) == (1, 1, 1)
+    # VPC + default security group defaults are applied and namespaced.
+    assert proxy.launch_template.vpc_name == "sandbox-vpc"
+    assert proxy.launch_template.security_group_names == ["sandbox-vpc-sg"]
+
+    # Registered into the standard deploy passes.
+    assert any(r.name == proxy.ec2_role.name for r in cloud.iam_roles)
+    assert any(p.name == proxy.instance_profile.name for p in cloud.iam_instance_profiles)
+    assert any(lt.name == proxy.launch_template.name for lt in cloud.launch_templates)
+    assert any(
+        asg.name == proxy.autoscaling_group.name for asg in cloud.autoscaling_groups
+    )
+
+
+def test_s3_proxy_serves_all_project_buckets_by_default():
+    cloud = _s3_proxy_cloud()
+    proxy = cloud.s3_proxy
+
+    assert proxy.proxied_buckets == ["sandbox-artifacts", "sandbox-builds"]
+
+    resources = proxy.ec2_role.inline_policies["S3ProxyAccess"]["Statement"][1][
+        "Resource"
+    ]
+    assert set(resources) == {
+        "arn:aws:s3:::sandbox-artifacts",
+        "arn:aws:s3:::sandbox-artifacts/*",
+        "arn:aws:s3:::sandbox-builds",
+        "arn:aws:s3:::sandbox-builds/*",
+    }
+
+    user_data = proxy.launch_template.user_data
+    assert (
+        "PRAKTIKA_S3_PROXY_BUCKETS=sandbox-artifacts sandbox-builds" in user_data
+    )
+    # No placeholders survive rendering.
+    for placeholder in ("__TS_", "__PROXIED_BUCKETS__", "__SIGNER_PY_B64__"):
+        assert placeholder not in user_data
+
+
+def test_s3_proxy_default_hostname_tracks_project_namespace():
+    cloud = _s3_proxy_cloud()
+    assert cloud.s3_proxy.hostname == "sandbox-s3-proxy"
+    assert "--hostname=\"sandbox-s3-proxy\"" in cloud.s3_proxy.launch_template.user_data
+
+
+def test_s3_proxy_explicit_hostname_is_preserved():
+    cloud = _s3_proxy_cloud(hostname="my-ci-reports")
+    assert cloud.s3_proxy.hostname == "my-ci-reports"
+    assert (
+        "--hostname=\"my-ci-reports\"" in cloud.s3_proxy.launch_template.user_data
+    )
+
+
+def test_s3_proxy_role_grants_only_read_and_tailscale_ssm():
+    cloud = _s3_proxy_cloud(
+        tailscale_oauth_client_id_ssm="/praktika/tailscale/oauth-client-id",
+        tailscale_oauth_client_secret_ssm="/praktika/tailscale/oauth-client-secret",
+    )
+    statements = cloud.s3_proxy.ec2_role.inline_policies["S3ProxyAccess"]["Statement"]
+
+    ssm_stmt = next(s for s in statements if s["Sid"] == "ReadTailscaleOAuthClient")
+    assert set(ssm_stmt["Action"]) == {"ssm:GetParameter", "ssm:GetParameters"}
+    assert ssm_stmt["Resource"] == [
+        "arn:aws:ssm:*:*:parameter/praktika/tailscale/oauth-client-id",
+        "arn:aws:ssm:*:*:parameter/praktika/tailscale/oauth-client-secret",
+    ]
+
+    s3_stmt = next(s for s in statements if s["Sid"] == "ReadProxiedBuckets")
+    # Read-only: no PutObject / DeleteObject.
+    assert not any(
+        action.startswith(("s3:Put", "s3:Delete")) for action in s3_stmt["Action"]
+    )
+
+
+def test_s3_proxy_explicit_buckets_are_not_overridden_by_storages():
+    cloud = _s3_proxy_cloud(proxied_buckets=["external-reports-bucket"])
+    assert cloud.s3_proxy.proxied_buckets == ["external-reports-bucket"]
+    assert (
+        "PRAKTIKA_S3_PROXY_BUCKETS=external-reports-bucket"
+        in cloud.s3_proxy.launch_template.user_data
+    )

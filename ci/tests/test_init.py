@@ -221,7 +221,8 @@ def test_prompt_aws_account_id_retries_with_available_account_ids(monkeypatch, c
 
 
 def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeypatch):
-    confirm_answers = iter([True, False, False])
+    # confirm order: create infrastructure, is_oss, enable_ai, enable_s3_proxy
+    confirm_answers = iter([True, False, False, False])
     string_answers = iter(
         [
             "main",
@@ -335,7 +336,7 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
         "amd-medium": 100,
     }
     assert {tuple(pool.allowed_s3_prefixes) for pool in cloud.runner_pools} == {
-        (f"{project_slug}-artifacts",)
+        (f"{project_slug}-artifacts-us-east-1",)
     }
     assert {tuple(pool.allowed_ssm_parameters) for pool in cloud.runner_pools} == {()}
     assert {tuple(pool.allowed_secrets) for pool in cloud.runner_pools} == {()}
@@ -444,6 +445,88 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
         "arm-medium": "arm64",
         "amd-medium": "x86_64",
     }
+    # The S3 report proxy is opt-in and was declined here.
+    assert cloud.s3_proxy is None
+
+
+def _load_cloud_config_from_scaffold(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(tmp_path))
+    module_names = ("ci.settings.settings", "ci.settings")
+    missing_module = object()
+    previous_modules = {
+        module_name: sys.modules.get(module_name, missing_module)
+        for module_name in module_names
+    }
+    for module_name in module_names:
+        sys.modules.pop(module_name, None)
+    monkeypatch.setattr(
+        Settings,
+        "CLOUD_INFRASTRUCTURE_CONFIG_PATH",
+        str(tmp_path / "ci/infrastructure/projects.py"),
+    )
+    try:
+        return _get_infra_config()
+    finally:
+        for module_name in module_names:
+            sys.modules.pop(module_name, None)
+        for module_name, previous_module in previous_modules.items():
+            if previous_module is not missing_module:
+                sys.modules[module_name] = previous_module
+
+
+def test_run_init_interactive_scaffolds_s3_proxy_for_private_project(
+    tmp_path, monkeypatch
+):
+    # confirm order: create infrastructure, is_oss, enable_ai, enable_s3_proxy
+    confirm_answers = iter([True, False, False, True])
+    string_answers = iter(["main", "eu-north-1", "eu-north-1a", "awslinux"])
+
+    monkeypatch.setattr(
+        UserPrompt, "confirm", staticmethod(lambda _: next(confirm_answers))
+    )
+    monkeypatch.setattr(
+        UserPrompt,
+        "get_string",
+        staticmethod(lambda *args, **kwargs: next(string_answers)),
+    )
+    monkeypatch.setattr(
+        "praktika.project_init._prompt_aws_profile",
+        lambda default="default": "default",
+    )
+    monkeypatch.setattr(
+        "praktika.project_init._prompt_aws_account_id",
+        lambda profile="": "123456789012",
+    )
+
+    run_init_interactive(tmp_path)
+
+    cloud = _load_cloud_config_from_scaffold(tmp_path, monkeypatch)
+    project_slug = tmp_path.name.lower().replace("_", "-")
+
+    assert cloud.s3_proxy is not None
+    proxy = cloud.s3_proxy
+    assert proxy.hostname == f"{project_slug}-ci-reports"
+    # Defaults to serving every project Storage bucket.
+    assert proxy.proxied_buckets == [f"{project_slug}-artifacts-eu-north-1"]
+    assert proxy.autoscaling_group.name == f"{project_slug}-s3-proxy"
+    assert proxy.launch_template.vpc_name == f"{project_slug}-vpc"
+    assert any(
+        lt.name == f"{project_slug}-s3-proxy-lt" for lt in cloud.launch_templates
+    )
+    assert any(
+        asg.name == f"{project_slug}-s3-proxy" for asg in cloud.autoscaling_groups
+    )
+
+    # Report links are rewritten to the Tailscale proxy endpoint.
+    settings_ns = {}
+    exec(
+        (tmp_path / "ci/settings/settings.py").read_text(encoding="utf8"),
+        settings_ns,
+    )
+    report_bucket = settings_ns["S3_REPORT_BUCKET"]
+    endpoint = settings_ns["S3_BUCKET_TO_HTTP_ENDPOINT"][report_bucket]
+    assert endpoint == f"{project_slug}-ci-reports.{settings_ns['TAILSCALE_TAILNET']}/{report_bucket}"
+    assert "s3.amazonaws.com" not in endpoint
 
 
 def test_run_init_interactive_supports_oss_storage_and_ubuntu_images(
