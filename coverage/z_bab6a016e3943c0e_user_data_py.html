@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-    <title>Coverage for praktika/infrastructure/native/user_data.py: 88.24%</title>
+    <title>Coverage for praktika/infrastructure/native/user_data.py: 87.10%</title>
     <link rel="icon" sizes="32x32" href="favicon_32_cb_c827f16f.png">
     <link rel="stylesheet" href="style_cb_4667309f.css" type="text/css">
     <script src="coverage_html_cb_dd2e7eb5.js" defer></script>
@@ -12,7 +12,7 @@
     <div class="content">
         <h1>
             <span class="text">Coverage for </span><b>praktika<span class="sep">/</span>infrastructure<span class="sep">/</span>native<span class="sep">/</span>user_data.py</b>:
-            <span class="pc_cov">88.24%</span>
+            <span class="pc_cov">87.10%</span>
         </h1>
         <aside id="help_panel_wrapper">
             <input id="help_panel_state" type="checkbox">
@@ -55,19 +55,19 @@
             </div>
         </aside>
         <h2>
-            <span class="text">13 statements &nbsp;</span>
-            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">12<span class="text"> run</span></button>
-            <button type="button" class="mis show_mis button_toggle_mis" value="mis" data-shortcut="m" title="Toggle lines missing">1<span class="text"> missing</span></button>
+            <span class="text">23 statements &nbsp;</span>
+            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">21<span class="text"> run</span></button>
+            <button type="button" class="mis show_mis button_toggle_mis" value="mis" data-shortcut="m" title="Toggle lines missing">2<span class="text"> missing</span></button>
             <button type="button" class="exc show_exc button_toggle_exc" value="exc" data-shortcut="x" title="Toggle lines excluded">0<span class="text"> excluded</span></button>
-            <button type="button" class="par run show_par button_toggle_par" value="par" data-shortcut="p" title="Toggle lines partially run">1<span class="text"> partial</span></button>
+            <button type="button" class="par run show_par button_toggle_par" value="par" data-shortcut="p" title="Toggle lines partially run">2<span class="text"> partial</span></button>
         </h2>
         <p class="text">
-            <a id="prevFileLink" class="nav" href="z_bab6a016e3943c0e_runner_pool_py.html">&#xab; prev</a> &nbsp; &nbsp;
+            <a id="prevFileLink" class="nav" href="z_bab6a016e3943c0e_s3_proxy_signer_py.html">&#xab; prev</a> &nbsp; &nbsp;
             <a id="indexLink" class="nav" href="index.html">&Hat; index</a> &nbsp; &nbsp;
             <a id="nextFileLink" class="nav" href="z_07c03e7a4c866698_report_page_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.15.4">coverage.py v7.15.4</a>,
-            created at 2026-08-10 15:57 +0000
+            created at 2026-08-20 17:29 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -118,16 +118,56 @@
     <p class="run run2"><span class="n"><a id="t34" href="#t34">34</a></span><span class="t">        <span class="op">.</span><span class="nam">replace</span><span class="op">(</span><span class="str">&quot;__SCHEMA_SQL_B64__&quot;</span><span class="op">,</span> <span class="nam">schema_b64</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t35" href="#t35">35</a></span><span class="t">        <span class="op">.</span><span class="nam">replace</span><span class="op">(</span><span class="str">&quot;__REPLICA_NAME__&quot;</span><span class="op">,</span> <span class="nam">replica_name</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="run run2"><span class="n"><a id="t36" href="#t36">36</a></span><span class="t">    <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t37" href="#t37">37</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t38" href="#t38">38</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t39" href="#t39">39</a></span><span class="t"><span class="key">def</span> <span class="nam">s3_proxy_user_data</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t40" href="#t40">40</a></span><span class="t">    <span class="nam">hostname</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t41" href="#t41">41</a></span><span class="t">    <span class="nam">tailscale_tag</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t42" href="#t42">42</a></span><span class="t">    <span class="nam">oauth_client_id_ssm</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t43" href="#t43">43</a></span><span class="t">    <span class="nam">oauth_client_secret_ssm</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t44" href="#t44">44</a></span><span class="t">    <span class="nam">proxied_buckets</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t45" href="#t45">45</a></span><span class="t"><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t46" href="#t46">46</a></span><span class="t">    <span class="str">&quot;&quot;&quot;Render the S3 report proxy bootstrap script.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t47" href="#t47">47</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t48" href="#t48">48</a></span><span class="t"><span class="str">    Inlines the SigV4 signer (base64-encoded) so the instance is self-contained</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t49" href="#t49">49</a></span><span class="t"><span class="str">    on first boot. The proxied bucket allowlist is passed to the signer via an</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t50" href="#t50">50</a></span><span class="t"><span class="str">    environment variable rendered into its systemd unit.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t51" href="#t51">51</a></span><span class="t"><span class="str">    &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t52" href="#t52">52</a></span><span class="t">    <span class="key">import</span> <span class="nam">base64</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t53" href="#t53">53</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t54" href="#t54">54</a></span><span class="t">    <span class="nam">signer_py</span> <span class="op">=</span> <span class="op">(</span><span class="nam">_HERE</span> <span class="op">/</span> <span class="str">&quot;s3_proxy_signer.py&quot;</span><span class="op">)</span><span class="op">.</span><span class="nam">read_text</span><span class="op">(</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t55" href="#t55">55</a></span><span class="t">    <span class="nam">template</span> <span class="op">=</span> <span class="op">(</span><span class="nam">_HERE</span> <span class="op">/</span> <span class="str">&quot;s3_proxy_user_data.sh&quot;</span><span class="op">)</span><span class="op">.</span><span class="nam">read_text</span><span class="op">(</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t56" href="#t56">56</a></span><span class="t">    <span class="nam">placeholders</span> <span class="op">=</span> <span class="op">(</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t57" href="#t57">57</a></span><span class="t">        <span class="str">&quot;__TS_OAUTH_CLIENT_ID_SSM__&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t58" href="#t58">58</a></span><span class="t">        <span class="str">&quot;__TS_OAUTH_CLIENT_SECRET_SSM__&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t59" href="#t59">59</a></span><span class="t">        <span class="str">&quot;__TS_TAG__&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t60" href="#t60">60</a></span><span class="t">        <span class="str">&quot;__TS_HOSTNAME__&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t61" href="#t61">61</a></span><span class="t">        <span class="str">&quot;__PROXIED_BUCKETS__&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t62" href="#t62">62</a></span><span class="t">        <span class="str">&quot;__SIGNER_PY_B64__&quot;</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t63" href="#t63">63</a></span><span class="t">    <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t64" href="#t64">64</a></span><span class="t">    <span class="key">for</span> <span class="nam">ph</span> <span class="key">in</span> <span class="nam">placeholders</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="par run show_par"><span class="n"><a id="t65" href="#t65">65</a></span><span class="t">        <span class="key">if</span> <span class="nam">ph</span> <span class="key">not</span> <span class="key">in</span> <span class="nam">template</span><span class="op">:</span>&nbsp;</span><span class="r"><span class="annotate short">65&#x202F;&#x219B;&#x202F;66</span><span class="annotate long">line 65 didn't jump to line 66 because the condition on line 65 was never true</span></span></p>
+    <p class="mis show_mis"><span class="n"><a id="t66" href="#t66">66</a></span><span class="t">            <span class="key">raise</span> <span class="nam">RuntimeError</span><span class="op">(</span><span class="fst">f&quot;</span><span class="fst">s3_proxy_user_data.sh is missing </span><span class="op">{</span><span class="nam">ph</span><span class="op">}</span><span class="fst">&quot;</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t67" href="#t67">67</a></span><span class="t">    <span class="nam">signer_b64</span> <span class="op">=</span> <span class="nam">base64</span><span class="op">.</span><span class="nam">b64encode</span><span class="op">(</span><span class="nam">signer_py</span><span class="op">.</span><span class="nam">encode</span><span class="op">(</span><span class="str">&quot;utf-8&quot;</span><span class="op">)</span><span class="op">)</span><span class="op">.</span><span class="nam">decode</span><span class="op">(</span><span class="str">&quot;ascii&quot;</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t68" href="#t68">68</a></span><span class="t">    <span class="key">return</span> <span class="op">(</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t69" href="#t69">69</a></span><span class="t">        <span class="nam">template</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t70" href="#t70">70</a></span><span class="t">        <span class="op">.</span><span class="nam">replace</span><span class="op">(</span><span class="str">&quot;__TS_OAUTH_CLIENT_ID_SSM__&quot;</span><span class="op">,</span> <span class="nam">oauth_client_id_ssm</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t71" href="#t71">71</a></span><span class="t">        <span class="op">.</span><span class="nam">replace</span><span class="op">(</span><span class="str">&quot;__TS_OAUTH_CLIENT_SECRET_SSM__&quot;</span><span class="op">,</span> <span class="nam">oauth_client_secret_ssm</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t72" href="#t72">72</a></span><span class="t">        <span class="op">.</span><span class="nam">replace</span><span class="op">(</span><span class="str">&quot;__TS_TAG__&quot;</span><span class="op">,</span> <span class="nam">tailscale_tag</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t73" href="#t73">73</a></span><span class="t">        <span class="op">.</span><span class="nam">replace</span><span class="op">(</span><span class="str">&quot;__TS_HOSTNAME__&quot;</span><span class="op">,</span> <span class="nam">hostname</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t74" href="#t74">74</a></span><span class="t">        <span class="op">.</span><span class="nam">replace</span><span class="op">(</span><span class="str">&quot;__PROXIED_BUCKETS__&quot;</span><span class="op">,</span> <span class="str">&quot; &quot;</span><span class="op">.</span><span class="nam">join</span><span class="op">(</span><span class="nam">proxied_buckets</span><span class="op">)</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t75" href="#t75">75</a></span><span class="t">        <span class="op">.</span><span class="nam">replace</span><span class="op">(</span><span class="str">&quot;__SIGNER_PY_B64__&quot;</span><span class="op">,</span> <span class="nam">signer_b64</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run run2"><span class="n"><a id="t76" href="#t76">76</a></span><span class="t">    <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
 </main>
 <footer>
     <div class="content">
         <p>
-            <a class="nav" href="z_bab6a016e3943c0e_runner_pool_py.html">&#xab; prev</a> &nbsp; &nbsp;
+            <a class="nav" href="z_bab6a016e3943c0e_s3_proxy_signer_py.html">&#xab; prev</a> &nbsp; &nbsp;
             <a class="nav" href="index.html">&Hat; index</a> &nbsp; &nbsp;
             <a class="nav" href="z_07c03e7a4c866698_report_page_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.15.4">coverage.py v7.15.4</a>,
-            created at 2026-08-10 15:57 +0000
+            created at 2026-08-20 17:29 +0000
         </p>
     </div>
 </footer>
