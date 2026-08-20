@@ -10,3 +10,5 @@ def test_native_runtime_assets_are_included_in_package_data():
 
     assert "infrastructure/native/user_data_cidb.sh" in package_data
     assert "infrastructure/native/cidb_schema.sql" in package_data
+    assert "infrastructure/native/s3_proxy_user_data.sh" in package_data
+    assert "infrastructure/native/s3_proxy_signer.py" in package_data

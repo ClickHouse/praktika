@@ -95,6 +95,8 @@ praktika = [
     "py.typed",
     "infrastructure/native/user_data_cidb.sh",
     "infrastructure/native/cidb_schema.sql",
+    "infrastructure/native/s3_proxy_user_data.sh",
+    "infrastructure/native/s3_proxy_signer.py",
 ]
 
 [tool.black]
