@@ -318,7 +318,18 @@ class GH:
 
             target = worktree / destination_dir if destination_dir else worktree
             if target.exists() and clean_destination:
-                if target.is_dir():
+                if target == worktree:
+                    # Publishing to the Pages root: clear the contents but keep
+                    # the worktree's own .git link, else it stops being a git
+                    # working tree and every later git command fails.
+                    for item in worktree.iterdir():
+                        if item.name == ".git":
+                            continue
+                        if item.is_dir():
+                            shutil.rmtree(item)
+                        else:
+                            item.unlink()
+                elif target.is_dir():
                     shutil.rmtree(target)
                 else:
                     target.unlink()
