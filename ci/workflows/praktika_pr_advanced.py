@@ -18,7 +18,7 @@ workflow = Workflow.Config(
     base_branches=["main"],
     ai_orchestrator=Workflow.OrchestratorAI.Config(
         enabled=True,
-        provider="bedrock",
+        provider="bedrock-anthropic",
         model="global.anthropic.claude-sonnet-5",
     ),
     jobs=[
@@ -87,6 +87,22 @@ workflow = Workflow.Config(
         ).parametrize(
             Job.ParamSet(parameter={"key_1": [1, 2, "ABC"], "key_2": None}),
             Job.ParamSet(parameter={"key_1": [2, 3]}),
+        ),
+        # Native AI code review: consults an OpenAI model on Bedrock for a
+        # structured result, then posts the summary / inline findings and
+        # resolves its own threads from trusted job code (see praktika.ai_review).
+        # allow_failure so a review hiccup never blocks merge; enable_gh_auth so
+        # the job can post comments and manage review threads.
+        Job.Config(
+            name="Code Review",
+            runs_on=[RunnerLabels.SMALL_ARM_BEDROCK],
+            command=(
+                "python3 -m praktika review --provider bedrock-openai "
+                "--model global.openai.gpt-5.6-sol --reasoning-effort high "
+                "--prompt ./ci/prompts/code_review.md"
+            ),
+            allow_failure=True,
+            enable_gh_auth=True,
         ),
     ],
     artifacts=[artifact],

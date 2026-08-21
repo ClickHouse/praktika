@@ -3,6 +3,8 @@ PROJECT_SLUG = "praktika"
 class RunnerLabels:
     SMALL_ARM = "arm-2xsmall"
     SMALL_ARM_BASE = "arm-2xsmall-base"
+    # Dedicated pool whose instance role can call Bedrock (for the Code Review job).
+    SMALL_ARM_BEDROCK = "arm-2xsmall-bedrock"
     SMALL_AMD = "amd-2xsmall"
     SMALL_AMD_UBUNTU = "amd-2xsmall-ubuntu"
 

@@ -492,7 +492,7 @@ def _pull_request_workflow_template(answers: InitAnswers) -> str:
                 """\
                 ai_orchestrator=Workflow.OrchestratorAI.Config(
                     enabled=True,
-                    provider="bedrock",
+                    provider="bedrock-anthropic",
                     model="global.anthropic.claude-sonnet-5",
                 ),
                 """
@@ -560,7 +560,10 @@ def _main_ci_workflow_template(answers: InitAnswers) -> str:
 def _infrastructure_template(answers: InitAnswers) -> str:
     optional_ai_package = ""
     optional_ai_permissions = ""
-    optional_ai_ext = ""
+    # The orchestrator's push-webhook Lambda only triggers Main CI for branches
+    # listed here, so scaffold the project's default branch explicitly instead of
+    # relying on the library default (which would silently be "main").
+    ext_entries = [f'"allowed_push_branches": [{answers.main_branch!r}]']
     if answers.enable_ai_capabilities:
         optional_ai_package = '                "anthropic[bedrock]",\n'
         optional_ai_permissions = """\
@@ -571,7 +574,8 @@ def _infrastructure_template(answers: InitAnswers) -> str:
             "Resource": "*",
         }
 """
-        optional_ai_ext = '\n                ext={"iam_statements": [_ORCHESTRATOR_BEDROCK_IAM_STATEMENT]},'
+        ext_entries.append('"iam_statements": [_ORCHESTRATOR_BEDROCK_IAM_STATEMENT]')
+    orchestrator_ext = "\n                    ext={" + ", ".join(ext_entries) + "},"
     optional_slug_import = ", PROJECT_SLUG" if answers.enable_s3_proxy else ""
     optional_s3_proxy = ""
     if answers.enable_s3_proxy:
@@ -697,7 +701,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                     max_size=50,
                     volume_size_gb=100,
                     capacity_reserve=1,
-                    image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],{optional_ai_ext}
+                    image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],{orchestrator_ext}
                 ),
                 runner_pools=[
                     Components.RunnerPool(

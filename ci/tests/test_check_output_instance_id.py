@@ -48,6 +48,25 @@ def test_job_runner_check_output_includes_instance_id():
     assert "job markdown" in output["text"]
 
 
+def test_job_runner_check_output_includes_pool():
+    output = _build_check_output(
+        _make_fake_result("FAIL", False),
+        rc=1,
+        instance_id="i-runner456",
+        pool="arm-2xsmall-bedrock",
+    )
+
+    assert "runner `i-runner456`" in output["summary"]
+    assert "pool `arm-2xsmall-bedrock`" in output["summary"]
+    assert "**Runner pool:** `arm-2xsmall-bedrock`" in output["text"]
+
+
+def test_job_runner_check_output_omits_pool_when_absent():
+    output = _build_check_output(_make_fake_result("OK", True), 0, instance_id="i-x")
+    assert "pool `" not in output["summary"]
+    assert "Runner pool" not in output["text"]
+
+
 def test_job_runner_check_output_includes_report_url():
     url = "https://example.com/report?PR=1&sha=abc&name_0=CI&name_1=My+Job"
     output = _build_check_output(_make_fake_result("OK", True), 0, report_url=url)

@@ -156,6 +156,44 @@ def test_queued_check_output_names_state_and_pool(monkeypatch):
     ]
 
 
+def test_dispatch_failure_to_undeployed_pool_gives_clear_message(monkeypatch):
+    """A job kicked to a pool whose SQS queue does not exist must fail with a
+    clear check message (not the stale QUEUED summary), hinting the pool is
+    likely not deployed."""
+    job = types.SimpleNamespace(
+        name="Code Review", runs_on=["arm-2xsmall-bedrock"], always_run=False
+    )
+    fake_check = _FakeCheck()
+    ws = types.SimpleNamespace(
+        can_post_checks=True,
+        workflow=types.SimpleNamespace(name="CI"),
+        _gh_token="token",
+        _repo="org/repo",
+        _head_sha="sha",
+        local_mode=False,
+        # Queue does not exist -> get_queue_url raised -> (False, reason).
+        _dispatch=lambda job_state, target: (
+            False,
+            "QueueDoesNotExist: The specified queue does not exist.",
+        ),
+    )
+    monkeypatch.setattr(state_mod.JobCheckRun, "queue", lambda *a, **k: fake_check)
+
+    js = JobState(job, workflow_state=ws)
+    js.status = JobStatus.READY
+    js.kick()
+
+    assert js.status == JobStatus.FAILURE
+    assert fake_check.completed, "check must be completed, not left QUEUED"
+    last = fake_check.completed[-1]
+    assert last["conclusion"] == "failure"
+    summary = last["output"]["summary"]
+    assert "Failed to dispatch" in summary
+    assert "arm-2xsmall-bedrock" in summary
+    assert "not deployed" in summary
+    assert "QUEUED: job dispatched" not in summary
+
+
 def test_fresh_queued_job_stays_queued():
     """No heartbeat yet, kicked seconds ago — must NOT be marked dead."""
     s3 = _FakeS3()

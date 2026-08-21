@@ -583,7 +583,10 @@ def test_run_init_interactive_supports_oss_storage_and_ubuntu_images(
     ).read_text(encoding="utf8")
     assert '"anthropic[bedrock]"' in infra_text
     assert '"Action": ["bedrock:InvokeModel"]' in infra_text
-    assert 'ext={"iam_statements": [_ORCHESTRATOR_BEDROCK_IAM_STATEMENT]}' in infra_text
+    assert (
+        'ext={"allowed_push_branches": [\'main\'], '
+        '"iam_statements": [_ORCHESTRATOR_BEDROCK_IAM_STATEMENT]}'
+    ) in infra_text
     assert "allowed_ssm_parameters=[]" in infra_text
     assert "allowed_secrets=[]" in infra_text
     assert 'allowed_s3_prefixes=["artifacts-eu-north-1"]' in infra_text

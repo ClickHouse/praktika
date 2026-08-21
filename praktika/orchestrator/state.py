@@ -83,12 +83,13 @@ def _normalize_job_name_for_s3(name):
     return name.replace(" ", "_").replace("/", "_")
 
 
-def _build_check_output(result, rc, instance_id="", report_url=""):
+def _build_check_output(result, rc, instance_id="", report_url="", pool=""):
     """Render a job's Result as the ``output`` dict for a check-run
     completion. ``result`` is a ``praktika.Result`` reconstructed from the
-    completion payload (the runner ships it in ``final.json``). Returns
-    None on any failure so the caller can fall back to a bodyless
-    completion."""
+    completion payload (the runner ships it in ``final.json``). ``pool`` is
+    the runner pool (the job's ``runs_on``) the job ran on, surfaced so a
+    reader can tell which pool/role executed it. Returns None on any failure
+    so the caller can fall back to a bodyless completion."""
     try:
         text = result.to_markdown(report_url=report_url)
         # Check API caps output.text at ~64 KB.
@@ -109,11 +110,15 @@ def _build_check_output(result, rc, instance_id="", report_url=""):
         summary = f"**{displayed_status}**{dur}"
         if report_url:
             summary += f" — [CI Report]({report_url})"
+        details = []
         if instance_id:
             summary += f" — runner `{instance_id}`"
-            text = f"**Runner instance:** `{instance_id}`" + (
-                f"\n\n{text}" if text else ""
-            )
+            details.append(f"**Runner instance:** `{instance_id}`")
+        if pool:
+            summary += f" — pool `{pool}`"
+            details.append(f"**Runner pool:** `{pool}`")
+        if details:
+            text = "\n\n".join(details) + (f"\n\n{text}" if text else "")
         return {"title": displayed_status, "summary": summary, "text": text}
     except Exception as e:
         print(f"  [warn] could not render job Result as MD: {type(e).__name__}: {e}")
@@ -367,10 +372,32 @@ class JobState:
         )
 
         print(f"[KICK ] {self.name:70s} runs_on={runs_on}  -> {target}")
-        if not ws._dispatch(self, target):
-            # Dispatch failed (e.g. SQS error) — fail the job; nothing else
-            # will ever drive it forward.
-            self.finish(success=False)
+        ok, reason = ws._dispatch(self, target)
+        if not ok:
+            # Dispatch failed (e.g. SQS error) — fail the job with a clear
+            # message; nothing else will ever drive it forward. The most common
+            # cause is a runner pool that has no queue yet (not deployed), which
+            # surfaces as a QueueDoesNotExist error from get_queue_url.
+            not_deployed = (
+                "QueueDoesNotExist" in reason or "NonExistentQueue" in reason
+            )
+            hint = (
+                f" Runner pool `{runs_on}` has no SQS queue — it is likely not "
+                f"deployed. Deploy it (`praktika infrastructure --deploy`) and "
+                f"re-run."
+                if not_deployed
+                else ""
+            )
+            summary = (
+                f"Failed to dispatch job to runner pool `{runs_on}` "
+                f"(queue `{target}`).{hint}"
+            )
+            if reason:
+                summary += f"\n\nError: {reason}"
+            self.finish(
+                success=False,
+                output={"title": "Dispatch failed", "summary": summary},
+            )
 
     def finish(self, success=True, output=None, details_url=None):
         """Transition in-flight jobs -> SUCCESS/FAILURE and emit a finish line.
@@ -778,6 +805,7 @@ class WorkflowState:
                         rc,
                         instance_id=js.runner_instance_id or "",
                         report_url=details_url or "",
+                        pool=", ".join(js.job.runs_on) if js.job.runs_on else "",
                     )
                 except Exception as e:
                     print(
@@ -928,8 +956,9 @@ class WorkflowState:
     def _dispatch(self, job_state, queue_name):
         """Send a ``job_task`` message to ``queue_name`` for ``job_state``.
 
-        Returns True on success, False on any failure (missing boto3, queue
-        doesn't exist, SQS error). On failure ``kick()`` fails the job —
+        Returns ``(ok, error)``: ``(True, "")`` on success, ``(False, reason)``
+        on any failure (missing boto3, queue doesn't exist, SQS error). On
+        failure ``kick()`` fails the job with ``reason`` surfaced on the check —
         nothing else will ever drive it forward.
         """
         task = {
@@ -958,7 +987,7 @@ class WorkflowState:
         }
 
         if self.local_mode:
-            return self._dispatch_local(job_state, task)
+            return self._dispatch_local(job_state, task), ""
 
         try:
             if self._sqs is None:
@@ -973,13 +1002,14 @@ class WorkflowState:
                 self._queue_urls[queue_name] = url
 
             self._sqs.send_message(QueueUrl=url, MessageBody=json.dumps(task))
-            return True
+            return True, ""
         except Exception as e:
+            reason = f"{type(e).__name__}: {e}"
             print(
                 f"  [warn] dispatch of {job_state.name!r} to {queue_name!r} failed: "
-                f"{type(e).__name__}: {e}"
+                f"{reason}"
             )
-            return False
+            return False, reason
 
     def _dispatch_local(self, job_state, task):
         """Run the job synchronously as a subprocess.
