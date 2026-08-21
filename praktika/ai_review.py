@@ -344,15 +344,20 @@ _REVIEW_HEADER = "---\n\n### Code Review\n\n"
 
 
 def _post_summary(summary_md, dry_run):
+    """Post/update the top-level review comment. Returns a list of write-error
+    strings (empty on success) so the caller can fail the job on a failed write
+    instead of falsely reporting OK."""
     summary_md = (summary_md or "").strip()
     if not summary_md:
         print("No summary to post")
-        return
+        return []
     body = _REVIEW_HEADER + summary_md
     if dry_run:
         print(f"[dry-run] would post/update summary comment:\n{body}")
-        return
-    GH.post_updateable_comment(comment_tags_and_bodies={"review": body})
+        return []
+    if not GH.post_updateable_comment(comment_tags_and_bodies={"review": body}):
+        return ["failed to post review summary comment"]
+    return []
 
 
 def _existing_bot_finding_locations(threads, bot_login):
@@ -392,11 +397,11 @@ def _post_inline_findings(findings, commit_id, dry_run, threads=None, bot_login=
         findings = kept
     if not findings:
         print("No inline findings to post")
-        return
+        return []
     if dry_run:
         for f in findings:
             print(f"[dry-run] inline {f.get('path')}:{f.get('line')} -> {f.get('body')}")
-        return
+        return []
     tmp_files = []
     comments = []
     try:
@@ -415,7 +420,9 @@ def _post_inline_findings(findings, commit_id, dry_run, threads=None, bot_login=
                 comment["start_line"] = int(f["start_line"])
                 comment["start_side"] = f.get("start_side", comment["side"])
             comments.append(comment)
-        GH.post_pr_review(commit_id=commit_id, comments=comments)
+        if not GH.post_pr_review(commit_id=commit_id, comments=comments):
+            return [f"failed to post inline review ({len(comments)} finding(s))"]
+        return []
     finally:
         for p in tmp_files:
             try:
@@ -433,14 +440,15 @@ def _apply_thread_actions(actions, threads, bot_login, dry_run):
     """
     actions = [a for a in (actions or []) if isinstance(a, dict)]
     if not actions:
-        return
+        return []
     if not bot_login:
         print(
             f"WARNING: bot login unknown; skipping {len(actions)} thread action(s) "
             "for safety"
         )
-        return
+        return []
 
+    errors = []
     by_id = {t.get("id"): t for t in threads}
     bot = _norm_login(bot_login)
     for a in actions:
@@ -460,9 +468,11 @@ def _apply_thread_actions(actions, threads, bot_login, dry_run):
             print(f"[dry-run] {action} thread {thread_id}")
             continue
         if action == "resolve":
-            GH.resolve_pr_review_thread(thread_id)
+            if not GH.resolve_pr_review_thread(thread_id):
+                errors.append(f"failed to resolve thread [{thread_id}]")
         elif action == "unresolve":
-            GH.unresolve_pr_review_thread(thread_id)
+            if not GH.unresolve_pr_review_thread(thread_id):
+                errors.append(f"failed to unresolve thread [{thread_id}]")
         elif action == "reply":
             body = (a.get("body") or "").strip()
             parent = _thread_first_comment_db_id(thread)
@@ -473,7 +483,8 @@ def _apply_thread_actions(actions, threads, bot_login, dry_run):
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
                     fh.write(body)
-                GH.post_pr_line_comment(body_file=path, in_reply_to=parent)
+                if not GH.post_pr_line_comment(body_file=path, in_reply_to=parent):
+                    errors.append(f"failed to reply on thread [{thread_id}]")
             finally:
                 try:
                     os.unlink(path)
@@ -481,6 +492,7 @@ def _apply_thread_actions(actions, threads, bot_login, dry_run):
                     pass
         else:
             print(f"WARNING: unknown thread action [{action}] — skip")
+    return errors
 
 
 def review(args):
@@ -512,15 +524,19 @@ def review(args):
 
     review_data, usage = _run_model(provider, _SYSTEM, user_content)
 
-    _post_summary(review_data.get("summary_md", ""), args.dry_run)
-    _post_inline_findings(
+    # Aggregate write failures from every apply step: the GH helpers return
+    # False (not raise) on API failure, so a failed/partial write must fail the
+    # job rather than falsely report a successfully applied review.
+    errors = []
+    errors += _post_summary(review_data.get("summary_md", ""), args.dry_run)
+    errors += _post_inline_findings(
         review_data.get("inline_findings"),
         info.sha,
         args.dry_run,
         threads=threads,
         bot_login=bot_login,
     )
-    _apply_thread_actions(
+    errors += _apply_thread_actions(
         review_data.get("thread_actions"), threads, bot_login, args.dry_run
     )
 
@@ -530,8 +546,11 @@ def review(args):
         f"thread_actions={len(review_data.get('thread_actions') or [])} "
         f"tokens={usage.input_tokens}/{usage.output_tokens}"
     )
+    if errors:
+        info_line += "\nWrite failures:\n- " + "\n- ".join(errors)
     print(info_line)
-    return Result.create_from(status=Result.Status.OK, info=info_line)
+    status = Result.Status.FAIL if errors else Result.Status.OK
+    return Result.create_from(status=status, info=info_line)
 
 
 def main(args):

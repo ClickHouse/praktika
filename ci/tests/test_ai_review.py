@@ -272,6 +272,29 @@ def test_review_end_to_end_applies_all_actions(monkeypatch):
     assert result.is_ok()
 
 
+def test_review_fails_when_a_write_fails(monkeypatch):
+    threads = [_thread("t-bot", "review-bot")]
+    review_json = {
+        "summary_md": "looks ok",
+        "inline_findings": [],
+        "thread_actions": [],
+    }
+    _wire_common(monkeypatch, review_json, threads)
+
+    # post_updateable_comment reports failure (False) — the job must FAIL, not
+    # falsely report a successfully applied review.
+    monkeypatch.setattr(
+        GH, "post_updateable_comment",
+        classmethod(lambda cls, comment_tags_and_bodies, **k: False),
+    )
+
+    args = SimpleNamespace(provider="stub", model="", prompt="", bot_login="", dry_run=False)
+    result = ai_review.review(args)
+
+    assert result.status == result.Status.FAIL
+    assert "failed to post review summary comment" in result.info
+
+
 @pytest.mark.parametrize("pr_number", [0, -1])
 def test_review_skips_when_not_a_pr(monkeypatch, pr_number):
     monkeypatch.setattr(ai_review, "Info", lambda: _stub_info(pr_number=pr_number))
