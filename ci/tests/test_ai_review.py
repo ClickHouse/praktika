@@ -145,6 +145,61 @@ def test_inline_findings_empty_is_noop(monkeypatch):
     ai_review._post_inline_findings([], "sha", dry_run=False)
 
 
+def _thread_at(node_id, author, path, line):
+    t = _thread(node_id, author)
+    t["path"] = path
+    t["line"] = line
+    return t
+
+
+def test_inline_findings_skip_locations_with_existing_bot_thread(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        GH, "post_pr_review",
+        classmethod(lambda cls, commit_id, comments, **k: captured.update(paths=[c["path"] for c in comments]) or True),
+    )
+    threads = [_thread_at("t1", "review-bot", "a.py", 10)]  # bot already commented a.py:10
+    findings = [
+        {"path": "a.py", "line": 10, "body": "dup"},   # should be skipped
+        {"path": "b.py", "line": 5, "body": "new"},    # should be posted
+    ]
+    ai_review._post_inline_findings(
+        findings, "sha", dry_run=False, threads=threads, bot_login="review-bot"
+    )
+    assert captured["paths"] == ["b.py"]
+
+
+def test_inline_findings_no_dedup_when_bot_login_unknown(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        GH, "post_pr_review",
+        classmethod(lambda cls, commit_id, comments, **k: captured.update(n=len(comments)) or True),
+    )
+    threads = [_thread_at("t1", "review-bot", "a.py", 10)]
+    findings = [{"path": "a.py", "line": 10, "body": "x"}]
+    # Unknown bot login -> cannot identify own threads -> no dedup, finding posts.
+    ai_review._post_inline_findings(
+        findings, "sha", dry_run=False, threads=threads, bot_login=""
+    )
+    assert captured["n"] == 1
+
+
+def test_infer_bot_login_from_ci_comment(monkeypatch):
+    monkeypatch.setattr(
+        ai_review, "Shell",
+        SimpleNamespace(get_output=lambda cmd: "" if "api user" in cmd else json.dumps([
+            {"user": {"login": "human"}, "body": "just a comment"},
+            {"user": {"login": "praktika-gh[bot]"},
+             "body": "<!-- CI automatic comment start :report: -->\nx"},
+        ])),
+    )
+    # _infer_bot_login_from_comments imports _Environment lazily; patch that.
+    import praktika._environment as envmod
+    monkeypatch.setattr(envmod._Environment, "get",
+                        classmethod(lambda cls: SimpleNamespace(REPOSITORY="o/r", PR_NUMBER=1)))
+    assert ai_review._authenticated_login() == "praktika-gh[bot]"
+
+
 # ------------------------------------------------------------- gh payload
 
 

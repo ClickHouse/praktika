@@ -128,6 +128,11 @@ human reply on one of your threads as a deliberate decision: if it explains,
 fixes, or dismisses the point, drop it; only reply when the author asked you a
 direct question or claimed a fix that the current code contradicts.
 
+Do NOT re-post a finding you already raised: if an existing thread authored by
+BOT_LOGIN already covers an issue at a `path`/`line`, do not add another inline
+finding there. Only add an inline finding for a genuinely new issue that has no
+existing thread. If the issue is now fixed, `resolve` your thread instead.
+
 Do NOT raise issues that dedicated CI jobs already catch: build/compile errors
 and style/lint/formatting. Mention those, if at all, only as nits in the summary.
 
@@ -180,14 +185,49 @@ def _parse_review(text):
 def _authenticated_login(explicit=""):
     """The login of the reviewing bot, used to enforce thread ownership.
 
-    Prefers an explicit ``--bot-login``; otherwise asks the authenticated gh
-    CLI. Returns "" if it cannot be determined — callers then skip all thread
-    actions rather than risk touching a human's thread.
+    Resolution order:
+
+    1. an explicit ``--bot-login``;
+    2. ``gh api user`` — works for user/PAT tokens;
+    3. the author of a CI-automatic comment the bot already posted on this PR
+       (the report/review comment). GitHub **App** installation tokens have no
+       ``/user`` endpoint, so this is how the app learns its own login
+       (e.g. ``praktika-gh[bot]``) at runtime.
+
+    Returns "" if none of these resolve — callers then skip all thread actions
+    rather than risk touching a human's thread.
     """
     if explicit:
         return explicit.strip()
     login = (Shell.get_output("gh api user --jq .login") or "").strip()
-    return login
+    if login:
+        return login
+    return _infer_bot_login_from_comments()
+
+
+def _infer_bot_login_from_comments():
+    """Best-effort: the author login of a CI-automatic comment on this PR.
+
+    Praktika posts the workflow report/review comment as the app, tagged with
+    ``<!-- CI automatic comment start :...: -->``. That comment's author is the
+    bot itself, so its login identifies us even when ``gh api user`` cannot.
+    """
+    from ._environment import _Environment
+
+    env = _Environment.get()
+    if not env.REPOSITORY or not env.PR_NUMBER:
+        return ""
+    out = Shell.get_output(
+        f"gh api /repos/{env.REPOSITORY}/issues/{env.PR_NUMBER}/comments --paginate"
+    )
+    try:
+        for comment in json.loads(out or "[]"):
+            body = comment.get("body") or ""
+            if "CI automatic comment start :" in body:
+                return ((comment.get("user") or {}).get("login") or "").strip()
+    except Exception as e:
+        print(f"WARNING: could not infer bot login from comments: {e}")
+    return ""
 
 
 def _norm_login(login):
@@ -315,8 +355,41 @@ def _post_summary(summary_md, dry_run):
     GH.post_updateable_comment(comment_tags_and_bodies={"review": body})
 
 
-def _post_inline_findings(findings, commit_id, dry_run):
+def _existing_bot_finding_locations(threads, bot_login):
+    """{(path, line)} of review threads the bot itself opened — used to avoid
+    re-posting the same inline finding on a later run (which is how duplicate
+    review comments accumulated). Empty when the bot login is unknown, since we
+    then cannot tell our threads apart from anyone else's."""
+    if not bot_login:
+        return set()
+    bot = _norm_login(bot_login)
+    locations = set()
+    for t in threads or []:
+        if _norm_login(_thread_first_author(t)) != bot:
+            continue
+        line = t.get("line")
+        if line is not None:
+            locations.add((t.get("path"), int(line)))
+    return locations
+
+
+def _post_inline_findings(findings, commit_id, dry_run, threads=None, bot_login=""):
     findings = [f for f in (findings or []) if isinstance(f, dict) and f.get("body")]
+    # Drop findings at a location the bot already commented on, so re-runs don't
+    # stack duplicate inline comments on the same line.
+    existing = _existing_bot_finding_locations(threads, bot_login)
+    if existing:
+        kept = []
+        for f in findings:
+            try:
+                loc = (f.get("path"), int(f.get("line")))
+            except (TypeError, ValueError):
+                loc = None
+            if loc in existing:
+                print(f"Skipping duplicate finding at {loc[0]}:{loc[1]} (existing thread)")
+            else:
+                kept.append(f)
+        findings = kept
     if not findings:
         print("No inline findings to post")
         return
@@ -436,7 +509,13 @@ def review(args):
     review_data, usage = _run_model(provider, _SYSTEM, user_content)
 
     _post_summary(review_data.get("summary_md", ""), args.dry_run)
-    _post_inline_findings(review_data.get("inline_findings"), info.sha, args.dry_run)
+    _post_inline_findings(
+        review_data.get("inline_findings"),
+        info.sha,
+        args.dry_run,
+        threads=threads,
+        bot_login=bot_login,
+    )
     _apply_thread_actions(
         review_data.get("thread_actions"), threads, bot_login, args.dry_run
     )
