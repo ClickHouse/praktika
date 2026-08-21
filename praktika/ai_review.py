@@ -41,7 +41,7 @@ from .info import Info
 from .orchestrator.ai import anthropic as _anthropic
 from .orchestrator.ai.provider import resolve_provider
 from .result import Result
-from .utils import Shell, Utils
+from .utils import Utils
 
 # Number of attempts at the model round-trip. The provider may hit a transient
 # API error, or return output that is not the requested JSON; re-running the
@@ -114,22 +114,22 @@ _REVIEW_SCHEMA = {
 _SYSTEM = """\
 You are an automated code reviewer for a pull request. You are given the PR
 title and body, the full diff, and the existing review threads (each with a
-stable `thread_id`, the author of its first comment, whether it is resolved,
+stable `thread_id`, an `authored_by_me` flag, whether it is resolved,
 `path`/`line`, and all comments). The repository is checked out at the PR head.
 
 Investigate before deciding: use `grep_repo` to locate code and `read_file` to
 read the relevant source and confirm whether a concern is a real defect. Review
 the current code, not only the diff or prior discussion.
 
-You (the reviewing bot) are identified by the login given as BOT_LOGIN below.
-You may only resolve, unresolve, or reply to review threads whose first comment
-was authored by BOT_LOGIN — never touch threads started by anyone else. Treat a
-human reply on one of your threads as a deliberate decision: if it explains,
-fixes, or dismisses the point, drop it; only reply when the author asked you a
-direct question or claimed a fix that the current code contradicts.
+A thread is yours when its `authored_by_me` is true. You may only resolve,
+unresolve, or reply to threads where `authored_by_me` is true — never touch
+threads started by anyone else. Treat a human reply on one of your threads as a
+deliberate decision: if it explains, fixes, or dismisses the point, drop it;
+only reply when the author asked you a direct question or claimed a fix that the
+current code contradicts.
 
-Do NOT re-post a finding you already raised: if an existing thread authored by
-BOT_LOGIN already covers an issue at a `path`/`line`, do not add another inline
+Do NOT re-post a finding you already raised: if a thread with `authored_by_me`
+true already covers an issue at a `path`/`line`, do not add another inline
 finding there. Only add an inline finding for a genuinely new issue that has no
 existing thread. If the issue is now fixed, `resolve` your thread instead.
 
@@ -182,62 +182,18 @@ def _parse_review(text):
     return {}
 
 
-def _authenticated_login(explicit=""):
-    """The login of the reviewing bot, used to enforce thread ownership.
+def _thread_authored_by_viewer(thread):
+    """True if the reviewing bot (the authenticated token) authored the thread's
+    first comment.
 
-    Resolution order:
-
-    1. an explicit ``--bot-login``;
-    2. ``gh api user`` — works for user/PAT tokens;
-    3. the author of a CI-automatic comment the bot already posted on this PR
-       (the report/review comment). GitHub **App** installation tokens have no
-       ``/user`` endpoint, so this is how the app learns its own login
-       (e.g. ``praktika-gh[bot]``) at runtime.
-
-    Returns "" if none of these resolve — callers then skip all thread actions
-    rather than risk touching a human's thread.
+    Uses GitHub's ``viewerDidAuthor``, which the API evaluates server-side
+    against the authenticated identity. It is not derivable from
+    user-controllable content, so ownership can be enforced without knowing (or
+    trusting) any bot login — a PR participant cannot make their thread look
+    bot-authored.
     """
-    if explicit:
-        return explicit.strip()
-    login = (Shell.get_output("gh api user --jq .login") or "").strip()
-    if login:
-        return login
-    return _infer_bot_login_from_comments()
-
-
-def _infer_bot_login_from_comments():
-    """Best-effort: the author login of a CI-automatic comment on this PR.
-
-    Praktika posts the workflow report/review comment as the app, tagged with
-    ``<!-- CI automatic comment start :...: -->``. That comment's author is the
-    bot itself, so its login identifies us even when ``gh api user`` cannot.
-    """
-    from ._environment import _Environment
-
-    env = _Environment.get()
-    if not env.REPOSITORY or not env.PR_NUMBER:
-        return ""
-    out = Shell.get_output(
-        f"gh api /repos/{env.REPOSITORY}/issues/{env.PR_NUMBER}/comments --paginate"
-    )
-    try:
-        for comment in json.loads(out or "[]"):
-            body = comment.get("body") or ""
-            if "CI automatic comment start :" in body:
-                return ((comment.get("user") or {}).get("login") or "").strip()
-    except Exception as e:
-        print(f"WARNING: could not infer bot login from comments: {e}")
-    return ""
-
-
-def _norm_login(login):
-    """Normalize a login for comparison: lowercased, trailing ``[bot]`` removed.
-    A GitHub App shows as ``slug`` in comment authors and ``slug[bot]`` in
-    ``resolvedBy``, so compare on the bare slug."""
-    login = (login or "").strip().lower()
-    if login.endswith("[bot]"):
-        login = login[: -len("[bot]")]
-    return login
+    nodes = (thread.get("comments") or {}).get("nodes") or []
+    return bool(nodes and nodes[0].get("viewerDidAuthor"))
 
 
 def _thread_first_author(thread):
@@ -272,6 +228,9 @@ def _compact_threads(threads):
             {
                 "thread_id": t.get("id"),
                 "first_author": _thread_first_author(t),
+                # Whether this thread is yours (the reviewing bot). Trust this,
+                # not first_author, to decide resolve/unresolve/reply.
+                "authored_by_me": _thread_authored_by_viewer(t),
                 "isResolved": t.get("isResolved"),
                 "resolvedBy": (t.get("resolvedBy") or {}).get("login"),
                 "path": t.get("path"),
@@ -282,9 +241,8 @@ def _compact_threads(threads):
     return out
 
 
-def _build_user_content(info, diff, threads, bot_login, project_prompt):
+def _build_user_content(info, diff, threads, project_prompt):
     payload = {
-        "BOT_LOGIN": bot_login or "(unknown — thread actions will be skipped)",
         "pr": {
             "number": info.pr_number,
             "title": info.pr_title,
@@ -360,17 +318,14 @@ def _post_summary(summary_md, dry_run):
     return []
 
 
-def _existing_bot_finding_locations(threads, bot_login):
+def _existing_bot_finding_locations(threads):
     """{(path, line)} of review threads the bot itself opened — used to avoid
     re-posting the same inline finding on a later run (which is how duplicate
-    review comments accumulated). Empty when the bot login is unknown, since we
-    then cannot tell our threads apart from anyone else's."""
-    if not bot_login:
-        return set()
-    bot = _norm_login(bot_login)
+    review comments accumulated). Ownership is decided by GitHub's
+    ``viewerDidAuthor``, so no bot login is needed."""
     locations = set()
     for t in threads or []:
-        if _norm_login(_thread_first_author(t)) != bot:
+        if not _thread_authored_by_viewer(t):
             continue
         line = t.get("line")
         if line is not None:
@@ -378,11 +333,11 @@ def _existing_bot_finding_locations(threads, bot_login):
     return locations
 
 
-def _post_inline_findings(findings, commit_id, dry_run, threads=None, bot_login=""):
+def _post_inline_findings(findings, commit_id, dry_run, threads=None):
     findings = [f for f in (findings or []) if isinstance(f, dict) and f.get("body")]
     # Drop findings at a location the bot already commented on, so re-runs don't
     # stack duplicate inline comments on the same line.
-    existing = _existing_bot_finding_locations(threads, bot_login)
+    existing = _existing_bot_finding_locations(threads)
     if existing:
         kept = []
         for f in findings:
@@ -431,26 +386,19 @@ def _post_inline_findings(findings, commit_id, dry_run, threads=None, bot_login=
                 pass
 
 
-def _apply_thread_actions(actions, threads, bot_login, dry_run):
+def _apply_thread_actions(actions, threads, dry_run):
     """Apply resolve/unresolve/reply, but only on threads the bot authored.
 
     Ownership is enforced here (not trusted from the model): an action targeting
-    a thread whose first comment was not authored by ``bot_login`` is dropped
-    with a warning. When ``bot_login`` is unknown, all actions are skipped.
+    a thread the bot did not author (per GitHub's ``viewerDidAuthor``) is dropped
+    with a warning, so the bot can never touch a human's thread.
     """
     actions = [a for a in (actions or []) if isinstance(a, dict)]
     if not actions:
         return []
-    if not bot_login:
-        print(
-            f"WARNING: bot login unknown; skipping {len(actions)} thread action(s) "
-            "for safety"
-        )
-        return []
 
     errors = []
     by_id = {t.get("id"): t for t in threads}
-    bot = _norm_login(bot_login)
     for a in actions:
         thread_id = a.get("thread_id")
         action = a.get("action")
@@ -458,10 +406,10 @@ def _apply_thread_actions(actions, threads, bot_login, dry_run):
         if thread is None:
             print(f"WARNING: thread_action targets unknown thread [{thread_id}] — skip")
             continue
-        if _norm_login(_thread_first_author(thread)) != bot:
+        if not _thread_authored_by_viewer(thread):
             print(
                 f"WARNING: refusing {action} on thread [{thread_id}] authored by "
-                f"[{_thread_first_author(thread)}], not the bot [{bot_login}]"
+                f"[{_thread_first_author(thread)}] — not this bot"
             )
             continue
         if dry_run:
@@ -513,14 +461,13 @@ def review(args):
     effort = getattr(args, "reasoning_effort", "") or ""
     if effort and hasattr(provider, "reasoning_effort"):
         provider.reasoning_effort = effort
-    bot_login = _authenticated_login(getattr(args, "bot_login", "") or "")
     print(f"AI review: provider={provider.name} model={provider.resolved_model()} "
           f"effort={getattr(provider, 'reasoning_effort', '(n/a)')} "
-          f"bot_login={bot_login or '(unknown)'} dry_run={bool(args.dry_run)}")
+          f"dry_run={bool(args.dry_run)}")
 
     diff = GH.get_pr_diff()
     threads = GH.list_pr_review_threads()
-    user_content = _build_user_content(info, diff, threads, bot_login, project_prompt)
+    user_content = _build_user_content(info, diff, threads, project_prompt)
 
     review_data, usage = _run_model(provider, _SYSTEM, user_content)
 
@@ -534,10 +481,9 @@ def review(args):
         info.sha,
         args.dry_run,
         threads=threads,
-        bot_login=bot_login,
     )
     errors += _apply_thread_actions(
-        review_data.get("thread_actions"), threads, bot_login, args.dry_run
+        review_data.get("thread_actions"), threads, args.dry_run
     )
 
     info_line = (

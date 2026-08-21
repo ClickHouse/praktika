@@ -298,16 +298,6 @@ def create_parser():
         help="Path to a repo-local Markdown file with project-specific review guidance",
     )
     review_parser.add_argument(
-        "--bot-login",
-        dest="bot_login",
-        default="",
-        help=(
-            "Login of the reviewing bot, used to enforce thread ownership. "
-            "Defaults to the authenticated gh user; when unknown, thread "
-            "resolve/unresolve/reply actions are skipped"
-        ),
-    )
-    review_parser.add_argument(
         "--dry-run",
         dest="dry_run",
         action="store_true",

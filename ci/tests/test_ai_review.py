@@ -8,7 +8,11 @@ from praktika.gh import GH
 from praktika.orchestrator.ai.provider import Turn, Usage
 
 
-def _thread(node_id, first_author, resolved=False, db_id=11):
+def _thread(node_id, first_author, resolved=False, db_id=11, mine=None):
+    # Ownership is decided by GitHub's viewerDidAuthor, not the login. Default it
+    # from first_author for convenience ("review-bot" == ours) unless overridden.
+    if mine is None:
+        mine = first_author == "review-bot"
     return {
         "id": node_id,
         "isResolved": resolved,
@@ -22,6 +26,7 @@ def _thread(node_id, first_author, resolved=False, db_id=11):
                     "databaseId": db_id,
                     "createdAt": "2026-05-21T00:00:00Z",
                     "author": {"login": first_author},
+                    "viewerDidAuthor": mine,
                     "body": "first",
                 }
             ],
@@ -39,72 +44,57 @@ def test_parse_review_tolerates_fences_and_prose():
     assert ai_review._parse_review("not json at all") == {}
 
 
-def test_norm_login_strips_bot_suffix():
-    assert ai_review._norm_login("Review-Bot[bot]") == "review-bot"
-    assert ai_review._norm_login("review-bot") == "review-bot"
-
-
 # ------------------------------------------------------- thread-action safety
 
 
-def test_thread_actions_only_touch_bot_owned_threads(monkeypatch):
+def test_thread_actions_only_touch_viewer_authored_threads(monkeypatch):
     threads = [
-        _thread("t-bot", "review-bot"),
-        _thread("t-human", "some-human"),
+        _thread("t-bot", "review-bot", mine=True),
+        # A human thread — even one that spoofs the bot's login — is not ours
+        # because viewerDidAuthor (server-evaluated) is False.
+        _thread("t-human", "review-bot", mine=False),
     ]
     resolved = []
     monkeypatch.setattr(
         GH, "resolve_pr_review_thread",
-        classmethod(lambda cls, tid, verbose=False: resolved.append(tid)),
+        classmethod(lambda cls, tid, verbose=False: resolved.append(tid) or True),
     )
     actions = [
         {"thread_id": "t-bot", "action": "resolve"},
         {"thread_id": "t-human", "action": "resolve"},
         {"thread_id": "t-missing", "action": "resolve"},
     ]
-    ai_review._apply_thread_actions(actions, threads, "review-bot", dry_run=False)
-    # only the bot-authored thread is resolved; human + unknown are refused
+    ai_review._apply_thread_actions(actions, threads, dry_run=False)
+    # only the thread the viewer authored is resolved; the rest are refused
     assert resolved == ["t-bot"]
 
 
-def test_thread_actions_skipped_when_bot_login_unknown(monkeypatch):
-    threads = [_thread("t-bot", "review-bot")]
-    called = []
-    monkeypatch.setattr(
-        GH, "resolve_pr_review_thread",
-        classmethod(lambda cls, tid, verbose=False: called.append(tid)),
-    )
-    ai_review._apply_thread_actions(
-        [{"thread_id": "t-bot", "action": "resolve"}], threads, "", dry_run=False
-    )
-    assert called == []
-
-
 def test_thread_reply_uses_first_comment_db_id(monkeypatch):
-    threads = [_thread("t-bot", "review-bot", db_id=4242)]
+    threads = [_thread("t-bot", "review-bot", db_id=4242, mine=True)]
     replies = []
 
     def _fake_line_comment(cls, body_file, in_reply_to=None, **kw):
         with open(body_file, encoding="utf-8") as f:
             replies.append((in_reply_to, f.read()))
+        return True
 
     monkeypatch.setattr(GH, "post_pr_line_comment", classmethod(_fake_line_comment))
     ai_review._apply_thread_actions(
         [{"thread_id": "t-bot", "action": "reply", "body": "answer"}],
-        threads, "review-bot", dry_run=False,
+        threads, dry_run=False,
     )
     assert replies == [(4242, "answer")]
 
 
 def test_dry_run_makes_no_gh_calls(monkeypatch):
-    threads = [_thread("t-bot", "review-bot")]
+    threads = [_thread("t-bot", "review-bot", mine=True)]
 
     def _boom(*a, **k):
         raise AssertionError("no GH write expected in dry-run")
 
     monkeypatch.setattr(GH, "resolve_pr_review_thread", classmethod(lambda cls, *a, **k: _boom()))
     ai_review._apply_thread_actions(
-        [{"thread_id": "t-bot", "action": "resolve"}], threads, "review-bot", dry_run=True
+        [{"thread_id": "t-bot", "action": "resolve"}], threads, dry_run=True
     )
 
 
@@ -145,8 +135,8 @@ def test_inline_findings_empty_is_noop(monkeypatch):
     ai_review._post_inline_findings([], "sha", dry_run=False)
 
 
-def _thread_at(node_id, author, path, line):
-    t = _thread(node_id, author)
+def _thread_at(node_id, path, line, mine):
+    t = _thread(node_id, "review-bot", mine=mine)
     t["path"] = path
     t["line"] = line
     return t
@@ -158,46 +148,26 @@ def test_inline_findings_skip_locations_with_existing_bot_thread(monkeypatch):
         GH, "post_pr_review",
         classmethod(lambda cls, commit_id, comments, **k: captured.update(paths=[c["path"] for c in comments]) or True),
     )
-    threads = [_thread_at("t1", "review-bot", "a.py", 10)]  # bot already commented a.py:10
+    threads = [_thread_at("t1", "a.py", 10, mine=True)]  # bot already commented a.py:10
     findings = [
         {"path": "a.py", "line": 10, "body": "dup"},   # should be skipped
         {"path": "b.py", "line": 5, "body": "new"},    # should be posted
     ]
-    ai_review._post_inline_findings(
-        findings, "sha", dry_run=False, threads=threads, bot_login="review-bot"
-    )
+    ai_review._post_inline_findings(findings, "sha", dry_run=False, threads=threads)
     assert captured["paths"] == ["b.py"]
 
 
-def test_inline_findings_no_dedup_when_bot_login_unknown(monkeypatch):
+def test_inline_findings_no_dedup_against_non_viewer_thread(monkeypatch):
     captured = {}
     monkeypatch.setattr(
         GH, "post_pr_review",
         classmethod(lambda cls, commit_id, comments, **k: captured.update(n=len(comments)) or True),
     )
-    threads = [_thread_at("t1", "review-bot", "a.py", 10)]
+    # A thread the viewer did NOT author must not suppress a finding there.
+    threads = [_thread_at("t1", "a.py", 10, mine=False)]
     findings = [{"path": "a.py", "line": 10, "body": "x"}]
-    # Unknown bot login -> cannot identify own threads -> no dedup, finding posts.
-    ai_review._post_inline_findings(
-        findings, "sha", dry_run=False, threads=threads, bot_login=""
-    )
+    ai_review._post_inline_findings(findings, "sha", dry_run=False, threads=threads)
     assert captured["n"] == 1
-
-
-def test_infer_bot_login_from_ci_comment(monkeypatch):
-    monkeypatch.setattr(
-        ai_review, "Shell",
-        SimpleNamespace(get_output=lambda cmd: "" if "api user" in cmd else json.dumps([
-            {"user": {"login": "human"}, "body": "just a comment"},
-            {"user": {"login": "praktika-gh[bot]"},
-             "body": "<!-- CI automatic comment start :report: -->\nx"},
-        ])),
-    )
-    # _infer_bot_login_from_comments imports _Environment lazily; patch that.
-    import praktika._environment as envmod
-    monkeypatch.setattr(envmod._Environment, "get",
-                        classmethod(lambda cls: SimpleNamespace(REPOSITORY="o/r", PR_NUMBER=1)))
-    assert ai_review._authenticated_login() == "praktika-gh[bot]"
 
 
 # ------------------------------------------------------------- gh payload
@@ -225,7 +195,6 @@ def _stub_info(pr_number=42):
 
 def _wire_common(monkeypatch, review_json, threads):
     monkeypatch.setattr(ai_review, "Info", lambda: _stub_info())
-    monkeypatch.setattr(ai_review, "_authenticated_login", lambda explicit="": "review-bot")
     monkeypatch.setattr(GH, "get_pr_diff", classmethod(lambda cls, *a, **k: "DIFF"))
     monkeypatch.setattr(
         GH, "list_pr_review_threads", classmethod(lambda cls, *a, **k: threads)
