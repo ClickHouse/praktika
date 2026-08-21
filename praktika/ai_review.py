@@ -69,7 +69,11 @@ _REVIEW_SCHEMA = {
     "properties": {
         "summary_md": {
             "type": "string",
-            "description": "Self-contained Markdown summary of ALL findings.",
+            "description": (
+                "Markdown body summarizing ALL findings. Do NOT include a "
+                "top-level title/heading — the job prepends a 'Code Review' "
+                "heading; start directly with the content."
+            ),
         },
         "inline_findings": {
             "type": "array",
@@ -129,7 +133,7 @@ and style/lint/formatting. Mention those, if at all, only as nits in the summary
 
 Respond with ONLY a JSON object (no prose, no markdown fences) of the form:
 {
-  "summary_md": "<self-contained Markdown summary of ALL findings>",
+  "summary_md": "<Markdown body summarizing ALL findings; do NOT add a top-level title/heading — the job prepends a 'Code Review' heading. Start directly with the content, using #### or bullet sub-sections as needed>",
   "inline_findings": [
     {"path": "<repo-relative file>", "line": <int>, "side": "RIGHT",
      "start_line": <int, optional for a multi-line range>,
@@ -293,15 +297,22 @@ def _run_model(provider, system, user_content):
     raise RuntimeError(f"AI review failed after {MAX_ATTEMPTS} attempts: {last_error}")
 
 
+# Fixed heading prepended to the model's summary so the review comment always
+# has a consistent "Code Review" title and a horizontal rule above it, whatever
+# the model wrote. The model is instructed not to add its own top-level title.
+_REVIEW_HEADER = "---\n\n### Code Review\n\n"
+
+
 def _post_summary(summary_md, dry_run):
     summary_md = (summary_md or "").strip()
     if not summary_md:
         print("No summary to post")
         return
+    body = _REVIEW_HEADER + summary_md
     if dry_run:
-        print(f"[dry-run] would post/update summary comment:\n{summary_md}")
+        print(f"[dry-run] would post/update summary comment:\n{body}")
         return
-    GH.post_updateable_comment(comment_tags_and_bodies={"review": summary_md})
+    GH.post_updateable_comment(comment_tags_and_bodies={"review": body})
 
 
 def _post_inline_findings(findings, commit_id, dry_run):

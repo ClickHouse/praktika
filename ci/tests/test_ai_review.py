@@ -209,7 +209,9 @@ def test_review_end_to_end_applies_all_actions(monkeypatch):
     args = SimpleNamespace(provider="stub", model="", prompt="", bot_login="", dry_run=False)
     result = ai_review.review(args)
 
-    assert posted["review"] == "## Review\nlooks ok"
+    # The job prepends a fixed "Code Review" heading + rule to the model summary.
+    assert posted["review"] == ai_review._REVIEW_HEADER + "## Review\nlooks ok"
+    assert posted["review"].startswith("---\n\n### Code Review\n\n")
     assert posted["inline"] == 1
     assert posted["resolved"] == "t-bot"
     assert result.is_ok()
