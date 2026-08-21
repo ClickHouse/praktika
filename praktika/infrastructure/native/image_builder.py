@@ -50,8 +50,15 @@ def _ubuntu_setup_component(name: str, *, with_docker: bool):
         # Stop stock Ubuntu background apt/snap upgrades from holding the dpkg
         # lock -- both during this build (racing our own apt-get) and, once the
         # AMI is baked, at runner boot (racing the agent's first heartbeat).
+        # Disabling the timers is not enough: a timer may have already activated
+        # apt-daily{,-upgrade}.service, which are separate units still holding
+        # the lock, so stop those too. Give every apt command a lock timeout
+        # (via a global config so all invocations below inherit it) to ride out
+        # any residual run rather than failing instantly on a held lock.
+        "echo 'DPkg::Lock::Timeout \"120\";' > /etc/apt/apt.conf.d/99praktika-lock-timeout",
         "systemctl disable --now apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service || true",
-        "DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=60 purge -y unattended-upgrades || true",
+        "systemctl stop apt-daily.service apt-daily-upgrade.service || true",
+        "DEBIAN_FRONTEND=noninteractive apt-get purge -y unattended-upgrades || true",
         "apt-get update",
         "DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends apt-transport-https at atop binfmt-support build-essential ca-certificates curl git gnupg jq lsb-release moreutils pigz python3-dev python3-pip python3.12 python3.12-venv qemu-user-static ripgrep unzip wget zstd",
         "ln -sf /usr/bin/python3.12 /usr/local/bin/python3",
