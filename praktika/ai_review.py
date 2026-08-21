@@ -498,8 +498,12 @@ def review(args):
             project_prompt = f.read()
 
     provider = resolve_provider(args.provider, model=args.model or "")
+    effort = getattr(args, "reasoning_effort", "") or ""
+    if effort and hasattr(provider, "reasoning_effort"):
+        provider.reasoning_effort = effort
     bot_login = _authenticated_login(getattr(args, "bot_login", "") or "")
     print(f"AI review: provider={provider.name} model={provider.resolved_model()} "
+          f"effort={getattr(provider, 'reasoning_effort', '(n/a)')} "
           f"bot_login={bot_login or '(unknown)'} dry_run={bool(args.dry_run)}")
 
     diff = GH.get_pr_diff()
@@ -524,7 +528,7 @@ def review(args):
         f"provider={provider.name} model={provider.resolved_model()} "
         f"findings={len(review_data.get('inline_findings') or [])} "
         f"thread_actions={len(review_data.get('thread_actions') or [])} "
-        f"tokens={usage.input_tokens}/{usage.output_tokens} cost=${usage.cost_usd:.4f}"
+        f"tokens={usage.input_tokens}/{usage.output_tokens}"
     )
     print(info_line)
     return Result.create_from(status=Result.Status.OK, info=info_line)

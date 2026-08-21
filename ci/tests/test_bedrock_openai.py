@@ -35,6 +35,16 @@ def _make_provider(responses):
     return p
 
 
+def test_reasoning_fields_shape_per_model_family():
+    # gpt-5.x: nested reasoning.effort, supports xhigh.
+    p5 = BedrockOpenAIProvider(model="global.openai.gpt-5.6-sol")
+    assert p5._reasoning_fields("xhigh") == {"reasoning": {"effort": "xhigh"}}
+    # gpt-oss: flat reasoning_effort, xhigh clamped to high.
+    poss = BedrockOpenAIProvider(model="openai.gpt-oss-120b-1:0")
+    assert poss._reasoning_fields("xhigh") == {"reasoning_effort": "high"}
+    assert poss._reasoning_fields("medium") == {"reasoning_effort": "medium"}
+
+
 def test_two_phase_structured_output_returns_submit_json():
     result = {"summary_md": "looks good", "inline_findings": [], "thread_actions": []}
     p = _make_provider(

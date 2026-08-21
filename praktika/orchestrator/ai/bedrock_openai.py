@@ -71,18 +71,34 @@ def _to_tool_config(tools):
 
 class BedrockOpenAIProvider(AIProvider):
     name = "bedrock-openai"
-    DEFAULT_MODEL = "openai.gpt-oss-120b-1:0"
+    # gpt-5.6 via its global inference profile (on-demand invocation of the bare
+    # model id isn't supported). This mirrors the ClickHouse code-review job's
+    # gpt-5.x + xhigh reasoning. Override with --model, e.g.
+    # global.openai.gpt-5.6-terra / -luna, or openai.gpt-oss-120b-1:0.
+    DEFAULT_MODEL = "global.openai.gpt-5.6-sol"
 
-    # Default reasoning effort for gpt-oss investigation turns. "low" reasoning
-    # is used for the forced final submit so the model spends its output budget
-    # emitting the result tool call, not more analysis.
-    DEFAULT_REASONING_EFFORT = "medium"
+    # Default reasoning effort for investigation turns (matches ClickHouse's
+    # xhigh). "low" is used for the forced final submit / summary so the model
+    # spends its output budget emitting the result, not more analysis.
+    DEFAULT_REASONING_EFFORT = "xhigh"
 
     def __init__(self, model="", aws_region="", reasoning_effort=""):
         super().__init__(model=model)
         self.aws_region = aws_region or ""
         self.reasoning_effort = reasoning_effort or self.DEFAULT_REASONING_EFFORT
         self._client = None  # lazily constructed on first complete()
+
+    def _reasoning_fields(self, effort):
+        """The ``additionalModelRequestFields`` for a given reasoning effort,
+        in the shape the target model family expects. gpt-oss takes a flat
+        ``reasoning_effort`` (max "high"); gpt-5.x takes a nested
+        ``reasoning: {effort}`` (supports "xhigh")."""
+        model = self.resolved_model()
+        if "gpt-oss" in model:
+            # gpt-oss has no "xhigh"; clamp so a shared default still works.
+            eff = "high" if effort == "xhigh" else effort
+            return {"reasoning_effort": eff}
+        return {"reasoning": {"effort": effort}}
 
     def _region(self):
         if self.aws_region:
@@ -149,9 +165,9 @@ class BedrockOpenAIProvider(AIProvider):
                 system=[{"text": system}],
                 messages=messages,
                 inferenceConfig={"maxTokens": max_tokens},
-                additionalModelRequestFields={
-                    "reasoning_effort": self.reasoning_effort
-                },
+                additionalModelRequestFields=self._reasoning_fields(
+                    self.reasoning_effort
+                ),
             )
             if inv_config:
                 kwargs["toolConfig"] = inv_config
@@ -196,7 +212,7 @@ class BedrockOpenAIProvider(AIProvider):
                 system=[{"text": system}],
                 messages=messages,
                 inferenceConfig={"maxTokens": max_tokens},
-                additionalModelRequestFields={"reasoning_effort": "low"},
+                additionalModelRequestFields=self._reasoning_fields("low"),
             )
             if inv_config:
                 kwargs["toolConfig"] = inv_config
@@ -229,7 +245,7 @@ class BedrockOpenAIProvider(AIProvider):
                     system=[{"text": "You convert a review into structured data."}],
                     messages=[{"role": "user", "content": [{"text": structure_msg}]}],
                     inferenceConfig={"maxTokens": max(max_tokens, 4000)},
-                    additionalModelRequestFields={"reasoning_effort": "low"},
+                    additionalModelRequestFields=self._reasoning_fields("low"),
                     toolConfig={
                         "tools": submit_spec["tools"],
                         "toolChoice": {"tool": {"name": _SUBMIT_TOOL}},
@@ -249,8 +265,7 @@ class BedrockOpenAIProvider(AIProvider):
         print(
             f"[AI {self.name}] complete: model={model} tool_calls={tool_calls} "
             f"structured={response_schema is not None} "
-            f"tokens={usage.input_tokens}/{usage.output_tokens} "
-            f"cost=${usage.cost_usd:.4f}"
+            f"tokens={usage.input_tokens}/{usage.output_tokens}"
         )
         return Turn(reasoning=text, usage=usage)
 

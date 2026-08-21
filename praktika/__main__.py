@@ -284,6 +284,15 @@ def create_parser():
         help="Model/runtime target override; empty uses the provider's default",
     )
     review_parser.add_argument(
+        "--reasoning-effort",
+        dest="reasoning_effort",
+        default="",
+        help=(
+            "Reasoning effort for providers that support it (e.g. bedrock-openai: "
+            "low|medium|high, and xhigh for gpt-5.x). Empty uses the provider default"
+        ),
+    )
+    review_parser.add_argument(
         "--prompt",
         default="",
         help="Path to a repo-local Markdown file with project-specific review guidance",
