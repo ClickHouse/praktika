@@ -17,10 +17,17 @@ Region resolution mirrors the Anthropic ``BedrockProvider``: explicit
 ``AWS_DEFAULT_REGION`` env. Bedrock Runtime has no region fallback, so a region
 must be resolvable or ``complete`` raises (→ the caller's error handling).
 """
+import json
 import os
 import time
 
 from .provider import AIProvider, Turn, Usage
+
+# Name of the synthetic tool used to collect structured output. When
+# ``response_schema`` is set the model is required to return its answer by
+# calling this tool, so the result is a validated argument object rather than
+# free text a reasoning model tends to muddle with its analysis.
+_SUBMIT_TOOL = "submit_result"
 
 # Per-1M-token (input, output) USD pricing, matched by longest substring in the
 # model id (tolerant of version suffixes). Unknown ids price at zero so cost
@@ -66,9 +73,15 @@ class BedrockOpenAIProvider(AIProvider):
     name = "bedrock-openai"
     DEFAULT_MODEL = "openai.gpt-oss-120b-1:0"
 
-    def __init__(self, model="", aws_region=""):
+    # Default reasoning effort for gpt-oss investigation turns. "low" reasoning
+    # is used for the forced final submit so the model spends its output budget
+    # emitting the result tool call, not more analysis.
+    DEFAULT_REASONING_EFFORT = "medium"
+
+    def __init__(self, model="", aws_region="", reasoning_effort=""):
         super().__init__(model=model)
         self.aws_region = aws_region or ""
+        self.reasoning_effort = reasoning_effort or self.DEFAULT_REASONING_EFFORT
         self._client = None  # lazily constructed on first complete()
 
     def _region(self):
@@ -106,43 +119,54 @@ class BedrockOpenAIProvider(AIProvider):
         tools=None,
         tool_executor=None,
         max_tokens=4000,
+        response_schema=None,
     ) -> Turn:
         client = self._get_client()
         model = self.resolved_model()
-        tool_config = _to_tool_config(tools)
+        inv_config = _to_tool_config(list(tools or []))
+
         messages = [{"role": "user", "content": [{"text": user_content}]}]
         totals = {"input": 0, "output": 0}
         tool_calls = 0
 
+        def _record(resp):
+            u = resp.get("usage") or {}
+            totals["input"] += u.get("inputTokens", 0) or 0
+            totals["output"] += u.get("outputTokens", 0) or 0
+            return ((resp.get("output") or {}).get("message") or {}).get("content") or []
+
         t0 = time.time()
+
+        # ---- Phase 1: investigate and produce free-text findings ----------
+        # gpt-oss is a reasoning model that writes its answer as prose; let it.
+        # We don't ask for JSON here — structuring happens in phase 2, which is
+        # far more reliable than parsing JSON out of a reasoning model's output.
         text = ""
+        exhausted = True
         for _ in range(_MAX_TOOL_ROUNDS + 1):
             kwargs = dict(
                 modelId=model,
                 system=[{"text": system}],
                 messages=messages,
                 inferenceConfig={"maxTokens": max_tokens},
+                additionalModelRequestFields={
+                    "reasoning_effort": self.reasoning_effort
+                },
             )
-            if tool_config:
-                kwargs["toolConfig"] = tool_config
-            resp = client.converse(**kwargs)
-
-            usage = resp.get("usage") or {}
-            totals["input"] += usage.get("inputTokens", 0) or 0
-            totals["output"] += usage.get("outputTokens", 0) or 0
-
-            message = (resp.get("output") or {}).get("message") or {}
-            content = message.get("content") or []
-            text = next(
-                (b["text"] for b in content if "text" in b),
-                text,
-            )
+            if inv_config:
+                kwargs["toolConfig"] = inv_config
+            content = _record(client.converse(**kwargs))
             tool_uses = [b["toolUse"] for b in content if "toolUse" in b]
             if not tool_uses:
+                text = next((b["text"] for b in content if "text" in b), text)
+                exhausted = False
                 break
-
-            # Echo the assistant turn back, then answer each tool call.
-            messages.append({"role": "assistant", "content": content})
+            # Echo the assistant turn back, but strip reasoningContent blocks:
+            # Bedrock rejects prior-turn reasoningContent in the request for
+            # gpt-oss (ValidationException). Only toolUse/text are needed to
+            # continue the tool loop.
+            echo = [b for b in content if "reasoningContent" not in b]
+            messages.append({"role": "assistant", "content": echo})
             results = []
             for tu in tool_uses:
                 tool_calls += 1
@@ -160,11 +184,71 @@ class BedrockOpenAIProvider(AIProvider):
                     }
                 )
             messages.append({"role": "user", "content": results})
-        latency_ms = int((time.time() - t0) * 1000)
 
+        if exhausted:
+            # The model kept calling tools to the round cap; ask it once more to
+            # write up its findings (messages ends with a user turn). toolConfig
+            # must still be passed — Converse rejects a request that omits it
+            # while the history contains toolUse/toolResult blocks — but low
+            # reasoning effort biases the model to answer in text now.
+            kwargs = dict(
+                modelId=model,
+                system=[{"text": system}],
+                messages=messages,
+                inferenceConfig={"maxTokens": max_tokens},
+                additionalModelRequestFields={"reasoning_effort": "low"},
+            )
+            if inv_config:
+                kwargs["toolConfig"] = inv_config
+            content = _record(client.converse(**kwargs))
+            text = next((b["text"] for b in content if "text" in b), text)
+
+        # ---- Phase 2: structure the findings via a forced tool call -------
+        # A separate, small-context call that forces ``submit_result``. gpt-oss
+        # honors a forced ``toolChoice`` reliably when the context is small, so
+        # the result comes back as validated tool arguments, not free text.
+        if response_schema is not None:
+            submit_spec = _to_tool_config(
+                [
+                    {
+                        "name": _SUBMIT_TOOL,
+                        "description": "Return the structured result.",
+                        "input_schema": response_schema,
+                    }
+                ]
+            )
+            structure_msg = (
+                "Convert the following code review into the required structured "
+                "result by calling the " + _SUBMIT_TOOL + " tool. Preserve every "
+                "finding, its file path and line, and the summary verbatim.\n\n"
+                + (text or "(the reviewer produced no findings)")
+            )
+            forced_content = _record(
+                client.converse(
+                    modelId=model,
+                    system=[{"text": "You convert a review into structured data."}],
+                    messages=[{"role": "user", "content": [{"text": structure_msg}]}],
+                    inferenceConfig={"maxTokens": max(max_tokens, 4000)},
+                    additionalModelRequestFields={"reasoning_effort": "low"},
+                    toolConfig={
+                        "tools": submit_spec["tools"],
+                        "toolChoice": {"tool": {"name": _SUBMIT_TOOL}},
+                    },
+                )
+            )
+            forced_submit = [
+                b["toolUse"]
+                for b in forced_content
+                if "toolUse" in b and b["toolUse"]["name"] == _SUBMIT_TOOL
+            ]
+            if forced_submit:
+                text = json.dumps(forced_submit[0].get("input") or {})
+
+        latency_ms = int((time.time() - t0) * 1000)
         usage = self._usage(model, totals, latency_ms)
         print(
             f"[AI {self.name}] complete: model={model} tool_calls={tool_calls} "
+            f"structured={response_schema is not None} "
             f"tokens={usage.input_tokens}/{usage.output_tokens} "
             f"cost=${usage.cost_usd:.4f}"
         )

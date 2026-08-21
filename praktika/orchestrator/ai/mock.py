@@ -21,6 +21,7 @@ class MockProvider(AIProvider):
         tools=None,
         tool_executor=None,
         max_tokens=4000,
+        response_schema=None,
     ) -> Turn:
         """Return a canned, action-free review JSON without any model call.
 

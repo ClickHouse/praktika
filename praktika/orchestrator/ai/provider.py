@@ -174,6 +174,7 @@ class AIProvider(ABC):
         tools=None,
         tool_executor=None,
         max_tokens=4000,
+        response_schema=None,
     ) -> "Turn":
         """One-shot model call outside the orchestrator lifecycle.
 
@@ -186,6 +187,14 @@ class AIProvider(ABC):
         so tool execution stays with the caller — and returns a ``Turn`` whose
         ``reasoning`` holds the model's final raw text and whose ``usage`` is
         filled. The caller parses ``reasoning`` however it needs.
+
+        ``response_schema`` (a JSON Schema dict), when set, requests
+        **structured output**: the provider offers a forced ``submit_result``
+        tool whose input schema is ``response_schema`` and returns the
+        submitted arguments as a JSON string in ``Turn.reasoning``. This is far
+        more reliable than parsing free-text JSON from a reasoning model, which
+        tends to intermix its analysis with the answer. A provider that doesn't
+        implement structured output ignores the schema and returns free text.
 
         No default implementation: a provider that supports one-shot completion
         overrides this. Providers that only react to lifecycle events (e.g. the

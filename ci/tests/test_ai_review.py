@@ -182,7 +182,8 @@ def _wire_common(monkeypatch, review_json, threads):
         def resolved_model(self):
             return "stub-model"
 
-        def complete(self, system, user_content, tools=None, tool_executor=None, max_tokens=4000):
+        def complete(self, system, user_content, tools=None, tool_executor=None,
+                     max_tokens=4000, response_schema=None):
             return Turn(reasoning=json.dumps(review_json), usage=Usage(provider="stub"))
 
     monkeypatch.setattr(ai_review, "resolve_provider", lambda spec, model="": _Stub())

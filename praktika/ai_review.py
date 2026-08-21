@@ -60,6 +60,53 @@ def _tool_executor(name, tool_input):
     return _anthropic._execute_tool(name, tool_input, set())
 
 
+# JSON Schema for the review result. Passed to provider.complete() as
+# response_schema so a provider that supports structured output (bedrock-openai)
+# forces the model to return exactly this shape via a tool call, instead of
+# emitting free-text JSON a reasoning model tends to muddle with its analysis.
+_REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary_md": {
+            "type": "string",
+            "description": "Self-contained Markdown summary of ALL findings.",
+        },
+        "inline_findings": {
+            "type": "array",
+            "description": "Per-line findings to post as one batched review.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "line": {"type": "integer"},
+                    "side": {"type": "string", "enum": ["RIGHT", "LEFT"]},
+                    "start_line": {"type": "integer"},
+                    "body": {"type": "string"},
+                },
+                "required": ["path", "line", "body"],
+            },
+        },
+        "thread_actions": {
+            "type": "array",
+            "description": "Actions on existing review threads.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "thread_id": {"type": "string"},
+                    "action": {
+                        "type": "string",
+                        "enum": ["resolve", "unresolve", "reply"],
+                    },
+                    "body": {"type": "string"},
+                },
+                "required": ["thread_id", "action"],
+            },
+        },
+    },
+    "required": ["summary_md", "inline_findings", "thread_actions"],
+}
+
+
 _SYSTEM = """\
 You are an automated code reviewer for a pull request. You are given the PR
 title and body, the full diff, and the existing review threads (each with a
@@ -227,6 +274,7 @@ def _run_model(provider, system, user_content):
                 user_content=user_content,
                 tools=_REVIEW_TOOLS,
                 tool_executor=_tool_executor,
+                response_schema=_REVIEW_SCHEMA,
             )
             if turn.error:
                 last_error = turn.error
@@ -235,6 +283,9 @@ def _run_model(provider, system, user_content):
                 if review:
                     return review, turn.usage
                 last_error = "model reply did not parse into a JSON object"
+                # Surface the raw reply (truncated) so a parse failure is
+                # diagnosable from the job log instead of opaque.
+                print(f"  raw model reply: {(turn.reasoning or '')[:800]!r}")
         except Exception as e:  # noqa: BLE001 — any failure here is retryable
             last_error = f"{type(e).__name__}: {e}"
             traceback.print_exc()

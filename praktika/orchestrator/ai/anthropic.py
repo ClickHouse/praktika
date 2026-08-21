@@ -444,8 +444,14 @@ class AnthropicProvider(AIProvider):
         tools=None,
         tool_executor=None,
         max_tokens=4000,
+        response_schema=None,
     ) -> Turn:
         """Run the Messages API tool-use loop and return the final raw text.
+
+        ``response_schema`` is accepted for interface parity but not yet used by
+        this provider (structured output is implemented in the bedrock-openai
+        provider); here the model is asked for JSON via the prompt and the
+        caller parses the returned text.
 
         Shared by ``on_job_failure`` (orchestrator) and standalone callers such
         as ``praktika review``. The loop drives the model until it stops calling
