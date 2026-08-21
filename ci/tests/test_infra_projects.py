@@ -1489,6 +1489,7 @@ def test_project_image_builders_register_expected_launch_templates():
     ] == [
         "arm-2xsmall-lt",
         "arm-2xsmall-base-lt",
+        "arm-2xsmall-bedrock-lt",
         "workflow-orchestrator-lt",
         "workflow-orchestrator-base-lt",
     ]
@@ -1659,6 +1660,7 @@ def test_shared_arm64_images_are_used_by_runner_and_orchestrator_pools():
     assert [lt.name for lt in builder.launch_templates] == [
         "arm-2xsmall-lt",
         "arm-2xsmall-base-lt",
+        "arm-2xsmall-bedrock-lt",
         "workflow-orchestrator-lt",
         "workflow-orchestrator-base-lt",
     ]

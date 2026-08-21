@@ -95,7 +95,7 @@ workflow = Workflow.Config(
         # the job can post comments and manage review threads.
         Job.Config(
             name="Code Review",
-            runs_on=[RunnerLabels.SMALL_ARM],
+            runs_on=[RunnerLabels.SMALL_ARM_BEDROCK],
             command=(
                 "python3 -m praktika review --provider bedrock-openai "
                 "--prompt ./ci/prompts/code_review.md"

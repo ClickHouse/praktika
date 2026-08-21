@@ -170,6 +170,12 @@ class RunnerPool:
     evidence to the `/{slug}/praktika-system` CloudWatch log group. Off by
     default; see docs/logging.md.
 
+    `ext["iam_statements"]` (list of IAM policy statement dicts) are appended to
+    the runner instance role's RunnerAccess inline policy, so a project can grant
+    pool-specific permissions (e.g. a code-review pool's `bedrock:InvokeModel`)
+    without editing this shared class. Applied only when the role is created here
+    (not when a custom `ec2_role` is supplied).
+
     All three AWS components are created at construction time and registered
     into CloudInfrastructure.Config automatically via its runner_pools list.
 
@@ -363,6 +369,14 @@ class RunnerPool:
                         "Resource": allowed_secret_resources,
                     }
                 )
+            # Extra IAM policy statements appended to RunnerAccess, so a project
+            # can grant pool-specific permissions (e.g. a code-review pool's
+            # Bedrock access) from its config without editing this shared class.
+            extra_iam_statements = self.ext.get("iam_statements", [])
+            assert isinstance(extra_iam_statements, list) and all(
+                isinstance(stmt, dict) for stmt in extra_iam_statements
+            ), "ext['iam_statements'] must be a list of IAM policy statement dicts"
+            runner_statements.extend(extra_iam_statements)
             self.ec2_role = IAMRole.Config(
                 name=f"{self.name}-role",
                 trust_service="ec2.amazonaws.com",

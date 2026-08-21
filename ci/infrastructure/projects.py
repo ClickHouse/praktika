@@ -125,6 +125,21 @@ _RUNNER_ALLOW_ALL_SECRETS = False
 _RUNNER_ALLOW_ALL_S3_PREFIXES = False
 _RUNNER_ALLOW_SSM_DEBUG = False
 
+# The Code Review job (`praktika review`) calls an OpenAI model on Bedrock via
+# the Converse API, which requires bedrock:InvokeModel. Only the dedicated
+# code-review runner pool below carries this grant (scoped to Bedrock
+# foundation-model / inference-profile resources) -- general job runners stay
+# Bedrock-less, so an arbitrary job cannot reach the model API.
+_CODE_REVIEW_BEDROCK_IAM_STATEMENT = {
+    "Sid": "BedrockRuntimeInference",
+    "Effect": "Allow",
+    "Action": ["bedrock:InvokeModel"],
+    "Resource": [
+        "arn:aws:bedrock:*::foundation-model/*",
+        "arn:aws:bedrock:*:*:inference-profile/*",
+    ],
+}
+
 _runner_pools = [
     Components.RunnerPool(
         name="arm-2xsmall",
@@ -231,6 +246,43 @@ _runner_pools = [
                 "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/praktika/amazon-cloudwatch-agent.json -s",
                 "# Update the controller if changed (to test new version w/o image rebuild)",
                 f"python3.12 -m pip install --ignore-installed {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages",
+                (
+                    f"/opt/praktika/base-venvs/{_RUNTIME_BASE_VENV}/bin/python "
+                    f"-m pip install --force-reinstall {_PRAKTIKA_WHL}"
+                ),
+                "systemctl enable --now praktika-controller",
+                "",
+            ]
+        ),
+    ),
+    # Dedicated pool for the AI Code Review job. Identical to arm-2xsmall, plus a
+    # scoped bedrock:InvokeModel grant via ext["iam_statements"] so only this
+    # pool's role can call the Bedrock model API.
+    Components.RunnerPool(
+        name="arm-2xsmall-bedrock",
+        instance_type="t4g.small",
+        scaling=Components.RunnerPool.Scaling.Auto,
+        size=0,
+        max_size=10,
+        image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
+        allowed_ssm_parameters=list(_RUNNER_ALLOWED_SSM_PARAMETERS),
+        allowed_secrets=list(_RUNNER_ALLOWED_SECRETS),
+        allowed_s3_prefixes=list(_RUNNER_ALLOWED_S3_PREFIXES),
+        allow_all_ssm_parameters=_RUNNER_ALLOW_ALL_SSM_PARAMETERS,
+        allow_all_secrets=_RUNNER_ALLOW_ALL_SECRETS,
+        allow_all_s3_prefixes=_RUNNER_ALLOW_ALL_S3_PREFIXES,
+        allow_ssm_debug=_RUNNER_ALLOW_SSM_DEBUG,
+        ext={"iam_statements": [_CODE_REVIEW_BEDROCK_IAM_STATEMENT]},
+        user_data="\n".join(
+            [
+                "#!/usr/bin/env bash",
+                "set -xeuo pipefail",
+                "",
+                "# Update the controller if changed (to test new version w/o image rebuild)",
+                f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages",
+                "# Add any host customization you need above this line.",
+                "/usr/local/bin/praktika-configure-cloudwatch-agent",
+                "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/praktika/amazon-cloudwatch-agent.json -s",
                 (
                     f"/opt/praktika/base-venvs/{_RUNTIME_BASE_VENV}/bin/python "
                     f"-m pip install --force-reinstall {_PRAKTIKA_WHL}"
