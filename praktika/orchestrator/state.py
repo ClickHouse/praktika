@@ -83,12 +83,13 @@ def _normalize_job_name_for_s3(name):
     return name.replace(" ", "_").replace("/", "_")
 
 
-def _build_check_output(result, rc, instance_id="", report_url=""):
+def _build_check_output(result, rc, instance_id="", report_url="", pool=""):
     """Render a job's Result as the ``output`` dict for a check-run
     completion. ``result`` is a ``praktika.Result`` reconstructed from the
-    completion payload (the runner ships it in ``final.json``). Returns
-    None on any failure so the caller can fall back to a bodyless
-    completion."""
+    completion payload (the runner ships it in ``final.json``). ``pool`` is
+    the runner pool (the job's ``runs_on``) the job ran on, surfaced so a
+    reader can tell which pool/role executed it. Returns None on any failure
+    so the caller can fall back to a bodyless completion."""
     try:
         text = result.to_markdown(report_url=report_url)
         # Check API caps output.text at ~64 KB.
@@ -109,11 +110,15 @@ def _build_check_output(result, rc, instance_id="", report_url=""):
         summary = f"**{displayed_status}**{dur}"
         if report_url:
             summary += f" — [CI Report]({report_url})"
+        details = []
         if instance_id:
             summary += f" — runner `{instance_id}`"
-            text = f"**Runner instance:** `{instance_id}`" + (
-                f"\n\n{text}" if text else ""
-            )
+            details.append(f"**Runner instance:** `{instance_id}`")
+        if pool:
+            summary += f" — pool `{pool}`"
+            details.append(f"**Runner pool:** `{pool}`")
+        if details:
+            text = "\n\n".join(details) + (f"\n\n{text}" if text else "")
         return {"title": displayed_status, "summary": summary, "text": text}
     except Exception as e:
         print(f"  [warn] could not render job Result as MD: {type(e).__name__}: {e}")
@@ -800,6 +805,7 @@ class WorkflowState:
                         rc,
                         instance_id=js.runner_instance_id or "",
                         report_url=details_url or "",
+                        pool=", ".join(js.job.runs_on) if js.job.runs_on else "",
                     )
                 except Exception as e:
                     print(
