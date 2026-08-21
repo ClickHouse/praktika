@@ -26,8 +26,8 @@ class Workflow:
             # no AI advisor existed for this workflow.
             enabled: bool = False
             # Provider selector: registered name ("mock", "anthropic",
-            # "bedrock"), a custom AIProvider subclass, or a ready provider
-            # instance attached directly by the workflow.
+            # "bedrock-anthropic", "bedrock-openai"), a custom AIProvider
+            # subclass, or a ready provider instance attached by the workflow.
             provider: object = "mock"
             # Provider-specific model/runtime target. Empty means "use the
             # provider's default model".

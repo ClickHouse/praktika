@@ -499,6 +499,182 @@ class GH:
         return data
 
     @classmethod
+    def post_pr_line_comment(
+        cls,
+        body_file,
+        commit_id=None,
+        path=None,
+        line=None,
+        side="RIGHT",
+        in_reply_to=None,
+        pr=None,
+        repo=None,
+    ):
+        """Post an inline review comment on a specific line of a PR diff,
+        or a reply on an existing inline thread.
+
+        When ``in_reply_to`` is set, the comment is posted as a reply on
+        the thread whose parent comment has that database id, and
+        ``commit_id``/``path``/``line``/``side`` are ignored. Otherwise a
+        new top-level inline comment is created at the given location and
+        all four are required.
+
+        The body is read from ``body_file`` and passed via ``-F body=@<file>``,
+        which avoids two classes of bugs we have hit before:
+          1) Newlines collapsing to literal ``\\n`` when the body is inlined.
+          2) The body being posted as the literal ``@<file>`` string when a
+             caller mistakenly uses ``-f`` (raw field) instead of ``-F`` (typed
+             field with ``@file`` expansion).
+        """
+        if not repo:
+            repo = _Environment.get().REPOSITORY
+        if not pr:
+            pr = _Environment.get().PR_NUMBER
+
+        if not os.path.exists(body_file):
+            raise FileNotFoundError(f"Body file [{body_file}] not found")
+        if os.path.getsize(body_file) == 0:
+            raise ValueError(f"Body file [{body_file}] is empty")
+
+        if in_reply_to is not None:
+            cmd = (
+                f"gh api -X POST "
+                f'-H "Accept: application/vnd.github.v3+json" '
+                f'"/repos/{repo}/pulls/{pr}/comments/{int(in_reply_to)}/replies" '
+                f"-F body=@{shlex.quote(body_file)}"
+            )
+        else:
+            if commit_id is None or path is None or line is None:
+                raise ValueError(
+                    "post_pr_line_comment requires commit_id, path, and line "
+                    "when in_reply_to is not set"
+                )
+            cmd = (
+                f"gh api -X POST "
+                f'-H "Accept: application/vnd.github.v3+json" '
+                f'"/repos/{repo}/pulls/{pr}/comments" '
+                f"-F body=@{shlex.quote(body_file)} "
+                f"-f commit_id={shlex.quote(commit_id)} "
+                f"-f path={shlex.quote(path)} "
+                f"-F line={int(line)} "
+                f"-f side={shlex.quote(side)}"
+            )
+        return cls.do_command_with_retries(cmd)
+
+    @classmethod
+    def post_pr_review(
+        cls,
+        commit_id,
+        comments,
+        body="",
+        pr=None,
+        repo=None,
+    ):
+        """Post all inline findings as a single ``COMMENT`` PR review (one
+        review event, one notification) instead of many standalone inline
+        comments.
+
+        Only the ``COMMENT`` event is supported; this helper never approves or
+        requests changes, so an empty review is always a no-op rather than a
+        meaningful action.
+
+        ``comments`` is a list of dicts, each describing one inline comment::
+
+            {"path": <file>, "line": <int>, "side": "RIGHT"|"LEFT",
+             "start_line": <int> (optional), "start_side": <str> (optional),
+             "body_file": <path>}
+
+        Each comment body is read from its ``body_file`` and the whole payload
+        is assembled with ``json.dumps``, so multi-line Markdown is escaped
+        correctly. This avoids the ``-f`` vs ``-F`` / literal ``@<file>`` and
+        literal ``\\n`` footguns that standalone ``gh api`` calls have hit.
+
+        GitHub rejects a ``COMMENT`` review with neither a body nor any
+        comments, so when ``comments`` is empty and ``body`` is empty the call
+        is skipped and True is returned.
+        """
+        if not repo:
+            repo = _Environment.get().REPOSITORY
+        if not pr:
+            pr = _Environment.get().PR_NUMBER
+
+        payload_comments = []
+        for c in comments:
+            body_file = c["body_file"]
+            if not os.path.exists(body_file):
+                raise FileNotFoundError(f"Body file [{body_file}] not found")
+            if os.path.getsize(body_file) == 0:
+                raise ValueError(f"Body file [{body_file}] is empty")
+            with open(body_file, "r", encoding="utf-8") as f:
+                comment = {"path": c["path"], "body": f.read()}
+            if c.get("start_line") is not None:
+                comment["start_line"] = int(c["start_line"])
+                comment["start_side"] = c.get("start_side", c.get("side", "RIGHT"))
+            comment["line"] = int(c["line"])
+            comment["side"] = c.get("side", "RIGHT")
+            payload_comments.append(comment)
+
+        if not payload_comments and not body:
+            print("No review body and no inline comments; skipping review post")
+            return True
+
+        payload = {"event": "COMMENT", "comments": payload_comments}
+        if commit_id:
+            payload["commit_id"] = commit_id
+        if body:
+            payload["body"] = body
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as f:
+            json.dump(payload, f)
+            payload_file = f.name
+        try:
+            cmd = (
+                f"gh api -X POST "
+                f'-H "Accept: application/vnd.github.v3+json" '
+                f'"/repos/{repo}/pulls/{pr}/reviews" '
+                f"--input {shlex.quote(payload_file)}"
+            )
+            return cls.do_command_with_retries(cmd)
+        finally:
+            os.unlink(payload_file)
+
+    @classmethod
+    def _set_review_thread_resolution(cls, thread_id, resolve, verbose=False):
+        mutation_name = "resolveReviewThread" if resolve else "unresolveReviewThread"
+        query = (
+            f"mutation($threadId:ID!){{"
+            f"{mutation_name}(input:{{threadId:$threadId}}){{thread{{isResolved}}}}"
+            f"}}"
+        )
+        cmd = (
+            f"gh api graphql "
+            f"-f query={shlex.quote(query)} "
+            f"-f threadId={shlex.quote(thread_id)}"
+        )
+        return cls.do_command_with_retries(cmd, verbose=verbose)
+
+    @classmethod
+    def resolve_pr_review_thread(cls, thread_id, verbose=False):
+        """Mark a PR review thread as resolved (GraphQL ``resolveReviewThread``).
+
+        ``thread_id`` is the GraphQL node id from
+        :meth:`list_pr_review_threads`, not the REST comment id.
+        """
+        return cls._set_review_thread_resolution(
+            thread_id, resolve=True, verbose=verbose
+        )
+
+    @classmethod
+    def unresolve_pr_review_thread(cls, thread_id, verbose=False):
+        """Re-open a previously resolved PR review thread
+        (GraphQL ``unresolveReviewThread``)."""
+        return cls._set_review_thread_resolution(
+            thread_id, resolve=False, verbose=verbose
+        )
+
+    @classmethod
     def list_pr_review_threads(cls, pr=None, repo=None, verbose=False):
         """Return all review threads on a PR via GraphQL.
 

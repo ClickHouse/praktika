@@ -167,6 +167,34 @@ class AIProvider(ABC):
         self._check_updater = None  # fn(status, summary_md); status in-progress|neutral
         self._check_open = False    # True between track_observation and track_turn
 
+    def complete(
+        self,
+        system,
+        user_content,
+        tools=None,
+        tool_executor=None,
+        max_tokens=4000,
+    ) -> "Turn":
+        """One-shot model call outside the orchestrator lifecycle.
+
+        The seam the standalone jobs (e.g. ``praktika review``) use to talk to
+        *any* provider without touching the event-hook machinery. Given a
+        ``system`` prompt, a ``user_content`` string, and an optional toolset
+        (name/description/``input_schema`` dicts, same shape ``on_job_failure``
+        uses), the provider runs its own tool-use loop — calling
+        ``tool_executor(name, input) -> str`` for each tool the model invokes,
+        so tool execution stays with the caller — and returns a ``Turn`` whose
+        ``reasoning`` holds the model's final raw text and whose ``usage`` is
+        filled. The caller parses ``reasoning`` however it needs.
+
+        No default implementation: a provider that supports one-shot completion
+        overrides this. Providers that only react to lifecycle events (e.g. the
+        mock) leave it unimplemented.
+        """
+        raise NotImplementedError(
+            f"provider {self.name!r} does not implement complete()"
+        )
+
     def resolved_model(self) -> str:
         """The model id this provider will actually use for a call.
 
@@ -337,7 +365,9 @@ def resolve_provider(spec, model="") -> "AIProvider":
 # circular import: mock.py imports the dataclasses from this module.
 from . import mock as _mock  # noqa: E402
 from . import anthropic as _anthropic  # noqa: E402
+from . import bedrock_openai as _bedrock_openai  # noqa: E402
 
 register(_mock.MockProvider)
 register(_anthropic.AnthropicProvider)
-register(_anthropic.BedrockProvider)
+register(_anthropic.BedrockAnthropicProvider)
+register(_bedrock_openai.BedrockOpenAIProvider)

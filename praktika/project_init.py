@@ -492,7 +492,7 @@ def _pull_request_workflow_template(answers: InitAnswers) -> str:
                 """\
                 ai_orchestrator=Workflow.OrchestratorAI.Config(
                     enabled=True,
-                    provider="bedrock",
+                    provider="bedrock-anthropic",
                     model="global.anthropic.claude-sonnet-5",
                 ),
                 """

@@ -56,6 +56,8 @@ ai = [
 ]
 # AI orchestration via the "bedrock" provider (Amazon Bedrock, AWS auth). Adds
 # the SDK's Bedrock client deps (boto3) on top of `ai`.
+# The "bedrock-openai" provider (OpenAI models on Bedrock, used by
+# `praktika review`) needs no extra: it uses the core boto3 dependency directly.
 bedrock = [
     "anthropic[bedrock]>=0.69.0",
 ]

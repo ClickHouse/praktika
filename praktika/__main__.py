@@ -265,6 +265,46 @@ def create_parser():
         "yaml",
         help="Generate YAML for GitHub Actions-based Praktika pipelines",
     )
+
+    review_parser = subparsers.add_parser(
+        "review",
+        help="Run the native AI code-review job on the current PR",
+    )
+    review_parser.add_argument(
+        "--provider",
+        default="bedrock-openai",
+        help=(
+            "AI provider name from the registry: mock | anthropic | "
+            "bedrock-anthropic | bedrock-openai (default: bedrock-openai)"
+        ),
+    )
+    review_parser.add_argument(
+        "--model",
+        default="",
+        help="Model/runtime target override; empty uses the provider's default",
+    )
+    review_parser.add_argument(
+        "--prompt",
+        default="",
+        help="Path to a repo-local Markdown file with project-specific review guidance",
+    )
+    review_parser.add_argument(
+        "--bot-login",
+        dest="bot_login",
+        default="",
+        help=(
+            "Login of the reviewing bot, used to enforce thread ownership. "
+            "Defaults to the authenticated gh user; when unknown, thread "
+            "resolve/unresolve/reply actions are skipped"
+        ),
+    )
+    review_parser.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        default=False,
+        help="Consult the model but print intended actions instead of posting to GitHub",
+    )
     return parser
 
 
@@ -278,6 +318,10 @@ def main(argv=None):
     elif args.command == "yaml":
         Validator().validate()
         YamlGenerator().generate()
+    elif args.command == "review":
+        from .ai_review import main as review_main
+
+        review_main(args)
     elif args.command == "infrastructure":
         from .interactive import UserPrompt
 

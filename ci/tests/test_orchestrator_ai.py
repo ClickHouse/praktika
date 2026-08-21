@@ -12,7 +12,7 @@ from praktika.orchestrator.ai import (
 )
 from praktika.orchestrator.ai.anthropic import (
     AnthropicProvider,
-    BedrockProvider,
+    BedrockAnthropicProvider,
     _collect_log_urls,
     _execute_tool,
     _grep_log,
@@ -292,7 +292,7 @@ def test_provider_error_does_not_raise(monkeypatch):
 
 def test_registry_resolves_anthropic_and_bedrock():
     assert resolve("anthropic") is AnthropicProvider
-    assert resolve("bedrock") is BedrockProvider
+    assert resolve("bedrock-anthropic") is BedrockAnthropicProvider
 
 
 def test_resolve_provider_by_name():
@@ -719,24 +719,24 @@ def test_bedrock_defaults_and_region(monkeypatch):
     import praktika.settings as psettings
 
     monkeypatch.setattr(psettings.Settings, "AWS_REGION", "eu-test-1", raising=False)
-    p = BedrockProvider()
-    assert p.name == "bedrock"
+    p = BedrockAnthropicProvider()
+    assert p.name == "bedrock-anthropic"
     assert p.resolved_model() == "global.anthropic.claude-opus-4-8"
     assert p._region() == "eu-test-1"
 
 
 def test_bedrock_explicit_region_wins():
-    assert BedrockProvider(aws_region="us-west-2")._region() == "us-west-2"
+    assert BedrockAnthropicProvider(aws_region="us-west-2")._region() == "us-west-2"
 
 
 def test_bedrock_decide_costs_with_prefixed_model():
-    p = BedrockProvider(model="global.anthropic.claude-opus-4-8")
+    p = BedrockAnthropicProvider(model="global.anthropic.claude-opus-4-8")
     p._client = _FakeClient(
         _fake_resp('{"reasoning": "r", "decision": []}', input_tokens=10, output_tokens=4)
     )
     turn = p.on_job_failure(Observation())
     assert turn.error is None
-    assert turn.usage.provider == "bedrock"
+    assert turn.usage.provider == "bedrock-anthropic"
     assert turn.usage.model == "global.anthropic.claude-opus-4-8"
     # opus pricing resolved through the inference-profile prefix
     assert turn.usage.cost_usd == round((10 * 5.0 + 4 * 25.0) / 1_000_000, 6)
@@ -747,7 +747,7 @@ def test_error_turn_stamps_resolved_model(monkeypatch):
     advisor = OrchestratorAI.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="bedrock")),
+        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="bedrock-anthropic")),
     )
 
     def boom(observation):
@@ -757,7 +757,7 @@ def test_error_turn_stamps_resolved_model(monkeypatch):
 
     turn = advisor.on_workflow_update(_state([_job("A", "failure")]), EVENT)
     assert turn.error is not None
-    assert turn.usage.provider == "bedrock"
+    assert turn.usage.provider == "bedrock-anthropic"
     assert turn.usage.model == "global.anthropic.claude-opus-4-8"
 
 

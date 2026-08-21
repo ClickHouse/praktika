@@ -41,7 +41,7 @@ def _runtime_prebuilt_venvs():
     # The `infrastructure` extra pulls Praktika's runtime deps
     # (boto3/PyJWT/cryptography/requests) automatically; pytest and the Bedrock
     # AI SDK are optional extras the runner/orchestrator need, so list them
-    # explicitly. The orchestrator's AI advisor (AI_PROVIDER="bedrock") imports
+    # explicitly. The orchestrator's AI advisor (AI_PROVIDER="bedrock-anthropic") imports
     # `anthropic[bedrock]` lazily at decide() time; baking it into this shared
     # venv keeps it present on every AMI — including the base pool, which has no
     # boot-time user_data to pip-install into (harmless on job runners).
