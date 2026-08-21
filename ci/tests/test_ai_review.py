@@ -216,7 +216,9 @@ def _wire_common(monkeypatch, review_json, threads):
 def test_review_end_to_end_applies_all_actions(monkeypatch):
     threads = [_thread("t-bot", "review-bot")]
     review_json = {
-        "summary_md": "## Review\nlooks ok",
+        "change_summary": "Adds a widget.",
+        "verdict": "issues_found",
+        "summary_md": "#### Findings\nlooks ok",
         "inline_findings": [{"path": "a.py", "line": 3, "body": "nit"}],
         "thread_actions": [{"thread_id": "t-bot", "action": "resolve"}],
     }
@@ -230,14 +232,40 @@ def test_review_end_to_end_applies_all_actions(monkeypatch):
     monkeypatch.setattr(GH, "post_pr_review", classmethod(lambda cls, commit_id, comments, **k: posted.update({"inline": len(comments)}) or True))
     monkeypatch.setattr(GH, "resolve_pr_review_thread", classmethod(lambda cls, tid, **k: posted.update({"resolved": tid}) or True))
 
-    args = SimpleNamespace(provider="stub", model="", prompt="", bot_login="", dry_run=False)
+    args = SimpleNamespace(provider="stub", model="", prompt="", dry_run=False)
     result = ai_review.review(args)
 
-    # The job prepends a fixed "Code Review" heading + rule to the model summary.
-    assert posted["review"] == ai_review._REVIEW_HEADER + "## Review\nlooks ok"
-    assert posted["review"].startswith("---\n\n### Code Review\n\n")
+    body = posted["review"]
+    assert body.startswith("---\n\n### Code Review\n\n")
+    assert "**Result:** ⚠️ Issues found" in body
+    assert "**What changed:** Adds a widget." in body
+    assert "#### Findings\nlooks ok" in body
     assert posted["inline"] == 1
     assert posted["resolved"] == "t-bot"
+    assert result.is_ok()
+
+
+def test_review_posts_result_and_change_summary_when_no_findings(monkeypatch):
+    threads = []
+    review_json = {
+        "change_summary": "Refactors the parser.",
+        "verdict": "no_issues",
+        "summary_md": "",
+        "inline_findings": [],
+        "thread_actions": [],
+    }
+    _wire_common(monkeypatch, review_json, threads)
+    posted = {}
+    monkeypatch.setattr(
+        GH, "post_updateable_comment",
+        classmethod(lambda cls, comment_tags_and_bodies, **k: posted.update(comment_tags_and_bodies) or True),
+    )
+    args = SimpleNamespace(provider="stub", model="", prompt="", dry_run=False)
+    result = ai_review.review(args)
+
+    # Even with no findings, the comment carries the overall result + change summary.
+    assert "**Result:** ✅ No issues found" in posted["review"]
+    assert "**What changed:** Refactors the parser." in posted["review"]
     assert result.is_ok()
 
 

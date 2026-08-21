@@ -98,7 +98,7 @@ workflow = Workflow.Config(
             runs_on=[RunnerLabels.SMALL_ARM_BEDROCK],
             command=(
                 "python3 -m praktika review --provider bedrock-openai "
-                "--model global.openai.gpt-5.6-sol --reasoning-effort xhigh "
+                "--model global.openai.gpt-5.6-sol --reasoning-effort high "
                 "--prompt ./ci/prompts/code_review.md"
             ),
             allow_failure=True,

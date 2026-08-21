@@ -34,6 +34,8 @@ class MockProvider(AIProvider):
 
         text = json.dumps(
             {
+                "change_summary": "(mock provider)",
+                "verdict": "no_issues",
                 "summary_md": "_(mock provider: no findings)_",
                 "inline_findings": [],
                 "thread_actions": [],

@@ -72,15 +72,15 @@ def _to_tool_config(tools):
 class BedrockOpenAIProvider(AIProvider):
     name = "bedrock-openai"
     # gpt-5.6 via its global inference profile (on-demand invocation of the bare
-    # model id isn't supported). This mirrors the ClickHouse code-review job's
-    # gpt-5.x + xhigh reasoning. Override with --model, e.g.
-    # global.openai.gpt-5.6-terra / -luna, or openai.gpt-oss-120b-1:0.
+    # model id isn't supported), close to the ClickHouse code-review job's
+    # gpt-5.x. Override with --model, e.g. global.openai.gpt-5.6-terra / -luna,
+    # or openai.gpt-oss-120b-1:0.
     DEFAULT_MODEL = "global.openai.gpt-5.6-sol"
 
-    # Default reasoning effort for investigation turns (matches ClickHouse's
-    # xhigh). "low" is used for the forced final submit / summary so the model
-    # spends its output budget emitting the result, not more analysis.
-    DEFAULT_REASONING_EFFORT = "xhigh"
+    # Default reasoning effort for investigation turns. "low" is used for the
+    # forced final submit / summary so the model spends its output budget
+    # emitting the result, not more analysis.
+    DEFAULT_REASONING_EFFORT = "high"
 
     def __init__(self, model="", aws_region="", reasoning_effort=""):
         super().__init__(model=model)

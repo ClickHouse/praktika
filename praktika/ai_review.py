@@ -67,12 +67,29 @@ def _tool_executor(name, tool_input):
 _REVIEW_SCHEMA = {
     "type": "object",
     "properties": {
+        "change_summary": {
+            "type": "string",
+            "description": (
+                "1-3 sentence plain summary of WHAT this PR changes (not the "
+                "review outcome). Always provide it, even when there are no "
+                "findings."
+            ),
+        },
+        "verdict": {
+            "type": "string",
+            "enum": ["no_issues", "nits_only", "issues_found", "blocking_issues"],
+            "description": (
+                "Overall result of the review: no_issues, nits_only, "
+                "issues_found, or blocking_issues."
+            ),
+        },
         "summary_md": {
             "type": "string",
             "description": (
-                "Markdown body summarizing ALL findings. Do NOT include a "
-                "top-level title/heading — the job prepends a 'Code Review' "
-                "heading; start directly with the content."
+                "Markdown body detailing the findings (or a short 'no issues' "
+                "note). Do NOT include a top-level title/heading, a change "
+                "summary, or the verdict — those are rendered separately; start "
+                "directly with the findings."
             ),
         },
         "inline_findings": {
@@ -107,7 +124,13 @@ _REVIEW_SCHEMA = {
             },
         },
     },
-    "required": ["summary_md", "inline_findings", "thread_actions"],
+    "required": [
+        "change_summary",
+        "verdict",
+        "summary_md",
+        "inline_findings",
+        "thread_actions",
+    ],
 }
 
 
@@ -138,7 +161,9 @@ and style/lint/formatting. Mention those, if at all, only as nits in the summary
 
 Respond with ONLY a JSON object (no prose, no markdown fences) of the form:
 {
-  "summary_md": "<Markdown body summarizing ALL findings; do NOT add a top-level title/heading — the job prepends a 'Code Review' heading. Start directly with the content, using #### or bullet sub-sections as needed>",
+  "change_summary": "<1-3 sentence plain summary of WHAT the PR changes; always fill this in, even when there are no findings>",
+  "verdict": "no_issues | nits_only | issues_found | blocking_issues",
+  "summary_md": "<Markdown body detailing the findings, or a short 'no issues' note. Do NOT add a title/heading, the change summary, or the verdict — those are rendered separately. Start directly with the findings, using #### or bullet sub-sections as needed>",
   "inline_findings": [
     {"path": "<repo-relative file>", "line": <int>, "side": "RIGHT",
      "start_line": <int, optional for a multi-line range>,
@@ -295,21 +320,48 @@ def _run_model(provider, system, user_content):
     raise RuntimeError(f"AI review failed after {MAX_ATTEMPTS} attempts: {last_error}")
 
 
-# Fixed heading prepended to the model's summary so the review comment always
-# has a consistent "Code Review" title and a horizontal rule above it, whatever
-# the model wrote. The model is instructed not to add its own top-level title.
+# Fixed heading prepended to the review comment so it always has a consistent
+# "Code Review" title and a horizontal rule above it, whatever the model wrote.
 _REVIEW_HEADER = "---\n\n### Code Review\n\n"
 
+# Human-readable label for each verdict enum value.
+_VERDICT_LABELS = {
+    "no_issues": "✅ No issues found",
+    "nits_only": "🟢 Nits only",
+    "issues_found": "⚠️ Issues found",
+    "blocking_issues": "❌ Blocking issues",
+}
 
-def _post_summary(summary_md, dry_run):
+
+def _render_review_body(review_data):
+    """Compose the review comment: a heading, the overall result, a plain
+    change summary, then the findings detail. Always shows the result and change
+    summary even when there are no findings."""
+    verdict = review_data.get("verdict") or ""
+    change_summary = (review_data.get("change_summary") or "").strip()
+    summary_md = (review_data.get("summary_md") or "").strip()
+
+    sections = []
+    verdict_label = _VERDICT_LABELS.get(verdict, verdict)
+    if verdict_label:
+        sections.append(f"**Result:** {verdict_label}")
+    if change_summary:
+        sections.append(f"**What changed:** {change_summary}")
+    if summary_md:
+        sections.append(summary_md)
+    if not sections:
+        return ""
+    return _REVIEW_HEADER + "\n\n".join(sections)
+
+
+def _post_summary(review_data, dry_run):
     """Post/update the top-level review comment. Returns a list of write-error
     strings (empty on success) so the caller can fail the job on a failed write
     instead of falsely reporting OK."""
-    summary_md = (summary_md or "").strip()
-    if not summary_md:
+    body = _render_review_body(review_data)
+    if not body:
         print("No summary to post")
         return []
-    body = _REVIEW_HEADER + summary_md
     if dry_run:
         print(f"[dry-run] would post/update summary comment:\n{body}")
         return []
@@ -475,7 +527,7 @@ def review(args):
     # False (not raise) on API failure, so a failed/partial write must fail the
     # job rather than falsely report a successfully applied review.
     errors = []
-    errors += _post_summary(review_data.get("summary_md", ""), args.dry_run)
+    errors += _post_summary(review_data, args.dry_run)
     errors += _post_inline_findings(
         review_data.get("inline_findings"),
         info.sha,
@@ -488,6 +540,7 @@ def review(args):
 
     info_line = (
         f"provider={provider.name} model={provider.resolved_model()} "
+        f"verdict={review_data.get('verdict') or '(none)'} "
         f"findings={len(review_data.get('inline_findings') or [])} "
         f"thread_actions={len(review_data.get('thread_actions') or [])} "
         f"tokens={usage.input_tokens}/{usage.output_tokens}"
