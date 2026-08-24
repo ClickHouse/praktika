@@ -333,10 +333,28 @@ _VERDICT_LABELS = {
 }
 
 
-def _render_review_body(review_data):
+def _investigation_footer(usage):
+    """A short note on how much of the tool-call budget the review used, so a
+    reader can tell whether the model had room to investigate the whole change.
+    Empty when the provider ran no tool loop (max_tool_rounds == 0)."""
+    total = getattr(usage, "max_tool_rounds", 0) or 0
+    if not total:
+        return ""
+    used = getattr(usage, "tool_rounds", 0) or 0
+    calls = getattr(usage, "tool_calls", 0) or 0
+    if getattr(usage, "exhausted", False):
+        return (
+            f"> [!WARNING]\n> The reviewer used its full investigation budget "
+            f"({used}/{total} rounds, {calls} tool calls) and may not have seen "
+            "the whole change - the review could be incomplete."
+        )
+    return f"_Investigation: {used}/{total} rounds, {calls} tool calls._"
+
+
+def _render_review_body(review_data, footer=""):
     """Compose the review comment: a heading, the overall result, a plain
-    change summary, then the findings detail. Always shows the result and change
-    summary even when there are no findings."""
+    change summary, the findings detail, then an investigation footer. Always
+    shows the result and change summary even when there are no findings."""
     verdict = review_data.get("verdict") or ""
     change_summary = (review_data.get("change_summary") or "").strip()
     summary_md = (review_data.get("summary_md") or "").strip()
@@ -351,14 +369,16 @@ def _render_review_body(review_data):
         sections.append(summary_md)
     if not sections:
         return ""
+    if footer:
+        sections.append(footer)
     return _REVIEW_HEADER + "\n\n".join(sections)
 
 
-def _post_summary(review_data, dry_run):
+def _post_summary(review_data, dry_run, footer=""):
     """Post/update the top-level review comment. Returns a list of write-error
     strings (empty on success) so the caller can fail the job on a failed write
     instead of falsely reporting OK."""
-    body = _render_review_body(review_data)
+    body = _render_review_body(review_data, footer)
     if not body:
         print("No summary to post")
         return []
@@ -526,8 +546,9 @@ def review(args):
     # Aggregate write failures from every apply step: the GH helpers return
     # False (not raise) on API failure, so a failed/partial write must fail the
     # job rather than falsely report a successfully applied review.
+    footer = _investigation_footer(usage)
     errors = []
-    errors += _post_summary(review_data, args.dry_run)
+    errors += _post_summary(review_data, args.dry_run, footer)
     errors += _post_inline_findings(
         review_data.get("inline_findings"),
         info.sha,
@@ -538,12 +559,19 @@ def review(args):
         review_data.get("thread_actions"), threads, args.dry_run
     )
 
+    rounds = ""
+    if usage.max_tool_rounds:
+        rounds = (
+            f" rounds={usage.tool_rounds}/{usage.max_tool_rounds}"
+            f" tool_calls={usage.tool_calls}"
+            + (" exhausted" if usage.exhausted else "")
+        )
     info_line = (
         f"provider={provider.name} model={provider.resolved_model()} "
         f"verdict={review_data.get('verdict') or '(none)'} "
         f"findings={len(review_data.get('inline_findings') or [])} "
         f"thread_actions={len(review_data.get('thread_actions') or [])} "
-        f"tokens={usage.input_tokens}/{usage.output_tokens}"
+        f"tokens={usage.input_tokens}/{usage.output_tokens}{rounds}"
     )
     if errors:
         info_line += "\nWrite failures:\n- " + "\n- ".join(errors)
