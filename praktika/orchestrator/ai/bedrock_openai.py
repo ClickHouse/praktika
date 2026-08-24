@@ -38,8 +38,19 @@ _PRICING = {
 }
 
 # Stop runaway tool loops: at most this many tool rounds before a final answer
-# is forced from whatever the model has seen. Mirrors the Anthropic provider.
-_MAX_TOOL_ROUNDS = 8
+# is forced from whatever the model has seen. A large PR (many files) needs room
+# to investigate before it is pushed to write up, so this is more generous than
+# the Anthropic provider's cap.
+_MAX_TOOL_ROUNDS = 12
+
+# Appended to the system prompt for the forced final write-up once the model
+# exhausts its tool-call budget: stop investigating and produce the review now,
+# so the loop yields real text instead of another tool call.
+_STOP_AND_WRITE_UP = (
+    "\n\nYou have reached the tool-call budget and investigated enough. Do NOT "
+    "call any more tools. Write your complete code review now as your final "
+    "text answer, covering every issue you found."
+)
 
 
 def _price_per_mtok(model):
@@ -172,9 +183,12 @@ class BedrockOpenAIProvider(AIProvider):
             if inv_config:
                 kwargs["toolConfig"] = inv_config
             content = _record(client.converse(**kwargs))
+            # A reasoning model often emits a text block alongside its tool
+            # calls; keep the latest so an interim write-up survives even when
+            # the loop later hits the round cap.
+            text = next((b["text"] for b in content if "text" in b), text)
             tool_uses = [b["toolUse"] for b in content if "toolUse" in b]
             if not tool_uses:
-                text = next((b["text"] for b in content if "text" in b), text)
                 exhausted = False
                 break
             # Echo the assistant turn back, but strip reasoningContent blocks:
@@ -205,11 +219,12 @@ class BedrockOpenAIProvider(AIProvider):
             # The model kept calling tools to the round cap; ask it once more to
             # write up its findings (messages ends with a user turn). toolConfig
             # must still be passed — Converse rejects a request that omits it
-            # while the history contains toolUse/toolResult blocks — but low
-            # reasoning effort biases the model to answer in text now.
+            # while the history contains toolUse/toolResult blocks — but a firm
+            # stop directive plus low reasoning effort biases it to answer in
+            # text now instead of spending the turn on yet another tool call.
             kwargs = dict(
                 modelId=model,
-                system=[{"text": system}],
+                system=[{"text": system + _STOP_AND_WRITE_UP}],
                 messages=messages,
                 inferenceConfig={"maxTokens": max_tokens},
                 additionalModelRequestFields=self._reasoning_fields("low"),
@@ -218,6 +233,21 @@ class BedrockOpenAIProvider(AIProvider):
                 kwargs["toolConfig"] = inv_config
             content = _record(client.converse(**kwargs))
             text = next((b["text"] for b in content if "text" in b), text)
+
+        # A blank write-up means the investigation never produced a review - it
+        # spent its whole budget on tool calls. Structuring that would emit a
+        # vacuous "no issues" result, so fail instead and let the caller retry.
+        if not (text or "").strip():
+            usage = self._usage(model, totals, int((time.time() - t0) * 1000))
+            print(
+                f"[AI {self.name}] complete: model={model} tool_calls={tool_calls} "
+                "structured=aborted (no review text produced)"
+            )
+            return Turn(
+                reasoning="",
+                usage=usage,
+                error="model produced no review text after investigation",
+            )
 
         # ---- Phase 2: structure the findings via a forced tool call -------
         # A separate, small-context call that forces ``submit_result``. gpt-oss
