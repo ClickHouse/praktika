@@ -2,7 +2,11 @@
 using a fake bedrock-runtime client (no network / boto3 calls)."""
 import json
 
-from praktika.orchestrator.ai.bedrock_openai import BedrockOpenAIProvider
+from praktika.orchestrator.ai.bedrock_openai import (
+    _MAX_TOOL_ROUNDS,
+    _STOP_AND_WRITE_UP,
+    BedrockOpenAIProvider,
+)
 
 
 class _FakeClient:
@@ -20,6 +24,10 @@ class _FakeClient:
 
 def _msg(*blocks):
     return {"output": {"message": {"content": list(blocks)}}, "usage": {"inputTokens": 1, "outputTokens": 1}}
+
+
+def _tool_msg(uid="t"):
+    return _msg({"toolUse": {"toolUseId": uid, "name": "grep_repo", "input": {}}})
 
 
 _SCHEMA = {
@@ -119,3 +127,131 @@ def test_phase2_forces_submit_toolchoice():
     structuring = p._client.requests[-1]
     assert structuring["toolConfig"]["toolChoice"] == {"tool": {"name": "submit_result"}}
     assert [t["toolSpec"]["name"] for t in structuring["toolConfig"]["tools"]] == ["submit_result"]
+
+
+def test_interim_text_survives_when_model_stops_without_text():
+    # Round 1 emits a text block alongside a tool call; round 2 stops with only
+    # reasoning (no text). The interim write-up must survive into phase 2.
+    p = _make_provider(
+        [
+            _msg(
+                {"text": "partial finding: foo.py:1"},
+                {"toolUse": {"toolUseId": "t1", "name": "grep_repo", "input": {}}},
+            ),
+            _msg({"reasoningContent": {"reasoningText": {"text": "done thinking"}}}),
+            _msg({"toolUse": {"toolUseId": "s1", "name": "submit_result", "input": {"summary_md": "ok"}}}),
+        ]
+    )
+    turn = p.complete(
+        system="sys",
+        user_content="go",
+        tools=[{"name": "grep_repo", "description": "d", "input_schema": {"type": "object"}}],
+        tool_executor=lambda name, inp: "out",
+        response_schema=_SCHEMA,
+    )
+    # Phase 2's structuring prompt carries the interim text verbatim.
+    structuring_user = p._client.requests[-1]["messages"][0]["content"][0]["text"]
+    assert "partial finding: foo.py:1" in structuring_user
+    assert turn.error is None
+
+
+def test_per_round_budget_note_in_system():
+    # Each investigation turn tells the model where it is in its tool budget.
+    p = _make_provider(
+        [
+            _tool_msg("t1"),
+            _msg({"text": "done"}),
+            _msg({"toolUse": {"toolUseId": "s1", "name": "submit_result", "input": {"summary_md": "ok"}}}),
+        ]
+    )
+    turn = p.complete(
+        system="sys",
+        user_content="go",
+        tools=[{"name": "grep_repo", "description": "d", "input_schema": {"type": "object"}}],
+        tool_executor=lambda name, inp: "out",
+        response_schema=_SCHEMA,
+    )
+    first_system = p._client.requests[0]["system"][0]["text"]
+    assert f"round 1 of {_MAX_TOOL_ROUNDS + 1}" in first_system
+    # One tool-issuing round ran before the model stopped with a clean answer;
+    # the terminating text round is not counted and the budget is not exhausted.
+    assert turn.usage.tool_rounds == 1
+    assert turn.usage.max_tool_rounds == _MAX_TOOL_ROUNDS + 1
+    assert turn.usage.tool_calls == 1
+    assert turn.usage.exhausted is False
+
+
+def test_exhausted_budget_forces_write_up_with_stop_directive():
+    # Every round calls a tool up to the cap, then the forced fallback writes up.
+    responses = [_tool_msg(f"t{i}") for i in range(_MAX_TOOL_ROUNDS + 1)]
+    responses.append(_msg({"text": "Finding: bar.py:2 leaks"}))  # forced write-up
+    responses.append(
+        _msg({"toolUse": {"toolUseId": "s1", "name": "submit_result", "input": {"summary_md": "found it"}}})
+    )
+    p = _make_provider(responses)
+    turn = p.complete(
+        system="sys",
+        user_content="go",
+        tools=[{"name": "grep_repo", "description": "d", "input_schema": {"type": "object"}}],
+        tool_executor=lambda name, inp: "out",
+        response_schema=_SCHEMA,
+    )
+    # The write-up request (right before phase 2) appends the stop directive.
+    write_up = p._client.requests[-2]
+    assert write_up["system"][0]["text"].endswith(_STOP_AND_WRITE_UP)
+    assert json.loads(turn.reasoning) == {"summary_md": "found it"}
+    assert turn.error is None
+    # Round accounting reflects the exhausted budget.
+    assert turn.usage.tool_rounds == _MAX_TOOL_ROUNDS + 1
+    assert turn.usage.max_tool_rounds == _MAX_TOOL_ROUNDS + 1
+    assert turn.usage.exhausted is True
+
+
+def test_interim_text_accumulates_across_rounds():
+    # Round 1 emits a real finding + tool call; round 2 emits chatter + tool
+    # call; the model then stops with no text. Both interim texts must reach
+    # phase 2 - an early finding is not overwritten by later progress chatter.
+    p = _make_provider(
+        [
+            _msg(
+                {"text": "Finding A: foo.py is broken"},
+                {"toolUse": {"toolUseId": "t1", "name": "grep_repo", "input": {}}},
+            ),
+            _msg(
+                {"text": "now checking bar.py"},
+                {"toolUse": {"toolUseId": "t2", "name": "grep_repo", "input": {}}},
+            ),
+            _msg({"reasoningContent": {"reasoningText": {"text": "hmm"}}}),
+            _msg({"toolUse": {"toolUseId": "s1", "name": "submit_result", "input": {"summary_md": "ok"}}}),
+        ]
+    )
+    p.complete(
+        system="sys",
+        user_content="go",
+        tools=[{"name": "grep_repo", "description": "d", "input_schema": {"type": "object"}}],
+        tool_executor=lambda name, inp: "out",
+        response_schema=_SCHEMA,
+    )
+    structuring_user = p._client.requests[-1]["messages"][0]["content"][0]["text"]
+    assert "Finding A: foo.py is broken" in structuring_user
+    assert "now checking bar.py" in structuring_user
+
+
+def test_blank_write_up_aborts_before_structuring():
+    # The model burns the whole budget on tools and the forced write-up still
+    # returns no text: complete() must abort with an error and never structure.
+    responses = [_tool_msg(f"t{i}") for i in range(_MAX_TOOL_ROUNDS + 1)]
+    responses.append(_msg({"reasoningContent": {"reasoningText": {"text": "still thinking"}}}))
+    p = _make_provider(responses)
+    turn = p.complete(
+        system="sys",
+        user_content="go",
+        tools=[{"name": "grep_repo", "description": "d", "input_schema": {"type": "object"}}],
+        tool_executor=lambda name, inp: "out",
+        response_schema=_SCHEMA,
+    )
+    assert turn.reasoning == ""
+    assert turn.error == "model produced no review text after investigation"
+    # No structuring call was made (the queue was not drained past the write-up).
+    assert not p._client._responses  # all consumed; no extra phase-2 pop
+    assert len(p._client.requests) == _MAX_TOOL_ROUNDS + 2  # cap rounds + write-up

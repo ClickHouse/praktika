@@ -38,8 +38,34 @@ _PRICING = {
 }
 
 # Stop runaway tool loops: at most this many tool rounds before a final answer
-# is forced from whatever the model has seen. Mirrors the Anthropic provider.
-_MAX_TOOL_ROUNDS = 8
+# is forced from whatever the model has seen. A large PR (many files) needs room
+# to investigate before it is pushed to write up, so this is more generous than
+# the Anthropic provider's cap.
+_MAX_TOOL_ROUNDS = 12
+
+# Appended to the system prompt for the forced final write-up once the model
+# exhausts its tool-call budget: stop investigating and produce the review now,
+# so the loop yields real text instead of another tool call.
+_STOP_AND_WRITE_UP = (
+    "\n\nYou have reached the tool-call budget and investigated enough. Do NOT "
+    "call any more tools. Write your complete code review now as your final "
+    "text answer, covering every issue you found."
+)
+
+
+def _budget_note(round_number, total_rounds):
+    """System-prompt suffix telling the model where it is in its tool budget, so
+    it can plan to write up before it is force-stopped. The final round returns
+    the hard stop directive."""
+    remaining = total_rounds - round_number
+    if remaining <= 0:
+        return _STOP_AND_WRITE_UP
+    return (
+        f"\n\nTool-call budget: round {round_number} of {total_rounds} "
+        f"({remaining} left before you must stop). Investigate what you need, "
+        "then write your complete review as a text answer - do not spend the "
+        "whole budget on tool calls."
+    )
 
 
 def _price_per_mtok(model):
@@ -144,6 +170,7 @@ class BedrockOpenAIProvider(AIProvider):
         messages = [{"role": "user", "content": [{"text": user_content}]}]
         totals = {"input": 0, "output": 0}
         tool_calls = 0
+        total_rounds = _MAX_TOOL_ROUNDS + 1
 
         def _record(resp):
             u = resp.get("usage") or {}
@@ -158,11 +185,13 @@ class BedrockOpenAIProvider(AIProvider):
         # We don't ask for JSON here — structuring happens in phase 2, which is
         # far more reliable than parsing JSON out of a reasoning model's output.
         text = ""
+        interim = []
+        tool_rounds = 0
         exhausted = True
-        for _ in range(_MAX_TOOL_ROUNDS + 1):
+        for round_index in range(total_rounds):
             kwargs = dict(
                 modelId=model,
-                system=[{"text": system}],
+                system=[{"text": system + _budget_note(round_index + 1, total_rounds)}],
                 messages=messages,
                 inferenceConfig={"maxTokens": max_tokens},
                 additionalModelRequestFields=self._reasoning_fields(
@@ -172,11 +201,20 @@ class BedrockOpenAIProvider(AIProvider):
             if inv_config:
                 kwargs["toolConfig"] = inv_config
             content = _record(client.converse(**kwargs))
+            round_text = next((b["text"] for b in content if "text" in b), "")
             tool_uses = [b["toolUse"] for b in content if "toolUse" in b]
             if not tool_uses:
-                text = next((b["text"] for b in content if "text" in b), text)
+                # A terminating no-tool turn is the authoritative write-up; it
+                # supersedes any interim text kept for salvage below.
+                text = round_text or text
                 exhausted = False
                 break
+            tool_rounds += 1
+            # A reasoning model often emits a text block alongside its tool
+            # calls; accumulate those so an interim write-up survives even when
+            # the loop later hits the round cap without a clean final turn.
+            if round_text:
+                interim.append(round_text)
             # Echo the assistant turn back, but strip reasoningContent blocks:
             # Bedrock rejects prior-turn reasoningContent in the request for
             # gpt-oss (ValidationException). Only toolUse/text are needed to
@@ -205,11 +243,12 @@ class BedrockOpenAIProvider(AIProvider):
             # The model kept calling tools to the round cap; ask it once more to
             # write up its findings (messages ends with a user turn). toolConfig
             # must still be passed — Converse rejects a request that omits it
-            # while the history contains toolUse/toolResult blocks — but low
-            # reasoning effort biases the model to answer in text now.
+            # while the history contains toolUse/toolResult blocks — but a firm
+            # stop directive plus low reasoning effort biases it to answer in
+            # text now instead of spending the turn on yet another tool call.
             kwargs = dict(
                 modelId=model,
-                system=[{"text": system}],
+                system=[{"text": system + _STOP_AND_WRITE_UP}],
                 messages=messages,
                 inferenceConfig={"maxTokens": max_tokens},
                 additionalModelRequestFields=self._reasoning_fields("low"),
@@ -218,6 +257,32 @@ class BedrockOpenAIProvider(AIProvider):
                 kwargs["toolConfig"] = inv_config
             content = _record(client.converse(**kwargs))
             text = next((b["text"] for b in content if "text" in b), text)
+
+        # No authoritative final/fallback text: fall back to the interim text
+        # the model emitted alongside its tool calls so an early finding is not
+        # lost to later progress chatter.
+        if not (text or "").strip():
+            text = "\n\n".join(interim).strip()
+
+        # A blank write-up means the investigation never produced a review - it
+        # spent its whole budget on tool calls. Structuring that would emit a
+        # vacuous "no issues" result, so fail instead and let the caller retry.
+        if not (text or "").strip():
+            usage = self._usage(
+                model, totals, int((time.time() - t0) * 1000),
+                tool_calls=tool_calls, tool_rounds=tool_rounds,
+                max_tool_rounds=total_rounds, exhausted=exhausted,
+            )
+            print(
+                f"[AI {self.name}] complete: model={model} tool_calls={tool_calls} "
+                f"tool_rounds={tool_rounds}/{total_rounds} "
+                "structured=aborted (no review text produced)"
+            )
+            return Turn(
+                reasoning="",
+                usage=usage,
+                error="model produced no review text after investigation",
+            )
 
         # ---- Phase 2: structure the findings via a forced tool call -------
         # A separate, small-context call that forces ``submit_result``. gpt-oss
@@ -261,15 +326,22 @@ class BedrockOpenAIProvider(AIProvider):
                 text = json.dumps(forced_submit[0].get("input") or {})
 
         latency_ms = int((time.time() - t0) * 1000)
-        usage = self._usage(model, totals, latency_ms)
+        usage = self._usage(
+            model, totals, latency_ms,
+            tool_calls=tool_calls, tool_rounds=tool_rounds,
+            max_tool_rounds=total_rounds, exhausted=exhausted,
+        )
         print(
             f"[AI {self.name}] complete: model={model} tool_calls={tool_calls} "
+            f"tool_rounds={tool_rounds}/{total_rounds}"
+            f"{' exhausted' if exhausted else ''} "
             f"structured={response_schema is not None} "
             f"tokens={usage.input_tokens}/{usage.output_tokens}"
         )
         return Turn(reasoning=text, usage=usage)
 
-    def _usage(self, model, totals, latency_ms) -> Usage:
+    def _usage(self, model, totals, latency_ms, tool_calls=0, tool_rounds=0,
+               max_tool_rounds=0, exhausted=False) -> Usage:
         inp = totals["input"]
         out = totals["output"]
         in_price, out_price = _price_per_mtok(model)
@@ -281,4 +353,8 @@ class BedrockOpenAIProvider(AIProvider):
             latency_ms=latency_ms,
             provider=self.name,
             model=model,
+            tool_calls=tool_calls,
+            tool_rounds=tool_rounds,
+            max_tool_rounds=max_tool_rounds,
+            exhausted=exhausted,
         )

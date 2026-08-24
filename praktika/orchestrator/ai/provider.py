@@ -40,6 +40,15 @@ class Usage:
     latency_ms: int = 0
     provider: str = ""
     model: str = ""
+    # Investigation-loop accounting for a tool-using provider: how many tool
+    # calls and tool-issuing rounds it ran, and the round budget. max_tool_rounds
+    # == 0 means the provider does not run a tool loop (nothing to report).
+    # exhausted is True only when the loop hit the cap and had to force a final
+    # write-up - not merely when tool_rounds reaches the budget.
+    tool_calls: int = 0
+    tool_rounds: int = 0
+    max_tool_rounds: int = 0
+    exhausted: bool = False
 
     def to_dict(self):
         return {
@@ -49,6 +58,10 @@ class Usage:
             "latency_ms": self.latency_ms,
             "provider": self.provider,
             "model": self.model,
+            "tool_calls": self.tool_calls,
+            "tool_rounds": self.tool_rounds,
+            "max_tool_rounds": self.max_tool_rounds,
+            "exhausted": self.exhausted,
         }
 
 

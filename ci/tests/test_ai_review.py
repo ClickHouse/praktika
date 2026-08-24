@@ -193,12 +193,13 @@ def _stub_info(pr_number=42):
     )
 
 
-def _wire_common(monkeypatch, review_json, threads):
+def _wire_common(monkeypatch, review_json, threads, usage=None):
     monkeypatch.setattr(ai_review, "Info", lambda: _stub_info())
     monkeypatch.setattr(GH, "get_pr_diff", classmethod(lambda cls, *a, **k: "DIFF"))
     monkeypatch.setattr(
         GH, "list_pr_review_threads", classmethod(lambda cls, *a, **k: threads)
     )
+    turn_usage = usage or Usage(provider="stub")
 
     class _Stub:
         name = "stub"
@@ -208,7 +209,7 @@ def _wire_common(monkeypatch, review_json, threads):
 
         def complete(self, system, user_content, tools=None, tool_executor=None,
                      max_tokens=4000, response_schema=None):
-            return Turn(reasoning=json.dumps(review_json), usage=Usage(provider="stub"))
+            return Turn(reasoning=json.dumps(review_json), usage=turn_usage)
 
     monkeypatch.setattr(ai_review, "resolve_provider", lambda spec, model="": _Stub())
 
@@ -266,6 +267,82 @@ def test_review_posts_result_and_change_summary_when_no_findings(monkeypatch):
     # Even with no findings, the comment carries the overall result + change summary.
     assert "**Result:** ✅ No issues found" in posted["review"]
     assert "**What changed:** Refactors the parser." in posted["review"]
+    assert result.is_ok()
+
+
+def test_review_comment_shows_investigation_budget(monkeypatch):
+    review_json = {
+        "change_summary": "Adds a widget.",
+        "verdict": "no_issues",
+        "summary_md": "",
+        "inline_findings": [],
+        "thread_actions": [],
+    }
+    usage = Usage(provider="stub", tool_rounds=5, max_tool_rounds=13, tool_calls=9)
+    _wire_common(monkeypatch, review_json, [], usage=usage)
+    posted = {}
+    monkeypatch.setattr(
+        GH, "post_updateable_comment",
+        classmethod(lambda cls, comment_tags_and_bodies, **k: posted.update(comment_tags_and_bodies) or True),
+    )
+    args = SimpleNamespace(provider="stub", model="", prompt="", dry_run=False)
+    result = ai_review.review(args)
+
+    assert "_Investigation: 5/13 rounds, 9 tool calls._" in posted["review"]
+    assert result.is_ok()
+
+
+def test_review_comment_warns_when_budget_exhausted(monkeypatch):
+    review_json = {
+        "change_summary": "Adds a widget.",
+        "verdict": "no_issues",
+        "summary_md": "",
+        "inline_findings": [],
+        "thread_actions": [],
+    }
+    usage = Usage(
+        provider="stub", tool_rounds=13, max_tool_rounds=13, tool_calls=33,
+        exhausted=True,
+    )
+    _wire_common(monkeypatch, review_json, [], usage=usage)
+    posted = {}
+    monkeypatch.setattr(
+        GH, "post_updateable_comment",
+        classmethod(lambda cls, comment_tags_and_bodies, **k: posted.update(comment_tags_and_bodies) or True),
+    )
+    args = SimpleNamespace(provider="stub", model="", prompt="", dry_run=False)
+    result = ai_review.review(args)
+
+    assert "[!WARNING]" in posted["review"]
+    assert "full investigation budget" in posted["review"]
+    assert result.is_ok()
+
+
+def test_review_comment_no_warning_when_budget_used_but_not_exhausted(monkeypatch):
+    # The model used every round but finished with a clean write-up on the last
+    # one (exhausted=False). The comment must not falsely warn of incompleteness.
+    review_json = {
+        "change_summary": "Adds a widget.",
+        "verdict": "no_issues",
+        "summary_md": "",
+        "inline_findings": [],
+        "thread_actions": [],
+    }
+    usage = Usage(
+        provider="stub", tool_rounds=13, max_tool_rounds=13, tool_calls=20,
+        exhausted=False,
+    )
+    _wire_common(monkeypatch, review_json, [], usage=usage)
+    posted = {}
+    monkeypatch.setattr(
+        GH, "post_updateable_comment",
+        classmethod(lambda cls, comment_tags_and_bodies, **k: posted.update(comment_tags_and_bodies) or True),
+    )
+    args = SimpleNamespace(provider="stub", model="", prompt="", dry_run=False)
+    result = ai_review.review(args)
+
+    assert "[!WARNING]" not in posted["review"]
+    assert "_Investigation: 13/13 rounds, 20 tool calls._" in posted["review"]
     assert result.is_ok()
 
 
