@@ -117,10 +117,14 @@ class CloudInfrastructure:
             # Project names are user-facing labels. Resource names need a
             # stable AWS-safe slug so all generated names line up across
             # queues, ASGs, IAM roles, launch templates, etc. The slug also
-            # feeds DNS/Tailscale hostnames (e.g. the S3 report proxy), which
-            # forbid "_", so use "-" as the intra-slug separator throughout.
-            prefix = re.sub(r"[^a-z0-9]+", "-", (self.name or "").strip().lower())
-            prefix = re.sub(r"-{2,}", "-", prefix).strip("-")
+            # feeds DNS/Tailscale hostnames (e.g. the S3 report proxy).
+            #
+            # The slug must be purely alphanumeric — no "-" or "_". Resources
+            # are discovered by the "{slug}-" name prefix, so a slug that itself
+            # contained "-" would make one project's prefix match another's
+            # (e.g. "clickhouse-" would match the "clickhouse-private" project),
+            # so strip every separator rather than collapsing it to "-".
+            prefix = re.sub(r"[^a-z0-9]+", "", (self.name or "").strip().lower())
             if not prefix:
                 raise ValueError("CloudInfrastructure.Config.name must normalize to a non-empty project prefix")
             return prefix

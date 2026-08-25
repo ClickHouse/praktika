@@ -256,15 +256,15 @@ def test_cloud_infrastructure_registers_pool_autoscaler():
     )
 
     cloud = CloudInfrastructure.Config(
-        name="test-cloud",
+        name="testcloud",
         pool_autoscalers=[autoscaler],
     )
 
     assert any(
-        config.name == "test-cloud-pool-autoscaler" for config in cloud.lambda_functions
+        config.name == "testcloud-pool-autoscaler" for config in cloud.lambda_functions
     )
     assert any(
-        role.name == "test-cloud-pool-autoscaler-role" for role in cloud.iam_roles
+        role.name == "testcloud-pool-autoscaler-role" for role in cloud.iam_roles
     )
 
 
@@ -287,13 +287,13 @@ def test_cloud_infrastructure_creates_implicit_runner_autoscaler():
     )
 
     cloud = CloudInfrastructure.Config(
-        name="test-cloud",
+        name="testcloud",
         runner_pools=[auto_pool, disabled_pool],
         pool_autoscaler_interval_seconds=120,
     )
 
     autoscalers = [
-        l for l in cloud.lambda_functions if l.name == "test-cloud-pool-autoscaler"
+        l for l in cloud.lambda_functions if l.name == "testcloud-pool-autoscaler"
     ]
     assert len(autoscalers) == 1
     autoscaler = autoscalers[0]
@@ -316,18 +316,18 @@ def test_cloud_infrastructure_creates_implicit_orchestrator_autoscaler():
     )
 
     cloud = CloudInfrastructure.Config(
-        name="test-cloud",
+        name="testcloud",
         orchestrator_pool=orchestrator_pool,
         pool_autoscaler_interval_seconds=60,
     )
 
     autoscalers = [
-        l for l in cloud.lambda_functions if l.name == "test-cloud-pool-autoscaler"
+        l for l in cloud.lambda_functions if l.name == "testcloud-pool-autoscaler"
     ]
     assert len(autoscalers) == 1
     autoscaler = autoscalers[0]
     env = autoscaler.environments["POOLS_CONFIG_JSON"]
     assert '"name":"workflow-orchestrator"' in env
-    assert '"queue_name":"test-cloud-workflow-orchestrator"' in env
-    assert '"asg_name":"test-cloud-workflow-orchestrator"' in env
+    assert '"queue_name":"testcloud-workflow-orchestrator"' in env
+    assert '"asg_name":"testcloud-workflow-orchestrator"' in env
     assert '"capacity_reserve":2' in env

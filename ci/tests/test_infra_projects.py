@@ -1048,7 +1048,7 @@ def test_runner_pool_accepts_custom_role_and_profile_configs():
 
 def test_cloud_config_prefixes_all_top_level_resource_types():
     cloud = CloudInfrastructure.Config(
-        name="prefix-check",
+        name="prefixcheck",
         vpcs=[
             VPC.Config(
                 name="ci",
@@ -1130,43 +1130,43 @@ def test_cloud_config_prefixes_all_top_level_resource_types():
     lambda_cfg = cloud.lambda_functions[0]
     builder = cloud.image_builders[0]
 
-    assert vpc.name == "prefix-check-ci"
-    assert storage.name == "prefix-check-artifacts"
-    assert role.name == "prefix-check-worker-role"
-    assert profile.name == "prefix-check-worker-profile"
-    assert profile.role_name == "prefix-check-worker-role"
-    assert secret.name == "prefix-check-app-secret"
-    assert path_secret.name == "/prefix-check-path-secret"
-    assert queue.name == "prefix-check-jobs"
-    assert lt.name == "prefix-check-runner-lt"
-    assert lt.vpc_name == "prefix-check-ci"
-    assert lt.iam_instance_profile_name == "prefix-check-worker-profile"
-    assert lt.security_group_names == ["prefix-check-ci-sg"]
-    assert asg.name == "prefix-check-runner"
-    assert asg.vpc_name == "prefix-check-ci"
-    assert asg.launch_template_name == "prefix-check-runner-lt"
-    assert lambda_cfg.name == "prefix-check-worker"
-    assert lambda_cfg.role_name == "prefix-check-worker-role"
+    assert vpc.name == "prefixcheck-ci"
+    assert storage.name == "prefixcheck-artifacts"
+    assert role.name == "prefixcheck-worker-role"
+    assert profile.name == "prefixcheck-worker-profile"
+    assert profile.role_name == "prefixcheck-worker-role"
+    assert secret.name == "prefixcheck-app-secret"
+    assert path_secret.name == "/prefixcheck-path-secret"
+    assert queue.name == "prefixcheck-jobs"
+    assert lt.name == "prefixcheck-runner-lt"
+    assert lt.vpc_name == "prefixcheck-ci"
+    assert lt.iam_instance_profile_name == "prefixcheck-worker-profile"
+    assert lt.security_group_names == ["prefixcheck-ci-sg"]
+    assert asg.name == "prefixcheck-runner"
+    assert asg.vpc_name == "prefixcheck-ci"
+    assert asg.launch_template_name == "prefixcheck-runner-lt"
+    assert lambda_cfg.name == "prefixcheck-worker"
+    assert lambda_cfg.role_name == "prefixcheck-worker-role"
     assert lambda_cfg.secrets == {
-        "prefix-check-app-secret": "APP_SECRET",
-        "/prefix-check-path-secret": "PATH_SECRET",
+        "prefixcheck-app-secret": "APP_SECRET",
+        "/prefixcheck-path-secret": "PATH_SECRET",
     }
-    assert builder.name == "prefix-check-builder"
-    assert builder.image_recipe_name == "prefix-check-builder-recipe"
+    assert builder.name == "prefixcheck-builder"
+    assert builder.image_recipe_name == "prefixcheck-builder-recipe"
     assert (
         builder.infrastructure_configuration_name
-        == "prefix-check-builder-imagebuilder-infra"
+        == "prefixcheck-builder-imagebuilder-infra"
     )
     assert (
         builder.distribution_configuration_name
-        == "prefix-check-builder-imagebuilder-dist"
+        == "prefixcheck-builder-imagebuilder-dist"
     )
-    assert builder.image_pipeline_name == "prefix-check-builder-imagebuilder-pipeline"
-    assert builder.ami_name == "prefix-check-builder-{{ imagebuilder:buildDate }}"
-    assert builder.instance_profile_name == "prefix-check-worker-profile"
-    assert builder.vpc_name == "prefix-check-ci"
-    assert builder.security_group_names == ["prefix-check-ci-sg"]
-    assert builder.inline_components[0]["name"] == "prefix-check-builder-setup"
+    assert builder.image_pipeline_name == "prefixcheck-builder-imagebuilder-pipeline"
+    assert builder.ami_name == "prefixcheck-builder-{{ imagebuilder:buildDate }}"
+    assert builder.instance_profile_name == "prefixcheck-worker-profile"
+    assert builder.vpc_name == "prefixcheck-ci"
+    assert builder.security_group_names == ["prefixcheck-ci-sg"]
+    assert builder.inline_components[0]["name"] == "prefixcheck-builder-setup"
     assert builder.inline_components[0]["commands"] == [
         "test -x /opt/praktika/base-venvs/runtime/bin/python"
     ]
@@ -1262,7 +1262,7 @@ def test_cloud_deploy_runs_lambdas_before_image_backed_compute(monkeypatch):
     calls = []
 
     cloud = CloudInfrastructure.Config(
-        name="deploy-order",
+        name="deployorder",
         lambda_functions=[
             Lambda.Config(
                 name="webhook",
@@ -1333,12 +1333,12 @@ def test_cloud_deploy_runs_lambdas_before_image_backed_compute(monkeypatch):
     cloud.deploy()
 
     assert calls == [
-        "role:deploy-order-imagebuilder-role",
-        "profile:deploy-order-imagebuilder-profile",
-        "lambda:deploy-order-webhook",
-        "imagebuilder:deploy-order-builder",
-        "lt:deploy-order-runner-lt",
-        "asg:deploy-order-runner-asg",
+        "role:deployorder-imagebuilder-role",
+        "profile:deployorder-imagebuilder-profile",
+        "lambda:deployorder-webhook",
+        "imagebuilder:deployorder-builder",
+        "lt:deployorder-runner-lt",
+        "asg:deployorder-runner-asg",
     ]
 
 

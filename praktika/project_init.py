@@ -36,8 +36,13 @@ class InitAnswers:
 
     @property
     def project_slug(self) -> str:
-        slug = re.sub(r"[^a-z0-9]+", "-", self.project_name.strip().lower())
-        slug = re.sub(r"-{2,}", "-", slug).strip("-")
+        # The slug prefixes every AWS resource name ("{slug}-...") and is used
+        # to discover a project's resources by prefix. If the slug itself could
+        # contain "-", one project's prefix would match another's (e.g.
+        # "clickhouse-" would match the "clickhouse-private" project's
+        # resources). Strip every separator so the slug is purely alphanumeric
+        # and "{slug}-" is an unambiguous boundary.
+        slug = re.sub(r"[^a-z0-9]+", "", self.project_name.strip().lower())
         if not slug:
             raise ValueError("Project name must normalize to a non-empty slug")
         return slug

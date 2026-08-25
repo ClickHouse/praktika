@@ -106,6 +106,18 @@ class Validator:
     def validate(cls):
         print("---Start validating Pipeline and settings---")
 
+        project_slug = getattr(Settings, "PROJECT_SLUG", "") or ""
+        if project_slug:
+            # The slug prefixes every AWS resource name ("{slug}-...") and
+            # resources are discovered by that prefix. A slug containing "-" (or
+            # any separator) would make one project's prefix match another's
+            # (e.g. "clickhouse-" matches the "clickhouse-private" project), so
+            # the slug must be purely lowercase-alphanumeric.
+            cls.evaluate_check_simple(
+                bool(re.fullmatch(r"[a-z0-9]+", project_slug)),
+                f"Setting PROJECT_SLUG [{project_slug}] must be non-empty and contain only lowercase letters and digits (no '-', '_' or other separators)",
+            )
+
         if Settings.DISABLED_WORKFLOWS:
             for file in Settings.DISABLED_WORKFLOWS:
                 cls.evaluate_check_simple(
