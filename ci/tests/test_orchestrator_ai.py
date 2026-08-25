@@ -23,7 +23,13 @@ from praktika.orchestrator.ai.anthropic import (
     _safe_repo_path,
 )
 from praktika.orchestrator.ai.mock import MockProvider
-from praktika.orchestrator.ai.provider import Observation, resolve, resolve_provider
+from praktika.orchestrator.ai.provider import (
+    Observation,
+    Turn,
+    _decision_cell,
+    resolve,
+    resolve_provider,
+)
 
 
 def _job(name, status, started_at=None, finished_at=None, filter_reason=None):
@@ -345,6 +351,24 @@ def test_parse_non_json_falls_back_to_reasoning():
 def test_parse_non_list_decision_coerced_empty():
     r, d = _parse('{"reasoning": "r", "decision": "oops"}')
     assert d == []
+
+
+def test_decision_cell_empty_decision_renders_continue_with_reasoning():
+    cell = _decision_cell(Turn(reasoning="flaky infra; let the run continue", decision=[]))
+    assert "`continue`" in cell
+    assert "flaky infra; let the run continue" in cell
+
+
+def test_decision_cell_explicit_continue_includes_reasoning_and_detail():
+    cell = _decision_cell(
+        Turn(
+            reasoning="likely transient network issue",
+            decision=[{"type": "continue", "detail": "retry-friendly failure"}],
+        )
+    )
+    assert "`continue`" in cell
+    assert "retry-friendly failure" in cell
+    assert "likely transient network issue" in cell
 
 
 # --------------------------------------------------------------- pricing

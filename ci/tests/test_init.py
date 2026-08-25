@@ -533,7 +533,7 @@ def test_run_init_interactive_supports_oss_storage_and_ubuntu_images(
     tmp_path, monkeypatch
 ):
     confirm_answers = iter([True, True, True])
-    project_slug = tmp_path.name.replace("_", "-")
+    project_slug = tmp_path.name.lower().replace("_", "-")
     string_answers = iter(
         [
             "main",

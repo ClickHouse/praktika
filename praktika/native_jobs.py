@@ -6,7 +6,6 @@ import platform
 import sys
 import traceback
 from pathlib import Path
-from typing import Dict
 
 from . import Job, Workflow
 from ._environment import _Environment
@@ -38,7 +37,7 @@ def _GH_Auth(force=False):
         return
     from .gh_auth import GHAuth
 
-    if force or not Shell.check(f"gh auth status", verbose=True):
+    if force or not Shell.check("gh auth status", verbose=True):
         GHAuth.auth_from_settings()
 
 
@@ -277,7 +276,90 @@ def _prepare_submodule_cache(workflow_config: RunConfig) -> Result:
     )
 
 
+def _filter_unaffected_jobs(jobs, workflow_config, changed_files, affected_dockers=()):
+    """
+    Update workflow_config.filtered_jobs for jobs unaffected by changed_files.
+
+    Two fixes relative to the original inline algorithm:
+
+    Fix 1 (Bug 2) — jobs already filtered by workflow_filter_hooks are skipped.
+    They will not run, so their 'requires' must not keep their dependencies alive.
+
+    Fix 2 (Bug 3) — all_required_artifacts is propagated to a fixed point after
+    the initial sweep.  When an unaffected job is rescued because an affected job
+    requires it, that rescued job's own dependencies are also rescued.
+    """
+    affected_artifacts = []
+    unaffected_jobs = {}  # name → job
+    all_required_artifacts = set()
+
+    for job in jobs:
+        if _is_praktika_job(job.name):
+            continue
+        if job.name in workflow_config.filtered_jobs:
+            continue  # Already filtered by workflow_filter_hooks — skip entirely
+
+        is_affected = False
+
+        if any(dep in affected_artifacts for dep in job.requires):
+            print(f"Job [{job.name}] requires affected artifacts")
+            is_affected = True
+        elif job.get_docker_image_name() in affected_dockers:
+            print(
+                f"Job [{job.name}] runs in affected Docker image [{job.run_in_docker}]"
+            )
+            is_affected = True
+        elif job.is_affected_by(changed_files):
+            print(f"Job [{job.name}] is directly affected by changed files")
+            is_affected = True
+
+        if is_affected:
+            affected_artifacts.extend(job.provides)
+            # Propagate the job name so downstream jobs requiring it by name
+            # are marked as affected.
+            affected_artifacts.append(job.name)
+            for req in job.requires:
+                all_required_artifacts.add(req)
+        else:
+            print(f"Job [{job.name}] is not affected by the change")
+            unaffected_jobs[job.name] = job
+
+    print(f"All required artifacts [{all_required_artifacts}]")
+    print(f"Affected artifacts [{affected_artifacts}]")
+
+    # Propagate all_required_artifacts transitively: when an unaffected job is
+    # rescued (because an affected job requires it), add its own requirements so
+    # the jobs that produce its inputs are also rescued.
+    changed = True
+    while changed:
+        changed = False
+        for job in unaffected_jobs.values():
+            if (
+                any(a in all_required_artifacts for a in job.provides)
+                or job.name in all_required_artifacts
+            ):
+                for req in job.requires:
+                    if req not in all_required_artifacts:
+                        all_required_artifacts.add(req)
+                        changed = True
+
+    for job_name, job in unaffected_jobs.items():
+        if (
+            any(a in all_required_artifacts for a in job.provides)
+            or job_name in all_required_artifacts
+        ):
+            print(
+                f"NOTE: Job [{job_name}] is required by affected jobs - cannot be skipped"
+            )
+        else:
+            workflow_config.set_job_as_filtered(
+                job_name,
+                "Not affected by the changed files and not required",
+            )
+
+
 def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
+    stop_watch = Utils.Stopwatch()
     # debug info
     GH.print_log_in_group("GITHUB envs", Shell.get_output("env | grep GITHUB"))
 
@@ -343,7 +425,7 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
     # - all authors who contributed to the PR
     # - the original commit messages before GitHub's ephemeral merge commit
     commands = [
-        f"git rev-parse --is-shallow-repository | grep -q true && git fetch --unshallow --prune --no-recurse-submodules --filter=tree:0 origin HEAD ||:",
+        "git rev-parse --is-shallow-repository | grep -q true && git fetch --unshallow --prune --no-recurse-submodules --filter=tree:0 origin HEAD ||:",
     ]
     if env.BASE_BRANCH and env.PR_NUMBER:
         commands.append(
@@ -365,7 +447,15 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
     try:
         _GH_Auth(force=True)
     except Exception as e:
-        print(f"WARNING: Failed to auth with GH: [{e}]")
+        message = f"Failed to auth with GH: [{e}]"
+        print(f"ERROR: {message}")
+        env.add_workflow_error(message)
+        return Result.create_from(
+            name=job_name,
+            status=Result.Status.ERROR,
+            stopwatch=stop_watch,
+            info=message,
+        )
 
     # refresh PR data
     if env.PR_NUMBER > 0:
@@ -443,7 +533,12 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
             res_.append(Result.from_commands_run(name=name, command=pre_check))
 
         results.append(
-            Result.create_from(name="Pre Hooks", results=res_, stopwatch=sw_)
+            Result.create_from(
+                name="Pre Hooks",
+                results=res_,
+                stopwatch=sw_,
+                with_info_from_results=True,
+            )
         )
         # reread env object in case some new dada (JOB_KV_DATA) has been added in .pre_hooks
         env = _Environment.get()
@@ -521,6 +616,9 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
                 name="Filter Hooks", status=status, stopwatch=sw_, info=info
             )
         )
+        # Reload the environment because workflow filter hooks may have written
+        # report messages through a separate Info instance.
+        env = _Environment.get()
 
     if workflow.enable_job_filtering_by_changes and results[-1].is_ok():
         print("Filter not affected jobs")
@@ -538,59 +636,9 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
             if all_affected_dockers:
                 print(f"Affected docker images [{all_affected_dockers}]")
 
-            affected_artifacts = []
-            unaffected_jobs_with_artifacts = {}
-            all_required_artifacts = set()
-
-            # Build set of all job names for quick lookup
-            job_names = {j.name for j in workflow.jobs}
-
-            for job in workflow.jobs:
-                # Skip native Praktika jobs
-                if _is_praktika_job(job.name):
-                    continue
-
-                is_affected = False
-
-                if any(dep in affected_artifacts for dep in job.requires):
-                    print(f"Job [{job.name}] requires affected artifacts")
-                    is_affected = True
-                elif job.get_docker_image_name() in all_affected_dockers:
-                    print(
-                        f"Job [{job.name}] runs in affected Docker image [{job.run_in_docker}]"
-                    )
-                    is_affected = True
-                elif job.is_affected_by(changed_files):
-                    print(f"Job [{job.name}] is directly affected by changed files")
-                    is_affected = True
-
-                if is_affected:
-                    affected_artifacts.extend(job.provides)
-                    # Propagate the job name so that downstream jobs
-                    # requiring this job by name are marked as affected
-                    affected_artifacts.append(job.name)
-                    # All items in requires are hard dependencies
-                    for req in job.requires:
-                        all_required_artifacts.add(req)
-                else:
-                    print(f"Job [{job.name}] is not affected by the change")
-                    unaffected_jobs_with_artifacts[job.name] = job.provides
-
-            print(f"All required artifacts [{all_required_artifacts}]")
-            print(f"Affected artifacts [{affected_artifacts}]")
-            for job_name, artifacts in unaffected_jobs_with_artifacts.items():
-                if (
-                    any(a in all_required_artifacts for a in artifacts)
-                    or job_name in all_required_artifacts
-                ):
-                    print(
-                        f"NOTE: Job [{job_name}] is required by affected jobs - cannot be skipped"
-                    )
-                else:
-                    workflow_config.set_job_as_filtered(
-                        job_name,
-                        "Not affected by the changed files and not required",
-                    )
+            _filter_unaffected_jobs(
+                workflow.jobs, workflow_config, changed_files, all_affected_dockers
+            )
 
             workflow_config.dump()
 
@@ -609,7 +657,7 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
             workflow_config = CacheRunnerHooks.configure(workflow)
             files.append(RunConfig.file_name_static(workflow.name))
             res = True
-        except Exception as e:
+        except Exception:
             res = False
             traceback.print_exc()
             info = traceback.format_exc()
@@ -662,7 +710,7 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
                                 )
                                 has_base_parent = True
                                 break
-                            except:
+                            except Exception:
                                 pass
 
                         if not has_base_parent:
@@ -698,6 +746,27 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
                 env.COMMIT_AUTHORS = list(commit_authors)
                 env.JOB_KV_DATA["commit_authors"] = list(commit_authors)
                 env.dump()
+        elif not env.COMMIT_AUTHORS:
+            # A push event already has COMMIT_AUTHORS seeded from the webhook
+            # payload by `_Environment.from_env`, so only fill it here when it is
+            # still empty (workflow_dispatch / scheduled runs, e.g. releases).
+            # Those have no PR author, so the Slack feed would notify no one and a
+            # failure would be silent; fall back to the head commit's author so
+            # failures still reach a human. Never overwrite an already-populated
+            # author set — that would drop the full authors of a multi-commit push.
+            author_email = ""
+            try:
+                head_email = Shell.get_output(
+                    f"git log -1 --format='%ae' {env.SHA}", verbose=True
+                ).strip()
+                if head_email and "@" in head_email and "+" not in head_email:
+                    author_email = head_email
+            except Exception as e:
+                print(f"WARNING: Failed to get head commit author: {e}")
+            authors = [author_email] if author_email else []
+            env.COMMIT_AUTHORS = authors
+            env.JOB_KV_DATA["commit_authors"] = authors
+            env.dump()
 
     print(f"WorkflowRuntimeConfig: [{workflow_config.to_json(pretty=True)}]")
     workflow_config.dump()
@@ -802,7 +871,12 @@ def _finish_workflow(workflow, job_name):
             results_.append(Result.from_commands_run(name=name, command=check))
 
         results.append(
-            Result.create_from(name="Post Hooks", results=results_, stopwatch=sw_)
+            Result.create_from(
+                name="Post Hooks",
+                results=results_,
+                stopwatch=sw_,
+                with_info_from_results=True,
+            )
         )
 
     ready_for_merge_status = Result.Status.OK
@@ -903,7 +977,7 @@ def _finish_workflow(workflow, job_name):
             description=ready_for_merge_description,
             url="",
         ):
-            print(f"ERROR: failed to set ReadyForMerge status")
+            print("ERROR: failed to set ReadyForMerge status")
             env.add_workflow_error(ResultInfo.GH_STATUS_ERROR)
 
     if update_final_report:
@@ -938,7 +1012,7 @@ if __name__ == "__main__":
             result = _finish_workflow(workflow, job_name)
         else:
             assert False, f"BUG, job name [{job_name}]"
-    except Exception as e:
+    except Exception:
         error_traceback = traceback.format_exc()
         print("Failed with Exception:")
         print(error_traceback)

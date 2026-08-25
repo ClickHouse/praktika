@@ -296,7 +296,7 @@ def _validate_aws_profile(value: str) -> bool:
 
 def _prompt_aws_profile(default: str = "default") -> str:
     profiles = sorted(detect_aws_profiles())
-    prompt = f"\nAWS profile name"
+    prompt = "\nAWS profile name"
     if profiles:
         prompt += f" (options: {', '.join(profiles)}"
         if default:
@@ -465,7 +465,6 @@ def _settings_template(answers: InitAnswers) -> str:
         CI_CONFIG_RUNS_ON = [RunnerLabels.SMALL_ARM]
 
         AWS_REGION = "{answers.aws_region}"
-        AWS_ACCOUNT_ID = "{answers.aws_account_id}"
         AWS_PROFILE = "{answers.aws_profile}"
 
         S3_ARTIFACT_BUCKET = {artifact_bucket_expr}
@@ -605,7 +604,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
 
 
         # until published in pip
-        _PRAKTIKA_CONTROLLER_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_controller-0.1.1-py3-none-any.whl"
+        _PRAKTIKA_CONTROLLER_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_controller-0.1.9-py3-none-any.whl"
         # Floating compat alias: the latest backwards-compatible patch in the
         # {compat_version(current_praktika_version())} branch, so the project picks up BC bug fixes
         # without re-pinning on every Praktika release.

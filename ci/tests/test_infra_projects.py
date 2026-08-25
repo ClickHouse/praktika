@@ -1,4 +1,5 @@
 import base64
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -472,6 +473,46 @@ def test_cloud_config_prefixes_embedded_pool_resources():
     )
 
 
+def test_praktika_project_slug_tag_is_normalized_slug_not_raw_name():
+    # The controller reads the praktika_project_slug instance tag into
+    # PRAKTIKA_PROJECT_SLUG and derives resource names from it (e.g. the
+    # "{slug}-gh-token" auth lambda it invokes). A mixed-case project name
+    # must be lowercased to the same slug every AWS resource is named with,
+    # otherwise the controller invokes a wrongly-cased, non-existent lambda.
+    cloud = CloudInfrastructure.Config(
+        name="ClickHouse",
+        image_builders=[],
+        runner_pools=[
+            RunnerPool(
+                name="arm-2xsmall",
+                instance_type="t4g.small",
+                vpc_name="praktika-ci",
+                scaling=RunnerPool.Scaling.Auto,
+                size=0,
+                max_size=1,
+            )
+        ],
+        orchestrator_pool=OrchestratorPool(
+            instance_type="t4g.small",
+            scaling=OrchestratorPool.Scaling.Auto,
+            size=0,
+            max_size=1,
+        ),
+    )
+
+    runner = cloud.runner_pools[0]
+    orchestrator = cloud.orchestrator_pool
+    for pool in (runner, orchestrator):
+        assert pool.launch_template.tags["praktika_project_slug"] == "clickhouse"
+        assert pool.autoscaling_group.tags["praktika_project_slug"] == "clickhouse"
+    # Sanity: the gh-token lambda the controller would build matches the
+    # deployed, slug-prefixed function name.
+    assert (
+        f"{orchestrator.launch_template.tags['praktika_project_slug']}-gh-token"
+        == "clickhouse-gh-token"
+    )
+
+
 def test_runner_pools_get_distinct_roles_and_profiles():
     cloud = CloudInfrastructure.Config(
         name="sandbox",
@@ -769,6 +810,59 @@ def test_runner_pool_allow_lists_are_project_namespaced():
         "arn:aws:s3:::sandbox-reports-bucket/reports",
         "arn:aws:s3:::sandbox-reports-bucket/reports/*",
         "arn:aws:s3:::external-bucket/custom/*",
+    ]
+
+
+def test_runner_pool_readonly_s3_prefixes_grant_read_not_write():
+    pool = RunnerPool(
+        name="runner",
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        scaling=RunnerPool.Scaling.Auto,
+        size=0,
+        max_size=1,
+        allowed_s3_prefixes=["builds/runs"],
+        allowed_s3_prefixes_readonly=["builds/REFs", "reports/REFs"],
+    )
+
+    read_only = _statement_by_sid(pool, "AllowedS3ReadOnly")
+    assert "s3:PutObject" not in read_only["Action"]
+    assert "s3:GetObject" in read_only["Action"]
+    assert "s3:ListBucket" in read_only["Action"]
+    assert read_only["Resource"] == [
+        "arn:aws:s3:::builds",
+        "arn:aws:s3:::builds/REFs",
+        "arn:aws:s3:::builds/REFs/*",
+        "arn:aws:s3:::reports",
+        "arn:aws:s3:::reports/REFs",
+        "arn:aws:s3:::reports/REFs/*",
+    ]
+    # The read/write prefixes stay in their own statement and still allow writes.
+    assert "s3:PutObject" in _statement_by_sid(pool, "AllowedS3ReadWrite")["Action"]
+
+
+def test_runner_pool_readonly_s3_prefixes_are_project_namespaced():
+    cloud = CloudInfrastructure.Config(
+        name="sandbox",
+        image_builders=[],
+        runner_pools=[
+            RunnerPool(
+                name="runner",
+                instance_type="t4g.small",
+                vpc_name="praktika-ci",
+                scaling=RunnerPool.Scaling.Auto,
+                size=0,
+                max_size=1,
+                allowed_s3_prefixes_readonly=["refs-bucket/REFs"],
+            )
+        ],
+    )
+    pool = cloud.runner_pools[0]
+    assert pool.allowed_s3_prefixes_readonly == ["sandbox-refs-bucket/REFs"]
+    assert _statement_by_sid(pool, "AllowedS3ReadOnly")["Resource"] == [
+        "arn:aws:s3:::sandbox-refs-bucket",
+        "arn:aws:s3:::sandbox-refs-bucket/REFs",
+        "arn:aws:s3:::sandbox-refs-bucket/REFs/*",
     ]
 
 
@@ -1479,7 +1573,8 @@ def test_ubuntu_runner_pool_uses_ubuntu_image_builder():
     assert any("--ignore-installed" in command for command in runtime_commands)
     assert not any("--force-reinstall" in command for command in runtime_commands)
     assert [lt.name for lt in builder.launch_templates] == [
-        "amd-2xsmall-ubuntu-lt"
+        "amd-2xsmall-ubuntu-lt",
+        "pr-amd-2xsmall-ubuntu-lt",
     ]
 
 
@@ -1489,19 +1584,20 @@ def test_project_image_builders_register_expected_launch_templates():
     ] == [
         "arm-2xsmall-lt",
         "arm-2xsmall-base-lt",
+        "pr-arm-2xsmall-lt",
         "arm-2xsmall-bedrock-lt",
         "workflow-orchestrator-lt",
         "workflow-orchestrator-base-lt",
     ]
     assert [
         lt.name for lt in _IMAGE_BUILDERS_BY_NAME["ci-x86_64-image"].launch_templates
-    ] == ["amd-2xsmall-lt"]
+    ] == ["amd-2xsmall-lt", "pr-amd-2xsmall-lt"]
     assert [
         lt.name
         for lt in _IMAGE_BUILDERS_BY_NAME[
             "ci-ubuntu-x86_64-image"
         ].launch_templates
-    ] == ["amd-2xsmall-ubuntu-lt"]
+    ] == ["amd-2xsmall-ubuntu-lt", "pr-amd-2xsmall-ubuntu-lt"]
 
 
 def test_all_image_builders_stay_private():
@@ -1576,7 +1672,8 @@ def test_project_runner_pools_allow_only_required_ssm_parameters():
             "Effect": "Allow",
             "Action": ["ssm:GetParameter", "ssm:GetParameters"],
             "Resource": [
-                f"arn:aws:ssm:*:*:parameter/{_RUNNER_ALLOWED_SSM_PARAMETERS[0]}"
+                f"arn:aws:ssm:*:*:parameter/{param}"
+                for param in _RUNNER_ALLOWED_SSM_PARAMETERS
             ],
         }
         assert all(
@@ -1637,9 +1734,11 @@ def test_non_base_runner_pools_patch_praktika_into_shared_base_venv():
 
     ubuntu = next(pool for pool in _runner_pools if pool.name == "amd-2xsmall-ubuntu")
     ubuntu_user_data = ubuntu.launch_template.user_data
+    # The controller wheel is reinstalled first (before the CloudWatch agent is
+    # configured and the controller service starts).
     assert (
-        ubuntu_user_data.index("praktika-configure-cloudwatch-agent")
-        < ubuntu_user_data.index(_PRAKTIKA_CONTROLLER_LATEST_WHEEL)
+        ubuntu_user_data.index(_PRAKTIKA_CONTROLLER_LATEST_WHEEL)
+        < ubuntu_user_data.index("praktika-configure-cloudwatch-agent")
     )
     assert (
         "python3.12 -m pip install --ignore-installed"
@@ -1660,6 +1759,7 @@ def test_shared_arm64_images_are_used_by_runner_and_orchestrator_pools():
     assert [lt.name for lt in builder.launch_templates] == [
         "arm-2xsmall-lt",
         "arm-2xsmall-base-lt",
+        "pr-arm-2xsmall-lt",
         "arm-2xsmall-bedrock-lt",
         "workflow-orchestrator-lt",
         "workflow-orchestrator-base-lt",
@@ -1802,6 +1902,22 @@ def test_orchestrator_pool_can_configure_allowed_push_branches_from_ext():
     assert pool.lambda_config.environments["ALLOWED_PUSH_BRANCHES"] == (
         "develop,release/1.0"
     )
+
+
+def test_orchestrator_pool_can_configure_allowed_users_from_ext():
+    pool = OrchestratorPool(
+        name="orch",
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        size=1,
+        max_size=1,
+        ext={"allowed_users": ["alice", "bob"]},
+    )
+
+    assert json.loads(pool.lambda_config.environments["ALLOWED_USERS_JSON"]) == [
+        "alice",
+        "bob",
+    ]
 
 
 def test_orchestrator_pool_appends_ext_iam_statements_to_role_policy():

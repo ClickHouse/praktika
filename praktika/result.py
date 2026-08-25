@@ -11,7 +11,7 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from ._environment import _Environment
 from .event import Event
@@ -89,8 +89,9 @@ class Result(MetaClasses.Serializable):
         SETTING_VALUE = "setting"
         FLAKY = "flaky"
         REPRODUCIBLE = "reproducible"
+        LOG_CHECK = "log_check"
 
-    # Default hints rendered as a hover tooltip in json.html.
+    # Default hints rendered as a hover tooltip in praktika.html.
     # Looked up automatically when set_label is called without an explicit hint.
     LABEL_HINTS = {
         Label.OK_ON_RETRY: "Test failed initially but passed on retry",
@@ -103,6 +104,7 @@ class Result(MetaClasses.Serializable):
         Label.SETTING_VALUE: "Failure caused by a specific randomized setting value",
         Label.FLAKY: "Failure is reproducible in less than 100% of reruns",
         Label.REPRODUCIBLE: "Failure is reproducible in 100% of reruns",
+        Label.LOG_CHECK: "Server-log / runner health check, not a test case (excluded from bugfix-validation inversion)",
     }
 
     name: str
@@ -301,6 +303,13 @@ class Result(MetaClasses.Serializable):
                 )
                 files.remove(file)
         self.files += files
+        self._dump_if_persisted()
+        return self
+
+    def set_assets(self, assets) -> "Result":
+        if isinstance(assets, (str, Path)):
+            assets = [assets]
+        self.ext["assets"] = [str(asset) for asset in assets]
         self._dump_if_persisted()
         return self
 
@@ -563,13 +572,13 @@ class Result(MetaClasses.Serializable):
         if not self.ext.get("labels", None):
             return self
         self.ext["labels"] = [
-            l for l in self.ext["labels"] if self._label_name(l) != label
+            item for item in self.ext["labels"] if self._label_name(item) != label
         ]
         return self
 
     def get_labels(self):
         """Return list of label names."""
-        return [self._label_name(l) for l in self.ext.get("labels", [])]
+        return [self._label_name(item) for item in self.ext.get("labels", [])]
 
     def has_label(self, label):
         if label in self.get_labels():
@@ -578,9 +587,9 @@ class Result(MetaClasses.Serializable):
         return label in [x[0] for x in self.ext.get("hlabels", []) if x]
 
     def get_label_link(self, label):
-        for l in self.ext.get("labels", []):
-            if isinstance(l, dict) and l.get("name") == label:
-                return l.get("link")
+        for item in self.ext.get("labels", []):
+            if isinstance(item, dict) and item.get("name") == label:
+                return item.get("link")
         # Legacy fallback for results stored before the label/hlabel unification.
         for h in self.ext.get("hlabels", []):
             if isinstance(h, (list, tuple)) and len(h) >= 2 and h[0] == label:
@@ -588,9 +597,9 @@ class Result(MetaClasses.Serializable):
         return None
 
     def get_label_hint(self, label):
-        for l in self.ext.get("labels", []):
-            if isinstance(l, dict) and l.get("name") == label:
-                return l.get("hint")
+        for item in self.ext.get("labels", []):
+            if isinstance(item, dict) and item.get("name") == label:
+                return item.get("hint")
         return None
 
     def set_comment(self, comment):
@@ -922,6 +931,7 @@ class Result(MetaClasses.Serializable):
         command_kwargs=None,
         retries=1,
         retry_errors: Union[List[str], str] = "",
+        env=None,
     ):
         """
         Executes shell commands or Python callables, optionally logging output, and handles errors.
@@ -937,6 +947,8 @@ class Result(MetaClasses.Serializable):
         :param command_kwargs: Keyword arguments for the callable command.
         :param retries: The number of times to retry the command if it fails.
         :param retry_errors: The errors to retry on. Support for shell command(s) only.
+        :param env: Optional environment dict for shell commands (e.g. the job
+            python env so PYTHONPATH carries the checkout root for `ci.*` imports).
         :return: Result object with status and optional log file.
         """
 
@@ -1006,6 +1018,7 @@ class Result(MetaClasses.Serializable):
                         log_file=log_file,
                         retries=retries,
                         retry_errors=retry_errors,
+                        env=env,
                     )
                     if with_info or (with_info_on_failure and exit_code != 0):
                         log_output = Shell.get_output(f"cat {log_file}")
@@ -1325,7 +1338,7 @@ class ResultInfo:
 class _ResultS3:
 
     # Map the ``kind`` field used in ``_Environment.REPORT_MESSAGES`` to the
-    # ``ext`` bucket rendered by ``json.html``. Unknown kinds fall into notes.
+    # ``ext`` bucket rendered by ``praktika.html``. Unknown kinds fall into notes.
     _REPORT_MESSAGE_KIND_TO_EXT_KEY = {
         "warning": "warnings",
         "error": "errors",

@@ -27,9 +27,15 @@ class EC2Instance:
         image_id: str = ""
         instance_type: str = ""
 
-        # Networking
+        # Networking. `subnet_id`/`security_group_ids` can be given as raw IDs,
+        # or resolved at deploy time from a VPC referenced by `vpc_name`:
+        # the subnet is picked by `availability_zone` (falling back to the first
+        # subnet in the VPC) and the security groups by `security_group_names`.
         subnet_id: str = ""
         security_group_ids: List[str] = field(default_factory=list)
+        vpc_name: str = ""
+        security_group_names: List[str] = field(default_factory=list)
+        availability_zone: str = ""
 
         # IAM
         iam_instance_profile_name: str = ""
@@ -86,8 +92,6 @@ class EC2Instance:
             if not self.host_resource_group_name:
                 return ""
 
-            import boto3
-
             rg = aws_client("resource-groups", self.region, self.name)
             resp = rg.get_group(GroupName=self.host_resource_group_name)
             group = resp.get("Group") or {}
@@ -99,13 +103,39 @@ class EC2Instance:
             self.ext["host_resource_group_arn"] = arn
             return arn
 
+        def _resolve_networking(self) -> None:
+            """Fill in subnet_id / security_group_ids from `vpc_name` when they
+            were not given as raw IDs. No-op if already set or no VPC named."""
+            if (self.subnet_id and self.security_group_ids) or not self.vpc_name:
+                return
+
+            from .vpc import VPC
+
+            lookup = VPC.Lookup(name=self.vpc_name, region=self.region)
+            if not self.subnet_id:
+                if self.availability_zone:
+                    self.subnet_id = lookup.subnet_id_for_az(self.availability_zone)
+                else:
+                    self.subnet_id = lookup.first_subnet_id()
+                print(
+                    f"EC2Instance '{self.name}': resolved subnet {self.subnet_id} "
+                    f"from VPC '{self.vpc_name}'"
+                    + (f" in {self.availability_zone}" if self.availability_zone else "")
+                )
+            if not self.security_group_ids and self.security_group_names:
+                self.security_group_ids = lookup.resolve_security_group_ids(
+                    self.security_group_names
+                )
+                print(
+                    f"EC2Instance '{self.name}': resolved security groups "
+                    f"{self.security_group_ids} from VPC '{self.vpc_name}'"
+                )
+
         def _resolve_root_device_name(self) -> str:
             if self.root_device_name:
                 return self.root_device_name
             if not self.image_id:
                 return ""
-
-            import boto3
 
             ec2 = aws_client("ec2", self.region, self.name)
             resp = ec2.describe_images(ImageIds=[self.image_id])
@@ -135,7 +165,6 @@ class EC2Instance:
 
         def _find_existing_instances(self) -> List[Dict[str, Any]]:
             """Find all existing instances matching the name."""
-            import boto3
 
             ec2 = aws_client("ec2", self.region, self.name)
 
@@ -205,7 +234,6 @@ class EC2Instance:
             return self
 
         def deploy(self):
-            import boto3
             import os
 
             if not self.image_id or not self.instance_type:
@@ -230,6 +258,8 @@ class EC2Instance:
                 print(
                     f"EC2Instance '{self.name}': loaded user_data from file '{self.user_data_file}' ({len(self.user_data)} bytes)"
                 )
+
+            self._resolve_networking()
 
             existing_instances = self._find_existing_instances()
             ec2 = aws_client("ec2", self.region, self.name)
@@ -392,8 +422,6 @@ class EC2Instance:
             Args:
                 force: If True, forcefully terminate without stopping first (default: True).
             """
-            import boto3
-
             existing_instances = self._find_existing_instances()
             if not existing_instances:
                 print(

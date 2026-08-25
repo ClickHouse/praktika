@@ -150,9 +150,15 @@ def _record_value(record, key, default=None):
 
 
 def _queue_for_runs_on(runs_on):
-    """First non-empty ``runs_on`` label → ``<project-slug>-<label>`` queue name."""
+    """First meaningful ``runs_on`` label → ``<project-slug>-<label>`` queue name.
+
+    "self-hosted" is a GitHub-Actions runner-group label with no meaning to the
+    praktika engine, so it is skipped — the pool/size label is what maps to a
+    queue (e.g. ``["self-hosted", "style-checker-aarch64"]`` →
+    ``<slug>-style-checker-aarch64``).
+    """
     for label in runs_on or ():
-        if label:
+        if label and label != "self-hosted":
             return f"{_queue_prefix()}{label}"
     return None
 
@@ -194,6 +200,34 @@ class JobCheckRun:
         body = {"name": name, "head_sha": head_sha, "status": "queued"}
         if output is not None:
             body["output"] = output
+        data = cls._api(
+            "POST",
+            f"https://api.github.com/repos/{repo}/check-runs",
+            token,
+            body,
+        )
+        return cls(token, repo, data["id"], name)
+
+    @classmethod
+    def create_completed(
+        cls, token, repo, head_sha, name, conclusion, output=None, details_url=None
+    ):
+        """Create a check run already in its terminal state in one POST.
+
+        Used for jobs that never run (skipped) so the check posts its final
+        conclusion directly, rather than the queue()->complete() two-call
+        dance that briefly surfaces a pending check before flipping it.
+        """
+        body = {
+            "name": name,
+            "head_sha": head_sha,
+            "status": "completed",
+            "conclusion": conclusion,
+        }
+        if output is not None:
+            body["output"] = output
+        if details_url is not None:
+            body["details_url"] = details_url
         data = cls._api(
             "POST",
             f"https://api.github.com/repos/{repo}/check-runs",
@@ -335,6 +369,35 @@ class JobState:
                 f"{type(e).__name__}: {e}"
             )
 
+    def _create_completed_check(self, conclusion, output=None, details_url=None):
+        """Post the GitHub check run directly in its terminal state.
+
+        For jobs that never run (skipped), this posts the final conclusion in
+        a single API call instead of queue()->complete(), which would briefly
+        show a pending check before flipping it.
+        """
+        if self.check is not None:
+            return
+        ws = self._workflow_state
+        if ws is None or not ws.can_post_checks:
+            return
+        check_name = f"{ws.workflow.name} / {self.name}"
+        try:
+            self.check = JobCheckRun.create_completed(
+                ws._gh_token,
+                ws._repo,
+                ws._head_sha,
+                check_name,
+                conclusion,
+                output=output,
+                details_url=details_url,
+            )
+        except Exception as e:
+            print(
+                f"  [warn] could not post {conclusion} check for {check_name!r}: "
+                f"{type(e).__name__}: {e}"
+            )
+
     def kick(self):
         """Transition READY -> QUEUED, post the pending check, and dispatch
         to the runner.
@@ -437,9 +500,8 @@ class JobState:
         self.status = JobStatus.SKIPPED
         self.filter_reason = reason
         if post_check:
-            self._create_check()
-            self._update_check(
-                lambda c: c.complete("skipped", output=output, details_url=details_url)
+            self._create_completed_check(
+                "skipped", output=output, details_url=details_url
             )
         suffix = f" ({reason})" if reason else ""
         print(f"[SKIP ] {self.name:70s}{suffix}")
@@ -488,7 +550,14 @@ class JobState:
         self.status = JobStatus.CANCELLED
         if was_in_flight:
             self.finished_at = time.time()
-            self._update_check(lambda c: c.complete("cancelled"))
+            # Pass an explicit output so the terminal check reflects the
+            # cancellation instead of keeping the earlier "QUEUED" summary.
+            self._update_check(
+                lambda c: c.complete(
+                    "cancelled",
+                    output={"title": "CANCELLED", "summary": f"CANCELLED: {reason}."},
+                )
+            )
         print(f"[CANCL] {self.name:70s} ({reason})")
 
 
@@ -834,6 +903,7 @@ class WorkflowState:
         now = now if now is not None else time.time()
         for js in running:
             runs_on = ", ".join(js.job.runs_on) if js.job.runs_on else "default"
+            runner_pool = runs_on
             key = self._heartbeat_s3_key(js.name)
             heartbeat_missing = False
             try:
@@ -858,7 +928,10 @@ class WorkflowState:
                         js.status = JobStatus.RUNNING
                         summary = "RUNNING: runner picked up the job."
                         if instance_id:
-                            summary = f"RUNNING on runner `{instance_id}`."
+                            summary = (
+                                f"RUNNING on runner `{instance_id}` in pool "
+                                f"`{runner_pool}`."
+                            )
                         if phase:
                             summary += f" Phase: `{phase}`."
                         if attempt > 1:
@@ -963,7 +1036,9 @@ class WorkflowState:
         """
         task = {
             "type": "job_task",
+            "event_type": self._event.get("type", ""),
             "repo": self._event.get("repo", ""),
+            "head_repo": self._event.get("head_repo", ""),
             "pr_number": self._event.get("pr_number"),
             "head_sha": self._event.get("head_sha", ""),
             "head_ref": self._event.get("head_ref", ""),
