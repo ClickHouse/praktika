@@ -9,6 +9,7 @@ import shlex
 import site
 import shutil
 import sys
+import tempfile
 import textwrap
 import traceback
 from pathlib import Path
