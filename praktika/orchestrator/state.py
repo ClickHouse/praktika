@@ -303,6 +303,10 @@ class JobState:
         self._workflow_state = workflow_state  # back-ref for SQS dispatch
         self.status = JobStatus.PENDING
         self.rc = None
+        # True when the job FAILED but opted out of blocking the pipeline via
+        # result.complete_job(do_not_block_pipeline_on_failure=True). Such a
+        # failure is advisory: dependents must still run (see get_ready).
+        self.non_blocking = False
         self.started_at = None
         self.finished_at = None
         self.filter_reason = None  # set by .skip() when Config Workflow skips it
@@ -462,15 +466,22 @@ class JobState:
                 output={"title": "Dispatch failed", "summary": summary},
             )
 
-    def finish(self, success=True, output=None, details_url=None):
+    def finish(self, success=True, output=None, details_url=None, non_blocking=False):
         """Transition in-flight jobs -> SUCCESS/FAILURE and emit a finish line.
 
         The orchestrator owns the GitHub check lifecycle: runners publish
         final state to S3, and this method completes the check.
+
+        ``non_blocking`` records that a failing job asked not to block the
+        pipeline (``do_not_block_pipeline_on_failure``). The job's own status
+        stays FAILURE (its check goes red — the process exited non-zero), but
+        ``get_ready`` treats it as success-equivalent so dependents still run,
+        mirroring the GH-engine ``_pipeline_status`` behavior.
         """
         if self.status not in (JobStatus.QUEUED, JobStatus.RUNNING):
             return
         self.status = JobStatus.SUCCESS if success else JobStatus.FAILURE
+        self.non_blocking = bool(non_blocking) and not success
         self.finished_at = time.time()
         self.rc = 0 if success else 1
         self._update_check(
@@ -858,6 +869,7 @@ class WorkflowState:
             # check-run output here (the orchestrator owns the check
             # lifecycle).
             output = None
+            non_blocking = False
             result_dict = payload.get("result")
             if isinstance(result_dict, dict):
                 js.result = result_dict
@@ -869,6 +881,10 @@ class WorkflowState:
                     # from_dict mutates its argument, so reconstruct from a
                     # copy to keep js.result a plain, serializable dict.
                     result = Result.from_dict(deepcopy(result_dict))
+                    # rc alone is not "block the DAG": a job may exit non-zero
+                    # yet ask not to block dependents (advisory jobs such as
+                    # bugfix validation / coverage). Honor the Result flag.
+                    non_blocking = result.do_not_block_pipeline_on_failure()
                     output = _build_check_output(
                         result,
                         rc,
@@ -881,7 +897,12 @@ class WorkflowState:
                         f"  [warn] could not render Result for {js.name!r}: "
                         f"{type(e).__name__}: {e}"
                     )
-            js.finish(success=(rc == 0), output=output, details_url=details_url)
+            js.finish(
+                success=(rc == 0),
+                output=output,
+                details_url=details_url,
+                non_blocking=non_blocking,
+            )
 
     def sweep_liveness(self, now=None):
         """Mark in-flight jobs whose runner stopped responding as FAILURE.
@@ -1134,11 +1155,12 @@ class WorkflowState:
         """Promote PENDING jobs whose deps are resolved -> READY and return them.
 
         Normal jobs:
-          - any dep in FAILURE or CANCELLED ⇒ cascade this job to CANCELLED
-            (upstream failed / upstream cancelled, this can't proceed);
-          - every dep in SUCCESS or SKIPPED ⇒ promote to READY (SKIPPED
-            outputs still exist in S3 from a prior run — SUCCESS-equivalent
-            for dep resolution).
+          - any dep in blocking FAILURE or CANCELLED ⇒ cascade this job to
+            CANCELLED (upstream failed / upstream cancelled, this can't proceed);
+          - every dep in SUCCESS, SKIPPED, or non-blocking FAILURE ⇒ promote to
+            READY. SKIPPED outputs still exist in S3 from a prior run, and a
+            non-blocking FAILURE (do_not_block_pipeline_on_failure) is advisory —
+            both are SUCCESS-equivalent for dep resolution.
 
         ``always_run`` jobs (Finish Workflow is the only one
         today) promote to READY once every dep reaches *any* terminal
@@ -1150,19 +1172,30 @@ class WorkflowState:
         for name, js in self.jobs.items():
             if js.status != JobStatus.PENDING:
                 continue
-            dep_states = [self.jobs[d].status for d in self._deps.get(name, ())]
+            deps = [self.jobs[d] for d in self._deps.get(name, ())]
             if js.job.always_run:
-                if all(s in _TERMINAL for s in dep_states):
+                if all(d.status in _TERMINAL for d in deps):
                     js.status = JobStatus.READY
                     ready.append(js)
                 continue
-            if any(s == JobStatus.FAILURE for s in dep_states):
+            # A dep that FAILED but is non_blocking
+            # (do_not_block_pipeline_on_failure) counts as success-equivalent
+            # for dependency resolution: its failure is advisory, so it must
+            # neither cancel dependents nor hold them back.
+            if any(
+                d.status == JobStatus.FAILURE and not getattr(d, "non_blocking", False)
+                for d in deps
+            ):
                 js.cancel(reason="upstream failed")
                 continue
-            if any(s == JobStatus.CANCELLED for s in dep_states):
+            if any(d.status == JobStatus.CANCELLED for d in deps):
                 js.cancel(reason="upstream cancelled")
                 continue
-            if all(s in (JobStatus.SUCCESS, JobStatus.SKIPPED) for s in dep_states):
+            if all(
+                d.status in (JobStatus.SUCCESS, JobStatus.SKIPPED)
+                or (d.status == JobStatus.FAILURE and getattr(d, "non_blocking", False))
+                for d in deps
+            ):
                 js.status = JobStatus.READY
                 ready.append(js)
         return ready

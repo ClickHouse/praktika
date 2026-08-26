@@ -140,6 +140,7 @@ def _make_state(
         js.check = None
         js.status = status
         js.rc = None
+        js.non_blocking = False
         js.started_at = now - 5
         js.finished_at = None
         js.filter_reason = None
@@ -435,6 +436,48 @@ def test_wait_processes_final_before_liveness(monkeypatch):
 
     assert state.jobs["A"].status == JobStatus.SUCCESS
     assert state.jobs["A"].rc == 0
+
+
+def test_non_blocking_failure_promotes_dependents_instead_of_cancelling():
+    """A job that exits non-zero but set do_not_block_pipeline_on_failure is
+    advisory: its own status is FAILURE, but dependents must still run rather
+    than cascade to CANCELLED."""
+    s3 = _FakeS3()
+    state = _make_state(["A", "B"], s3)
+    state._deps = {"B": ("A",)}
+    state.jobs["B"].status = JobStatus.PENDING
+
+    result = _result_payload("A", status="FAIL")
+    result["ext"] = {"do_not_block_pipeline_on_failure": True}
+    _put_final(s3, "run42", "A", rc=1, result=result)
+
+    state.sweep_completions()
+    assert state.jobs["A"].status == JobStatus.FAILURE
+    assert state.jobs["A"].rc == 1
+    assert state.jobs["A"].non_blocking is True
+
+    ready = state.get_ready()
+    assert state.jobs["B"].status == JobStatus.READY
+    assert state.jobs["B"] in ready
+
+
+def test_blocking_failure_still_cancels_dependents():
+    """A plain non-zero exit (no do_not_block flag) remains a hard blocker:
+    dependents cascade to CANCELLED."""
+    s3 = _FakeS3()
+    state = _make_state(["A", "B"], s3)
+    state._deps = {"B": ("A",)}
+    state.jobs["B"].status = JobStatus.PENDING
+
+    result = _result_payload("A", status="FAIL")
+    _put_final(s3, "run42", "A", rc=1, result=result)
+
+    state.sweep_completions()
+    assert state.jobs["A"].status == JobStatus.FAILURE
+    assert state.jobs["A"].non_blocking is False
+
+    state.get_ready()
+    assert state.jobs["B"].status == JobStatus.CANCELLED
 
 
 if __name__ == "__main__":
