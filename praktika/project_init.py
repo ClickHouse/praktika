@@ -478,7 +478,6 @@ def _settings_template(answers: InitAnswers) -> str:
         ENABLE_SUBMODULE_CACHE = True
 {s3_endpoint_block}
 
-        USE_CUSTOM_GH_AUTH = True
         GH_AUTH_LAMBDA_NAME = f"{{PROJECT_SLUG}}-gh-token"
         GH_AUTH_LAMBDA_REGION = AWS_REGION
         PRAKTIKA_BASE_VENV = "praktika-runtime-{current_praktika_version()}"

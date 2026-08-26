@@ -15,7 +15,6 @@ def _run_validator_for_workflow(monkeypatch, workflow):
     monkeypatch.setattr(Settings, "CLOUD_INFRASTRUCTURE_CONFIG_PATH", "")
     monkeypatch.setattr(Settings, "ENABLED_WORKFLOWS", None)
     monkeypatch.setattr(Settings, "DISABLED_WORKFLOWS", None)
-    monkeypatch.setattr(Settings, "USE_CUSTOM_GH_AUTH", False)
     monkeypatch.setattr(Settings, "VALIDATE_FILE_PATHS", False)
     monkeypatch.setattr("praktika.validator._get_workflows", _fake_get_workflows)
 

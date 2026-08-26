@@ -25,7 +25,6 @@ DOCKER_BUILD_ARM_RUNS_ON = [RunnerLabels.SMALL_ARM]
 DOCKER_BUILD_AMD_RUNS_ON = [RunnerLabels.SMALL_AMD]
 
 SECRET_DOCKER_REGISTRY = "praktika-docker-registry-connection"
-USE_CUSTOM_GH_AUTH = True
 
 # Runner controller heartbeat write interval, in seconds.
 HEARTBEAT_INTERVAL_S = 30

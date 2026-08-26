@@ -17,6 +17,18 @@ from praktika.result import Result
 from praktika.settings import Settings
 from praktika.utils import Shell
 
+# `out` and `err` are API- or user-controlled and unbounded, while the fields identifying the
+# failure (command, exit code, attempt count) are short. Cap the unbounded ones so a caller
+# that bounds the whole message, or a log reader, still sees the cause.
+_GH_DIAGNOSTIC_FIELD_LIMIT = 300
+
+
+def _elide(text, limit=_GH_DIAGNOSTIC_FIELD_LIMIT):
+    """`text` capped at `limit`, with an explicit marker so a reader can tell it was cut."""
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}...(+{len(text) - limit} chars elided)"
+
 
 class GH:
 
@@ -509,16 +521,29 @@ class GH:
         return res
 
     @classmethod
-    def get_output_with_retries(cls, command, verbose=False):
+    def get_output_with_retries(cls, command, verbose=False, strict=False):
         """Run a read-style ``gh`` command and return its stdout.
 
         Mirrors :meth:`do_command_with_retries` but returns the captured
-        stdout instead of a boolean.
+        stdout instead of a boolean. Use this for any GitHub API read
+        (``gh api ...``, ``gh pr view ...``, ``gh pr diff ...``) that
+        previously used :meth:`Shell.get_output` without retries — those
+        calls would silently return an empty string on a transient 5xx
+        and propagate as ``json.loads('')`` errors or empty-result bugs.
+
+        Returns the trimmed stdout on success; an empty string if the
+        command keeps failing after ``MAX_RETRIES_GH`` attempts.
+        ``strict=True`` raises instead, so a caller can report why the
+        read failed rather than be handed an empty string that is
+        indistinguishable from an empty result.
         """
         retry_count = 0
-        out, err = "", ""
-
+        # Counted where the subprocess is invoked, so a non-retryable class that breaks out
+        # of the loop still reports the attempt it made. retry_count counts retries taken.
+        attempts = 0
+        out, err, ret_code = "", "", -1
         while retry_count < Settings.MAX_RETRIES_GH:
+            attempts += 1
             ret_code, out, err = Shell.get_res_stdout_stderr(command, verbose=verbose)
             if ret_code == 0:
                 return out
@@ -535,9 +560,15 @@ class GH:
             delay = min(2 ** (retry_count + 1), 60)
             time.sleep(delay)
 
-        print(
-            f"ERROR: Failed to execute gh command [{command}] out:[{out}] err:[{err}] after [{retry_count}] attempts"
+        # Field order matters: a caller may bound this message (it can reach a public report
+        # page), so the fields naming the cause come before the API-controlled output.
+        message = (
+            f"Failed to execute gh command [{command}] exit_code:[{ret_code}] "
+            f"after [{attempts}] attempts err:[{_elide(err)}] out:[{_elide(out)}]"
         )
+        print(f"ERROR: {message}")
+        if strict:
+            raise RuntimeError(message)
         return ""
 
     @classmethod
@@ -564,182 +595,6 @@ class GH:
         if "errors" in data and data["errors"]:
             raise RuntimeError(f"gh api graphql returned errors: {data['errors']}")
         return data
-
-    @classmethod
-    def post_pr_line_comment(
-        cls,
-        body_file,
-        commit_id=None,
-        path=None,
-        line=None,
-        side="RIGHT",
-        in_reply_to=None,
-        pr=None,
-        repo=None,
-    ):
-        """Post an inline review comment on a specific line of a PR diff,
-        or a reply on an existing inline thread.
-
-        When ``in_reply_to`` is set, the comment is posted as a reply on
-        the thread whose parent comment has that database id, and
-        ``commit_id``/``path``/``line``/``side`` are ignored. Otherwise a
-        new top-level inline comment is created at the given location and
-        all four are required.
-
-        The body is read from ``body_file`` and passed via ``-F body=@<file>``,
-        which avoids two classes of bugs we have hit before:
-          1) Newlines collapsing to literal ``\\n`` when the body is inlined.
-          2) The body being posted as the literal ``@<file>`` string when a
-             caller mistakenly uses ``-f`` (raw field) instead of ``-F`` (typed
-             field with ``@file`` expansion).
-        """
-        if not repo:
-            repo = _Environment.get().REPOSITORY
-        if not pr:
-            pr = _Environment.get().PR_NUMBER
-
-        if not os.path.exists(body_file):
-            raise FileNotFoundError(f"Body file [{body_file}] not found")
-        if os.path.getsize(body_file) == 0:
-            raise ValueError(f"Body file [{body_file}] is empty")
-
-        if in_reply_to is not None:
-            cmd = (
-                f"gh api -X POST "
-                f'-H "Accept: application/vnd.github.v3+json" '
-                f'"/repos/{repo}/pulls/{pr}/comments/{int(in_reply_to)}/replies" '
-                f"-F body=@{shlex.quote(body_file)}"
-            )
-        else:
-            if commit_id is None or path is None or line is None:
-                raise ValueError(
-                    "post_pr_line_comment requires commit_id, path, and line "
-                    "when in_reply_to is not set"
-                )
-            cmd = (
-                f"gh api -X POST "
-                f'-H "Accept: application/vnd.github.v3+json" '
-                f'"/repos/{repo}/pulls/{pr}/comments" '
-                f"-F body=@{shlex.quote(body_file)} "
-                f"-f commit_id={shlex.quote(commit_id)} "
-                f"-f path={shlex.quote(path)} "
-                f"-F line={int(line)} "
-                f"-f side={shlex.quote(side)}"
-            )
-        return cls.do_command_with_retries(cmd)
-
-    @classmethod
-    def post_pr_review(
-        cls,
-        commit_id,
-        comments,
-        body="",
-        pr=None,
-        repo=None,
-    ):
-        """Post all inline findings as a single ``COMMENT`` PR review (one
-        review event, one notification) instead of many standalone inline
-        comments.
-
-        Only the ``COMMENT`` event is supported; this helper never approves or
-        requests changes, so an empty review is always a no-op rather than a
-        meaningful action.
-
-        ``comments`` is a list of dicts, each describing one inline comment::
-
-            {"path": <file>, "line": <int>, "side": "RIGHT"|"LEFT",
-             "start_line": <int> (optional), "start_side": <str> (optional),
-             "body_file": <path>}
-
-        Each comment body is read from its ``body_file`` and the whole payload
-        is assembled with ``json.dumps``, so multi-line Markdown is escaped
-        correctly. This avoids the ``-f`` vs ``-F`` / literal ``@<file>`` and
-        literal ``\\n`` footguns that standalone ``gh api`` calls have hit.
-
-        GitHub rejects a ``COMMENT`` review with neither a body nor any
-        comments, so when ``comments`` is empty and ``body`` is empty the call
-        is skipped and True is returned.
-        """
-        if not repo:
-            repo = _Environment.get().REPOSITORY
-        if not pr:
-            pr = _Environment.get().PR_NUMBER
-
-        payload_comments = []
-        for c in comments:
-            body_file = c["body_file"]
-            if not os.path.exists(body_file):
-                raise FileNotFoundError(f"Body file [{body_file}] not found")
-            if os.path.getsize(body_file) == 0:
-                raise ValueError(f"Body file [{body_file}] is empty")
-            with open(body_file, "r", encoding="utf-8") as f:
-                comment = {"path": c["path"], "body": f.read()}
-            if c.get("start_line") is not None:
-                comment["start_line"] = int(c["start_line"])
-                comment["start_side"] = c.get("start_side", c.get("side", "RIGHT"))
-            comment["line"] = int(c["line"])
-            comment["side"] = c.get("side", "RIGHT")
-            payload_comments.append(comment)
-
-        if not payload_comments and not body:
-            print("No review body and no inline comments; skipping review post")
-            return True
-
-        payload = {"event": "COMMENT", "comments": payload_comments}
-        if commit_id:
-            payload["commit_id"] = commit_id
-        if body:
-            payload["body"] = body
-
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", delete=False, encoding="utf-8"
-        ) as f:
-            json.dump(payload, f)
-            payload_file = f.name
-        try:
-            cmd = (
-                f"gh api -X POST "
-                f'-H "Accept: application/vnd.github.v3+json" '
-                f'"/repos/{repo}/pulls/{pr}/reviews" '
-                f"--input {shlex.quote(payload_file)}"
-            )
-            return cls.do_command_with_retries(cmd)
-        finally:
-            os.unlink(payload_file)
-
-    @classmethod
-    def _set_review_thread_resolution(cls, thread_id, resolve, verbose=False):
-        mutation_name = "resolveReviewThread" if resolve else "unresolveReviewThread"
-        query = (
-            f"mutation($threadId:ID!){{"
-            f"{mutation_name}(input:{{threadId:$threadId}}){{thread{{isResolved}}}}"
-            f"}}"
-        )
-        cmd = (
-            f"gh api graphql "
-            f"-f query={shlex.quote(query)} "
-            f"-f threadId={shlex.quote(thread_id)}"
-        )
-        return cls.do_command_with_retries(cmd, verbose=verbose)
-
-    @classmethod
-    def resolve_pr_review_thread(cls, thread_id, verbose=False):
-        """Mark a PR review thread as resolved (GraphQL ``resolveReviewThread``).
-
-        ``thread_id`` is the GraphQL node id from
-        :meth:`list_pr_review_threads`, not the REST comment id.
-        """
-        return cls._set_review_thread_resolution(
-            thread_id, resolve=True, verbose=verbose
-        )
-
-    @classmethod
-    def unresolve_pr_review_thread(cls, thread_id, verbose=False):
-        """Re-open a previously resolved PR review thread
-        (GraphQL ``unresolveReviewThread``)."""
-        return cls._set_review_thread_resolution(
-            thread_id, resolve=False, verbose=verbose
-        )
 
     @classmethod
     def list_pr_review_threads(cls, pr=None, repo=None, verbose=False):
@@ -1225,6 +1080,86 @@ class GH:
         return res
 
     @classmethod
+    def _submit_team_review_requests(cls, team_slugs, pr, repo):
+        assert team_slugs
+
+        payload = {"reviewers": [], "team_reviewers": team_slugs}
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as temp_file:
+            json.dump(payload, temp_file)
+            temp_file_path = temp_file.name
+
+        try:
+            cmd = (
+                "gh api -X POST "
+                f'-H "Accept: application/vnd.github.v3+json" '
+                f'"/repos/{repo}/pulls/{pr}/requested_reviewers" '
+                f"--input {shlex.quote(temp_file_path)}"
+            )
+            if not cls.do_command_with_retries(cmd):
+                raise RuntimeError(
+                    f"Failed to request team reviews for pull request [{pr}]"
+                )
+        finally:
+            os.unlink(temp_file_path)
+
+    @classmethod
+    def _get_requested_team_reviews(cls, pr, repo):
+        cmd = (
+            f'gh api -H "Accept: application/vnd.github.v3+json" '
+            f'"/repos/{repo}/pulls/{pr}/requested_reviewers" '
+            "--jq '[.teams[].slug]'"
+        )
+        output = cls.get_output_with_retries(cmd)
+        if not output:
+            raise RuntimeError(
+                f"Failed to retrieve team review requests for pull request [{pr}]"
+            )
+
+        try:
+            requested_teams = json.loads(output)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                f"Failed to parse team review requests for pull request [{pr}]: {e}"
+            ) from e
+        if not isinstance(requested_teams, list) or not all(
+            isinstance(team, str) for team in requested_teams
+        ):
+            raise RuntimeError(
+                f"Unexpected team review request response for pull request [{pr}]"
+            )
+
+        return set(requested_teams)
+
+    @classmethod
+    def request_team_reviews(cls, team_slugs, pr=None, repo=None):
+        requested = set(team_slugs)
+        if not requested:
+            return True
+
+        if not repo:
+            repo = _Environment.get().REPOSITORY
+        if not pr:
+            pr = _Environment.get().PR_NUMBER
+
+        teams_to_request = sorted(
+            requested - cls._get_requested_team_reviews(pr, repo)
+        )
+        if teams_to_request:
+            cls._submit_team_review_requests(teams_to_request, pr, repo)
+            missing_teams = set(teams_to_request) - cls._get_requested_team_reviews(
+                pr, repo
+            )
+            if missing_teams:
+                raise RuntimeError(
+                    "Failed to verify team review requests for pull request "
+                    f"[{pr}], missing teams [{', '.join(sorted(missing_teams))}]"
+                )
+
+        return True
+
+    @classmethod
     def get_pr_contributors(cls, pr=None, repo=None):
         if not repo:
             repo = _Environment.get().REPOSITORY
@@ -1427,7 +1362,11 @@ class GH:
         return cls.do_command_with_retries(command)
 
     @classmethod
-    def merge_pr(cls, pr=None, repo=None, squash=False, keep_branch=False):
+    def merge_pr(cls, pr=None, repo=None, squash=False, keep_branch=False, admin=False):
+        """Merge PR #`pr`. With `admin`, merge right away with administrator
+        privileges: required checks are not awaited and the merge queue on the
+        base branch is bypassed. Only for automation that has already decided
+        the change must land immediately, such as reverting a broken merge."""
         if not repo:
             repo = _Environment.get().REPOSITORY
         if not pr:
@@ -1440,6 +1379,8 @@ class GH:
             extra_args += " --squash"
         else:
             extra_args += " --merge"
+        if admin:
+            extra_args += " --admin"
 
         cmd = f"gh pr merge {pr} --repo {repo} {extra_args}"
         return cls.do_command_with_retries(cmd)
@@ -1545,6 +1486,40 @@ class GH:
             if prs:
                 return prs[0]["url"]
             print(f"No {state} PR found for branch [{branch}]")
+        return ""
+
+    @classmethod
+    def get_pr_state_by_branch(cls, branch, repo=None):
+        """'MERGED' / 'OPEN' / '' for the PR whose head is `branch`.
+
+        Merged takes priority: an already-merged PR means the change is in master,
+        so the caller should stop even if a stray open PR also exists. (This is
+        the opposite order from `get_pr_url_by_branch`, which checks open first;
+        they agree unless one branch has both an open and a merged PR - which the
+        release flow's "never recreate once present" invariant prevents for the
+        `auto/<tag>` / `bump_version_<version>` branches this is used with.) Same
+        retry / fail-close semantics as `get_pr_url_by_branch` - a failed lookup
+        raises rather than being mistaken for 'no PR' (which would recreate a PR
+        or skip a needed merge after the release is already published).
+        """
+        if not repo:
+            repo = _Environment.get().REPOSITORY
+        safe_repo = shlex.quote(repo)
+        safe_branch = shlex.quote(branch)
+        for state in ("merged", "open"):
+            cmd = (
+                f"gh pr list --repo {safe_repo} --head {safe_branch}"
+                f" --state {state} --json url"
+            )
+            raw = cls.get_output_with_retries(cmd)
+            if not raw:
+                raise RuntimeError(
+                    f"gh pr list failed for branch [{branch}] in repo [{repo}] "
+                    f"(state {state}) after retries; refusing to treat a failed "
+                    f"lookup as 'no PR'"
+                )
+            if json.loads(raw):
+                return state.upper()
         return ""
 
     _STATUS_TO_GH = {

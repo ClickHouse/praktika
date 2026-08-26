@@ -106,18 +106,6 @@ class Validator:
     def validate(cls):
         print("---Start validating Pipeline and settings---")
 
-        project_slug = getattr(Settings, "PROJECT_SLUG", "") or ""
-        if project_slug:
-            # The slug prefixes every AWS resource name ("{slug}-...") and
-            # resources are discovered by that prefix. A slug containing "-" (or
-            # any separator) would make one project's prefix match another's
-            # (e.g. "clickhouse-" matches the "clickhouse-private" project), so
-            # the slug must be purely lowercase-alphanumeric.
-            cls.evaluate_check_simple(
-                bool(re.fullmatch(r"[a-z0-9]+", project_slug)),
-                f"Setting PROJECT_SLUG [{project_slug}] must be non-empty and contain only lowercase letters and digits (no '-', '_' or other separators)",
-            )
-
         if Settings.DISABLED_WORKFLOWS:
             for file in Settings.DISABLED_WORKFLOWS:
                 cls.evaluate_check_simple(
@@ -134,10 +122,16 @@ class Validator:
                     f"Setting ENABLED_WORKFLOWS has non-existing workflow file [{file}]",
                 )
 
-        if Settings.USE_CUSTOM_GH_AUTH:
+        project_slug = getattr(Settings, "PROJECT_SLUG", "") or ""
+        if project_slug:
+            # The slug prefixes every AWS resource name ("{slug}-...") and
+            # resources are discovered by that prefix. A slug containing "-" (or
+            # any separator) would make one project's prefix match another's
+            # (e.g. "clickhouse-" matches the "clickhouse-private" project), so
+            # the slug must be purely lowercase-alphanumeric.
             cls.evaluate_check_simple(
-                bool(Settings.SECRET_GH_APP or Settings.GH_AUTH_LAMBDA_NAME),
-                "Setting SECRET_GH_APP or GH_AUTH_LAMBDA_NAME must be provided with USE_CUSTOM_GH_AUTH == True",
+                bool(re.fullmatch(r"[a-z0-9]+", project_slug)),
+                f"Setting PROJECT_SLUG [{project_slug}] must be non-empty and contain only lowercase letters and digits (no '-', '_' or other separators)",
             )
 
         # NOTE: disabled — this is deploy-time validation (infra project-name
@@ -191,14 +185,13 @@ class Validator:
             #         ".enable_commit_status_on_failure is redundant for Praktika engine workflows: the GitHub Checks API is used and always publishes workflow/job check status",
             #         workflow.name,
             #     )
-            if Settings.USE_CUSTOM_GH_AUTH and workflow.enable_report:
-                if not Settings.GH_AUTH_LAMBDA_NAME:
-                    secret = workflow.get_secret(Settings.SECRET_GH_APP)
-                    cls.evaluate_check(
-                        bool(secret),
-                        f"Secret [{Settings.SECRET_GH_APP}] must be configured for workflow",
-                        workflow.name,
-                    )
+            if workflow.enable_report and not Settings.GH_AUTH_LAMBDA_NAME:
+                secret = workflow.get_secret(Settings.SECRET_GH_APP)
+                cls.evaluate_check(
+                    bool(secret),
+                    f"Secret [{Settings.SECRET_GH_APP}] must be configured for workflow",
+                    workflow.name,
+                )
 
             for job in workflow.jobs:
                 cls.evaluate_check(
