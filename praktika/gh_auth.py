@@ -411,6 +411,7 @@ class GHAuth:
             "exp": int(time.time()) + (10 * 60),
             "iss": app_id,
         }
+        _, jwt = _jwt_backend()
         encoded_jwt = jwt.PyJWT().encode(payload, pem, algorithm="RS256")
         return cls._post_installation_token(encoded_jwt, installation_id)
 
