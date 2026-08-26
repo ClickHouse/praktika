@@ -307,7 +307,9 @@ class TestRunner(unittest.TestCase):
                         is_completed=lambda: True,
                         is_running=lambda: False,
                         is_error=lambda: False,
+                        is_skipped=lambda: False,
                         add_ext_key_value=lambda *a, **k: None,
+                        set_label=lambda *a, **k: None,
                         dump=lambda: None,
                     )
                 ),
