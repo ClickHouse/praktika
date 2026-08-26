@@ -786,6 +786,19 @@ def _handle_external_rerun(workflow: dict, delivery_id: str, sender: str):
         print(f"SKIP: external PR rerun by non-maintainer {sender}")
         return
     state = _load_approval_state(workflow["repo"], workflow["pr_number"])
+    # Only a rerun of the CURRENT head may proceed. `workflow["head_sha"]` here
+    # is the SHA of the check being rerun (head A); if the PR head has since
+    # advanced (state["head_sha"] == B), this is a stale check. Rebinding it to
+    # the saved current workflow would approve/enqueue B off a rerun of A's
+    # check, breaking the "approve this exact commit" contract of the gate. Treat
+    # any mismatch as stale and stop before touching the saved (current) state.
+    rerun_sha = workflow.get("head_sha", "")
+    if not state or state.get("head_sha") != rerun_sha:
+        print(
+            f"SKIP: stale external rerun of PR#{workflow['pr_number']} "
+            f"sha={rerun_sha[:12]} current={(state or {}).get('head_sha', '')[:12]}"
+        )
+        return
     # `workflow` was reconstructed from the check_run/check_suite payload, which
     # doesn't carry the fork repo, labels, title, or draft flag. Reuse the
     # authentic PR metadata captured at pull_request time and stored in the
