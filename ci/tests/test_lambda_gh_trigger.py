@@ -147,6 +147,34 @@ def test_pull_request_sender_allowed_by_allowed_users_is_enqueued(monkeypatch):
     assert enqueued[0][0]["sender"] == "contributor"
 
 
+def test_pull_request_allowed_users_match_is_case_insensitive(monkeypatch):
+    # GitHub logins are case-insensitive: a differently-cased allow-list entry
+    # ("Contributor") must still match sender "contributor".
+    mod = _reload_lambda(monkeypatch, allowed_users=["Contributor"])
+    enqueued = []
+
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(
+        mod,
+        "_enqueue",
+        lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)),
+    )
+
+    mod.lambda_handler(
+        {
+            "headers": {
+                "X-GitHub-Event": "pull_request",
+                "X-GitHub-Delivery": "d-allowed-user-case",
+            },
+            "body": json.dumps(_pr_payload(external=False)),
+        },
+        None,
+    )
+
+    assert len(enqueued) == 1
+    assert enqueued[0][0]["sender"] == "contributor"
+
+
 def test_cancel_runs_before_stores_head_sha(monkeypatch):
     mod = _reload_lambda(monkeypatch)
     captured = {}

@@ -82,7 +82,9 @@ def _parse_allowed_users():
     if not isinstance(value, list):
         print("WARNING: ALLOWED_USERS_JSON must decode to a list")
         return set()
-    return {str(user).strip() for user in value if str(user).strip()}
+    # GitHub logins are case-insensitive; store casefolded so the membership
+    # check matches regardless of the casing a deployment configured.
+    return {str(user).strip().casefold() for user in value if str(user).strip()}
 
 
 ALLOWED_PUSH_BRANCHES = _parse_allowed_push_branches()
@@ -939,7 +941,7 @@ def lambda_handler(event, context):
     if ALLOWED_SENDERS and sender not in ALLOWED_SENDERS:
         print(f"SKIP: sender {sender} not in allowed list")
         return {"statusCode": 200, "body": "ok"}
-    if ALLOWED_USERS and sender not in ALLOWED_USERS:
+    if ALLOWED_USERS and sender.casefold() not in ALLOWED_USERS:
         print(f"SKIP: PR sender {sender} not in allowed users")
         return {"statusCode": 200, "body": "ok"}
 
