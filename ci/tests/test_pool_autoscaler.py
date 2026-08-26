@@ -293,7 +293,7 @@ def test_cloud_infrastructure_creates_implicit_runner_autoscaler():
     )
 
     autoscalers = [
-        l for l in cloud.lambda_functions if l.name == "testcloud-pool-autoscaler"
+        fn for fn in cloud.lambda_functions if fn.name == "testcloud-pool-autoscaler"
     ]
     assert len(autoscalers) == 1
     autoscaler = autoscalers[0]
@@ -322,7 +322,7 @@ def test_cloud_infrastructure_creates_implicit_orchestrator_autoscaler():
     )
 
     autoscalers = [
-        l for l in cloud.lambda_functions if l.name == "testcloud-pool-autoscaler"
+        fn for fn in cloud.lambda_functions if fn.name == "testcloud-pool-autoscaler"
     ]
     assert len(autoscalers) == 1
     autoscaler = autoscalers[0]

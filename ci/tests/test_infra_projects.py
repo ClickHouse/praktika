@@ -40,7 +40,6 @@ from praktika.infrastructure.secret_parameter import SecretParameter
 from praktika.infrastructure.sqs_queue import SQSQueue
 from praktika.validator import Validator
 from praktika.version import current_praktika_version, version_key
-from ci.settings.settings import RunnerLabels
 
 
 _PRAKTIKA_BASE_WHEEL = f"/praktika-{_PRAKTIKA_BASE_VERSION}-py3-none-any.whl"

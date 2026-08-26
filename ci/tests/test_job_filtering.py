@@ -46,11 +46,9 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
-import pytest
 from praktika.job import Job
 from praktika.native_jobs import _filter_unaffected_jobs
 from praktika.runtime import RunConfig
-from praktika.utils import Utils
 
 
 # ---------------------------------------------------------------------------

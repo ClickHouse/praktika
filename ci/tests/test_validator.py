@@ -1,5 +1,3 @@
-import pytest
-
 from praktika import Job, Workflow
 from praktika.settings import Settings
 from praktika.validator import Validator

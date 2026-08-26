@@ -77,7 +77,7 @@ workflow = Workflow.Config(
         Job.Config(
             name="Test",
             runs_on=[RunnerLabels.SMALL_ARM],
-            command=f"python3 ./ci/jobs/consume_artifact.py",
+            command="python3 ./ci/jobs/consume_artifact.py",
             requires=[artifact.name],
             digest_config=Job.CacheDigestConfig(
                 include_paths=["./ci/jobs/consume_artifact.py"],

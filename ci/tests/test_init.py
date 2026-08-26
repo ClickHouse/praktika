@@ -1,7 +1,6 @@
 import base64
 import re
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 from praktika.__main__ import create_parser, main
