@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict
 
 from botocore.exceptions import ClientError
-from ._utils import aws_client
+from ._utils import aws_account_id, aws_client
 
 
 # S3 key prefixes that hold ephemeral praktika CI artifacts/state and are safe
@@ -68,7 +68,7 @@ class Storage:
                             break
                         except ClientError as ce:
                             if ce.response["Error"]["Code"] == "OperationAborted" and attempt < 4:
-                                print(f"Bucket operation in progress, retrying in 5s...")
+                                print("Bucket operation in progress, retrying in 5s...")
                                 time.sleep(5)
                             else:
                                 raise
@@ -77,7 +77,7 @@ class Storage:
 
             # Public access
             if self.public:
-                from ..settings import Settings
+                account_id = aws_account_id(self.region)
                 s3.put_public_access_block(
                     Bucket=self.name,
                     PublicAccessBlockConfiguration={
@@ -95,7 +95,7 @@ class Storage:
                             {
                                 "Sid": "OwnerFullAccess",
                                 "Effect": "Allow",
-                                "Principal": {"AWS": f"arn:aws:iam::{Settings.AWS_ACCOUNT_ID}:root"},
+                                "Principal": {"AWS": f"arn:aws:iam::{account_id}:root"},
                                 "Action": "s3:*",
                                 "Resource": [
                                     f"arn:aws:s3:::{self.name}",

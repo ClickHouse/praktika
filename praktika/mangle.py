@@ -107,7 +107,7 @@ def _get_workflows(
                     _file_names_out.append(py_file.name.removeprefix(".py"))
             if default and not matched_default_workflow and not _is_local_run():
                 print(f"Skip [{py_file.name}]")
-        except Exception as e:
+        except Exception:
             pass
             # print(
             #     f"WARNING: Failed to add WORKFLOWS config from [{module_name}], exception [{e}]"
@@ -335,3 +335,13 @@ def _update_workflow_with_native_jobs(workflow):
         for job in workflow.jobs:
             aux_job.run_after.append(job.name)
         workflow.jobs.append(aux_job)
+
+    if workflow.runs_on_label_prefix:
+        prefix = workflow.runs_on_label_prefix
+        for job in workflow.jobs:
+            if not job.runs_on:
+                continue
+            job.runs_on = [
+                label if label == "self-hosted" else f"{prefix}{label}"
+                for label in job.runs_on
+            ]

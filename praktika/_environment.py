@@ -35,6 +35,7 @@ class _Environment(MetaClasses.Serializable):
     USER_LOGIN: str
     FORK_NAME: str
     COMMIT_MESSAGE: str = ""
+    EVENT_ACTION: str = ""
     # merged PR for "push" or "merge_group" workflow
     LINKED_PR_NUMBER: int = 0
     LOCAL_RUN: bool = False
@@ -82,6 +83,7 @@ class _Environment(MetaClasses.Serializable):
         PR_LABELS = []
         LINKED_PR_NUMBER = 0
         EVENT_TIME = ""
+        EVENT_ACTION = ""
         COMMIT_MESSAGE = ""
 
         WORKFLOW_JOB_DATA = cls._load_workflow_job_data()
@@ -89,6 +91,7 @@ class _Environment(MetaClasses.Serializable):
         if EVENT_FILE_PATH:
             with open(EVENT_FILE_PATH, "r", encoding="utf-8") as f:
                 github_event = json.load(f)
+            EVENT_ACTION = github_event.get("action", "")
             if "pull_request" in github_event:
                 FORK_NAME = github_event["pull_request"]["head"]["repo"]["full_name"]
                 EVENT_TYPE = Workflow.Event.PULL_REQUEST
@@ -165,7 +168,7 @@ class _Environment(MetaClasses.Serializable):
                         if LINKED_PR_NUMBER
                         else ""
                     )
-                except:
+                except Exception:
                     LINKED_PR_NUMBER = 0
                     CHANGE_URL = ""
 
@@ -212,6 +215,7 @@ class _Environment(MetaClasses.Serializable):
             JOB_OUTPUT_STREAM=JOB_OUTPUT_STREAM,
             SHA=SHA,
             EVENT_TYPE=EVENT_TYPE,
+            EVENT_ACTION=EVENT_ACTION,
             EVENT_TIME=EVENT_TIME,
             PR_NUMBER=PR_NUMBER,
             RUN_ID=RUN_ID,
@@ -330,7 +334,7 @@ class _Environment(MetaClasses.Serializable):
         Messages are collected during job execution and later written to both
         the job and workflow ``Result.ext`` as ``{"message": str, "from": str}``
         entries.  Grouping of duplicate messages is done at the rendering level
-        in ``json.html``.
+        in ``praktika.html``.
         Prefer the typed wrappers ``add_workflow_warning/error/note``.
         """
         self.REPORT_MESSAGES.append(
@@ -356,7 +360,7 @@ class _Environment(MetaClasses.Serializable):
                 env = cls.from_workflow_data()
                 env.dump()
                 return env
-            except FileNotFoundError as e:
+            except FileNotFoundError:
                 # For workflows without Config job
                 print(
                     f"NOTE: Workflow context file [{Settings.WORKFLOW_STATUS_FILE}] does not exist - read context from GH event"
@@ -406,21 +410,21 @@ class _Environment(MetaClasses.Serializable):
         )
 
     @classmethod
-    def get_s3_prefix_static(cls, pr_number, branch, sha, workflow_name="", latest=False):
+    def get_s3_prefix_static(cls, pr_number, branch, sha, workflow_name, latest=False):
         from .utils import Utils
 
         assert pr_number > 0 or branch
+        assert workflow_name
         if pr_number:
             prefix = f"PRs/{pr_number}"
         else:
             prefix = f"REFs/{branch}"
         assert sha or latest
         if latest:
-            prefix += f"/latest"
+            prefix += "/latest"
         elif sha:
             prefix += f"/{sha}"
-        if workflow_name:
-            prefix += f"/{Utils.normalize_string(workflow_name)}"
+        prefix += f"/{Utils.normalize_string(workflow_name)}"
         return prefix
 
     def is_local_run(self):

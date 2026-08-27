@@ -3,21 +3,28 @@ import time
 import json
 from datetime import datetime
 
-import requests
-
-try:
-    import jwt  # From pyjwt
-
-    assert hasattr(jwt, "encode"), "Invalid jwt module, 'encode' not found"
-    USING_PYJWT = True
-except (ImportError, AssertionError):
-    USING_PYJWT = False
-    print(
-        "Warning: pyjwt not available. Falling back to 'jwt' module (not recommended)"
-    )
-    from jwt import jwk_from_pem, JWT
-
 from praktika.utils import Shell
+
+# `gh auth login --with-token` validates the token against api.github.com. A single
+# transient GitHub API 5xx/timeout there would otherwise hard-fail the whole job.
+# Retry only on transport-class errors; auth errors (e.g. HTTP 401 bad token) stay fatal.
+_GH_AUTH_RETRY_ERRORS = [
+    "HTTP 500",
+    "HTTP 502",
+    "HTTP 503",
+    "HTTP 504",
+    "HTTP 429",
+    "Service Unavailable",
+    "Bad Gateway",
+    "Gateway Timeout",
+    "Too Many Requests",
+    "Internal Server Error",
+    "i/o timeout",
+    "TLS handshake timeout",
+    "connection reset by peer",
+    "connection refused",
+    "EOF",
+]
 
 
 _PERMISSION_LEVELS = {
@@ -29,6 +36,34 @@ _PERMISSION_LEVELS = {
 
 
 class GHAuth:
+    # Set once a token has been minted, so it is done at most once per process.
+    _authenticated = False
+
+    @staticmethod
+    def _describe_lambda_failure(response, data) -> str:
+        details = []
+        function_error = response.get("FunctionError")
+        if function_error:
+            details.append(f"FunctionError={function_error}")
+        status_code = response.get("StatusCode")
+        if status_code is not None:
+            details.append(f"StatusCode={status_code}")
+        executed_version = response.get("ExecutedVersion")
+        if executed_version:
+            details.append(f"ExecutedVersion={executed_version}")
+
+        if isinstance(data, dict):
+            if data.get("statusCode") is not None:
+                details.append(f"statusCode={data.get('statusCode')}")
+            if data.get("errorType"):
+                details.append(f"errorType={data.get('errorType')}")
+            if data.get("errorMessage"):
+                details.append(f"errorMessage={data.get('errorMessage')}")
+            if data.get("stackTrace"):
+                details.append("stackTrace=present")
+
+        return ", ".join(details) if details else "no diagnostic details available"
+
     @classmethod
     def _validate_permissions(cls, permissions, required_permissions):
         if not required_permissions:
@@ -68,21 +103,33 @@ class GHAuth:
             Payload=b"{}",
         )
         payload = response["Payload"].read().decode("utf-8")
-        data = json.loads(payload)
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                "GH auth lambda returned non-JSON payload "
+                f"[{payload[:200]}]: {e}"
+            ) from e
         if "FunctionError" in response:
-            raise RuntimeError("GH auth lambda failed (payload redacted)")
+            raise RuntimeError(
+                "GH auth lambda failed "
+                f"({cls._describe_lambda_failure(response, data)})"
+            )
         if isinstance(data, dict) and "statusCode" in data:
             if int(data.get("statusCode", 500)) >= 400:
                 raise RuntimeError(
-                    f"GH auth lambda returned statusCode={data.get('statusCode')} "
-                    "(body redacted)"
+                    "GH auth lambda returned error "
+                    f"({cls._describe_lambda_failure(response, data)})"
                 )
             body = data.get("body", "{}")
             data = json.loads(body) if isinstance(body, str) else body
         token = data.get("token")
         expires_at_iso = data.get("expires_at")
         if not token:
-            raise RuntimeError("GH auth lambda returned no token (payload redacted)")
+            raise RuntimeError(
+                "GH auth lambda returned no token "
+                f"({cls._describe_lambda_failure(response, data)})"
+            )
         cls._validate_permissions(data.get("permissions"), required_permissions)
         if expires_at_iso:
             expires_at = datetime.fromisoformat(
@@ -92,138 +139,114 @@ class GHAuth:
             expires_at = time.time() + 3600
         return token, expires_at
 
+    @classmethod
+    def _get_access_token_from_lambda(cls, lambda_name: str, region: str) -> str:
+        import boto3  # type: ignore
+
+        client = boto3.session.Session().client(
+            service_name="lambda", region_name=region or None
+        )
+        response = client.invoke(
+            FunctionName=lambda_name,
+            InvocationType="RequestResponse",
+            Payload=b"{}",
+        )
+        if response.get("FunctionError"):
+            raise RuntimeError(
+                f"Lambda {lambda_name} returned FunctionError (payload redacted)"
+            )
+        result = json.loads(response["Payload"].read())
+        status_code = result.get("statusCode")
+        if status_code != 200:
+            raise RuntimeError(
+                f"Lambda {lambda_name} returned statusCode={status_code} (body redacted)"
+            )
+        body = json.loads(result["body"])
+        return body["token"]
 
     @classmethod
-    def _post_installation_token(cls, jwt_token: str, installation_id: int):
-        """POST the JWT for an installation access token; return (token, expires_at_epoch).
-
-        GitHub returns the token plus an ISO 8601 ``expires_at`` (~1h ahead).
-        We surface both so ``GHTokenProvider`` can refresh ahead of expiry.
+    def auth_with_lambda(
+        cls, lambda_name: str, region: str = "", no_strict: bool = False
+    ) -> bool:
         """
-        headers = {
-            "Authorization": f"Bearer {jwt_token}",
-            "Accept": "application/vnd.github.v3+json",
-        }
-        response = requests.post(
-            f"https://api.github.com/app/installations/{installation_id}/access_tokens",
-            headers=headers,
-            timeout=10,
-        )
-        response.raise_for_status()
-        data = response.json()
-        token = data["token"]
-        expires_at_iso = data.get("expires_at")
-        if expires_at_iso:
-            expires_at = datetime.fromisoformat(
-                expires_at_iso.replace("Z", "+00:00")
-            ).timestamp()
-        else:
-            expires_at = time.time() + 3600
-        return token, expires_at
+        Authenticate `gh` with a token minted by the given AWS Lambda.
+
+        By default an authentication failure raises; pass `no_strict=True` to
+        instead print a warning and return False.
+        """
+        try:
+            print(f"Mint GitHub token via lambda [{lambda_name}]")
+            access_token = cls._get_access_token_from_lambda(lambda_name, region)
+            return Shell.check(
+                "gh auth login --with-token",
+                stdin_str=f"{access_token}\n",
+                strict=not no_strict,
+                retries=4,
+                retry_errors=_GH_AUTH_RETRY_ERRORS,
+            )
+        except Exception as e:
+            if not no_strict:
+                raise
+            print(f"WARNING: GH auth failed: {e}")
+            return False
 
     @classmethod
-    def _get_access_token_by_jwt(cls, jwt_token: str, installation_id: int) -> str:
-        token, _ = cls._post_installation_token(jwt_token, installation_id)
-        return token
+    def auth(cls, workflow=None, force=False, no_strict: bool = False) -> bool:
+        """
+        Authenticate `gh` for GitHub API calls and return whether `gh` is usable.
 
-    @classmethod
-    def _get_access_token(cls, private_key: str, app_id: str, installation_id: int) -> str:
-        payload = {
-            "iat": int(time.time()) - 60,
-            "exp": int(time.time()) + (10 * 60),
-            "iss": app_id,
-        }
+        A token is minted from the AWS Lambda configured for the workflow
+        (Workflow.Config.gh_auth_lambda_name) or globally
+        (Settings.GH_AUTH_LAMBDA_NAME). When no lambda is configured, the
+        ambient `gh` token is assumed and this is a no-op.
 
-        jwt_instance = jwt.PyJWT()
-        encoded_jwt = jwt_instance.encode(payload, private_key, algorithm="RS256")
-        return cls._get_access_token_by_jwt(encoded_jwt, installation_id)
+        The token is minted at most once per process unless `force` is set.
 
-    @classmethod
-    def _get_access_token_deprecated(cls, app_key, app_id, installation_id: int):
-        def _generate_jwt(client_id, pem):
-            pem = str.encode(pem)
-            signing_key = jwk_from_pem(pem)
-            payload = {
-                "iat": int(time.time()),
-                "exp": int(time.time()) + 600,
-                "iss": client_id,
-            }
-            # Create JWT
-            jwt_instance = JWT()
-            encoded_jwt = jwt_instance.encode(payload, signing_key, alg="RS256")
-            return encoded_jwt
-
-        jwt_token = _generate_jwt(app_id, app_key)
-        return cls._get_access_token_by_jwt(jwt_token, installation_id)
-
-    @classmethod
-    def auth(cls, app_id, app_key, installation_id: int) -> None:
-        if USING_PYJWT:
-            access_token = cls._get_access_token(app_key, app_id, installation_id)
-        else:
-            access_token = cls._get_access_token_deprecated(app_key, app_id, installation_id)
-        Shell.check(
-            "gh auth login --with-token",
-            stdin_str=f"{access_token}\n",
-            strict=True,
-        )
-
-    @classmethod
-    def _read_app_credentials(cls):
-        """Read (app_id, pem, installation_id) from Secrets Manager via the
-        Settings.SECRET_GH_APP entry. Shared by ``get_installation_token`` and
-        ``GHTokenProvider`` so both go through the same secret."""
-        from praktika.secret import Secret
+        By default an authentication failure raises. Pass `no_strict=True` to
+        instead print a warning and return False (the historical behaviour).
+        """
         from praktika.settings import Settings
 
-        app_id, pem, installation_id = Secret.Config(
-            name=[
-                f"{Settings.SECRET_GH_APP}.app-id",
-                f"{Settings.SECRET_GH_APP}.app-key",
-                f"{Settings.SECRET_GH_APP}.app-installation-id",
-            ],
-            type=Secret.Type.AWS_SSM_SECRET,
-            region=Settings.AWS_REGION,
-        ).get_value()
-        return app_id, pem, int(installation_id)
+        if cls._authenticated and not force:
+            return True
+
+        lambda_name = (
+            workflow.gh_auth_lambda_name if workflow else ""
+        ) or Settings.GH_AUTH_LAMBDA_NAME
+
+        if not lambda_name:
+            # No lambda configured - rely on the ambient gh token.
+            return True
+
+        try:
+            authenticated = cls.auth_with_lambda(
+                lambda_name, Settings.GH_AUTH_LAMBDA_REGION, no_strict=no_strict
+            )
+        except Exception as e:
+            if not no_strict:
+                raise
+            print(f"WARNING: GH auth failed: {e}")
+            authenticated = False
+
+        cls._authenticated = authenticated
+        return authenticated
 
     @classmethod
     def get_installation_token(cls, required_permissions=None) -> str:
-        """Return a raw GitHub App installation access token."""
-        from .settings import Settings
-
-        if Settings.GH_AUTH_LAMBDA_NAME:
-            token, _ = cls._get_lambda_token_with_expiry(
-                required_permissions=required_permissions
-            )
-            return token
-        app_id, pem, installation_id = cls._read_app_credentials()
-        return cls._get_access_token(pem, app_id, installation_id)
+        """Return a raw GitHub App installation access token minted via the
+        GH_AUTH_LAMBDA_NAME lambda (raises if no lambda is configured)."""
+        token, _ = cls._get_lambda_token_with_expiry(
+            required_permissions=required_permissions
+        )
+        return token
 
     @classmethod
     def get_installation_token_with_expiry(cls, required_permissions=None):
-        """Like ``get_installation_token`` but returns ``(token, expires_at_epoch)``."""
-        from .settings import Settings
+        """Like ``get_installation_token`` but returns ``(token, expires_at_epoch)``.
 
-        if Settings.GH_AUTH_LAMBDA_NAME:
-            return cls._get_lambda_token_with_expiry(
-                required_permissions=required_permissions
-            )
-        app_id, pem, installation_id = cls._read_app_credentials()
-        payload = {
-            "iat": int(time.time()) - 60,
-            "exp": int(time.time()) + (10 * 60),
-            "iss": app_id,
-        }
-        encoded_jwt = jwt.PyJWT().encode(payload, pem, algorithm="RS256")
-        return cls._post_installation_token(encoded_jwt, installation_id)
-
-    @classmethod
-    def auth_from_settings(cls) -> None:
-        Shell.check(
-            "gh auth login --with-token",
-            stdin_str=f"{cls.get_installation_token()}\n",
-            strict=True,
+        Minted via the GH_AUTH_LAMBDA_NAME lambda (raises if not configured)."""
+        return cls._get_lambda_token_with_expiry(
+            required_permissions=required_permissions
         )
 
 
@@ -257,18 +280,3 @@ class GHTokenProvider:
 
     def __call__(self) -> str:
         return self.get()
-
-
-# if __name__ == "__main__":
-#     from praktika.secret import Secret
-#
-#     pem = Secret.Config(
-#         name="woolenwolf_gh_app.clickhouse-app-key",
-#         type=Secret.Type.AWS_SSM_SECRET,
-#     ).get_value()
-#     app_id = Secret.Config(
-#         name="woolenwolf_gh_app.clickhouse-app-id",
-#         type=Secret.Type.AWS_SSM_SECRET,
-#     ).get_value()
-#     print(app_id, pem)
-#     GHAuth.auth(app_id, pem)

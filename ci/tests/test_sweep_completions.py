@@ -76,7 +76,32 @@ def _capture_check_queues(monkeypatch):
         checks.append(record)
         return _PostedCheck(record)
 
+    def fake_create_completed(
+        token, repo, head_sha, name, conclusion, output=None, details_url=None
+    ):
+        # Skipped jobs post their terminal state in a single call. Record the
+        # conclusion under the same "completed" shape the queue()->complete()
+        # path used, so tests assert on one surface regardless of which path
+        # a job took.
+        record = {
+            "token": token,
+            "repo": repo,
+            "head_sha": head_sha,
+            "name": name,
+            "output": output,
+            "completed": [
+                {
+                    "conclusion": conclusion,
+                    "output": output,
+                    "details_url": details_url,
+                }
+            ],
+        }
+        checks.append(record)
+        return _PostedCheck(record)
+
     monkeypatch.setattr(state_mod.JobCheckRun, "queue", fake_queue)
+    monkeypatch.setattr(state_mod.JobCheckRun, "create_completed", fake_create_completed)
     return checks
 
 
@@ -115,6 +140,7 @@ def _make_state(
         js.check = None
         js.status = status
         js.rc = None
+        js.non_blocking = False
         js.started_at = now - 5
         js.finished_at = None
         js.filter_reason = None
@@ -306,7 +332,7 @@ def test_workflow_config_cache_success_skips_job_with_report_check(monkeypatch):
     assert per_job["name"] == "Pull Request CI / Formatting"
     assert per_job["completed"][0]["conclusion"] == "skipped"
     details_url = per_job["completed"][0]["details_url"]
-    assert details_url.startswith("https://silk-reports/json.html?PR=69")
+    assert details_url.startswith("https://silk-reports/praktika.html?PR=69")
     assert "sha=f3ffcfe0c728a75081fe1b6f168a43ad1e564a01" in details_url
     assert "name_0=Pull%20Request%20CI" in details_url
     assert "name_1=Formatting" in details_url
@@ -410,6 +436,48 @@ def test_wait_processes_final_before_liveness(monkeypatch):
 
     assert state.jobs["A"].status == JobStatus.SUCCESS
     assert state.jobs["A"].rc == 0
+
+
+def test_non_blocking_failure_promotes_dependents_instead_of_cancelling():
+    """A job that exits non-zero but set do_not_block_pipeline_on_failure is
+    advisory: its own status is FAILURE, but dependents must still run rather
+    than cascade to CANCELLED."""
+    s3 = _FakeS3()
+    state = _make_state(["A", "B"], s3)
+    state._deps = {"B": ("A",)}
+    state.jobs["B"].status = JobStatus.PENDING
+
+    result = _result_payload("A", status="FAIL")
+    result["ext"] = {"do_not_block_pipeline_on_failure": True}
+    _put_final(s3, "run42", "A", rc=1, result=result)
+
+    state.sweep_completions()
+    assert state.jobs["A"].status == JobStatus.FAILURE
+    assert state.jobs["A"].rc == 1
+    assert state.jobs["A"].non_blocking is True
+
+    ready = state.get_ready()
+    assert state.jobs["B"].status == JobStatus.READY
+    assert state.jobs["B"] in ready
+
+
+def test_blocking_failure_still_cancels_dependents():
+    """A plain non-zero exit (no do_not_block flag) remains a hard blocker:
+    dependents cascade to CANCELLED."""
+    s3 = _FakeS3()
+    state = _make_state(["A", "B"], s3)
+    state._deps = {"B": ("A",)}
+    state.jobs["B"].status = JobStatus.PENDING
+
+    result = _result_payload("A", status="FAIL")
+    _put_final(s3, "run42", "A", rc=1, result=result)
+
+    state.sweep_completions()
+    assert state.jobs["A"].status == JobStatus.FAILURE
+    assert state.jobs["A"].non_blocking is False
+
+    state.get_ready()
+    assert state.jobs["B"].status == JobStatus.CANCELLED
 
 
 if __name__ == "__main__":

@@ -36,8 +36,13 @@ class InitAnswers:
 
     @property
     def project_slug(self) -> str:
-        slug = re.sub(r"[^a-z0-9]+", "-", self.project_name.strip().lower())
-        slug = re.sub(r"-{2,}", "-", slug).strip("-")
+        # The slug prefixes every AWS resource name ("{slug}-...") and is used
+        # to discover a project's resources by prefix. If the slug itself could
+        # contain "-", one project's prefix would match another's (e.g.
+        # "clickhouse-" would match the "clickhouse-private" project's
+        # resources). Strip every separator so the slug is purely alphanumeric
+        # and "{slug}-" is an unambiguous boundary.
+        slug = re.sub(r"[^a-z0-9]+", "", self.project_name.strip().lower())
         if not slug:
             raise ValueError("Project name must normalize to a non-empty slug")
         return slug
@@ -296,7 +301,7 @@ def _validate_aws_profile(value: str) -> bool:
 
 def _prompt_aws_profile(default: str = "default") -> str:
     profiles = sorted(detect_aws_profiles())
-    prompt = f"\nAWS profile name"
+    prompt = "\nAWS profile name"
     if profiles:
         prompt += f" (options: {', '.join(profiles)}"
         if default:
@@ -465,7 +470,6 @@ def _settings_template(answers: InitAnswers) -> str:
         CI_CONFIG_RUNS_ON = [RunnerLabels.SMALL_ARM]
 
         AWS_REGION = "{answers.aws_region}"
-        AWS_ACCOUNT_ID = "{answers.aws_account_id}"
         AWS_PROFILE = "{answers.aws_profile}"
 
         S3_ARTIFACT_BUCKET = {artifact_bucket_expr}
@@ -474,7 +478,6 @@ def _settings_template(answers: InitAnswers) -> str:
         ENABLE_SUBMODULE_CACHE = True
 {s3_endpoint_block}
 
-        USE_CUSTOM_GH_AUTH = True
         GH_AUTH_LAMBDA_NAME = f"{{PROJECT_SLUG}}-gh-token"
         GH_AUTH_LAMBDA_REGION = AWS_REGION
         PRAKTIKA_BASE_VENV = "praktika-runtime-{current_praktika_version()}"
@@ -605,7 +608,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
 
 
         # until published in pip
-        _PRAKTIKA_CONTROLLER_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_controller-0.1.1-py3-none-any.whl"
+        _PRAKTIKA_CONTROLLER_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_controller-0.1.9-py3-none-any.whl"
         # Floating compat alias: the latest backwards-compatible patch in the
         # {compat_version(current_praktika_version())} branch, so the project picks up BC bug fixes
         # without re-pinning on every Praktika release.

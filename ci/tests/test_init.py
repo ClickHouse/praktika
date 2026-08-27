@@ -1,6 +1,6 @@
 import base64
+import re
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 from praktika.__main__ import create_parser, main
@@ -291,7 +291,7 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
     builders_by_arch = {
         _builder_arch(builder): builder for builder in cloud.image_builders
     }
-    project_slug = tmp_path.name.lower().replace("_", "-")
+    project_slug = re.sub(r"[^a-z0-9]+", "", tmp_path.name.lower())
 
     assert {workflow.name for workflow in workflows} == {
         "Pull Request CI",
@@ -501,7 +501,7 @@ def test_run_init_interactive_scaffolds_s3_proxy_for_private_project(
     run_init_interactive(tmp_path)
 
     cloud = _load_cloud_config_from_scaffold(tmp_path, monkeypatch)
-    project_slug = tmp_path.name.lower().replace("_", "-")
+    project_slug = re.sub(r"[^a-z0-9]+", "", tmp_path.name.lower())
 
     assert cloud.s3_proxy is not None
     proxy = cloud.s3_proxy
@@ -533,7 +533,7 @@ def test_run_init_interactive_supports_oss_storage_and_ubuntu_images(
     tmp_path, monkeypatch
 ):
     confirm_answers = iter([True, True, True])
-    project_slug = tmp_path.name.replace("_", "-")
+    project_slug = re.sub(r"[^a-z0-9]+", "", tmp_path.name.lower())
     string_answers = iter(
         [
             "main",

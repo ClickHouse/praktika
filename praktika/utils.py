@@ -24,7 +24,7 @@ from threading import Event, Thread
 from types import SimpleNamespace
 from typing import Any, Dict, Iterator, List, Optional, Type, TypeVar, Union
 
-T = TypeVar("T", bound="Serializable")
+T = TypeVar("T", bound="MetaClasses.Serializable")
 
 
 class MetaClasses:
@@ -305,7 +305,7 @@ class Shell:
 
         # Force kill if still running
         if process.poll() is None:
-            print(f"WARNING: Process still running after SIGTERM, sending SIGKILL")
+            print("WARNING: Process still running after SIGTERM, sending SIGKILL")
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
@@ -323,6 +323,7 @@ class Shell:
         timeout=None,
         retries=1,
         retry_errors: Union[List[str], str] = "",
+        on_retry=None,
         **kwargs,
     ):
         if retry_errors and retries < 2:
@@ -425,21 +426,29 @@ class Shell:
                     err in err_line for err_line in err_output for err in retry_errors
                 ):
                     if verbose:
-                        print(f"No retryable errors found, stopping retries")
+                        print("No retryable errors found, stopping retries")
                     break
 
+                matched = next(
+                    (
+                        err
+                        for err in retry_errors
+                        if any(err in line for line in err_output)
+                    ),
+                    "",
+                )
                 if verbose:
-                    matched = next(
-                        (
-                            err
-                            for err in retry_errors
-                            if any(err in line for line in err_output)
-                        ),
-                        "",
-                    )
                     print(
                         f"Retryable error [{matched}] found, retry {retry+1}/{retries}"
                     )
+                if on_retry and retry < retries - 1:
+                    # Only where another attempt actually follows: the last iteration
+                    # matches too, but nothing is retried after it. Never lets a
+                    # reporting failure fail the command the retry is rescuing.
+                    try:
+                        on_retry(matched, retry + 1, retries - 1)
+                    except Exception as e:  # noqa: BLE001
+                        print(f"WARNING: on_retry callback failed, ex [{e}]")
             except Exception as e:
                 if verbose:
                     if retries == 1:
@@ -447,7 +456,7 @@ class Shell:
                     else:
                         print(f"Retry {retry+1}/{retries}: exception {e}")
                         if retry == retries - 1:
-                            print(f"ERROR: Final attempt failed, no more retries left.")
+                            print("ERROR: Final attempt failed, no more retries left.")
                 if proc:
                     proc.kill()
                 if retry == retries - 1:
@@ -803,11 +812,22 @@ class Utils:
                 )
         return path_out
 
+    @staticmethod
+    def fix_ownership_after_docker(path, docker_image: str) -> None:
+        uid = os.getuid()
+        gid = os.getgid()
+        Shell.run(
+            f"docker run --rm --user root --volume {path}:{path} {docker_image} chown -R {uid}:{gid} {path}",
+            verbose=True,
+        )
+
     @classmethod
     def encrypt(cls, path: str, key_path: str, aes_key_path: str) -> str:
+        # -base64: raw bytes can contain \0 or a leading newline, which breaks
+        # openssl enc -pass file: (it reads only the first line as the password).
         if not Path(f"{aes_key_path}.rsa").exists():
             Shell.run(f"""
-openssl rand 32 >{aes_key_path}
+openssl rand -base64 32 >{aes_key_path}
 openssl pkeyutl -encrypt -pubin -inkey {key_path} -in {aes_key_path} -out {aes_key_path}.rsa \
     -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256
 """)

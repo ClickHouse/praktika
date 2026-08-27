@@ -2,11 +2,15 @@ import importlib
 import json
 
 
-def _reload_lambda(monkeypatch, allowed_push_branches=None):
+def _reload_lambda(monkeypatch, allowed_push_branches=None, allowed_users=None):
     if allowed_push_branches is None:
         monkeypatch.delenv("ALLOWED_PUSH_BRANCHES", raising=False)
     else:
         monkeypatch.setenv("ALLOWED_PUSH_BRANCHES", allowed_push_branches)
+    if allowed_users is None:
+        monkeypatch.delenv("ALLOWED_USERS_JSON", raising=False)
+    else:
+        monkeypatch.setenv("ALLOWED_USERS_JSON", json.dumps(allowed_users))
     mod = importlib.import_module("praktika.infrastructure.native.lambda_gh_trigger")
     return importlib.reload(mod)
 
@@ -90,6 +94,85 @@ def test_build_workflow_marks_external_pr(monkeypatch):
 
     assert workflow["external_pr"] is True
     assert workflow["head_repo"] == "fork/repo"
+
+
+def test_pull_request_sender_can_be_restricted_by_allowed_users(monkeypatch):
+    mod = _reload_lambda(monkeypatch, allowed_users=["trusted"])
+    enqueued = []
+
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(
+        mod,
+        "_enqueue",
+        lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)),
+    )
+
+    mod.lambda_handler(
+        {
+            "headers": {
+                "X-GitHub-Event": "pull_request",
+                "X-GitHub-Delivery": "d-allowed-user",
+            },
+            "body": json.dumps(_pr_payload(external=False)),
+        },
+        None,
+    )
+
+    assert enqueued == []
+
+
+def test_pull_request_sender_allowed_by_allowed_users_is_enqueued(monkeypatch):
+    mod = _reload_lambda(monkeypatch, allowed_users=["contributor"])
+    enqueued = []
+
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(
+        mod,
+        "_enqueue",
+        lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)),
+    )
+
+    mod.lambda_handler(
+        {
+            "headers": {
+                "X-GitHub-Event": "pull_request",
+                "X-GitHub-Delivery": "d-allowed-user",
+            },
+            "body": json.dumps(_pr_payload(external=False)),
+        },
+        None,
+    )
+
+    assert len(enqueued) == 1
+    assert enqueued[0][0]["sender"] == "contributor"
+
+
+def test_pull_request_allowed_users_match_is_case_insensitive(monkeypatch):
+    # GitHub logins are case-insensitive: a differently-cased allow-list entry
+    # ("Contributor") must still match sender "contributor".
+    mod = _reload_lambda(monkeypatch, allowed_users=["Contributor"])
+    enqueued = []
+
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(
+        mod,
+        "_enqueue",
+        lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)),
+    )
+
+    mod.lambda_handler(
+        {
+            "headers": {
+                "X-GitHub-Event": "pull_request",
+                "X-GitHub-Delivery": "d-allowed-user-case",
+            },
+            "body": json.dumps(_pr_payload(external=False)),
+        },
+        None,
+    )
+
+    assert len(enqueued) == 1
+    assert enqueued[0][0]["sender"] == "contributor"
 
 
 def test_cancel_runs_before_stores_head_sha(monkeypatch):
@@ -294,3 +377,117 @@ def test_external_rerun_requires_maintainer(monkeypatch):
     )
 
     assert enqueued == []
+
+
+def _rerun_event(delivery, sender="maintainer"):
+    return {
+        "headers": {"X-GitHub-Event": "check_run", "X-GitHub-Delivery": delivery},
+        "body": json.dumps(
+            {
+                "action": "rerequested",
+                "sender": {"login": sender},
+                "check_run": {"pull_requests": [{"number": 17}]},
+                "repository": {"full_name": "owner/repo"},
+            }
+        ),
+    }
+
+
+def test_external_rerun_of_stale_head_is_not_rebound_to_current(monkeypatch):
+    # Security: a maintainer rerun of a STALE check (head A) must not approve or
+    # enqueue the current head (B). The reconstructed rerun workflow carries the
+    # stale sha A; state has advanced to B. A must not be silently rebound to B.
+    mod = _reload_lambda(monkeypatch)
+    workflow = {
+        "repo": "owner/repo",
+        "pr_number": 17,
+        "head_sha": "a" * 40,  # stale check being rerun
+        "head_ref": "feature",
+        "base_ref": "main",
+        "type": "pull_request",
+        "action": "rerequested",
+        "event_ts": 123.0,
+        "sender": "maintainer",
+        "title": "",
+        "draft": False,
+        "labels": [],
+        "external_pr": False,
+        "head_repo": "",
+    }
+    state = {
+        "workflow": {
+            "external_pr": True,
+            "repo": "owner/repo",
+            "pr_number": 17,
+            "head_sha": "b" * 40,
+        },
+        "approval_check_id": 77,
+        "head_sha": "b" * 40,  # PR head advanced to B
+    }
+    enqueued = []
+    gate_updates = []
+    stored = []
+
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(mod, "_build_rerun_workflow", lambda check_obj, payload, event_ts: (workflow, 17))
+    monkeypatch.setattr(mod, "_load_approval_state", lambda repo, pr_number: state)
+    monkeypatch.setattr(mod, "_get_github_token", lambda required_permissions=None: "tok")
+    monkeypatch.setattr(mod, "_can_maintain_repo", lambda repo, login, token: True)
+    monkeypatch.setattr(mod, "_update_gate_check", lambda *a, **k: gate_updates.append((a, k)))
+    monkeypatch.setattr(mod, "_store_gate_state", lambda *a, **k: stored.append((a, k)))
+    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)))
+
+    mod.lambda_handler(_rerun_event("d5"), None)
+
+    assert enqueued == []
+    assert gate_updates == []
+    assert stored == []
+
+
+def test_external_rerun_of_current_head_approves_and_enqueues(monkeypatch):
+    # A maintainer rerun of the CURRENT head (sha matches state) is an explicit
+    # approval of that exact commit: gate approved, saved workflow enqueued.
+    mod = _reload_lambda(monkeypatch)
+    workflow = {
+        "repo": "owner/repo",
+        "pr_number": 17,
+        "head_sha": "b" * 40,  # matches current head
+        "head_ref": "feature",
+        "base_ref": "main",
+        "type": "pull_request",
+        "action": "rerequested",
+        "event_ts": 123.0,
+        "sender": "maintainer",
+        "title": "",
+        "draft": False,
+        "labels": [],
+        "external_pr": False,
+        "head_repo": "",
+    }
+    saved = {
+        "external_pr": True,
+        "repo": "owner/repo",
+        "pr_number": 17,
+        "head_sha": "b" * 40,
+        "head_ref": "feature",
+        "base_ref": "main",
+    }
+    state = {"workflow": saved, "approval_check_id": 77, "head_sha": "b" * 40}
+    enqueued = []
+    stored = []
+
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(mod, "_build_rerun_workflow", lambda check_obj, payload, event_ts: (workflow, 17))
+    monkeypatch.setattr(mod, "_load_approval_state", lambda repo, pr_number: state)
+    monkeypatch.setattr(mod, "_get_github_token", lambda required_permissions=None: "tok")
+    monkeypatch.setattr(mod, "_can_maintain_repo", lambda repo, login, token: True)
+    monkeypatch.setattr(mod, "_update_gate_check", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "_store_gate_state", lambda *a, **k: stored.append((a, k)))
+    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)))
+
+    mod.lambda_handler(_rerun_event("d6"), None)
+
+    assert len(enqueued) == 1
+    assert enqueued[0][0]["head_sha"] == "b" * 40
+    assert enqueued[0][0]["external_pr"] is True
+    assert stored  # gate marked approved for the current head

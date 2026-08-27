@@ -17,6 +17,18 @@ from praktika.result import Result
 from praktika.settings import Settings
 from praktika.utils import Shell
 
+# `out` and `err` are API- or user-controlled and unbounded, while the fields identifying the
+# failure (command, exit code, attempt count) are short. Cap the unbounded ones so a caller
+# that bounds the whole message, or a log reader, still sees the cause.
+_GH_DIAGNOSTIC_FIELD_LIMIT = 300
+
+
+def _elide(text, limit=_GH_DIAGNOSTIC_FIELD_LIMIT):
+    """`text` capped at `limit`, with an explicit marker so a reader can tell it was cut."""
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}...(+{len(text) - limit} chars elided)"
+
 
 class GH:
 
@@ -79,39 +91,95 @@ class GH:
                 raise RuntimeError(
                     f"Failed to extract repository name from remote URL [{repo_url}]"
                 )
-            sha = Shell.get_output(f"git rev-parse HEAD", strict=True)
+            sha = Shell.get_output("git rev-parse HEAD", strict=True)
 
         assert repo_name
         print(repo_name)
 
-        for attempt in range(3):
-            # store changed files
-            if info.pr_number > 0:
-                exit_code, changed_files_str, err = Shell.get_res_stdout_stderr(
-                    f"gh pr view {info.pr_number} --repo {repo_name} --json files --jq '.files[].path'",
-                )
-                assert exit_code == 0, "Failed to retrieve changed files list"
-            else:
-                exit_code, changed_files_str, err = Shell.get_res_stdout_stderr(
-                    f"gh api repos/{repo_name}/commits/{sha} | jq -r '.files[].filename'",
+        # Include both sides of renames: .filename is the destination path and
+        # .previous_filename (REST API only, absent for non-renames) is the
+        # source path. Without the source path a rename out of a watched
+        # directory is invisible to consumers such as job filtering and the
+        # read-only docs guard. Rename sources do not exist in the checkout at
+        # HEAD, same as deleted files, which were always included.
+        jq_both_sides = ".filename, (.previous_filename // empty)"
+
+        # In a merge-queue run PR_NUMBER is 0, but the queue entry is built for
+        # exactly one PR (parsed from the merge group head ref). Use that PR's
+        # paginated files list: the merge group SHA is a merge commit, and the
+        # commits API caps a commit's file list at 300 entries.
+        pr_number = info.pr_number
+        if pr_number <= 0 and info.is_merge_queue_event:
+            pr_number = info.linked_pr_number
+            if pr_number <= 0 and strict:
+                # The linked PR number could not be parsed from the merge group
+                # head ref. Falling back to `repos/{repo}/commits/{sha}` would
+                # reintroduce the 300-entry cap this branch exists to avoid, so a
+                # large PR could silently lose changed test files and turn the
+                # merge-queue flaky check into a false green. Fail closed instead:
+                # a merge-queue run always corresponds to exactly one PR, so a
+                # missing linked PR number is a real fault, not a skip condition.
+                raise RuntimeError(
+                    "Merge-queue run has no linked PR number (could not parse it "
+                    "from the merge group head ref); refusing to fall back to the "
+                    "capped commits API for changed-file detection."
                 )
 
+        if pr_number > 0:
+            command = (
+                f"gh api repos/{repo_name}/pulls/{pr_number}/files "
+                f"--paginate --jq '.[] | {jq_both_sides}'"
+            )
+        else:
+            command = (
+                f"gh api repos/{repo_name}/commits/{sha} "
+                f"--jq '.files[] | {jq_both_sides}'"
+            )
+
+        # The GitHub API call is an idempotent read that occasionally fails with
+        # a transient error (rate limiting, a 5xx, or a GraphQL "Something went
+        # wrong" hiccup). Retry a few times with a small backoff so a momentary
+        # blip does not take down the whole workflow. Every non-zero exit code
+        # is treated as retryable: this is a read, so a spurious retry is cheap
+        # and we cannot reliably tell transient from permanent errors apart by
+        # the exit code alone.
+        attempts = 5
+        last_exit_code = 0
+        last_err = ""
+        last_out = ""
+        for attempt in range(attempts):
+            exit_code, changed_files_str, err = Shell.get_res_stdout_stderr(command)
             if exit_code == 0:
-                res = changed_files_str.split("\n") if changed_files_str else []
-                break
-            else:
-                print(
-                    f"Failed to get changed files, attempt [{attempt+1}], exit code [{exit_code}], error [{err}]"
+                res = (
+                    list(dict.fromkeys(changed_files_str.split("\n")))
+                    if changed_files_str
+                    else []
                 )
-                if exit_code > 1:
-                    # assume that exit code == 1 is retryable - Fix if not true
-                    # exit_code 1 for this type of errors:  WARNING: stderr: GraphQL: Something went wrong while executing your query on 2025-08-05T15:33:56Z. Please include `E746:1CAA99:44F9F67:8B9B520:68922464` when reporting this issue.
-                    print("error is not retryable - break")
-                    break
-                time.sleep(1)
+                break
 
-        if res is None and strict:
-            raise RuntimeError("Failed to get changed files")
+            last_exit_code, last_err, last_out = exit_code, err, changed_files_str
+            print(
+                f"Failed to get changed files, attempt [{attempt + 1}/{attempts}], "
+                f"exit code [{exit_code}], stderr [{err}]"
+            )
+            if attempt + 1 < attempts:
+                time.sleep(attempt + 1)
+
+        if res is None:
+            # Surface the actual command, exit code and stderr so the failure is
+            # diagnosable directly from the report, instead of resurfacing later
+            # as a confusing "NoneType is not iterable" in a downstream consumer
+            # that read the (never stored) changed files from the KV data.
+            message = (
+                f"Failed to retrieve the list of changed files after {attempts} attempts.\n"
+                f"  command:   {command}\n"
+                f"  exit code: {last_exit_code}\n"
+                f"  stderr:    {last_err}\n"
+                f"  stdout:    {last_out}"
+            )
+            print(message)
+            if strict:
+                raise RuntimeError(message)
 
         return res
 
@@ -453,16 +521,29 @@ class GH:
         return res
 
     @classmethod
-    def get_output_with_retries(cls, command, verbose=False):
+    def get_output_with_retries(cls, command, verbose=False, strict=False):
         """Run a read-style ``gh`` command and return its stdout.
 
         Mirrors :meth:`do_command_with_retries` but returns the captured
-        stdout instead of a boolean.
+        stdout instead of a boolean. Use this for any GitHub API read
+        (``gh api ...``, ``gh pr view ...``, ``gh pr diff ...``) that
+        previously used :meth:`Shell.get_output` without retries — those
+        calls would silently return an empty string on a transient 5xx
+        and propagate as ``json.loads('')`` errors or empty-result bugs.
+
+        Returns the trimmed stdout on success; an empty string if the
+        command keeps failing after ``MAX_RETRIES_GH`` attempts.
+        ``strict=True`` raises instead, so a caller can report why the
+        read failed rather than be handed an empty string that is
+        indistinguishable from an empty result.
         """
         retry_count = 0
-        out, err = "", ""
-
+        # Counted where the subprocess is invoked, so a non-retryable class that breaks out
+        # of the loop still reports the attempt it made. retry_count counts retries taken.
+        attempts = 0
+        out, err, ret_code = "", "", -1
         while retry_count < Settings.MAX_RETRIES_GH:
+            attempts += 1
             ret_code, out, err = Shell.get_res_stdout_stderr(command, verbose=verbose)
             if ret_code == 0:
                 return out
@@ -479,9 +560,15 @@ class GH:
             delay = min(2 ** (retry_count + 1), 60)
             time.sleep(delay)
 
-        print(
-            f"ERROR: Failed to execute gh command [{command}] out:[{out}] err:[{err}] after [{retry_count}] attempts"
+        # Field order matters: a caller may bound this message (it can reach a public report
+        # page), so the fields naming the cause come before the API-controlled output.
+        message = (
+            f"Failed to execute gh command [{command}] exit_code:[{ret_code}] "
+            f"after [{attempts}] attempts err:[{_elide(err)}] out:[{_elide(out)}]"
         )
+        print(f"ERROR: {message}")
+        if strict:
+            raise RuntimeError(message)
         return ""
 
     @classmethod
@@ -510,6 +597,67 @@ class GH:
         return data
 
     @classmethod
+    def list_pr_review_threads(cls, pr=None, repo=None, verbose=False):
+        """Return all review threads on a PR via GraphQL.
+
+        Each thread carries its node ``id``, ``isResolved``, ``isOutdated``,
+        ``resolvedBy`` (``{login}`` or ``null``), ``path``, ``line``, and the
+        full list of comments under it. Both the thread list and each thread's
+        comments are paginated.
+        """
+        if not repo:
+            repo = _Environment.get().REPOSITORY
+        if not pr:
+            pr = _Environment.get().PR_NUMBER
+        owner, name = repo.split("/", 1)
+
+        thread_query = (
+            "query($owner:String!,$name:String!,$pr:Int!,$after:String){"
+            "repository(owner:$owner,name:$name){"
+            "pullRequest(number:$pr){"
+            "reviewThreads(first:100,after:$after){"
+            "pageInfo{hasNextPage endCursor}"
+            "nodes{id isResolved isOutdated resolvedBy{login} path line "
+            "comments(first:50){"
+            "pageInfo{hasNextPage endCursor}"
+            "nodes{databaseId createdAt author{login} viewerDidAuthor body path line originalLine}"
+            "}}}}}}"
+        )
+        comments_query = (
+            "query($id:ID!,$after:String!){"
+            "node(id:$id){... on PullRequestReviewThread{"
+            "comments(first:50,after:$after){"
+            "pageInfo{hasNextPage endCursor}"
+            "nodes{databaseId createdAt author{login} viewerDidAuthor body path line originalLine}"
+            "}}}}"
+        )
+
+        threads = []
+        thread_cursor = None
+        while True:
+            variables = {"owner": owner, "name": name, "pr": int(pr)}
+            if thread_cursor is not None:
+                variables["after"] = thread_cursor
+            data = cls._gh_graphql_json(thread_query, variables, verbose=verbose)
+            page = data["data"]["repository"]["pullRequest"]["reviewThreads"]
+            for thread in page["nodes"]:
+                comments = thread["comments"]
+                while comments["pageInfo"]["hasNextPage"]:
+                    sub = cls._gh_graphql_json(
+                        comments_query,
+                        {"id": thread["id"], "after": comments["pageInfo"]["endCursor"]},
+                        verbose=verbose,
+                    )
+                    next_page = sub["data"]["node"]["comments"]
+                    comments["nodes"].extend(next_page["nodes"])
+                    comments["pageInfo"] = next_page["pageInfo"]
+                threads.append(thread)
+            if not page["pageInfo"]["hasNextPage"]:
+                break
+            thread_cursor = page["pageInfo"]["endCursor"]
+        return threads
+
+    @classmethod
     def post_pr_line_comment(
         cls,
         body_file,
@@ -532,10 +680,10 @@ class GH:
 
         The body is read from ``body_file`` and passed via ``-F body=@<file>``,
         which avoids two classes of bugs we have hit before:
-          1) Newlines collapsing to literal ``\\n`` when the body is inlined.
-          2) The body being posted as the literal ``@<file>`` string when a
-             caller mistakenly uses ``-f`` (raw field) instead of ``-F`` (typed
-             field with ``@file`` expansion).
+          1) Newlines collapsing to literal `\\n` when the body is inlined.
+          2) The body being posted as the literal `@<file>` string when a
+             caller mistakenly uses `-f` (raw field) instead of `-F` (typed
+             field with `@file` expansion).
         """
         if not repo:
             repo = _Environment.get().REPOSITORY
@@ -673,78 +821,13 @@ class GH:
         ``thread_id`` is the GraphQL node id from
         :meth:`list_pr_review_threads`, not the REST comment id.
         """
-        return cls._set_review_thread_resolution(
-            thread_id, resolve=True, verbose=verbose
-        )
+        return cls._set_review_thread_resolution(thread_id, resolve=True, verbose=verbose)
 
     @classmethod
     def unresolve_pr_review_thread(cls, thread_id, verbose=False):
         """Re-open a previously resolved PR review thread
         (GraphQL ``unresolveReviewThread``)."""
-        return cls._set_review_thread_resolution(
-            thread_id, resolve=False, verbose=verbose
-        )
-
-    @classmethod
-    def list_pr_review_threads(cls, pr=None, repo=None, verbose=False):
-        """Return all review threads on a PR via GraphQL.
-
-        Each thread carries its node ``id``, ``isResolved``, ``isOutdated``,
-        ``resolvedBy`` (``{login}`` or ``null``), ``path``, ``line``, and the
-        full list of comments under it. Both the thread list and each thread's
-        comments are paginated.
-        """
-        if not repo:
-            repo = _Environment.get().REPOSITORY
-        if not pr:
-            pr = _Environment.get().PR_NUMBER
-        owner, name = repo.split("/", 1)
-
-        thread_query = (
-            "query($owner:String!,$name:String!,$pr:Int!,$after:String){"
-            "repository(owner:$owner,name:$name){"
-            "pullRequest(number:$pr){"
-            "reviewThreads(first:100,after:$after){"
-            "pageInfo{hasNextPage endCursor}"
-            "nodes{id isResolved isOutdated resolvedBy{login} path line "
-            "comments(first:50){"
-            "pageInfo{hasNextPage endCursor}"
-            "nodes{databaseId createdAt author{login} viewerDidAuthor body path line originalLine}"
-            "}}}}}}"
-        )
-        comments_query = (
-            "query($id:ID!,$after:String!){"
-            "node(id:$id){... on PullRequestReviewThread{"
-            "comments(first:50,after:$after){"
-            "pageInfo{hasNextPage endCursor}"
-            "nodes{databaseId createdAt author{login} viewerDidAuthor body path line originalLine}"
-            "}}}}"
-        )
-
-        threads = []
-        thread_cursor = None
-        while True:
-            variables = {"owner": owner, "name": name, "pr": int(pr)}
-            if thread_cursor is not None:
-                variables["after"] = thread_cursor
-            data = cls._gh_graphql_json(thread_query, variables, verbose=verbose)
-            page = data["data"]["repository"]["pullRequest"]["reviewThreads"]
-            for thread in page["nodes"]:
-                comments = thread["comments"]
-                while comments["pageInfo"]["hasNextPage"]:
-                    sub = cls._gh_graphql_json(
-                        comments_query,
-                        {"id": thread["id"], "after": comments["pageInfo"]["endCursor"]},
-                        verbose=verbose,
-                    )
-                    next_page = sub["data"]["node"]["comments"]
-                    comments["nodes"].extend(next_page["nodes"])
-                    comments["pageInfo"] = next_page["pageInfo"]
-                threads.append(thread)
-            if not page["pageInfo"]["hasNextPage"]:
-                break
-            thread_cursor = page["pageInfo"]["endCursor"]
-        return threads
+        return cls._set_review_thread_resolution(thread_id, resolve=False, verbose=verbose)
 
     @classmethod
     def post_pr_comment(
@@ -984,7 +1067,7 @@ class GH:
         else:
             if not only_update:
                 cmd = f"gh pr comment {pr} --body-file {temp_file_path}"
-                print(f"Create new comment")
+                print("Create new comment")
                 res = cls.do_command_with_retries(cmd)
             else:
                 print(
@@ -995,6 +1078,86 @@ class GH:
         os.unlink(temp_file_path)
 
         return res
+
+    @classmethod
+    def _submit_team_review_requests(cls, team_slugs, pr, repo):
+        assert team_slugs
+
+        payload = {"reviewers": [], "team_reviewers": team_slugs}
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as temp_file:
+            json.dump(payload, temp_file)
+            temp_file_path = temp_file.name
+
+        try:
+            cmd = (
+                "gh api -X POST "
+                f'-H "Accept: application/vnd.github.v3+json" '
+                f'"/repos/{repo}/pulls/{pr}/requested_reviewers" '
+                f"--input {shlex.quote(temp_file_path)}"
+            )
+            if not cls.do_command_with_retries(cmd):
+                raise RuntimeError(
+                    f"Failed to request team reviews for pull request [{pr}]"
+                )
+        finally:
+            os.unlink(temp_file_path)
+
+    @classmethod
+    def _get_requested_team_reviews(cls, pr, repo):
+        cmd = (
+            f'gh api -H "Accept: application/vnd.github.v3+json" '
+            f'"/repos/{repo}/pulls/{pr}/requested_reviewers" '
+            "--jq '[.teams[].slug]'"
+        )
+        output = cls.get_output_with_retries(cmd)
+        if not output:
+            raise RuntimeError(
+                f"Failed to retrieve team review requests for pull request [{pr}]"
+            )
+
+        try:
+            requested_teams = json.loads(output)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                f"Failed to parse team review requests for pull request [{pr}]: {e}"
+            ) from e
+        if not isinstance(requested_teams, list) or not all(
+            isinstance(team, str) for team in requested_teams
+        ):
+            raise RuntimeError(
+                f"Unexpected team review request response for pull request [{pr}]"
+            )
+
+        return set(requested_teams)
+
+    @classmethod
+    def request_team_reviews(cls, team_slugs, pr=None, repo=None):
+        requested = set(team_slugs)
+        if not requested:
+            return True
+
+        if not repo:
+            repo = _Environment.get().REPOSITORY
+        if not pr:
+            pr = _Environment.get().PR_NUMBER
+
+        teams_to_request = sorted(
+            requested - cls._get_requested_team_reviews(pr, repo)
+        )
+        if teams_to_request:
+            cls._submit_team_review_requests(teams_to_request, pr, repo)
+            missing_teams = set(teams_to_request) - cls._get_requested_team_reviews(
+                pr, repo
+            )
+            if missing_teams:
+                raise RuntimeError(
+                    "Failed to verify team review requests for pull request "
+                    f"[{pr}], missing teams [{', '.join(sorted(missing_teams))}]"
+                )
+
+        return True
 
     @classmethod
     def get_pr_contributors(cls, pr=None, repo=None):
@@ -1043,7 +1206,7 @@ class GH:
             pr_data = json.loads(output)
             title = pr_data["title"]
             body = pr_data["body"]
-            labels = [l["name"] for l in pr_data["labels"]]
+            labels = [label["name"] for label in pr_data["labels"]]
         except Exception:
             print("ERROR: Failed to get PR data")
             traceback.print_exc()
@@ -1131,6 +1294,43 @@ class GH:
         return cls.do_command_with_retries(command)
 
     @classmethod
+    def get_commit_statuses(
+        cls, sha="", repo=""
+    ) -> Optional[Dict[str, "GH.CommitStatus"]]:
+        """
+        Fetch commit statuses for the given commit SHA and return the latest
+        status for each context. Returns ``None`` if the status list cannot be
+        retrieved or parsed.
+        """
+        repo = repo or _Environment.get().REPOSITORY
+        sha = sha or _Environment.get().SHA
+
+        output = cls.get_output_with_retries(
+            f"gh api repos/{repo}/commits/{sha}/statuses --paginate"
+        )
+        if not output:
+            print("ERROR: Failed to fetch commit statuses")
+            return None
+        try:
+            statuses_list = json.loads(output)
+        except json.JSONDecodeError as ex:
+            print(f"ERROR: Failed to parse commit statuses: {ex}")
+            return None
+        status_map: Dict[str, GH.CommitStatus] = {}
+
+        for status in statuses_list:
+            context = status["context"]
+            if context not in status_map:
+                status_map[context] = GH.CommitStatus(
+                    state=status["state"],
+                    description=status.get("description", ""),
+                    url=status.get("target_url", ""),
+                    context=context,
+                )
+
+        return status_map
+
+    @classmethod
     def post_foreign_commit_status(
         cls, name, status, description, url, repo, commit_sha
     ):
@@ -1162,7 +1362,11 @@ class GH:
         return cls.do_command_with_retries(command)
 
     @classmethod
-    def merge_pr(cls, pr=None, repo=None, squash=False, keep_branch=False):
+    def merge_pr(cls, pr=None, repo=None, squash=False, keep_branch=False, admin=False):
+        """Merge PR #`pr`. With `admin`, merge right away with administrator
+        privileges: required checks are not awaited and the merge queue on the
+        base branch is bypassed. Only for automation that has already decided
+        the change must land immediately, such as reverting a broken merge."""
         if not repo:
             repo = _Environment.get().REPOSITORY
         if not pr:
@@ -1175,6 +1379,8 @@ class GH:
             extra_args += " --squash"
         else:
             extra_args += " --merge"
+        if admin:
+            extra_args += " --admin"
 
         cmd = f"gh pr merge {pr} --repo {repo} {extra_args}"
         return cls.do_command_with_retries(cmd)
@@ -1248,6 +1454,74 @@ class GH:
                 os.unlink(temp_file_path)
         return None
 
+    @classmethod
+    def get_pr_url_by_branch(cls, branch, repo=None):
+        """URL of the PR whose head is `branch`, or '' if there genuinely is none.
+
+        On the rerun-safety path (changelog / version-bump PR reuse), a transient
+        `gh pr list` failure must NOT be mistaken for "no PR exists" — that would
+        create a duplicate PR or let merge_prs run with an empty URL after the
+        release is already published. So the lookup is retried and raises on a
+        persistent failure. A successful `gh pr list --json` always prints at
+        least `[]`, so an empty result from the retried read means the command
+        itself failed; genuinely no PR is an empty JSON array.
+        """
+        if not repo:
+            repo = _Environment.get().REPOSITORY
+        safe_repo = shlex.quote(repo)
+        safe_branch = shlex.quote(branch)
+        for state in ("open", "merged"):
+            cmd = (
+                f"gh pr list --repo {safe_repo} --head {safe_branch}"
+                f" --state {state} --json url"
+            )
+            raw = cls.get_output_with_retries(cmd)
+            if not raw:
+                raise RuntimeError(
+                    f"gh pr list failed for branch [{branch}] in repo [{repo}] "
+                    f"(state {state}) after retries; refusing to treat a failed "
+                    f"lookup as 'no PR'"
+                )
+            prs = json.loads(raw)
+            if prs:
+                return prs[0]["url"]
+            print(f"No {state} PR found for branch [{branch}]")
+        return ""
+
+    @classmethod
+    def get_pr_state_by_branch(cls, branch, repo=None):
+        """'MERGED' / 'OPEN' / '' for the PR whose head is `branch`.
+
+        Merged takes priority: an already-merged PR means the change is in master,
+        so the caller should stop even if a stray open PR also exists. (This is
+        the opposite order from `get_pr_url_by_branch`, which checks open first;
+        they agree unless one branch has both an open and a merged PR - which the
+        release flow's "never recreate once present" invariant prevents for the
+        `auto/<tag>` / `bump_version_<version>` branches this is used with.) Same
+        retry / fail-close semantics as `get_pr_url_by_branch` - a failed lookup
+        raises rather than being mistaken for 'no PR' (which would recreate a PR
+        or skip a needed merge after the release is already published).
+        """
+        if not repo:
+            repo = _Environment.get().REPOSITORY
+        safe_repo = shlex.quote(repo)
+        safe_branch = shlex.quote(branch)
+        for state in ("merged", "open"):
+            cmd = (
+                f"gh pr list --repo {safe_repo} --head {safe_branch}"
+                f" --state {state} --json url"
+            )
+            raw = cls.get_output_with_retries(cmd)
+            if not raw:
+                raise RuntimeError(
+                    f"gh pr list failed for branch [{branch}] in repo [{repo}] "
+                    f"(state {state}) after retries; refusing to treat a failed "
+                    f"lookup as 'no PR'"
+                )
+            if json.loads(raw):
+                return state.upper()
+        return ""
+
     _STATUS_TO_GH = {
         Result.Status.OK: Result.GHStatus.SUCCESS,
         Result.Status.FAIL: Result.GHStatus.FAILURE,
@@ -1302,7 +1576,7 @@ class GH:
         sha: str = ""
         start_time: Optional[float] = None
         duration: Optional[float] = None
-        failed_results: List["ResultSummaryForGH"] = dataclasses.field(
+        failed_results: List["GH.ResultSummaryForGH"] = dataclasses.field(
             default_factory=list
         )
         info: str = ""
@@ -1464,15 +1738,20 @@ class GH:
                 symbol = "⏳"  # Hourglass (in progress)
 
             body = f"**Summary:** {symbol}\n"
-            if self.extra_links:
-                for job_name, links_md in self.extra_links:
-                    body += f"- {job_name}: {links_md}\n"
-                body += "\n"
+            # Render each extra_links group as a plain bullet under the Summary
+            # line. Keeping the (un-bolded) job-name prefix tells the reader
+            # which job(s) the labels came from without adding extra weight.
+            for job_name, links_md in self.extra_links:
+                body += f"- {job_name}: {links_md}\n"
             if self.failed_results:
+                # Blank line so the failure section isn't parsed as continuation
+                # of the Summary paragraph or the preceding bullet list.
+                body += "\n"
                 if len(self.failed_results) > 15:
-                    body += (
-                        f"    *15 failures out of {len(self.failed_results)} shown*:\n"
-                    )
+                    # Unindented + terminated with a blank line, otherwise the
+                    # 4-space indent turns this into an indented code block that
+                    # swallows the table that follows.
+                    body += f"*15 failures out of {len(self.failed_results)} shown*:\n\n"
                     self.failed_results = self.failed_results[:15]
                 body += "|job_name|test_name|status|info|comment|\n"
                 body += "|:--|:--|:-:|:--|:--|\n"
@@ -1542,6 +1821,108 @@ if __name__ == "__main__":
         help="Only update an existing comment; do not create a new one",
     )
 
+    line_parser = subparsers.add_parser(
+        "post-pr-line-comment",
+        help="Post an inline review comment on a specific line of a PR diff",
+    )
+    line_parser.add_argument(
+        "--file",
+        required=True,
+        dest="body_file",
+        help="Path to file containing the comment body (read via -F body=@<file>)",
+    )
+    line_parser.add_argument(
+        "--commit",
+        default=None,
+        help="Commit SHA the comment refers to (required unless --reply-to is set)",
+    )
+    line_parser.add_argument(
+        "--path",
+        default=None,
+        help="Path of the file to comment on (required unless --reply-to is set)",
+    )
+    line_parser.add_argument(
+        "--line",
+        type=int,
+        default=None,
+        help="Line number in the PR diff (required unless --reply-to is set)",
+    )
+    line_parser.add_argument(
+        "--side", default="RIGHT", choices=["RIGHT", "LEFT"], help="Diff side"
+    )
+    line_parser.add_argument(
+        "--reply-to",
+        type=int,
+        default=None,
+        dest="reply_to",
+        help="databaseId of the parent comment to reply to. "
+        "When set, the comment is posted as a reply on the existing thread "
+        "and --commit/--path/--line are ignored.",
+    )
+    line_parser.add_argument("--pr", type=int, default=None, help="PR number")
+    line_parser.add_argument(
+        "--repo", default=None, help="Repository in owner/repo format"
+    )
+
+    review_parser = subparsers.add_parser(
+        "post-pr-review",
+        help="Post all inline findings as a single batched PR review",
+    )
+    review_parser.add_argument(
+        "--comments-file",
+        required=True,
+        dest="comments_file",
+        help="Path to a JSON file with a list of "
+        '{"path", "line", "side", "start_line"?, "start_side"?, "body_file"} '
+        "objects; each body_file holds that comment's Markdown body",
+    )
+    review_parser.add_argument(
+        "--body-file",
+        default=None,
+        dest="body_file",
+        help="Optional file with the top-level review body",
+    )
+    review_parser.add_argument(
+        "--commit",
+        default=None,
+        help="Commit SHA the review refers to",
+    )
+    review_parser.add_argument("--pr", type=int, default=None, help="PR number")
+    review_parser.add_argument(
+        "--repo", default=None, help="Repository in owner/repo format"
+    )
+
+    threads_parser = subparsers.add_parser(
+        "list-pr-review-threads",
+        help="List PR review threads via GraphQL (prints JSON to stdout)",
+    )
+    threads_parser.add_argument("--pr", type=int, default=None, help="PR number")
+    threads_parser.add_argument(
+        "--repo", default=None, help="Repository in owner/repo format"
+    )
+
+    resolve_parser = subparsers.add_parser(
+        "resolve-pr-review-thread",
+        help="Resolve a PR review thread via GraphQL",
+    )
+    resolve_parser.add_argument(
+        "--thread-id",
+        required=True,
+        dest="thread_id",
+        help="GraphQL node id of the review thread (from list-pr-review-threads)",
+    )
+
+    unresolve_parser = subparsers.add_parser(
+        "unresolve-pr-review-thread",
+        help="Re-open (unresolve) a PR review thread via GraphQL",
+    )
+    unresolve_parser.add_argument(
+        "--thread-id",
+        required=True,
+        dest="thread_id",
+        help="GraphQL node id of the review thread (from list-pr-review-threads)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "post-or-update":
@@ -1556,6 +1937,54 @@ if __name__ == "__main__":
         if args.repo is not None:
             kwargs["repo"] = args.repo
         ok = GH.post_updateable_comment(**kwargs)
+        sys.exit(0 if ok else 1)
+    elif args.command == "post-pr-line-comment":
+        kwargs = dict(
+            body_file=args.body_file,
+            commit_id=args.commit,
+            path=args.path,
+            line=args.line,
+            side=args.side,
+            in_reply_to=args.reply_to,
+        )
+        if args.pr is not None:
+            kwargs["pr"] = args.pr
+        if args.repo is not None:
+            kwargs["repo"] = args.repo
+        ok = GH.post_pr_line_comment(**kwargs)
+        sys.exit(0 if ok else 1)
+    elif args.command == "post-pr-review":
+        with open(args.comments_file, "r", encoding="utf-8") as f:
+            comments = json.load(f)
+        body = ""
+        if args.body_file is not None:
+            with open(args.body_file, "r", encoding="utf-8") as f:
+                body = f.read()
+        kwargs = dict(
+            commit_id=args.commit,
+            comments=comments,
+            body=body,
+        )
+        if args.pr is not None:
+            kwargs["pr"] = args.pr
+        if args.repo is not None:
+            kwargs["repo"] = args.repo
+        ok = GH.post_pr_review(**kwargs)
+        sys.exit(0 if ok else 1)
+    elif args.command == "list-pr-review-threads":
+        kwargs = {}
+        if args.pr is not None:
+            kwargs["pr"] = args.pr
+        if args.repo is not None:
+            kwargs["repo"] = args.repo
+        threads = GH.list_pr_review_threads(**kwargs)
+        print(json.dumps(threads, indent=2))
+        sys.exit(0)
+    elif args.command == "resolve-pr-review-thread":
+        ok = GH.resolve_pr_review_thread(args.thread_id)
+        sys.exit(0 if ok else 1)
+    elif args.command == "unresolve-pr-review-thread":
+        ok = GH.unresolve_pr_review_thread(args.thread_id)
         sys.exit(0 if ok else 1)
     else:
         parser.print_help()

@@ -131,5 +131,24 @@ def test_gh_auth_redacts_lambda_error_payload(monkeypatch):
         assert False, "expected lambda auth failure"
     except RuntimeError as e:
         message = str(e)
-        assert "payload redacted" in message
+        # The error surfaces whitelisted diagnostics (FunctionError, StatusCode,
+        # errorType/errorMessage) via _describe_lambda_failure, but never the raw
+        # lambda payload — so the token must not leak into the message.
+        assert "FunctionError=Unhandled" in message
         assert "should-not-leak" not in message
+
+
+def test_get_installation_token_requires_lambda(monkeypatch):
+    # Lambda-only: the app/JWT fallback was removed, so minting a token with no
+    # GH_AUTH_LAMBDA_NAME configured must raise, not silently fall back.
+    monkeypatch.setattr(Settings, "GH_AUTH_LAMBDA_NAME", "")
+
+    for mint in (
+        GHAuth.get_installation_token,
+        GHAuth.get_installation_token_with_expiry,
+    ):
+        try:
+            mint()
+            assert False, f"{mint.__name__} should raise without a lambda configured"
+        except RuntimeError as e:
+            assert "GH_AUTH_LAMBDA_NAME" in str(e)

@@ -16,6 +16,7 @@ workflow = Workflow.Config(
     name="Praktika CI Advanced",
     event=Workflow.Event.PULL_REQUEST,
     base_branches=["main"],
+    runs_on_label_prefix="pr-",
     ai_orchestrator=Workflow.OrchestratorAI.Config(
         enabled=True,
         provider="bedrock-anthropic",
@@ -48,6 +49,20 @@ workflow = Workflow.Config(
                 ],
             ),
         ),
+        # Ruff style check (ruff is baked into the runner image venv, see
+        # ci/infrastructure/projects.py::_runtime_prebuilt_venvs).
+        Job.Config(
+            name="Style Check",
+            runs_on=[RunnerLabels.SMALL_ARM],
+            command="ruff check .",
+            digest_config=Job.CacheDigestConfig(
+                include_paths=[
+                    "./praktika",
+                    "./ci",
+                    "./pyproject.toml",
+                ],
+            ),
+        ),
         # S3 artifact with cache digest
         Job.Config(
             name="Build",
@@ -62,7 +77,7 @@ workflow = Workflow.Config(
         Job.Config(
             name="Test",
             runs_on=[RunnerLabels.SMALL_ARM],
-            command=f"python3 ./ci/jobs/consume_artifact.py",
+            command="python3 ./ci/jobs/consume_artifact.py",
             requires=[artifact.name],
             digest_config=Job.CacheDigestConfig(
                 include_paths=["./ci/jobs/consume_artifact.py"],

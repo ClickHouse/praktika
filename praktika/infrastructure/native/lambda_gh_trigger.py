@@ -70,9 +70,27 @@ def _parse_allowed_repositories():
     return {str(repo).strip() for repo in value if str(repo).strip()}
 
 
+def _parse_allowed_users():
+    raw = os.environ.get("ALLOWED_USERS_JSON", "").strip()
+    if not raw:
+        return set()
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        print("WARNING: ALLOWED_USERS_JSON is not valid JSON")
+        return set()
+    if not isinstance(value, list):
+        print("WARNING: ALLOWED_USERS_JSON must decode to a list")
+        return set()
+    # GitHub logins are case-insensitive; store casefolded so the membership
+    # check matches regardless of the casing a deployment configured.
+    return {str(user).strip().casefold() for user in value if str(user).strip()}
+
+
 ALLOWED_PUSH_BRANCHES = _parse_allowed_push_branches()
 EXTERNAL_PR_AUTOAPPROVE_PATHS = _parse_autoapprove_paths()
 ALLOWED_REPOSITORIES = _parse_allowed_repositories()
+ALLOWED_USERS = _parse_allowed_users()
 
 
 def _cancel_scope(queue_name: str) -> str:
@@ -180,7 +198,7 @@ def _build_workflow(action, payload, event_ts):
         "sender": payload.get("sender", {}).get("login", ""),
         "title": pr.get("title", ""),
         "draft": pr.get("draft", False),
-        "labels": [l.get("name", "") for l in pr.get("labels", [])],
+        "labels": [label.get("name", "") for label in pr.get("labels", [])],
         "external_pr": _is_external_pr(pr, repo),
         "head_repo": pr.get("head", {}).get("repo", {}).get("full_name", ""),
     }
@@ -236,8 +254,13 @@ def _build_rerun_workflow(check_obj, payload, event_ts):
         "title": "",
         "draft": False,
         "labels": [],
+        # check_suite / check_run payloads don't carry the PR head repo's full
+        # name, labels, title, or draft flag. This reconstruction is only safe
+        # for internal PRs (external_pr False, head_repo is the base repo); the
+        # external path in _handle_external_rerun reuses the authoritative
+        # metadata stored in the approval state before enqueuing.
         "external_pr": False,
-        "head_repo": "",
+        "head_repo": repo,
     }
     return workflow, pr_number
 
@@ -463,8 +486,24 @@ def _can_maintain_repo(repo: str, login: str, token: str) -> bool:
 
 
 def _compare_changed_files(repo: str, base_sha: str, head_sha: str, token: str):
+    """Return (changed_paths, complete) for the diff ``base_sha...head_sha``.
+
+    ``changed_paths`` includes both sides of a rename (``filename`` and
+    ``previous_filename``) so a move out of a disallowed tree cannot hide the
+    original path. GitHub caps the compare ``files`` array at 300 entries and
+    does not paginate it, so ``complete`` is False once that cap is reached;
+    callers must then fail closed rather than trust a truncated list.
+    """
     data = _gh_api("GET", f"/repos/{repo}/compare/{base_sha}...{head_sha}", token)
-    return [f.get("filename", "") for f in data.get("files", []) if f.get("filename")]
+    files = data.get("files", []) or []
+    changed_paths = set()
+    for f in files:
+        for key in ("filename", "previous_filename"):
+            value = f.get(key)
+            if value:
+                changed_paths.add(value)
+    complete = len(files) < 300
+    return changed_paths, complete
 
 
 def _path_is_allowed(path: str) -> bool:
@@ -483,13 +522,19 @@ def _changes_are_autoapprovable(repo: str, base_sha: str, head_sha: str, token: 
     if not EXTERNAL_PR_AUTOAPPROVE_PATHS:
         return False
     try:
-        changed_files = _compare_changed_files(repo, base_sha, head_sha, token)
+        changed_paths, complete = _compare_changed_files(repo, base_sha, head_sha, token)
     except Exception as e:
         print(f"  [warn] compare for autoapprove failed: {e}")
         return False
-    if not changed_files:
+    if not complete:
+        # The changed-file list hit GitHub's 300-file cap and may be truncated;
+        # we cannot prove every changed path is autoapprovable, so fall back to
+        # manual maintainer approval instead of autoapproving a partial view.
+        print("  [warn] changed-file list may be truncated (>=300 files); requiring manual approval")
+        return False
+    if not changed_paths:
         return True
-    return all(_path_is_allowed(path) for path in changed_files)
+    return all(_path_is_allowed(path) for path in changed_paths)
 
 
 def _cancel_run(run_id):
@@ -743,6 +788,35 @@ def _handle_external_rerun(workflow: dict, delivery_id: str, sender: str):
         print(f"SKIP: external PR rerun by non-maintainer {sender}")
         return
     state = _load_approval_state(workflow["repo"], workflow["pr_number"])
+    # Only a rerun of the CURRENT head may proceed. `workflow["head_sha"]` here
+    # is the SHA of the check being rerun (head A); if the PR head has since
+    # advanced (state["head_sha"] == B), this is a stale check. Rebinding it to
+    # the saved current workflow would approve/enqueue B off a rerun of A's
+    # check, breaking the "approve this exact commit" contract of the gate. Treat
+    # any mismatch as stale and stop before touching the saved (current) state.
+    rerun_sha = workflow.get("head_sha", "")
+    if not state or state.get("head_sha") != rerun_sha:
+        print(
+            f"SKIP: stale external rerun of PR#{workflow['pr_number']} "
+            f"sha={rerun_sha[:12]} current={(state or {}).get('head_sha', '')[:12]}"
+        )
+        return
+    # `workflow` was reconstructed from the check_run/check_suite payload, which
+    # doesn't carry the fork repo, labels, title, or draft flag. Reuse the
+    # authentic PR metadata captured at pull_request time and stored in the
+    # approval state so the enqueued/persisted workflow stays classified as
+    # external, instead of an internal PR (head_repo == base repo) with no
+    # labels. Only the fields describing this rerun event are refreshed.
+    saved = dict((state or {}).get("workflow") or {})
+    if not saved:
+        print(
+            f"SKIP: no stored workflow for external rerun of PR#{workflow['pr_number']}"
+        )
+        return
+    saved["action"] = workflow["action"]
+    saved["event_ts"] = workflow["event_ts"]
+    saved["sender"] = sender
+    workflow = saved
     if state and state.get("head_sha") == workflow["head_sha"] and state.get(
         "approval_check_id"
     ):
@@ -866,6 +940,9 @@ def lambda_handler(event, context):
 
     if ALLOWED_SENDERS and sender not in ALLOWED_SENDERS:
         print(f"SKIP: sender {sender} not in allowed list")
+        return {"statusCode": 200, "body": "ok"}
+    if ALLOWED_USERS and sender.casefold() not in ALLOWED_USERS:
+        print(f"SKIP: PR sender {sender} not in allowed users")
         return {"statusCode": 200, "body": "ok"}
 
     workflow = _build_workflow(action, payload, event_ts)

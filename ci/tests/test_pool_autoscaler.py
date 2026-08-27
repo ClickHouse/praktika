@@ -184,6 +184,68 @@ def test_lambda_handler_updates_all_pools_that_need_scaling(monkeypatch):
     assert result["results"][2]["capacity_reserve"] == 2
 
 
+def test_lambda_handler_skips_pool_with_missing_queue_and_scales_the_rest(monkeypatch):
+    # A pool whose queue is missing or not in this role's IAM scope (SQS reports
+    # both as QueueDoesNotExist) must be logged and skipped, not abort the whole
+    # run -- the remaining pools still need to be scaled.
+    class _QueueDoesNotExist(Exception):
+        pass
+
+    class _FakeSQS:
+        def get_queue_url(self, QueueName):
+            if QueueName == "pool-missing":
+                raise _QueueDoesNotExist(
+                    "The specified queue does not exist or you do not have access"
+                )
+            return {"QueueUrl": f"https://example.invalid/{QueueName}"}
+
+        def get_queue_attributes(self, QueueUrl, AttributeNames):
+            return {
+                "Attributes": {
+                    "ApproximateNumberOfMessages": "3",
+                    "ApproximateNumberOfMessagesNotVisible": "0",
+                }
+            }
+
+    class _FakeAutoscaling:
+        def __init__(self):
+            self.updated = []
+
+        def describe_auto_scaling_groups(self, AutoScalingGroupNames):
+            return {"AutoScalingGroups": [{"DesiredCapacity": 0, "MaxSize": 10}]}
+
+        def update_auto_scaling_group(self, AutoScalingGroupName, DesiredCapacity):
+            self.updated.append((AutoScalingGroupName, DesiredCapacity))
+
+    fake_autoscaling = _FakeAutoscaling()
+
+    def _fake_boto3_client(service_name, region_name=None):
+        if service_name == "sqs":
+            return _FakeSQS()
+        if service_name == "autoscaling":
+            return fake_autoscaling
+        raise AssertionError(f"Unexpected boto3 client: {service_name}")
+
+    monkeypatch.setenv(
+        "POOLS_CONFIG_JSON",
+        '[{"name":"pool-missing","queue_name":"pool-missing","asg_name":"asg-missing"},'
+        '{"name":"pool-ok","queue_name":"pool-ok","asg_name":"asg-ok"}]',
+    )
+    monkeypatch.setenv("AWS_REGION", "eu-north-1")
+    monkeypatch.setattr(
+        "praktika.infrastructure.native.lambda_pool_autoscaler.boto3.client",
+        _fake_boto3_client,
+    )
+
+    result = lambda_handler({}, None)
+
+    # The healthy pool is still scaled; the missing one is reported as skipped.
+    assert fake_autoscaling.updated == [("asg-ok", 1)]
+    assert result["pool_count"] == 1
+    assert result["skipped_count"] == 1
+    assert result["skipped"][0]["pool_name"] == "pool-missing"
+
+
 def test_cloud_infrastructure_registers_pool_autoscaler():
     autoscaler = PoolAutoscaler(
         pools=[
@@ -194,15 +256,15 @@ def test_cloud_infrastructure_registers_pool_autoscaler():
     )
 
     cloud = CloudInfrastructure.Config(
-        name="test-cloud",
+        name="testcloud",
         pool_autoscalers=[autoscaler],
     )
 
     assert any(
-        config.name == "test-cloud-pool-autoscaler" for config in cloud.lambda_functions
+        config.name == "testcloud-pool-autoscaler" for config in cloud.lambda_functions
     )
     assert any(
-        role.name == "test-cloud-pool-autoscaler-role" for role in cloud.iam_roles
+        role.name == "testcloud-pool-autoscaler-role" for role in cloud.iam_roles
     )
 
 
@@ -225,13 +287,13 @@ def test_cloud_infrastructure_creates_implicit_runner_autoscaler():
     )
 
     cloud = CloudInfrastructure.Config(
-        name="test-cloud",
+        name="testcloud",
         runner_pools=[auto_pool, disabled_pool],
         pool_autoscaler_interval_seconds=120,
     )
 
     autoscalers = [
-        l for l in cloud.lambda_functions if l.name == "test-cloud-pool-autoscaler"
+        fn for fn in cloud.lambda_functions if fn.name == "testcloud-pool-autoscaler"
     ]
     assert len(autoscalers) == 1
     autoscaler = autoscalers[0]
@@ -254,18 +316,18 @@ def test_cloud_infrastructure_creates_implicit_orchestrator_autoscaler():
     )
 
     cloud = CloudInfrastructure.Config(
-        name="test-cloud",
+        name="testcloud",
         orchestrator_pool=orchestrator_pool,
         pool_autoscaler_interval_seconds=60,
     )
 
     autoscalers = [
-        l for l in cloud.lambda_functions if l.name == "test-cloud-pool-autoscaler"
+        fn for fn in cloud.lambda_functions if fn.name == "testcloud-pool-autoscaler"
     ]
     assert len(autoscalers) == 1
     autoscaler = autoscalers[0]
     env = autoscaler.environments["POOLS_CONFIG_JSON"]
     assert '"name":"workflow-orchestrator"' in env
-    assert '"queue_name":"test-cloud-workflow-orchestrator"' in env
-    assert '"asg_name":"test-cloud-workflow-orchestrator"' in env
+    assert '"queue_name":"testcloud-workflow-orchestrator"' in env
+    assert '"asg_name":"testcloud-workflow-orchestrator"' in env
     assert '"capacity_reserve":2' in env

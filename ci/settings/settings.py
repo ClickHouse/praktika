@@ -11,7 +11,6 @@ class RunnerLabels:
 CI_CONFIG_RUNS_ON = [RunnerLabels.SMALL_ARM]
 
 AWS_REGION = "eu-north-1"
-AWS_ACCOUNT_ID = "420943511422"
 AWS_PROFILE = "Box"
 
 S3_ARTIFACT_BUCKET = "praktika-artifacts-eu-north-1"
@@ -26,7 +25,6 @@ DOCKER_BUILD_ARM_RUNS_ON = [RunnerLabels.SMALL_ARM]
 DOCKER_BUILD_AMD_RUNS_ON = [RunnerLabels.SMALL_AMD]
 
 SECRET_DOCKER_REGISTRY = "praktika-docker-registry-connection"
-USE_CUSTOM_GH_AUTH = True
 
 # Runner controller heartbeat write interval, in seconds.
 HEARTBEAT_INTERVAL_S = 30

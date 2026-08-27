@@ -150,9 +150,15 @@ def _record_value(record, key, default=None):
 
 
 def _queue_for_runs_on(runs_on):
-    """First non-empty ``runs_on`` label → ``<project-slug>-<label>`` queue name."""
+    """First meaningful ``runs_on`` label → ``<project-slug>-<label>`` queue name.
+
+    "self-hosted" is a GitHub-Actions runner-group label with no meaning to the
+    praktika engine, so it is skipped — the pool/size label is what maps to a
+    queue (e.g. ``["self-hosted", "style-checker-aarch64"]`` →
+    ``<slug>-style-checker-aarch64``).
+    """
     for label in runs_on or ():
-        if label:
+        if label and label != "self-hosted":
             return f"{_queue_prefix()}{label}"
     return None
 
@@ -194,6 +200,34 @@ class JobCheckRun:
         body = {"name": name, "head_sha": head_sha, "status": "queued"}
         if output is not None:
             body["output"] = output
+        data = cls._api(
+            "POST",
+            f"https://api.github.com/repos/{repo}/check-runs",
+            token,
+            body,
+        )
+        return cls(token, repo, data["id"], name)
+
+    @classmethod
+    def create_completed(
+        cls, token, repo, head_sha, name, conclusion, output=None, details_url=None
+    ):
+        """Create a check run already in its terminal state in one POST.
+
+        Used for jobs that never run (skipped) so the check posts its final
+        conclusion directly, rather than the queue()->complete() two-call
+        dance that briefly surfaces a pending check before flipping it.
+        """
+        body = {
+            "name": name,
+            "head_sha": head_sha,
+            "status": "completed",
+            "conclusion": conclusion,
+        }
+        if output is not None:
+            body["output"] = output
+        if details_url is not None:
+            body["details_url"] = details_url
         data = cls._api(
             "POST",
             f"https://api.github.com/repos/{repo}/check-runs",
@@ -269,6 +303,10 @@ class JobState:
         self._workflow_state = workflow_state  # back-ref for SQS dispatch
         self.status = JobStatus.PENDING
         self.rc = None
+        # True when the job FAILED but opted out of blocking the pipeline via
+        # result.complete_job(do_not_block_pipeline_on_failure=True). Such a
+        # failure is advisory: dependents must still run (see get_ready).
+        self.non_blocking = False
         self.started_at = None
         self.finished_at = None
         self.filter_reason = None  # set by .skip() when Config Workflow skips it
@@ -332,6 +370,35 @@ class JobState:
         except Exception as e:
             print(
                 f"  [warn] could not queue check for {check_name!r}: "
+                f"{type(e).__name__}: {e}"
+            )
+
+    def _create_completed_check(self, conclusion, output=None, details_url=None):
+        """Post the GitHub check run directly in its terminal state.
+
+        For jobs that never run (skipped), this posts the final conclusion in
+        a single API call instead of queue()->complete(), which would briefly
+        show a pending check before flipping it.
+        """
+        if self.check is not None:
+            return
+        ws = self._workflow_state
+        if ws is None or not ws.can_post_checks:
+            return
+        check_name = f"{ws.workflow.name} / {self.name}"
+        try:
+            self.check = JobCheckRun.create_completed(
+                ws._gh_token,
+                ws._repo,
+                ws._head_sha,
+                check_name,
+                conclusion,
+                output=output,
+                details_url=details_url,
+            )
+        except Exception as e:
+            print(
+                f"  [warn] could not post {conclusion} check for {check_name!r}: "
                 f"{type(e).__name__}: {e}"
             )
 
@@ -399,15 +466,22 @@ class JobState:
                 output={"title": "Dispatch failed", "summary": summary},
             )
 
-    def finish(self, success=True, output=None, details_url=None):
+    def finish(self, success=True, output=None, details_url=None, non_blocking=False):
         """Transition in-flight jobs -> SUCCESS/FAILURE and emit a finish line.
 
         The orchestrator owns the GitHub check lifecycle: runners publish
         final state to S3, and this method completes the check.
+
+        ``non_blocking`` records that a failing job asked not to block the
+        pipeline (``do_not_block_pipeline_on_failure``). The job's own status
+        stays FAILURE (its check goes red — the process exited non-zero), but
+        ``get_ready`` treats it as success-equivalent so dependents still run,
+        mirroring the GH-engine ``_pipeline_status`` behavior.
         """
         if self.status not in (JobStatus.QUEUED, JobStatus.RUNNING):
             return
         self.status = JobStatus.SUCCESS if success else JobStatus.FAILURE
+        self.non_blocking = bool(non_blocking) and not success
         self.finished_at = time.time()
         self.rc = 0 if success else 1
         self._update_check(
@@ -437,9 +511,8 @@ class JobState:
         self.status = JobStatus.SKIPPED
         self.filter_reason = reason
         if post_check:
-            self._create_check()
-            self._update_check(
-                lambda c: c.complete("skipped", output=output, details_url=details_url)
+            self._create_completed_check(
+                "skipped", output=output, details_url=details_url
             )
         suffix = f" ({reason})" if reason else ""
         print(f"[SKIP ] {self.name:70s}{suffix}")
@@ -488,7 +561,14 @@ class JobState:
         self.status = JobStatus.CANCELLED
         if was_in_flight:
             self.finished_at = time.time()
-            self._update_check(lambda c: c.complete("cancelled"))
+            # Pass an explicit output so the terminal check reflects the
+            # cancellation instead of keeping the earlier "QUEUED" summary.
+            self._update_check(
+                lambda c: c.complete(
+                    "cancelled",
+                    output={"title": "CANCELLED", "summary": f"CANCELLED: {reason}."},
+                )
+            )
         print(f"[CANCL] {self.name:70s} ({reason})")
 
 
@@ -789,6 +869,7 @@ class WorkflowState:
             # check-run output here (the orchestrator owns the check
             # lifecycle).
             output = None
+            non_blocking = False
             result_dict = payload.get("result")
             if isinstance(result_dict, dict):
                 js.result = result_dict
@@ -800,6 +881,10 @@ class WorkflowState:
                     # from_dict mutates its argument, so reconstruct from a
                     # copy to keep js.result a plain, serializable dict.
                     result = Result.from_dict(deepcopy(result_dict))
+                    # rc alone is not "block the DAG": a job may exit non-zero
+                    # yet ask not to block dependents (advisory jobs such as
+                    # bugfix validation / coverage). Honor the Result flag.
+                    non_blocking = result.do_not_block_pipeline_on_failure()
                     output = _build_check_output(
                         result,
                         rc,
@@ -812,7 +897,12 @@ class WorkflowState:
                         f"  [warn] could not render Result for {js.name!r}: "
                         f"{type(e).__name__}: {e}"
                     )
-            js.finish(success=(rc == 0), output=output, details_url=details_url)
+            js.finish(
+                success=(rc == 0),
+                output=output,
+                details_url=details_url,
+                non_blocking=non_blocking,
+            )
 
     def sweep_liveness(self, now=None):
         """Mark in-flight jobs whose runner stopped responding as FAILURE.
@@ -834,6 +924,7 @@ class WorkflowState:
         now = now if now is not None else time.time()
         for js in running:
             runs_on = ", ".join(js.job.runs_on) if js.job.runs_on else "default"
+            runner_pool = runs_on
             key = self._heartbeat_s3_key(js.name)
             heartbeat_missing = False
             try:
@@ -858,7 +949,10 @@ class WorkflowState:
                         js.status = JobStatus.RUNNING
                         summary = "RUNNING: runner picked up the job."
                         if instance_id:
-                            summary = f"RUNNING on runner `{instance_id}`."
+                            summary = (
+                                f"RUNNING on runner `{instance_id}` in pool "
+                                f"`{runner_pool}`."
+                            )
                         if phase:
                             summary += f" Phase: `{phase}`."
                         if attempt > 1:
@@ -963,7 +1057,9 @@ class WorkflowState:
         """
         task = {
             "type": "job_task",
+            "event_type": self._event.get("type", ""),
             "repo": self._event.get("repo", ""),
+            "head_repo": self._event.get("head_repo", ""),
             "pr_number": self._event.get("pr_number"),
             "head_sha": self._event.get("head_sha", ""),
             "head_ref": self._event.get("head_ref", ""),
@@ -1059,11 +1155,12 @@ class WorkflowState:
         """Promote PENDING jobs whose deps are resolved -> READY and return them.
 
         Normal jobs:
-          - any dep in FAILURE or CANCELLED ⇒ cascade this job to CANCELLED
-            (upstream failed / upstream cancelled, this can't proceed);
-          - every dep in SUCCESS or SKIPPED ⇒ promote to READY (SKIPPED
-            outputs still exist in S3 from a prior run — SUCCESS-equivalent
-            for dep resolution).
+          - any dep in blocking FAILURE or CANCELLED ⇒ cascade this job to
+            CANCELLED (upstream failed / upstream cancelled, this can't proceed);
+          - every dep in SUCCESS, SKIPPED, or non-blocking FAILURE ⇒ promote to
+            READY. SKIPPED outputs still exist in S3 from a prior run, and a
+            non-blocking FAILURE (do_not_block_pipeline_on_failure) is advisory —
+            both are SUCCESS-equivalent for dep resolution.
 
         ``always_run`` jobs (Finish Workflow is the only one
         today) promote to READY once every dep reaches *any* terminal
@@ -1075,19 +1172,30 @@ class WorkflowState:
         for name, js in self.jobs.items():
             if js.status != JobStatus.PENDING:
                 continue
-            dep_states = [self.jobs[d].status for d in self._deps.get(name, ())]
+            deps = [self.jobs[d] for d in self._deps.get(name, ())]
             if js.job.always_run:
-                if all(s in _TERMINAL for s in dep_states):
+                if all(d.status in _TERMINAL for d in deps):
                     js.status = JobStatus.READY
                     ready.append(js)
                 continue
-            if any(s == JobStatus.FAILURE for s in dep_states):
+            # A dep that FAILED but is non_blocking
+            # (do_not_block_pipeline_on_failure) counts as success-equivalent
+            # for dependency resolution: its failure is advisory, so it must
+            # neither cancel dependents nor hold them back.
+            if any(
+                d.status == JobStatus.FAILURE and not getattr(d, "non_blocking", False)
+                for d in deps
+            ):
                 js.cancel(reason="upstream failed")
                 continue
-            if any(s == JobStatus.CANCELLED for s in dep_states):
+            if any(d.status == JobStatus.CANCELLED for d in deps):
                 js.cancel(reason="upstream cancelled")
                 continue
-            if all(s in (JobStatus.SUCCESS, JobStatus.SKIPPED) for s in dep_states):
+            if all(
+                d.status in (JobStatus.SUCCESS, JobStatus.SKIPPED)
+                or (d.status == JobStatus.FAILURE and getattr(d, "non_blocking", False))
+                for d in deps
+            ):
                 js.status = JobStatus.READY
                 ready.append(js)
         return ready

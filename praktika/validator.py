@@ -7,7 +7,7 @@ from pathlib import Path
 from praktika import Artifact, Job
 
 from . import Workflow
-from .mangle import _get_infra_projects, _get_workflows
+from .mangle import _get_workflows
 from .settings import GHRunners, Settings
 
 
@@ -122,30 +122,41 @@ class Validator:
                     f"Setting ENABLED_WORKFLOWS has non-existing workflow file [{file}]",
                 )
 
-        if Settings.USE_CUSTOM_GH_AUTH:
+        project_slug = getattr(Settings, "PROJECT_SLUG", "") or ""
+        if project_slug:
+            # The slug prefixes every AWS resource name ("{slug}-...") and
+            # resources are discovered by that prefix. A slug containing "-" (or
+            # any separator) would make one project's prefix match another's
+            # (e.g. "clickhouse-" matches the "clickhouse-private" project), so
+            # the slug must be purely lowercase-alphanumeric.
             cls.evaluate_check_simple(
-                bool(Settings.SECRET_GH_APP or Settings.GH_AUTH_LAMBDA_NAME),
-                "Setting SECRET_GH_APP or GH_AUTH_LAMBDA_NAME must be provided with USE_CUSTOM_GH_AUTH == True",
+                bool(re.fullmatch(r"[a-z0-9]+", project_slug)),
+                f"Setting PROJECT_SLUG [{project_slug}] must be non-empty and contain only lowercase letters and digits (no '-', '_' or other separators)",
             )
 
-        if Settings.CLOUD_INFRASTRUCTURE_CONFIG_PATH:
-            projects = _get_infra_projects()
-            normalized = {}
-            for project in projects:
-                normalized_name = re.sub(
-                    r"-{2,}",
-                    "-",
-                    re.sub(r"[^a-z0-9]+", "-", project.name.lower()),
-                ).strip("-")
-                cls.evaluate_check_simple(
-                    normalized_name,
-                    f"Infrastructure project name [{project.name}] must normalize to a non-empty AWS-safe prefix",
-                )
-                cls.evaluate_check_simple(
-                    normalized_name not in normalized,
-                    f"Infrastructure project names [{normalized.get(normalized_name)}] and [{project.name}] normalize to the same prefix [{normalized_name}]",
-                )
-                normalized[normalized_name] = project.name
+        # NOTE: disabled — this is deploy-time validation (infra project-name
+        # uniqueness) and requires ./ci/infrastructure/projects.py to exist.
+        # Pipeline/settings validation also runs on runners, whose checkout may
+        # not ship the infra config, so it wrongly failed with "Infrastructure
+        # config file does not exist". Re-enable behind a deploy-only guard.
+        # if Settings.CLOUD_INFRASTRUCTURE_CONFIG_PATH:
+        #     projects = _get_infra_projects()
+        #     normalized = {}
+        #     for project in projects:
+        #         normalized_name = re.sub(
+        #             r"_{2,}",
+        #             "_",
+        #             re.sub(r"[^a-z0-9]+", "_", project.name.lower()),
+        #         ).strip("_")
+        #         cls.evaluate_check_simple(
+        #             normalized_name,
+        #             f"Infrastructure project name [{project.name}] must normalize to a non-empty AWS-safe prefix",
+        #         )
+        #         cls.evaluate_check_simple(
+        #             normalized_name not in normalized,
+        #             f"Infrastructure project names [{normalized.get(normalized_name)}] and [{project.name}] normalize to the same prefix [{normalized_name}]",
+        #         )
+        #         normalized[normalized_name] = project.name
 
         _VALID_ENGINES = (Workflow.Engine.PRAKTIKA, Workflow.Engine.GH_ACTIONS)
         files = []
@@ -164,20 +175,23 @@ class Validator:
                 f"Invalid engine [{workflow.engine}], must be one of {_VALID_ENGINES}",
                 workflow.name,
             )
-            if workflow.engine == Workflow.Engine.PRAKTIKA:
+            # NOTE: disabled — like job.enable_commit_status, the workflow-level
+            # enable_commit_status_on_failure is harmless on the Praktika engine
+            # (the Checks API is used regardless), so don't fail validation when
+            # a workflow carries the flag.
+            # if workflow.engine == Workflow.Engine.PRAKTIKA:
+            #     cls.evaluate_check(
+            #         not workflow.enable_commit_status_on_failure,
+            #         ".enable_commit_status_on_failure is redundant for Praktika engine workflows: the GitHub Checks API is used and always publishes workflow/job check status",
+            #         workflow.name,
+            #     )
+            if workflow.enable_report and not Settings.GH_AUTH_LAMBDA_NAME:
+                secret = workflow.get_secret(Settings.SECRET_GH_APP)
                 cls.evaluate_check(
-                    not workflow.enable_commit_status_on_failure,
-                    ".enable_commit_status_on_failure is redundant for Praktika engine workflows: the GitHub Checks API is used and always publishes workflow/job check status",
+                    bool(secret),
+                    f"Secret [{Settings.SECRET_GH_APP}] must be configured for workflow",
                     workflow.name,
                 )
-            if Settings.USE_CUSTOM_GH_AUTH and workflow.enable_report:
-                if not Settings.GH_AUTH_LAMBDA_NAME:
-                    secret = workflow.get_secret(Settings.SECRET_GH_APP)
-                    cls.evaluate_check(
-                        bool(secret),
-                        f"Secret [{Settings.SECRET_GH_APP}] must be configured for workflow",
-                        workflow.name,
-                    )
 
             for job in workflow.jobs:
                 cls.evaluate_check(
@@ -193,18 +207,28 @@ class Validator:
                     workflow.name,
                 )
                 if workflow.engine != Workflow.Engine.GH_ACTIONS:
+                    # "self-hosted" is a GitHub-Actions runner-group label with
+                    # no meaning to the praktika engine (which routes by the
+                    # pool/size label); ignore it when counting.
+                    effective_runs_on = [
+                        label for label in (job.runs_on or []) if label != "self-hosted"
+                    ]
                     cls.evaluate_check(
-                        len(job.runs_on) == 1,
-                        f"Non-GHActions workflow jobs must have exactly one runs_on label, got [{job.runs_on}] for [{job.name}]",
+                        len(effective_runs_on) == 1,
+                        f"Non-GHActions workflow jobs must have exactly one runs_on "
+                        f"label (excluding 'self-hosted'), got [{job.runs_on}] for [{job.name}]",
                         workflow.name,
                     )
-                if workflow.engine == Workflow.Engine.PRAKTIKA:
-                    cls.evaluate_check(
-                        not job.enable_commit_status,
-                        ".enable_commit_status is redundant for Praktika engine workflows: the GitHub Checks API is used and always publishes workflow/job check status",
-                        workflow.name,
-                        job.name,
-                    )
+                # NOTE: disabled — `enable_commit_status` is harmless on the
+                # Praktika engine (it just uses the Checks API regardless), so
+                # don't fail validation when a job carries the flag.
+                # if workflow.engine == Workflow.Engine.PRAKTIKA:
+                #     cls.evaluate_check(
+                #         not job.enable_commit_status,
+                #         ".enable_commit_status is redundant for Praktika engine workflows: the GitHub Checks API is used and always publishes workflow/job check status",
+                #         workflow.name,
+                #         job.name,
+                #     )
                 cls.evaluate_check(
                     "PARAMETER" not in job.command,
                     f"Job parametrization config issue: job name [{job.name}], job command: [{job.command}]",
@@ -298,33 +322,33 @@ class Validator:
                 ), f"CACHE_S3_PATH Setting must be defined if enable_cache=True, workflow [{workflow.name}]"
 
             if workflow.dockers:
-                if Settings.ENABLE_MULTIPLATFORM_DOCKER_IN_ONE_JOB == False:
+                if not Settings.ENABLE_MULTIPLATFORM_DOCKER_IN_ONE_JOB:
                     cls.evaluate_check_simple(
                         Settings.DOCKER_BUILD_ARM_RUNS_ON
                         and Settings.DOCKER_MERGE_RUNS_ON
                         and Settings.DOCKER_BUILD_AMD_RUNS_ON
                         and Settings.DOCKER_BUILD_ARM_RUNS_ON
                         != Settings.DOCKER_BUILD_AMD_RUNS_ON,
-                        f"Settings: DOCKER_MERGE_RUNS_ON, DOCKER_BUILD_ARM_RUNS_ON, DOCKER_BUILD_AMD_RUNS_ON must be provided and be different CPU architecture machines",
+                        "Settings: DOCKER_MERGE_RUNS_ON, DOCKER_BUILD_ARM_RUNS_ON, DOCKER_BUILD_AMD_RUNS_ON must be provided and be different CPU architecture machines",
                     )
                 else:
                     cls.evaluate_check(
                         Settings.DOCKER_MERGE_RUNS_ON,
-                        f"DOCKER_BUILD_AND_MERGE_RUNS_ON settings must be defined if workflow has dockers",
+                        "DOCKER_BUILD_AND_MERGE_RUNS_ON settings must be defined if workflow has dockers",
                         workflow_name=workflow.name,
                     )
 
             if workflow.set_latest_for_docker_merged_manifest:
                 cls.evaluate_check(
                     workflow.enable_dockers_manifest_merge,
-                    f".set_latest_for_docker_merged_manifest workflow setting is applicable with .enable_dockers_manifest_merge=True",
+                    ".set_latest_for_docker_merged_manifest workflow setting is applicable with .enable_dockers_manifest_merge=True",
                     workflow_name=workflow.name,
                 )
 
             if workflow.enable_open_issues_check:
                 cls.evaluate_check(
                     workflow.enable_report,
-                    f".enable_open_issues_check workflow setting is applicable with .enable_report=True",
+                    ".enable_open_issues_check workflow setting is applicable with .enable_report=True",
                     workflow_name=workflow.name,
                 )
 
@@ -347,17 +371,24 @@ class Validator:
                     ), f"All artifacts must be of S3 type if enable_cache|enable_html=True, artifact [{artifact.name}], type [{artifact.type}], workflow [{workflow.name}]"
 
             if workflow.dockers and not workflow.disable_dockers_build:
-                assert (
-                    Settings.SECRET_DOCKER_REGISTRY
-                ), f"Settings.SECRET_DOCKER_REGISTRY must be provided if workflow has dockers, workflow [{workflow.name}]"
-                assert workflow.get_secret(
-                    Settings.SECRET_DOCKER_REGISTRY
-                ), f"Secret [{Settings.SECRET_DOCKER_REGISTRY}] must have configuration in workflow.secrets, workflow [{workflow.name}]"
+                assert Settings.SECRET_DOCKER_REGISTRY, (
+                    f"Settings.SECRET_DOCKER_REGISTRY must be set when the workflow "
+                    f"manages docker images (.dockers is set and "
+                    f".disable_dockers_build is False): praktika logs in to the "
+                    f"registry to build/push them. Point it at a secret whose value "
+                    f'is {{"username": ..., "password": ...}}. Workflow [{workflow.name}]'
+                )
+                assert workflow.get_secret(Settings.SECRET_DOCKER_REGISTRY), (
+                    f"Docker registry secret [{Settings.SECRET_DOCKER_REGISTRY}] "
+                    f"(Settings.SECRET_DOCKER_REGISTRY) is not registered in the "
+                    f"workflow's secrets. Add it to the project SECRETS so the "
+                    f"workflow can resolve it. Workflow [{workflow.name}]"
+                )
 
             if workflow.enable_open_issues_check:
                 cls.evaluate_check(
                     workflow.enable_merge_ready_status,
-                    f".enable_open_issues_check workflow setting is applicable with .enable_merge_ready_status=True",
+                    ".enable_open_issues_check workflow setting is applicable with .enable_merge_ready_status=True",
                     workflow_name=workflow.name,
                 )
 
@@ -487,7 +518,7 @@ class Validator:
         if check_ok:
             return
         else:
-            print(f"ERROR: Validation failed:")
+            print("ERROR: Validation failed:")
             for message in messages:
                 print(" ||  " + message)
             sys.exit(1)

@@ -101,10 +101,21 @@ def _put_heartbeat(fake_s3, run_id, job_name, ts, **fields):
 class _FakeCheck:
     def __init__(self):
         self.in_progress = []
+        self.updated = []
         self.completed = []
 
     def set_in_progress(self, output=None, details_url=None):
         self.in_progress.append({"output": output, "details_url": details_url})
+
+    def update(self, output=None, details_url=None, status=None, conclusion=None):
+        self.updated.append(
+            {
+                "output": output,
+                "details_url": details_url,
+                "status": status,
+                "conclusion": conclusion,
+            }
+        )
 
     def complete(self, conclusion, output=None, details_url=None):
         self.completed.append(
@@ -291,7 +302,7 @@ def test_heartbeat_sets_check_in_progress_with_runner_id():
         {
             "output": {
                 "title": "RUNNING",
-                "summary": "RUNNING on runner `i-runner`. Phase: `cloning`.",
+                "summary": "RUNNING on runner `i-runner` in pool `default`. Phase: `cloning`.",
             },
             "details_url": None,
         }

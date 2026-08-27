@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 import pytest
 
 from praktika.orchestrator.ai.provider import Observation, Turn, Usage
