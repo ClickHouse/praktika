@@ -1455,14 +1455,14 @@ class Runner:
                     else:
                         name = str(check)
                     # Run hooks with the job python env so PYTHONPATH carries the
-                # checkout root ("."), letting hooks import the repo's `ci.*`
-                # modules (they otherwise inherit an env without it and fail
-                # with ModuleNotFoundError: No module named 'ci').
-                results_.append(
-                    Result.from_commands_run(
-                        name=name, command=check, env=_job_python_env()
+                    # checkout root ("."), letting hooks import the repo's `ci.*`
+                    # modules (they otherwise inherit an env without it and fail
+                    # with ModuleNotFoundError: No module named 'ci').
+                    results_.append(
+                        Result.from_commands_run(
+                            name=name, command=check, env=_job_python_env()
+                        )
                     )
-                )
                 result.results.append(
                     Result.create_from(
                         name="Post Hooks",
