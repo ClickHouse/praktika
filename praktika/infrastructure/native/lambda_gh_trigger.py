@@ -19,6 +19,10 @@ GITHUB_API_BASE = "https://api.github.com"
 APPROVAL_CHECK_NAME = "External PR Approval"
 APPROVAL_EXTERNAL_ID_KIND = "external_pr_approval"
 APPROVAL_STATE_PREFIX = "external-pr-approvals"
+# Per-job check external_id kind — the orchestrator stamps {run_id, job} on every
+# per-job check so a `check_run.rerequested` webhook can target a single job.
+# Kept in sync with praktika.orchestrator.state.JOB_CHECK_EXTERNAL_ID_KIND.
+JOB_CHECK_EXTERNAL_ID_KIND = "praktika_job_check"
 _PERMISSION_LEVELS = {
     "none": 0,
     "read": 1,
@@ -130,6 +134,62 @@ def _parse_approval_external_id(value: str):
     if data.get("kind") != APPROVAL_EXTERNAL_ID_KIND:
         return None
     return data
+
+
+def _parse_job_check_external_id(value: str):
+    """Return (run_id, job) from a per-job check's external_id, or None."""
+    if not value:
+        return None
+    try:
+        data = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict) or data.get("kind") != JOB_CHECK_EXTERNAL_ID_KIND:
+        return None
+    run_id = str(data.get("run_id") or "").strip()
+    job = data.get("job")
+    if not run_id or not job:
+        return None
+    return run_id, job
+
+
+def _run_state_key(run_id: str) -> str:
+    return f"runs/{run_id}/state.json"
+
+
+def _load_run_snapshot(run_id: str):
+    """Read the orchestrator's per-run state snapshot from S3, or None."""
+    if not S3_BUCKET:
+        return None
+    try:
+        response = _s3().get_object(Bucket=S3_BUCKET, Key=_run_state_key(run_id))
+    except Exception as e:
+        if _is_no_such_key(e):
+            return None
+        raise
+    return json.loads(response["Body"].read().decode("utf-8"))
+
+
+def _write_rerun_request(run_id: str, jobs, delivery_id: str) -> None:
+    """Drop a per-run re-run request for the live orchestrator to pick up.
+
+    One key per delivery so concurrent requests for the same run don't clobber;
+    the orchestrator aggregates and deletes them (consume-once) in sweep_rerun.
+    """
+    if not S3_BUCKET:
+        print("  [warn] S3_BUCKET not set; cannot write rerun-request")
+        return
+    key = f"runs/{run_id}/rerun-request/{delivery_id}.json"
+    try:
+        _s3().put_object(
+            Bucket=S3_BUCKET,
+            Key=key,
+            Body=json.dumps({"jobs": list(jobs)}).encode("utf-8"),
+            ContentType="application/json",
+        )
+        print(f"RERUN request written: s3://{S3_BUCKET}/{key}")
+    except Exception as e:
+        print(f"  [warn] could not write rerun-request: {e}")
 
 
 def _get_raw_body(event) -> str:
@@ -793,11 +853,68 @@ def _handle_gate_action(payload, delivery_id: str, sender: str, identifier: str)
 
 
 def _handle_rerun(check_obj, payload, delivery_id, sender, event_ts, source):
-    """Handle a ``check_run`` / ``check_suite`` ``rerequested`` event.
+    """Route a ``check_run`` / ``check_suite`` ``rerequested`` event.
+
+    A single per-job check carries ``{run_id, job}`` in its ``external_id``, so a
+    re-run of one check becomes a *partial* re-run — only that job (and its
+    failed downstream) re-runs, in place on the existing run. Anything without
+    that marker (the check_suite "re-run all", the top-level check, or a run from
+    before external_ids) falls back to a full-workflow re-run.
+    """
+    parsed = _parse_job_check_external_id(check_obj.get("external_id", ""))
+    if parsed:
+        _handle_partial_rerun(parsed[0], parsed[1], payload, delivery_id, sender, event_ts)
+        return
+    _handle_full_rerun(check_obj, payload, delivery_id, sender, event_ts, source)
+
+
+def _handle_partial_rerun(run_id, job, payload, delivery_id, sender, event_ts):
+    """Re-run a single failed job (+ its failed downstream) on an existing run.
+
+    Running vs finished is decided from S3, never the GitHub API: the
+    orchestrator persists ``runs/<run_id>/state.json`` with a ``finalized`` flag.
+      - finished (finalized) → enqueue a ``rerun`` message; a fresh orchestrator
+        reloads the snapshot, resets the job, and re-drives.
+      - running (not finalized, or no snapshot yet) → drop a request under
+        ``runs/<run_id>/rerun-request/`` that the live orchestrator picks up.
+    """
+    repo = payload.get("repository", {}).get("full_name", "")
+    if ALLOWED_SENDERS and sender not in ALLOWED_SENDERS:
+        print(f"SKIP: partial rerun — sender {sender} not allowed")
+        return
+    try:
+        snap = _load_run_snapshot(run_id)
+    except Exception as e:
+        print(f"SKIP: partial rerun run={run_id} — could not read state: {e}")
+        return
+
+    if snap and snap.get("finalized"):
+        workflow = {
+            "type": "rerun",
+            "run_id": run_id,
+            "rerun_jobs": [job],
+            "repo": snap.get("repo") or repo,
+            "head_sha": snap.get("head_sha", ""),
+            "pr_number": snap.get("pr_number"),
+            "head_ref": snap.get("head_ref", ""),
+            "sender": sender,
+            "event_ts": event_ts,
+        }
+        _enqueue(workflow, delivery_id)
+        print(f"RERUN (partial, resume): run={run_id} job={job!r}")
+        return
+
+    # Running (or snapshot not written yet): hand the job to the live orchestrator.
+    _write_rerun_request(run_id, [job], delivery_id)
+    print(f"RERUN (partial, live): run={run_id} job={job!r}")
+
+
+def _handle_full_rerun(check_obj, payload, delivery_id, sender, event_ts, source):
+    """Full-workflow re-run (check_suite "re-run all", or a pre-external_id run).
 
     A rerun button only exists on a check that was already created for this exact
     sha, so a rerun of a real CI check is inherently a rerun of a sha that ran
-    before (and, for a fork PR, was already approved). We still refetch the PR by
+    before (and, for a fork PR, was already approved). We refetch the PR by
     number: it is the single authoritative source of fork status (which decides
     internal vs external routing) and of the labels/title/draft that the check
     payload omits but the DAG is filtered on. ``source`` is "check_run" /

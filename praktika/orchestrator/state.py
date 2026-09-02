@@ -29,6 +29,37 @@ from enum import Enum
 from . import build_job_dag
 from praktika.settings import Settings
 
+# Marks a per-job check's external_id as one the rerun path understands. The
+# lambda parses check_run.external_id on a `rerequested` webhook to recover the
+# exact run_id + job to re-run. Kept in sync with the lambda's copy.
+JOB_CHECK_EXTERNAL_ID_KIND = "praktika_job_check"
+
+
+def _job_check_external_id(run_id, job_name):
+    return json.dumps(
+        {"kind": JOB_CHECK_EXTERNAL_ID_KIND, "run_id": str(run_id), "job": job_name},
+        sort_keys=True,
+    )
+
+
+def load_run_snapshot(run_id):
+    """Read ``runs/<run_id>/state.json`` from S3. Returns the dict or None.
+
+    Used by the resume path (finished-run re-run) to recover the workflow name
+    and per-job terminal state before a WorkflowState is built. Own client so it
+    can run before any WorkflowState exists.
+    """
+    import boto3
+
+    region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+    s3 = boto3.client("s3", region_name=region)
+    key = f"runs/{run_id}/state.json"
+    try:
+        obj = s3.get_object(Bucket=Settings.S3_ARTIFACT_BUCKET, Key=key)
+        return json.loads(obj["Body"].read())
+    except Exception:
+        return None
+
 
 def _queue_prefix():
     project_slug = (getattr(Settings, "PROJECT_SLUG", "") or "").strip()
@@ -196,10 +227,15 @@ class JobCheckRun:
         return resp.json() if resp.content else {}
 
     @classmethod
-    def queue(cls, token, repo, head_sha, name, output=None):
+    def queue(cls, token, repo, head_sha, name, output=None, external_id=None):
         body = {"name": name, "head_sha": head_sha, "status": "queued"}
         if output is not None:
             body["output"] = output
+        if external_id is not None:
+            # Embeds {run_id, job} so a `check_run.rerequested` webhook can
+            # identify the exact run and job to re-run — see the lambda's
+            # _handle_rerun and JOB_CHECK_EXTERNAL_ID_KIND.
+            body["external_id"] = external_id
         data = cls._api(
             "POST",
             f"https://api.github.com/repos/{repo}/check-runs",
@@ -208,9 +244,27 @@ class JobCheckRun:
         )
         return cls(token, repo, data["id"], name)
 
+    def requeue(self, output=None):
+        """Flip an already-created (possibly completed) check back to ``queued``.
+
+        Used when a re-run resets a job: we reuse the existing check-run id
+        rather than creating a duplicate, so the PR's check goes
+        failure -> queued -> (in_progress) -> final in place.
+        """
+        body = {"status": "queued"}
+        if output is not None:
+            body["output"] = output
+        self._api(
+            "PATCH",
+            f"https://api.github.com/repos/{self.repo}/check-runs/{self.id}",
+            self.token,
+            body,
+        )
+
     @classmethod
     def create_completed(
-        cls, token, repo, head_sha, name, conclusion, output=None, details_url=None
+        cls, token, repo, head_sha, name, conclusion, output=None, details_url=None,
+        external_id=None,
     ):
         """Create a check run already in its terminal state in one POST.
 
@@ -228,6 +282,8 @@ class JobCheckRun:
             body["output"] = output
         if details_url is not None:
             body["details_url"] = details_url
+        if external_id is not None:
+            body["external_id"] = external_id
         data = cls._api(
             "POST",
             f"https://api.github.com/repos/{repo}/check-runs",
@@ -363,9 +419,14 @@ class JobState:
             "title": "QUEUED",
             "summary": f"QUEUED: job dispatched to runner pool `{runs_on}`.",
         }
+        run_id = getattr(ws, "_run_id", None)
+        external_id = (
+            _job_check_external_id(run_id, self.name) if run_id else None
+        )
         try:
             self.check = JobCheckRun.queue(
-                ws._gh_token, ws._repo, ws._head_sha, check_name, output=output
+                ws._gh_token, ws._repo, ws._head_sha, check_name, output=output,
+                external_id=external_id,
             )
         except Exception as e:
             print(
@@ -387,6 +448,7 @@ class JobState:
             return
         check_name = f"{ws.workflow.name} / {self.name}"
         try:
+            run_id = getattr(ws, "_run_id", None)
             self.check = JobCheckRun.create_completed(
                 ws._gh_token,
                 ws._repo,
@@ -395,6 +457,9 @@ class JobState:
                 conclusion,
                 output=output,
                 details_url=details_url,
+                external_id=(
+                    _job_check_external_id(run_id, self.name) if run_id else None
+                ),
             )
         except Exception as e:
             print(
@@ -651,6 +716,13 @@ class WorkflowState:
         self._runs_s3_prefix = f"runs/{self._run_id}"
         self._cancel_s3_key = f"{self._runs_s3_prefix}/cancel"
         self._cancel_request_s3_key = f"{self._runs_s3_prefix}/cancel-request"
+        # Persisted DAG snapshot (per-job status/check_id + environment +
+        # finalized flag) and the per-run re-run request drop-box. Together they
+        # let a re-run reset a job + downstream and be reconciled whether the
+        # workflow is still running (live sweep_rerun) or already finished
+        # (a fresh orchestrator loads the snapshot). See save_snapshot / sweep_rerun.
+        self._state_s3_key = f"{self._runs_s3_prefix}/state.json"
+        self._rerun_request_prefix = f"{self._runs_s3_prefix}/rerun-request/"
         queue_name = (os.environ.get("PRAKTIKA_CONTROLLER_QUEUE") or "").strip()
         cancel_scope = "base" if queue_name.endswith("-base") else "default"
         self._pr_cancel_before_s3_key = (
@@ -763,6 +835,178 @@ class WorkflowState:
                 f"{type(e).__name__}: {e}"
             )
             return None
+
+    # ------------------------------------------------- snapshot & re-run
+
+    def save_snapshot(self, finalized=False):
+        """Persist the DAG snapshot to ``runs/<run_id>/state.json``.
+
+        Captures each job's status + reusable check_id and the cumulative
+        environment, plus a ``finalized`` flag that doubles as the liveness
+        signal the lambda reads to decide running-vs-finished (no GitHub API).
+        Cheap PUT; called each loop iteration and at finalize. No-op in local
+        mode / without S3.
+        """
+        if self._s3 is None or self.local_mode:
+            return
+        snap = {
+            "run_id": self._run_id,
+            "workflow_name": self.workflow.name,
+            "repo": self._repo,
+            "head_sha": self._head_sha,
+            "pr_number": self._pr_number,
+            "event_ts": self._event_ts,
+            "finalized": bool(finalized),
+            "updated_at": time.time(),
+            "environment": self._environment,
+            "jobs": {
+                name: {
+                    "status": js.status.value,
+                    "check_id": js.check.id if js.check is not None else None,
+                    "rc": js.rc,
+                    "non_blocking": js.non_blocking,
+                    "filter_reason": js.filter_reason,
+                }
+                for name, js in self.jobs.items()
+            },
+        }
+        try:
+            self._s3.put_object(
+                Bucket=self._cancel_s3_bucket,
+                Key=self._state_s3_key,
+                Body=json.dumps(snap).encode("utf-8"),
+                ContentType="application/json",
+            )
+        except Exception as e:
+            print(f"  [warn] could not save state snapshot: {type(e).__name__}: {e}")
+
+    def seed_from_snapshot(self, snap):
+        """Rehydrate job statuses / check handles / environment from a snapshot.
+
+        Used by the resume path so a fresh orchestrator picks up a finished
+        run's terminal state instead of starting every job from PENDING. Jobs
+        absent from the snapshot stay PENDING.
+        """
+        if not isinstance(snap, dict):
+            return
+        self._environment = snap.get("environment")
+        for name, rec in (snap.get("jobs") or {}).items():
+            js = self.jobs.get(name)
+            if js is None or not isinstance(rec, dict):
+                continue
+            try:
+                js.status = JobStatus(rec.get("status"))
+            except ValueError:
+                continue
+            js.rc = rec.get("rc")
+            js.non_blocking = bool(rec.get("non_blocking"))
+            js.filter_reason = rec.get("filter_reason")
+            check_id = rec.get("check_id")
+            if check_id and self.can_post_checks:
+                check_name = f"{self.workflow.name} / {name}"
+                js.check = JobCheckRun(
+                    self._gh_token, self._repo, check_id, check_name
+                )
+
+    def apply_rerun(self, job_names):
+        """Reset the named jobs (and their FAILED/CANCELLED downstream) to
+        PENDING so the loop re-drives them. Returns the set actually reset.
+
+        Only failed/cancelled dependents are reset — a re-run is for a failed
+        job, whose downstream were cascade-cancelled/failed; dependents that
+        succeeded (or passed via a non-blocking upstream failure) are left as-is.
+        """
+        to_reset = set()
+        frontier = []
+        for name in job_names:
+            if name in self.jobs and name not in to_reset:
+                to_reset.add(name)
+                frontier.append(name)
+        while frontier:
+            cur = frontier.pop()
+            for dep in self._dependents.get(cur, ()):
+                if dep in to_reset:
+                    continue
+                if self.jobs[dep].status in (JobStatus.FAILURE, JobStatus.CANCELLED):
+                    to_reset.add(dep)
+                    frontier.append(dep)
+        for name in to_reset:
+            self._reset_job(name)
+        return to_reset
+
+    def _reset_job(self, name):
+        js = self.jobs[name]
+        # Drop the stale completion so sweep_completions doesn't immediately
+        # re-finish the job from a previous run's final.json.
+        if self._s3 is not None:
+            try:
+                self._s3.delete_object(
+                    Bucket=self._cancel_s3_bucket, Key=self._final_state_s3_key(name)
+                )
+            except Exception:
+                pass
+        js.status = JobStatus.PENDING
+        js.rc = None
+        js.non_blocking = False
+        js.result = None
+        js.started_at = None
+        js.finished_at = None
+        js.last_heartbeat_ts = None
+        js.runner_instance_id = None
+        js.last_heartbeat_phase = None
+        js.attempt = 1
+        js.stale_flagged = False
+        js.filter_reason = None
+        # Reuse the existing check-run (flip it back to queued) rather than
+        # duplicating it, so the PR shows the check going red -> queued -> final.
+        if js.check is not None:
+            try:
+                js.check.requeue(
+                    output={"title": "QUEUED", "summary": "QUEUED: re-run requested."}
+                )
+            except Exception as e:
+                print(f"  [warn] could not requeue check for {name!r}: {e}")
+
+    def sweep_rerun(self):
+        """Apply any pending re-run requests dropped under
+        ``runs/<run_id>/rerun-request/`` (lambda writes one per webhook while
+        the run is live). Aggregates the job set, resets it, deletes the
+        requests (consume-once). Returns True if anything was reset.
+        """
+        if self._s3 is None or self.local_mode:
+            return False
+        try:
+            resp = self._s3.list_objects_v2(
+                Bucket=self._cancel_s3_bucket, Prefix=self._rerun_request_prefix
+            )
+        except Exception:
+            return False
+        contents = resp.get("Contents", []) or []
+        if not contents:
+            return False
+        jobs = set()
+        keys = []
+        for obj in contents:
+            key = obj["Key"]
+            keys.append(key)
+            try:
+                body = self._s3.get_object(Bucket=self._cancel_s3_bucket, Key=key)[
+                    "Body"
+                ].read()
+                for j in (json.loads(body).get("jobs") or []):
+                    jobs.add(j)
+            except Exception:
+                continue
+        reset = self.apply_rerun(list(jobs)) if jobs else set()
+        for key in keys:
+            try:
+                self._s3.delete_object(Bucket=self._cancel_s3_bucket, Key=key)
+            except Exception:
+                pass
+        if reset:
+            print(f"[RERUN] reset {sorted(reset)}")
+            self.save_snapshot()
+        return bool(reset)
 
     # ---------------------------------------------------------- liveness
 

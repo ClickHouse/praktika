@@ -64,7 +64,7 @@ class _PostedCheck:
 def _capture_check_queues(monkeypatch):
     checks = []
 
-    def fake_queue(token, repo, head_sha, name, output=None):
+    def fake_queue(token, repo, head_sha, name, output=None, external_id=None):
         record = {
             "token": token,
             "repo": repo,
@@ -77,7 +77,8 @@ def _capture_check_queues(monkeypatch):
         return _PostedCheck(record)
 
     def fake_create_completed(
-        token, repo, head_sha, name, conclusion, output=None, details_url=None
+        token, repo, head_sha, name, conclusion, output=None, details_url=None,
+        external_id=None,
     ):
         # Skipped jobs post their terminal state in a single call. Record the
         # conclusion under the same "completed" shape the queue()->complete()

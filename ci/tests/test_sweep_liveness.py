@@ -137,7 +137,7 @@ def test_queued_check_output_names_state_and_pool(monkeypatch):
     )
     calls = []
 
-    def fake_queue(token, repo, head_sha, name, output=None):
+    def fake_queue(token, repo, head_sha, name, output=None, external_id=None):
         calls.append(
             {
                 "token": token,

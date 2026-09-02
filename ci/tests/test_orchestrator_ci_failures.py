@@ -89,6 +89,12 @@ class _FakeState:
     def wait(self):
         pass
 
+    def sweep_rerun(self):
+        return False
+
+    def save_snapshot(self, finalized=False):
+        pass
+
     def md_status_summary(self):
         return "all done"
 

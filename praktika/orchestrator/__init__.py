@@ -311,6 +311,13 @@ def orchestrate(
         except Exception as e:
             raise RuntimeError(f"Failed to mint GH token for CI orchestration: {e}") from e
 
+    # A finished-workflow re-run resumes an existing run in place: reopen the
+    # same top-level check, reload the persisted DAG snapshot, reset the target
+    # job + downstream, and re-drive. Distinct from a fresh trigger, which
+    # builds the DAG from scratch.
+    if event.get("type") == "rerun":
+        return _orchestrate_resume(event, gh_token=gh_token, ci=ci)
+
     # The controller opens a bootstrap check run *before* the (slow) clone so
     # the PR shows CI immediately and an interrupted clone still leaves a
     # signal. Adopt it here now that the workflow name is known, instead of
@@ -356,6 +363,38 @@ def orchestrate(
         )
         overall_rc = max(overall_rc, rc)
     return overall_rc
+
+
+def _drive_dag(state, check, workflow, event, advisor, report_url, is_rerun):
+    """Run the DAG to completion: get_ready -> kick -> wait, snapshotting each
+    iteration and applying any live re-run requests.
+
+    A re-run request (``sweep_rerun``) resets a failed job + its failed
+    downstream back to PENDING, so the loop naturally re-drives them. Before
+    finalizing, one last ``sweep_rerun`` closes the window where a request lands
+    just as the DAG drains — if it resets anything, we keep going.
+    """
+    cancel_handled = False
+    while True:
+        while state.not_finished():
+            if state.sweep_rerun():
+                _patch_top_check(check, workflow, state, phase="running", details_url=report_url, is_rerun=is_rerun)
+            if state.cancelled and not cancel_handled:
+                state.cancel_unfinished_jobs()
+                cancel_handled = True
+            for job in state.get_ready():
+                job.kick()
+            state.wait()
+            state.save_snapshot()
+            if advisor is not None:
+                advisor.on_workflow_update(state, event)
+            _patch_top_check(check, workflow, state, phase="running", details_url=report_url, is_rerun=is_rerun)
+        # DAG drained — final re-run check before finalizing (closes the
+        # lambda-sees-running-then-run-finishes race).
+        if state.sweep_rerun():
+            _patch_top_check(check, workflow, state, phase="running", details_url=report_url, is_rerun=is_rerun)
+            continue
+        break
 
 
 def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existing_check=None):
@@ -502,18 +541,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
         if advisor is not None:
             advisor.on_run_start(state, event)
 
-        cancel_handled = False
-        while state.not_finished():
-            if state.cancelled and not cancel_handled:
-                state.cancel_unfinished_jobs()
-                cancel_handled = True
-            for job in state.get_ready():
-                job.kick()
-            state.wait()
-            if advisor is not None:
-                advisor.on_workflow_update(state, event)
-            _patch_top_check(check, workflow, state, phase=phase, details_url=report_url, is_rerun=is_rerun)
-
+        _drive_dag(state, check, workflow, event, advisor, report_url, is_rerun)
         state.print_summary()
     except Exception as e:
         error = f"[phase: {phase}] {type(e).__name__}: {e}"
@@ -524,6 +552,10 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
             advisor.finalize(state)
         if state is not None:
             state.cleanup()
+            # Persist the terminal snapshot with finalized=True — the lambda
+            # reads this flag to route a re-run to a fresh orchestrator (resume)
+            # instead of a live one.
+            state.save_snapshot(finalized=True)
 
     if check is not None:
         if error is not None:
@@ -548,6 +580,103 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
     # Startup/infra failure (workflow never ran) → retryable on a fresh
     # instance; a crash once the DAG was running is an ordinary failure.
     return 1 if dag_started else INFRA_EXIT_CODE
+
+
+def _orchestrate_resume(event, gh_token=None, ci=True):
+    """Resume a finished run to re-run a failed job (+ its failed downstream).
+
+    Reopens the *existing* top-level check (run_id), reloads the persisted DAG
+    snapshot so every other job keeps its terminal state, resets the requested
+    jobs to PENDING, and re-drives the loop. Returns an exit code (0/1).
+    """
+    from .check_run import CheckRun
+    from .state import WorkflowState, load_run_snapshot
+    from ..mangle import _get_workflows
+
+    run_id = str(event.get("run_id") or "")
+    rerun_jobs = list(event.get("rerun_jobs") or [])
+    repo = event.get("repo", "")
+    head_sha = event.get("head_sha", "")
+    if not run_id:
+        print("Resume: missing run_id, nothing to do")
+        return 1
+
+    snap = load_run_snapshot(run_id)
+    if not snap:
+        print(f"Resume: no state snapshot for run {run_id}; cannot resume")
+        return 1
+    workflow_name = snap.get("workflow_name", "")
+    workflow = next((wf for wf in _get_workflows() if wf.name == workflow_name), None)
+    if workflow is None:
+        print(f"Resume: workflow {workflow_name!r} not found for run {run_id}")
+        return 1
+
+    report_url = None
+    if workflow.enable_report:
+        from ..info import Info
+        report_url = Info.get_specific_report_url_static(
+            pr_number=event.get("pr_number") or 0,
+            branch=event.get("head_ref", ""),
+            sha=head_sha,
+            job_name="",
+            workflow_name=workflow.name,
+        )
+
+    # Reopen the same top-level check (reuse run_id) and flip it back to
+    # in_progress; retitle() PATCHes status=in_progress and re-attaches Cancel.
+    check = None
+    if gh_token:
+        try:
+            check = CheckRun(gh_token, repo, int(run_id), workflow.name)
+            check.retitle(workflow.name, details_url=report_url)
+        except Exception as e:
+            print(f"Resume: could not reopen top-level check {run_id}: {e}")
+            check = None
+
+    state = WorkflowState(
+        workflow,
+        event=event,
+        gh_token=gh_token,
+        repo=repo,
+        head_sha=head_sha,
+        run_id=run_id,
+        local_mode=not ci,
+    )
+    state.seed_from_snapshot(snap)
+    # Apply the requested re-run set (from the message) plus any live requests
+    # that piled up in S3 (consume-once), then persist the reset state.
+    reset = state.apply_rerun(rerun_jobs)
+    state.sweep_rerun()
+    print(f"Resume: run {run_id} re-running {sorted(reset)}")
+    state.save_snapshot()
+
+    advisor = None  # advisory AI is not resumed for a targeted re-run
+    error = None
+    try:
+        _drive_dag(state, check, workflow, event, advisor, report_url, is_rerun=True)
+        state.print_summary()
+    except Exception as e:
+        error = f"{type(e).__name__}: {e}"
+        print(f"\n\nError: {error}")
+    finally:
+        state.cleanup()
+        state.save_snapshot(finalized=True)
+
+    if check is not None:
+        conclusion = "failure" if error else ("cancelled" if state.cancelled else "neutral")
+        try:
+            check.complete(
+                conclusion,
+                output=_check_output(
+                    workflow, state, error=error, report_url=report_url,
+                    phase="finalizing", is_rerun=True,
+                ),
+                details_url=report_url,
+            )
+        except Exception:
+            print(f"Failed to complete check run: {check}", file=sys.stderr)
+
+    return 0 if error is None else 1
 
 
 def _git_output(*args):

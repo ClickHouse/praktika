@@ -499,6 +499,85 @@ def test_rerun_fails_closed_when_pr_fetch_fails(monkeypatch):
     assert enqueued == []
 
 
+def _partial_rerun_event(delivery, run_id="run42", job="Style check"):
+    external_id = json.dumps(
+        {"kind": "praktika_job_check", "run_id": run_id, "job": job}, sort_keys=True
+    )
+    return {
+        "headers": {"X-GitHub-Event": "check_run", "X-GitHub-Delivery": delivery},
+        "body": json.dumps(
+            {
+                "action": "rerequested",
+                "sender": {"login": "maxknv"},
+                "check_run": {
+                    "head_sha": "b" * 40,
+                    "external_id": external_id,
+                    "pull_requests": [{"number": 17}],
+                },
+                "repository": {"full_name": "owner/repo"},
+            }
+        ),
+    }
+
+
+def test_partial_rerun_running_writes_request(monkeypatch):
+    # Single-check re-run while the run is live (snapshot not finalized):
+    # drop a rerun-request for the live orchestrator; do not enqueue.
+    mod = _reload_lambda(monkeypatch)
+    requests = []
+    enqueued = []
+
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(mod, "_load_run_snapshot", lambda run_id: {"finalized": False})
+    monkeypatch.setattr(mod, "_write_rerun_request", lambda run_id, jobs, delivery_id: requests.append((run_id, jobs)))
+    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append(workflow))
+
+    mod.lambda_handler(_partial_rerun_event("dp1"), None)
+
+    assert requests == [("run42", ["Style check"])]
+    assert enqueued == []
+
+
+def test_partial_rerun_finished_enqueues_resume(monkeypatch):
+    # Single-check re-run on a finished run (snapshot finalized): enqueue a
+    # `rerun` resume message targeting just that job.
+    mod = _reload_lambda(monkeypatch)
+    requests = []
+    enqueued = []
+
+    snap = {"finalized": True, "repo": "owner/repo", "head_sha": "b" * 40, "pr_number": 17}
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(mod, "_load_run_snapshot", lambda run_id: snap)
+    monkeypatch.setattr(mod, "_write_rerun_request", lambda run_id, jobs, delivery_id: requests.append((run_id, jobs)))
+    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append(workflow))
+
+    mod.lambda_handler(_partial_rerun_event("dp2"), None)
+
+    assert requests == []
+    assert len(enqueued) == 1
+    wf = enqueued[0]
+    assert wf["type"] == "rerun"
+    assert wf["run_id"] == "run42"
+    assert wf["rerun_jobs"] == ["Style check"]
+    assert wf["head_sha"] == "b" * 40
+
+
+def test_rerun_without_external_id_uses_full_path(monkeypatch):
+    # No per-job external_id (e.g. check_suite "re-run all") → full-workflow rerun.
+    mod = _reload_lambda(monkeypatch)
+    enqueued = []
+
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr_number: ("b" * 40, _rerun_meta(external=False)))
+    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append(workflow))
+
+    mod.lambda_handler(_rerun_event("d-full", sender="contributor"), None)
+
+    assert len(enqueued) == 1
+    assert enqueued[0]["type"] == "pull_request"
+    assert enqueued[0]["action"] == "rerequested"
+
+
 def test_external_rerun_of_stale_head_is_not_rebound_to_current(monkeypatch):
     # Security: a maintainer rerun of a STALE check (head A) must not approve or
     # enqueue the current head (B). The rerun carries the stale sha A; state has
