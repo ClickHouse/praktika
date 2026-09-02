@@ -238,6 +238,7 @@ class _Environment(MetaClasses.Serializable):
             FORK_NAME=FORK_NAME,
             COMMIT_MESSAGE=COMMIT_MESSAGE,
             PR_LABELS=PR_LABELS,
+            PR_IS_DRAFT=PR_IS_DRAFT,
             INSTANCE_LIFE_CYCLE=INSTANCE_LIFE_CYCLE,
             REPORT_MESSAGES=[],
             LINKED_PR_NUMBER=LINKED_PR_NUMBER,
