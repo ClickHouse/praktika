@@ -186,10 +186,11 @@ def test_post_pr_review_skips_when_empty(monkeypatch):
 # -------------------------------------------------------------- end to end
 
 
-def _stub_info(pr_number=42, pr_is_draft=False):
+def _stub_info(pr_number=42, pr_is_draft=False, rerun_count=0):
     return SimpleNamespace(
         pr_number=pr_number, pr_title="t", pr_body="b",
         pr_url="http://x", sha="deadbeef", pr_is_draft=pr_is_draft,
+        rerun_count=rerun_count,
     )
 
 
