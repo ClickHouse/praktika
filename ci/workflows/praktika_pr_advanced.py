@@ -70,26 +70,15 @@ workflow = Workflow.Config(
                 include_paths=["./ci/tests/example_2/some_job_script.py"],
             ),
         ),
-        # Consumes artifact, also cached.
-        # TEMP: `exit 1` forces a failure so the partial re-run feature can be
-        # exercised (re-run this failed job and confirm its dependent re-runs
-        # too). Remove before merge.
+        # Consumes artifact, also cached
         Job.Config(
             name="Test",
             runs_on=[RunnerLabels.SMALL_ARM],
-            command="python3 ./ci/jobs/consume_artifact.py && exit 1",
+            command="python3 ./ci/jobs/consume_artifact.py",
             requires=[artifact.name],
             digest_config=Job.CacheDigestConfig(
                 include_paths=["./ci/jobs/consume_artifact.py"],
             ),
-        ),
-        # TEMP: depends on Test, so a failing Test cascade-cancels it; re-running
-        # Test must reset and re-run this too. Remove before merge.
-        Job.Config(
-            name="Test Downstream",
-            runs_on=[RunnerLabels.SMALL_ARM],
-            command="python3 ./ci/tests/example_2/some_job_script.py",
-            run_after=["Test"],
         ),
         # Docker job
         Job.Config(

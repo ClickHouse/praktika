@@ -624,6 +624,14 @@ def _orchestrate_resume(event, gh_token=None, ci=True):
 
     # Reopen the same top-level check (reuse run_id) and flip it back to
     # in_progress; retitle() PATCHes status=in_progress and re-attaches Cancel.
+    #
+    # LIMITATION: GitHub won't un-complete a completed check run — this PATCH
+    # returns 200 but the status stays `completed` (only output updates). So on a
+    # finished-run resume the top-level check does not visibly return to
+    # in_progress; it keeps its prior conclusion while the re-run executes.
+    # Showing a real in_progress phase would require posting a NEW top-level
+    # check run for the resume (decoupled from run_id, which stays the S3 prefix).
+    # See PROTOCOL.md "Partial re-run".
     check = None
     if gh_token:
         try:

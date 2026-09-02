@@ -61,6 +61,12 @@ Re-running one failed check re-runs **only that job and its failed downstream**,
   - *Finished* → the Lambda enqueues a `type: "rerun"` message; a fresh orchestrator reopens the same top-level check (reusing `run_id`), seeds from the snapshot, applies the reset, and re-drives.
 - **Only failed jobs.** GitHub only shows the re-run button on completed checks, so the target is always terminal; a still-running job is never re-run.
 
+### Limitations {#partial-rerun-limitations}
+
+- **A re-run check does not visibly return to pending/in-progress.** GitHub does not allow un-completing a check run: PATCHing a `completed` check back to `queued`/`in_progress` returns HTTP 200 but is silently ignored — only the check's **output** updates, its **status/conclusion and timestamps stay frozen** at the original run. Because a re-run reuses the same check id (per-job and top-level), the check keeps its prior red/green state and just refreshes its output (with the re-run number) until the job re-completes; you won't see it flip to yellow. Showing a real pending→running transition would require posting a **new** check run per re-run (new id, same name — GitHub shows the latest), decoupled from `run_id` which stays the S3 state prefix. Not done — accepted as a limitation.
+- **Concurrent re-runs of a finished run.** The lambda throttles to one re-run per PR per `RERUN_MIN_INTERVAL_S` (default 120s) so several near-simultaneous clicks can't spawn resumes that race on the same run's state. Multi-select "re-run" therefore honours only the first click in the window.
+- **Check-suite "re-run all / failed" is still a full re-run** (that payload carries no per-job `external_id`); scoping it to the failed set is not done.
+
 ## Run lifecycle {#run-lifecycle}
 
 ```

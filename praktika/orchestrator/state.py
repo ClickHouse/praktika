@@ -979,9 +979,16 @@ class WorkflowState:
         js.stale_flagged = False
         js.filter_reason = None
         js.rerun_count += 1
-        # Reuse the existing check-run (flip it back to queued) rather than
-        # duplicating it, so the PR shows the check going red -> queued -> final.
-        # Surface that this is a manual re-run, with its number, on the check.
+        # Reuse the existing check-run and refresh its output for the re-run.
+        #
+        # LIMITATION: GitHub does NOT allow un-completing a check run. PATCHing a
+        # completed check back to status=queued/in_progress returns HTTP 200 but
+        # is silently ignored — only the output/text updates, the status stays
+        # `completed`. So a re-run does not visibly go queued -> in_progress
+        # again; the check keeps its previous conclusion and we just refresh the
+        # output (with the re-run number) until the job re-completes. Showing a
+        # real pending->running transition would require posting a NEW check run
+        # per re-run (new id) instead of reusing this one. See PROTOCOL.md.
         if js.check is not None:
             try:
                 js.check.requeue(
