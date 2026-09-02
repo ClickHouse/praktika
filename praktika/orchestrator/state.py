@@ -846,6 +846,25 @@ class WorkflowState:
 
     # ------------------------------------------------- snapshot & re-run
 
+    def clear_stale_cancel(self):
+        """Drop the previous generation's cancel markers before a resume.
+
+        A resume reuses the run's S3 prefix. If the original run was cancelled,
+        ``runs/<run_id>/cancel-request`` and the ``runs/<run_id>/cancel`` kill
+        flag still sit there — so without this the resumed orchestrator's first
+        ``sweep_cancel`` (and the runner-side kill-flag watchdog) would cancel
+        the freshly reset job immediately, making a failed job from a cancelled
+        workflow impossible to re-run. Also resets the in-memory flag.
+        """
+        self.cancelled = False
+        if self._s3 is None or self.local_mode:
+            return
+        for key in (self._cancel_request_s3_key, self._cancel_s3_key):
+            try:
+                self._s3.delete_object(Bucket=self._cancel_s3_bucket, Key=key)
+            except Exception as e:
+                print(f"  [warn] could not clear cancel marker {key}: {e}")
+
     def save_snapshot(self, finalized=False):
         """Persist the DAG snapshot to ``runs/<run_id>/state.json``.
 

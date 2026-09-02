@@ -177,6 +177,24 @@ def test_sweep_rerun_applies_and_consumes_requests():
     assert ("test-bucket", "runs/run42/state.json") in s3.store
 
 
+def test_clear_stale_cancel_deletes_markers():
+    # A resume of a cancelled run must drop the old cancel-request + kill flag,
+    # else the reset job is cancelled immediately.
+    s3 = _FakeS3()
+    s3.put_object("test-bucket", "runs/run42/cancel-request", b"requested")
+    s3.put_object("test-bucket", "runs/run42/cancel", b"cancelled")
+    state = _make_state(s3, {"A": JobStatus.FAILURE, "B": JobStatus.SUCCESS, "C": JobStatus.SUCCESS})
+    state._cancel_request_s3_key = "runs/run42/cancel-request"
+    state._cancel_s3_key = "runs/run42/cancel"
+    state.cancelled = True
+
+    state.clear_stale_cancel()
+
+    assert state.cancelled is False
+    assert ("test-bucket", "runs/run42/cancel-request") not in s3.store
+    assert ("test-bucket", "runs/run42/cancel") not in s3.store
+
+
 def test_sweep_rerun_no_requests_is_noop():
     s3 = _FakeS3()
     state = _make_state(s3, {"A": JobStatus.SUCCESS, "B": JobStatus.SUCCESS, "C": JobStatus.SUCCESS})

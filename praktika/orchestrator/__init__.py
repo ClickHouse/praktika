@@ -651,6 +651,10 @@ def _orchestrate_resume(event, gh_token=None, ci=True):
         local_mode=not ci,
     )
     state.seed_from_snapshot(snap)
+    # Clear the previous generation's cancel markers first — a resume reuses the
+    # run prefix, and a stale cancel-request/kill-flag from a cancelled original
+    # run would otherwise cancel the reset job on the first sweep.
+    state.clear_stale_cancel()
     # Apply the requested re-run set (from the message) plus any live requests
     # that piled up in S3 (consume-once), then persist the reset state.
     reset = state.apply_rerun(rerun_jobs)
