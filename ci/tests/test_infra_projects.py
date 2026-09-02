@@ -69,6 +69,14 @@ def _statement_by_sid(pool, sid: str):
     )
 
 
+def _statements_by_sid_prefix(pool, prefix: str):
+    return [
+        stmt
+        for stmt in _runner_access_statements(pool)
+        if stmt.get("Sid", "").startswith(prefix)
+    ]
+
+
 def test_get_infra_config_requires_project_when_multiple(tmp_path, monkeypatch):
     config_path = tmp_path / "cloud.py"
     config_path.write_text(
@@ -727,17 +735,30 @@ def test_runner_pool_can_allow_specific_ssm_parameters_secrets_and_s3_prefixes()
         "arn:aws:secretsmanager:eu-north-1:123456789012:secret:external-AbCd",
     ]
 
-    s3_read_write = _statement_by_sid(pool, "AllowedS3ReadWrite")
-    assert s3_read_write["Resource"] == [
-        "arn:aws:s3:::artifact-bucket",
+    # Object-level access is granted on object ARNs; s3:ListBucket is granted
+    # separately per bucket, prefix-scoped where the allowance is prefix-bound.
+    s3_objects = _statement_by_sid(pool, "AllowedS3ReadWriteObjects")
+    assert s3_objects["Resource"] == [
         "arn:aws:s3:::artifact-bucket/*",
-        "arn:aws:s3:::cache-bucket",
         "arn:aws:s3:::cache-bucket/ci_cache",
         "arn:aws:s3:::cache-bucket/ci_cache/*",
-        "arn:aws:s3:::reports-bucket",
         "arn:aws:s3:::reports-bucket/reports",
         "arn:aws:s3:::reports-bucket/reports/*",
         "arn:aws:s3:::external-bucket/custom/*",
+    ]
+    assert [
+        (s["Resource"], s.get("Condition"))
+        for s in _statements_by_sid_prefix(pool, "AllowedS3ReadWriteList")
+    ] == [
+        ("arn:aws:s3:::artifact-bucket", None),
+        (
+            "arn:aws:s3:::cache-bucket",
+            {"StringLike": {"s3:prefix": ["ci_cache", "ci_cache/*"]}},
+        ),
+        (
+            "arn:aws:s3:::reports-bucket",
+            {"StringLike": {"s3:prefix": ["reports", "reports/*"]}},
+        ),
     ]
 
 
@@ -799,16 +820,27 @@ def test_runner_pool_allow_lists_are_project_namespaced():
         "arn:aws:secretsmanager:*:*:secret:sandbox-github-app*",
         "arn:aws:secretsmanager:eu-north-1:123456789012:secret:external-AbCd",
     ]
-    assert _statement_by_sid(pool, "AllowedS3ReadWrite")["Resource"] == [
-        "arn:aws:s3:::sandbox-artifact-bucket",
+    assert _statement_by_sid(pool, "AllowedS3ReadWriteObjects")["Resource"] == [
         "arn:aws:s3:::sandbox-artifact-bucket/*",
-        "arn:aws:s3:::sandbox-cache-bucket",
         "arn:aws:s3:::sandbox-cache-bucket/ci_cache",
         "arn:aws:s3:::sandbox-cache-bucket/ci_cache/*",
-        "arn:aws:s3:::sandbox-reports-bucket",
         "arn:aws:s3:::sandbox-reports-bucket/reports",
         "arn:aws:s3:::sandbox-reports-bucket/reports/*",
         "arn:aws:s3:::external-bucket/custom/*",
+    ]
+    assert [
+        (s["Resource"], s.get("Condition"))
+        for s in _statements_by_sid_prefix(pool, "AllowedS3ReadWriteList")
+    ] == [
+        ("arn:aws:s3:::sandbox-artifact-bucket", None),
+        (
+            "arn:aws:s3:::sandbox-cache-bucket",
+            {"StringLike": {"s3:prefix": ["ci_cache", "ci_cache/*"]}},
+        ),
+        (
+            "arn:aws:s3:::sandbox-reports-bucket",
+            {"StringLike": {"s3:prefix": ["reports", "reports/*"]}},
+        ),
     ]
 
 
@@ -824,20 +856,33 @@ def test_runner_pool_readonly_s3_prefixes_grant_read_not_write():
         allowed_s3_prefixes_readonly=["builds/REFs", "reports/REFs"],
     )
 
-    read_only = _statement_by_sid(pool, "AllowedS3ReadOnly")
+    read_only = _statement_by_sid(pool, "AllowedS3ReadOnlyObjects")
     assert "s3:PutObject" not in read_only["Action"]
     assert "s3:GetObject" in read_only["Action"]
-    assert "s3:ListBucket" in read_only["Action"]
     assert read_only["Resource"] == [
-        "arn:aws:s3:::builds",
         "arn:aws:s3:::builds/REFs",
         "arn:aws:s3:::builds/REFs/*",
-        "arn:aws:s3:::reports",
         "arn:aws:s3:::reports/REFs",
         "arn:aws:s3:::reports/REFs/*",
     ]
+    # s3:ListBucket lives in the separate per-bucket list statements, prefix-scoped.
+    read_only_lists = _statements_by_sid_prefix(pool, "AllowedS3ReadOnlyList")
+    assert "s3:ListBucket" in read_only_lists[0]["Action"]
+    assert [(s["Resource"], s.get("Condition")) for s in read_only_lists] == [
+        (
+            "arn:aws:s3:::builds",
+            {"StringLike": {"s3:prefix": ["REFs", "REFs/*"]}},
+        ),
+        (
+            "arn:aws:s3:::reports",
+            {"StringLike": {"s3:prefix": ["REFs", "REFs/*"]}},
+        ),
+    ]
     # The read/write prefixes stay in their own statement and still allow writes.
-    assert "s3:PutObject" in _statement_by_sid(pool, "AllowedS3ReadWrite")["Action"]
+    assert (
+        "s3:PutObject"
+        in _statement_by_sid(pool, "AllowedS3ReadWriteObjects")["Action"]
+    )
 
 
 def test_runner_pool_readonly_s3_prefixes_are_project_namespaced():
@@ -858,10 +903,18 @@ def test_runner_pool_readonly_s3_prefixes_are_project_namespaced():
     )
     pool = cloud.runner_pools[0]
     assert pool.allowed_s3_prefixes_readonly == ["sandbox-refs-bucket/REFs"]
-    assert _statement_by_sid(pool, "AllowedS3ReadOnly")["Resource"] == [
-        "arn:aws:s3:::sandbox-refs-bucket",
+    assert _statement_by_sid(pool, "AllowedS3ReadOnlyObjects")["Resource"] == [
         "arn:aws:s3:::sandbox-refs-bucket/REFs",
         "arn:aws:s3:::sandbox-refs-bucket/REFs/*",
+    ]
+    assert [
+        (s["Resource"], s.get("Condition"))
+        for s in _statements_by_sid_prefix(pool, "AllowedS3ReadOnlyList")
+    ] == [
+        (
+            "arn:aws:s3:::sandbox-refs-bucket",
+            {"StringLike": {"s3:prefix": ["REFs", "REFs/*"]}},
+        ),
     ]
 
 
@@ -890,9 +943,14 @@ def test_runner_pool_allow_all_is_scoped_to_project_namespace():
         "arn:aws:secretsmanager:*:*:secret:praktika-*",
         "arn:aws:secretsmanager:*:*:secret:praktika/*",
     ]
-    assert _statement_by_sid(pool, "AllowedS3ReadWrite")["Resource"] == [
-        "arn:aws:s3:::praktika-artifacts-eu-north-1",
+    assert _statement_by_sid(pool, "AllowedS3ReadWriteObjects")["Resource"] == [
         "arn:aws:s3:::praktika-artifacts-eu-north-1/*",
+    ]
+    assert [
+        (s["Resource"], s.get("Condition"))
+        for s in _statements_by_sid_prefix(pool, "AllowedS3ReadWriteList")
+    ] == [
+        ("arn:aws:s3:::praktika-artifacts-eu-north-1", None),
     ]
 
 
@@ -1679,9 +1737,14 @@ def test_project_runner_pools_allow_only_required_ssm_parameters():
             stmt.get("Sid") != "AllowedSecretsManagerSecretsRead"
             for stmt in runner_access
         )
-        assert _statement_by_sid(pool, "AllowedS3ReadWrite")["Resource"] == [
-            f"arn:aws:s3:::praktika-{_RUNNER_ALLOWED_S3_PREFIXES[0]}",
+        assert _statement_by_sid(pool, "AllowedS3ReadWriteObjects")["Resource"] == [
             f"arn:aws:s3:::praktika-{_RUNNER_ALLOWED_S3_PREFIXES[0]}/*",
+        ]
+        assert [
+            (s["Resource"], s.get("Condition"))
+            for s in _statements_by_sid_prefix(pool, "AllowedS3ReadWriteList")
+        ] == [
+            (f"arn:aws:s3:::praktika-{_RUNNER_ALLOWED_S3_PREFIXES[0]}", None),
         ]
 
 

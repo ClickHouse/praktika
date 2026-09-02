@@ -293,7 +293,7 @@ class TestRunner(unittest.TestCase):
                 enable_gh_auth=False,
                 command="echo ok",
             )
-            workflow = SimpleNamespace(name="workflow")
+            workflow = SimpleNamespace(name="workflow", enable_exit_code_result=False)
 
             with mock.patch.object(runner, "TeePopen", DummyTeePopen), mock.patch.object(
                 runner.Shell, "check", lambda *args, **kwargs: False
