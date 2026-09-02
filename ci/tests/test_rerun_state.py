@@ -32,13 +32,13 @@ class _FakeS3:
         }
 
 
-def _job(name):
+def _job(name, always_run=False):
     return types.SimpleNamespace(
-        name=name, runs_on=[], requires=[], run_after=[], provides=[], always_run=False
+        name=name, runs_on=[], requires=[], run_after=[], provides=[], always_run=always_run
     )
 
 
-def _make_state(s3, statuses):
+def _make_state(s3, statuses, always_run=()):
     """Build a WorkflowState for the linear DAG A -> B -> C with given statuses."""
     state = WorkflowState.__new__(WorkflowState)
     state.workflow = types.SimpleNamespace(name="PR")
@@ -58,7 +58,7 @@ def _make_state(s3, statuses):
     state.jobs = {}
     for name, status in statuses.items():
         js = JobState.__new__(JobState)
-        js.job = _job(name)
+        js.job = _job(name, always_run=name in always_run)
         js.check = None
         js.status = status
         js.rc = 0 if status == JobStatus.SUCCESS else (1 if status == JobStatus.FAILURE else None)
@@ -105,12 +105,28 @@ def test_apply_rerun_leaves_successful_downstream_alone():
     assert state.jobs["C"].status == JobStatus.SUCCESS
 
 
-def test_reset_deletes_stale_final_json():
+def test_apply_rerun_resets_successful_always_run_downstream():
+    s3 = _FakeS3()
+    # C is always_run (e.g. Finish Workflow): it succeeds even though A failed,
+    # so it must still be reset so its aggregate/merge-readiness re-runs.
+    state = _make_state(
+        s3,
+        {"A": JobStatus.FAILURE, "B": JobStatus.CANCELLED, "C": JobStatus.SUCCESS},
+        always_run=("C",),
+    )
+    reset = state.apply_rerun(["A"])
+    assert reset == {"A", "B", "C"}
+    assert state.jobs["C"].status == JobStatus.PENDING
+
+
+def test_reset_deletes_stale_final_json_and_heartbeat():
     s3 = _FakeS3()
     s3.put_object("test-bucket", "runs/run42/A/final.json", b"{}")
+    s3.put_object("test-bucket", "runs/run42/A/heartbeat.json", b"{}")
     state = _make_state(s3, {"A": JobStatus.FAILURE, "B": JobStatus.SUCCESS, "C": JobStatus.SUCCESS})
     state.apply_rerun(["A"])
     assert ("test-bucket", "runs/run42/A/final.json") not in s3.store
+    assert ("test-bucket", "runs/run42/A/heartbeat.json") not in s3.store
 
 
 def test_snapshot_roundtrip():

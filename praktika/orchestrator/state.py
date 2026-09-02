@@ -927,7 +927,15 @@ class WorkflowState:
             for dep in self._dependents.get(cur, ()):
                 if dep in to_reset:
                     continue
-                if self.jobs[dep].status in (JobStatus.FAILURE, JobStatus.CANCELLED):
+                d = self.jobs[dep]
+                # Re-run failed/cancelled downstream, and also any terminal
+                # always_run downstream (e.g. Finish Workflow): those succeed
+                # even when a test fails, so unless they re-run their aggregate
+                # status — merge-readiness, CIDB writeback, post-hooks — stays
+                # stale after a successful re-run of the failed job.
+                if d.status in (JobStatus.FAILURE, JobStatus.CANCELLED) or (
+                    d.job.always_run and d.status in _TERMINAL
+                ):
                     to_reset.add(dep)
                     frontier.append(dep)
         for name in to_reset:
@@ -936,15 +944,18 @@ class WorkflowState:
 
     def _reset_job(self, name):
         js = self.jobs[name]
-        # Drop the stale completion so sweep_completions doesn't immediately
-        # re-finish the job from a previous run's final.json.
+        # Drop the stale completion AND heartbeat so the redispatched attempt
+        # starts clean: a leftover final.json would let sweep_completions
+        # immediately re-finish the job from the previous run, and a leftover
+        # heartbeat.json (if older than HEARTBEAT_TIMEOUT_S) would let the first
+        # liveness sweep flip the new attempt to RUNNING and fail_dead() it
+        # before its fresh runner ever posts a heartbeat.
         if self._s3 is not None:
-            try:
-                self._s3.delete_object(
-                    Bucket=self._cancel_s3_bucket, Key=self._final_state_s3_key(name)
-                )
-            except Exception:
-                pass
+            for key in (self._final_state_s3_key(name), self._heartbeat_s3_key(name)):
+                try:
+                    self._s3.delete_object(Bucket=self._cancel_s3_bucket, Key=key)
+                except Exception:
+                    pass
         js.status = JobStatus.PENDING
         js.rc = None
         js.non_blocking = False

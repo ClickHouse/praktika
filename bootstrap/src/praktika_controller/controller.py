@@ -206,9 +206,13 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
     wf_type = event.get("type", "unknown")
     log.info("Processing: %s", wf_type)
 
-    if wf_type not in ("pull_request", "push"):
+    # "rerun" resumes a finished run to re-run a failed job (+ its downstream);
+    # it reopens the run's existing top-level check itself, so it takes the same
+    # clone -> `orchestrate workflow` path but without a fresh bootstrap check.
+    if wf_type not in ("pull_request", "push", "rerun"):
         log.info("Unknown event type: %s, skipping", wf_type)
         return {"status": "skipped", "reason": f"unknown type: {wf_type}"}
+    is_resume = wf_type == "rerun"
 
     repo = event.get("repo", "")
     pr_number = event.get("pr_number")
@@ -227,7 +231,7 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
     # interrupted clone still leaves a signal. The orchestrator subprocess
     # adopts this id and renames it to the matched workflow.
     early_check_id = None
-    if head_sha:
+    if head_sha and not is_resume:
         early_check_id = post_early_check(
             repo, head_sha, gh_token, EARLY_CHECK_NAME, log=log
         )

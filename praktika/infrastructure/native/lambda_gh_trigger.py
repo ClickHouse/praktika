@@ -863,12 +863,12 @@ def _handle_rerun(check_obj, payload, delivery_id, sender, event_ts, source):
     """
     parsed = _parse_job_check_external_id(check_obj.get("external_id", ""))
     if parsed:
-        _handle_partial_rerun(parsed[0], parsed[1], payload, delivery_id, sender, event_ts)
+        _handle_partial_rerun(parsed[0], parsed[1], check_obj, payload, delivery_id, sender, event_ts)
         return
     _handle_full_rerun(check_obj, payload, delivery_id, sender, event_ts, source)
 
 
-def _handle_partial_rerun(run_id, job, payload, delivery_id, sender, event_ts):
+def _handle_partial_rerun(run_id, job, check_obj, payload, delivery_id, sender, event_ts):
     """Re-run a single failed job (+ its failed downstream) on an existing run.
 
     Running vs finished is decided from S3, never the GitHub API: the
@@ -882,6 +882,36 @@ def _handle_partial_rerun(run_id, job, payload, delivery_id, sender, event_ts):
     if ALLOWED_SENDERS and sender not in ALLOWED_SENDERS:
         print(f"SKIP: partial rerun — sender {sender} not allowed")
         return
+
+    # Runners check out the LIVE PR head (refs/pull/N/head), not the sha of the
+    # check being rerun. So before re-running an old check we must confirm the
+    # PR head has not advanced — otherwise this would run the current (possibly
+    # unapproved fork) code under the old check's authorization. Fetch the PR;
+    # reject on mismatch, and for fork PRs also require a maintainer. Fail closed
+    # on any error / missing PR.
+    rerun_sha = check_obj.get("head_sha", "")
+    prs = check_obj.get("pull_requests", [])
+    pr_number = prs[0].get("number") if prs else None
+    if not pr_number or not rerun_sha:
+        print(f"SKIP: partial rerun run={run_id} — missing PR number or head sha")
+        return
+    try:
+        current_sha, meta = _fetch_pr(repo, pr_number)
+    except Exception as e:
+        print(f"SKIP: partial rerun run={run_id} — could not verify PR head, failing closed: {e}")
+        return
+    if current_sha != rerun_sha:
+        print(
+            f"SKIP: partial rerun run={run_id} — stale (rerun sha {rerun_sha[:12]} "
+            f"!= current head {current_sha[:12]})"
+        )
+        return
+    if meta["external_pr"]:
+        token = _get_github_token(required_permissions={"metadata": "read"})
+        if not _can_maintain_repo(repo, sender, token):
+            print(f"SKIP: partial rerun run={run_id} — fork PR rerun by non-maintainer {sender}")
+            return
+
     try:
         snap = _load_run_snapshot(run_id)
     except Exception as e:
@@ -934,17 +964,25 @@ def _handle_full_rerun(check_obj, payload, delivery_id, sender, event_ts, source
         print(f"SKIP: {source}.rerequested — sender {sender} not allowed")
         return
 
-    # One fetch gives both the fork status (routing) and the DAG-shaping metadata
-    # the check payload lacks. The rerun targets the exact sha of the check being
-    # rerun (``rerun_sha``), not the PR's current head, so the fetched head sha is
-    # ignored here. Fail closed on any error so a fork PR can never slip onto the
-    # ungated internal enqueue path.
+    # One fetch gives the fork status (routing), the DAG-shaping metadata the
+    # check payload lacks, and the live head sha. Fail closed on any error so a
+    # fork PR can never slip onto the ungated internal enqueue path.
     try:
-        _, meta = _fetch_pr(repo, pr_number)
+        current_sha, meta = _fetch_pr(repo, pr_number)
     except Exception as e:
         print(
             f"SKIP: {source}.rerequested — could not fetch PR#{pr_number}, "
             f"failing closed: {e}"
+        )
+        return
+
+    # Runners check out the live PR head, not rerun_sha. If the head has advanced
+    # since this check ran, re-running it would execute the current (possibly
+    # unapproved fork) code under this old check's identity — reject as stale.
+    if current_sha != rerun_sha:
+        print(
+            f"SKIP: {source}.rerequested — stale (rerun sha {rerun_sha[:12]} "
+            f"!= current head {current_sha[:12]})"
         )
         return
 
@@ -1132,11 +1170,20 @@ def lambda_handler(event, context):
     # overwrite the approval state with A). Drop any event whose head no longer
     # matches the live PR, and otherwise replace the payload metadata with the
     # live labels/title/draft/fork so every trigger schedules the DAG from one
-    # place. On fetch failure fall back to the payload — availability over the
-    # rare reorder-during-outage — rather than dropping a legitimate run.
+    # place. On fetch failure: for an internal PR fall back to the payload
+    # (availability over the rare reorder-during-outage); for an external PR fail
+    # closed — the payload alone can't prove the event isn't a stale/reordered
+    # one for a superseded commit, and running the live fork head under a stale
+    # event's authority (or overwriting approval state) must never happen.
     try:
         current_sha, meta = _fetch_pr(workflow["repo"], workflow["pr_number"])
     except Exception as e:
+        if workflow.get("external_pr"):
+            print(
+                f"SKIP: could not refetch external PR#{workflow['pr_number']}, "
+                f"failing closed: {e}"
+            )
+            return _pr_response(False)
         print(
             f"  [warn] could not refetch PR#{workflow['pr_number']}, using payload "
             f"metadata: {e}"
