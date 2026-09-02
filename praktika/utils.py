@@ -298,22 +298,21 @@ class Shell:
             print("Process already terminated.")
             return
 
-        time_wait = 0
-        wait_interval = 5
+        # Grace period keyed on the readers finishing (`finished`), not on the
+        # leader's own exit. The leader may already be dead while a backgrounded
+        # descendant keeps stdout/stderr open; polling process.poll() here would
+        # return immediately and skip the SIGKILL, leaving a SIGTERM-ignoring
+        # descendant to block the reader threads forever.
+        if finished.wait(100):
+            return
 
-        # Wait for process to terminate
-        while process.poll() is None and time_wait < 100:
-            print("Waiting for process to exit...")
-            time.sleep(wait_interval)
-            time_wait += wait_interval
-
-        # Force kill if still running
-        if process.poll() is None:
-            print("WARNING: Process still running after SIGTERM, sending SIGKILL")
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                print("Process already terminated.")
+        # Still not done after the grace period: escalate to SIGKILL on the whole
+        # group, even when the leader itself has already exited.
+        print("WARNING: Process still running after SIGTERM, sending SIGKILL")
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            print("Process already terminated.")
 
     @classmethod
     def run(

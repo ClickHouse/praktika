@@ -842,37 +842,42 @@ class GH:
         try:
             if or_update_comment_with_substring:
                 print(f"check comment [{comment_body}] created")
-                safe_substr = shlex.quote(or_update_comment_with_substring)
                 cmd_check_created = (
                     f'gh api -H "Accept: application/vnd.github.v3+json" '
                     f'"/repos/{repo}/issues/{pr}/comments" '
-                    f"--jq '.[] | {{id: .id, body: .body}}' | grep -F {safe_substr}"
+                    f"--jq '.[] | {{id: .id, body: .body}}'"
                 )
+                # No `| grep`: on no match grep exits 1, which get_output_with_retries
+                # treats as a failed gh call and retries 3x with backoff before the
+                # normal create-new-comment path. Fetch the comments and match the
+                # substring in Python so retries cover only real gh failures.
                 output = cls.get_output_with_retries(cmd_check_created)
-                if output:
-                    comment_ids = []
+                comment_ids = []
+                for item in (output or "").split("\n"):
+                    item = item.strip()
+                    if not item:
+                        continue
                     try:
-                        comment_ids = [
-                            json.loads(item.strip())["id"]
-                            for item in output.split("\n")
-                            if item.strip()
-                        ]
+                        comment = json.loads(item)
                     except Exception as ex:
-                        print(f"Failed to retrieve PR comments with [{ex}]")
-                    if comment_ids:
-                        with tempfile.NamedTemporaryFile(
-                            mode="w", delete=False, suffix=".txt", encoding="utf-8"
-                        ) as temp_file:
-                            temp_file.write(comment_body)
-                            temp_file_path = temp_file.name
-                        for id in comment_ids:
-                            cmd = f'gh api \
-                               -X PATCH \
-                                  -H "Accept: application/vnd.github.v3+json" \
-                                     "/repos/{repo}/issues/comments/{id}" \
-                                     -F body=@{temp_file_path}'
-                            print(f"Update existing comments [{id}]")
-                            return cls.do_command_with_retries(cmd)
+                        print(f"Failed to parse PR comment with [{ex}]")
+                        continue
+                    if or_update_comment_with_substring in comment.get("body", ""):
+                        comment_ids.append(comment["id"])
+                if comment_ids:
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", delete=False, suffix=".txt", encoding="utf-8"
+                    ) as temp_file:
+                        temp_file.write(comment_body)
+                        temp_file_path = temp_file.name
+                    for id in comment_ids:
+                        cmd = f'gh api \
+                           -X PATCH \
+                              -H "Accept: application/vnd.github.v3+json" \
+                                 "/repos/{repo}/issues/comments/{id}" \
+                                 -F body=@{temp_file_path}'
+                        print(f"Update existing comments [{id}]")
+                        return cls.do_command_with_retries(cmd)
 
             # default: create a new comment using a temporary file to avoid shell escaping/injection
             with tempfile.NamedTemporaryFile(

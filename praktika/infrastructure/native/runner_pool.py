@@ -180,6 +180,12 @@ def _s3_grants(prefixes: List[str]):
     return _unique(object_resources), bucket_conditions
 
 
+# The only bucket-level S3 actions that carry an `s3:prefix` request context key
+# and can therefore be constrained by a StringLike s3:prefix condition. Any other
+# bucket action under that condition is silently denied.
+_S3_PREFIX_AWARE_ACTIONS = frozenset({"s3:ListBucket"})
+
+
 def _s3_statements(prefixes, sid_base, object_actions, list_actions):
     """Build split object-level and bucket-level (list) S3 policy statements.
 
@@ -199,18 +205,45 @@ def _s3_statements(prefixes, sid_base, object_actions, list_actions):
             }
         )
     for i, bucket_arn in enumerate(sorted(bucket_conditions)):
-        statement = {
-            "Sid": f"{sid_base}List{i}",
-            "Effect": "Allow",
-            "Action": list_actions,
-            "Resource": bucket_arn,
-        }
         prefixes_cond = bucket_conditions[bucket_arn]
-        if prefixes_cond is not None:
-            statement["Condition"] = {
-                "StringLike": {"s3:prefix": sorted(prefixes_cond)}
-            }
-        statements.append(statement)
+        if prefixes_cond is None:
+            # Whole-bucket grant: no prefix condition, so every list action is
+            # granted unconditionally.
+            statements.append(
+                {
+                    "Sid": f"{sid_base}List{i}",
+                    "Effect": "Allow",
+                    "Action": list_actions,
+                    "Resource": bucket_arn,
+                }
+            )
+            continue
+        # Prefix-scoped grant: only actions that send an `s3:prefix` request
+        # context key can carry the condition. Bucket-level actions like
+        # GetBucketLocation / ListBucketMultipartUploads don't, so under a
+        # StringLike s3:prefix condition they evaluate false and are silently
+        # denied. Split them into an unconditional bucket-resource statement.
+        prefix_aware = [a for a in list_actions if a in _S3_PREFIX_AWARE_ACTIONS]
+        unconditional = [a for a in list_actions if a not in _S3_PREFIX_AWARE_ACTIONS]
+        if prefix_aware:
+            statements.append(
+                {
+                    "Sid": f"{sid_base}List{i}",
+                    "Effect": "Allow",
+                    "Action": prefix_aware,
+                    "Resource": bucket_arn,
+                    "Condition": {"StringLike": {"s3:prefix": sorted(prefixes_cond)}},
+                }
+            )
+        if unconditional:
+            statements.append(
+                {
+                    "Sid": f"{sid_base}Bucket{i}",
+                    "Effect": "Allow",
+                    "Action": unconditional,
+                    "Resource": bucket_arn,
+                }
+            )
     return statements
 
 

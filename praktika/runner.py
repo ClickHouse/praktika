@@ -484,7 +484,16 @@ class Runner:
                     result.set_label(label, hint=hint)
         if exit_code != 0:
             if not result.is_completed():
-                if not process.timeout_exceeded and enable_exit_code_result:
+                # Read the tail up front so a docker daemon death (exit 125 +
+                # torn-down-connection signatures) is classified as infra BEFORE
+                # the simple exit-code path. Otherwise enable_exit_code_result
+                # workflows record it as a plain FAIL and never auto-retry.
+                latest_log = process.get_latest_log(max_lines=20)
+                if (
+                    not process.timeout_exceeded
+                    and enable_exit_code_result
+                    and not cls._is_docker_daemon_death(exit_code, latest_log)
+                ):
                     # Simple mode: the workflow opted out of an explicit Result,
                     # so a clean non-zero exit is a job-level FAIL, not an
                     # infra-level ERROR/KILLED. Timeouts still classify as ERROR.
@@ -508,7 +517,6 @@ class Runner:
                         print(f"ERROR: {info}")
                         result.add_error(info)
                     result.set_status(Result.Status.ERROR)
-                    latest_log = process.get_latest_log(max_lines=20)
                     result.set_info(latest_log)
                     # Must run before the dump below, or the label never reaches the
                     # result JSON that retry_infra_failures.yml reads.
