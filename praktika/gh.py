@@ -848,7 +848,7 @@ class GH:
                     f'"/repos/{repo}/issues/{pr}/comments" '
                     f"--jq '.[] | {{id: .id, body: .body}}' | grep -F {safe_substr}"
                 )
-                output = Shell.get_output(cmd_check_created)
+                output = cls.get_output_with_retries(cmd_check_created)
                 if output:
                     comment_ids = []
                     try:
@@ -881,7 +881,9 @@ class GH:
                 temp_file.write(comment_body)
                 temp_file_path = temp_file.name
 
-            cmd = f"gh pr comment {pr} --body-file {temp_file_path}"
+            # Pass --repo so gh does not probe git remotes (Docker-mounted
+            # checkouts can hit "detected dubious ownership") to autodetect it.
+            cmd = f"gh pr comment {pr} --repo {repo} --body-file {temp_file_path}"
             return cls.do_command_with_retries(cmd)
         finally:
             if temp_file_path and os.path.exists(temp_file_path):
@@ -923,7 +925,10 @@ class GH:
             f'"/repos/{repo}/issues/{pr}/comments" '
             f"--jq '[.[] | {{id: .id, body: .body}}]' --paginate"
         )
-        output = Shell.get_output(cmd_list, verbose=verbose)
+        # Idempotent read on the maintenance path: retry transient GitHub
+        # failures so a flake does not skip the delete step and post a duplicate
+        # tagged comment.
+        output = cls.get_output_with_retries(cmd_list, verbose=verbose)
         if output:
             try:
                 for comment in json.loads(output):
@@ -949,7 +954,9 @@ class GH:
             ) as temp_file:
                 temp_file.write(full_body)
                 temp_file_path = temp_file.name
-            cmd = f"gh pr comment {pr} --body-file {temp_file_path}"
+            # Pass --repo so gh does not probe git remotes (Docker-mounted
+            # checkouts can hit "detected dubious ownership") to autodetect it.
+            cmd = f"gh pr comment {pr} --repo {repo} --body-file {temp_file_path}"
             return cls.do_command_with_retries(cmd)
         finally:
             if temp_file_path and os.path.exists(temp_file_path):
@@ -984,7 +991,9 @@ class GH:
         cmd_check_created = f'gh api -H "Accept: application/vnd.github.v3+json" \
             "/repos/{repo}/issues/{pr}/comments" \
             --jq \'[.[] | {{id: .id, body: .body}}]\' --paginate'
-        output = Shell.get_output(cmd_check_created, verbose=verbose)
+        # Idempotent read: retry transient GitHub failures so a flake does not
+        # give up and leave a stale review/status comment in place.
+        output = cls.get_output_with_retries(cmd_check_created, verbose=verbose)
 
         if not output or not output.strip():
             print(
@@ -1066,7 +1075,9 @@ class GH:
             res = cls.do_command_with_retries(cmd)
         else:
             if not only_update:
-                cmd = f"gh pr comment {pr} --body-file {temp_file_path}"
+                # Pass --repo so gh does not probe git remotes (Docker-mounted
+                # checkouts can hit "detected dubious ownership") to autodetect it.
+                cmd = f"gh pr comment {pr} --repo {repo} --body-file {temp_file_path}"
                 print("Create new comment")
                 res = cls.do_command_with_retries(cmd)
             else:
@@ -1366,14 +1377,26 @@ class GH:
         """Merge PR #`pr`. With `admin`, merge right away with administrator
         privileges: required checks are not awaited and the merge queue on the
         base branch is bypassed. Only for automation that has already decided
-        the change must land immediately, such as reverting a broken merge."""
+        the change must land immediately, such as reverting a broken merge.
+
+        `admin` never asks `gh` to delete the branch, whatever `keep_branch`
+        says, because `gh` refuses the two together -- see the comment below."""
         if not repo:
             repo = _Environment.get().REPOSITORY
         if not pr:
             pr = _Environment.get().PR_NUMBER
 
         extra_args = ""
-        if not keep_branch:
+        # `gh` rejects `--delete-branch` outright whenever the base branch has a
+        # merge queue enabled -- "Cannot use `-d` or `--delete-branch` when merge
+        # queue enabled" -- and it rejects it even next to `--admin`, which is the
+        # flag that bypasses that very queue: the check looks at the branch setting
+        # and not at what the merge is about to do. Asking for both fails the merge
+        # itself, so an `admin` merge does not ask. Nothing is lost by that: the
+        # merge is immediate rather than queued, and GitHub removes the head branch
+        # on its own wherever the repository has `delete_branch_on_merge` set, which
+        # is where this is used.
+        if not keep_branch and not admin:
             extra_args += " --delete-branch"
         if squash:
             extra_args += " --squash"
