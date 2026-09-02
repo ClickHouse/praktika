@@ -670,3 +670,68 @@ def test_external_rerun_of_current_head_approves_and_enqueues(monkeypatch):
     assert enqueued[0][0]["head_sha"] == "b" * 40
     assert enqueued[0][0]["external_pr"] is True
     assert stored  # gate marked approved for the current head
+
+
+class _ThrottleS3:
+    """Fake S3 supporting the conditional put (IfNoneMatch) the rerun throttle uses."""
+
+    def __init__(self):
+        self.store = {}
+
+    def put_object(self, Bucket, Key, Body, IfNoneMatch=None, ContentType=None):  # noqa: N803
+        if IfNoneMatch == "*" and Key in self.store:
+            err = Exception("exists")
+            err.response = {"Error": {"Code": "PreconditionFailed"}}
+            raise err
+        self.store[Key] = Body
+
+    def get_object(self, Bucket, Key):  # noqa: N803
+        import io
+        if Key not in self.store:
+            err = Exception("missing")
+            err.response = {"Error": {"Code": "NoSuchKey"}}
+            raise err
+        return {"Body": io.BytesIO(self.store[Key])}
+
+
+def test_rerun_throttle_blocks_second_within_window(monkeypatch):
+    mod = _reload_lambda(monkeypatch)
+    monkeypatch.setattr(mod, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(mod, "RERUN_MIN_INTERVAL_S", 120)
+    monkeypatch.setattr(mod, "_s3", lambda: _shared_s3, raising=False)
+    global _shared_s3
+    _shared_s3 = _ThrottleS3()
+
+    assert mod._rerun_throttled(17, 1000.0) is False   # first: claims the window
+    assert mod._rerun_throttled(17, 1030.0) is True    # +30s: throttled
+    assert mod._rerun_throttled(17, 1200.0) is False   # +200s: window elapsed, allowed
+    # A different PR is independent.
+    assert mod._rerun_throttled(18, 1030.0) is False
+
+
+def test_rerun_throttle_disabled_when_interval_zero(monkeypatch):
+    mod = _reload_lambda(monkeypatch)
+    monkeypatch.setattr(mod, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(mod, "RERUN_MIN_INTERVAL_S", 0)
+    monkeypatch.setattr(mod, "_s3", lambda: _ThrottleS3())
+    assert mod._rerun_throttled(17, 1000.0) is False
+
+
+def test_second_rapid_partial_rerun_is_throttled(monkeypatch):
+    # Two near-simultaneous partial-rerun clicks: only the first is honored.
+    mod = _reload_lambda(monkeypatch)
+    monkeypatch.setattr(mod, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(mod, "RERUN_MIN_INTERVAL_S", 120)
+    s3 = _ThrottleS3()
+    monkeypatch.setattr(mod, "_s3", lambda: s3)
+    requests = []
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr_number: ("b" * 40, _rerun_meta(external=False)))
+    monkeypatch.setattr(mod, "_load_run_snapshot", lambda run_id: {"finalized": False})
+    monkeypatch.setattr(mod, "_write_rerun_request", lambda run_id, jobs, delivery_id: requests.append((run_id, jobs)))
+    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: None)
+
+    mod.lambda_handler(_partial_rerun_event("t1", job="Test"), None)
+    mod.lambda_handler(_partial_rerun_event("t2", job="Style Check"), None)
+
+    assert requests == [("run42", ["Test"])]  # second click throttled
