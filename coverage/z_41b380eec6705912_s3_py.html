@@ -66,8 +66,8 @@
             <a id="indexLink" class="nav" href="index.html">&Hat; index</a> &nbsp; &nbsp;
             <a id="nextFileLink" class="nav" href="z_41b380eec6705912_secret_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
-            <a class="nav" href="https://coverage.readthedocs.io/en/7.15.4">coverage.py v7.15.4</a>,
-            created at 2026-08-28 07:15 +0000
+            <a class="nav" href="https://coverage.readthedocs.io/en/7.16.0">coverage.py v7.16.0</a>,
+            created at 2026-09-02 13:13 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -940,7 +940,7 @@
     <p class="mis show_mis"><span class="n"><a id="t856" href="#t856">856</a></span><span class="t">            <span class="key">return</span> <span class="key">True</span>&nbsp;</span><span class="r"></span></p>
     <p class="mis show_mis"><span class="n"><a id="t857" href="#t857">857</a></span><span class="t">        <span class="key">except</span> <span class="nam">ClientError</span> <span class="key">as</span> <span class="nam">e</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="mis show_mis"><span class="n"><a id="t858" href="#t858">858</a></span><span class="t">            <span class="nam">error_code</span> <span class="op">=</span> <span class="nam">e</span><span class="op">.</span><span class="nam">response</span><span class="op">.</span><span class="nam">get</span><span class="op">(</span><span class="str">&quot;Error&quot;</span><span class="op">,</span> <span class="op">{</span><span class="op">}</span><span class="op">)</span><span class="op">.</span><span class="nam">get</span><span class="op">(</span><span class="str">&quot;Code&quot;</span><span class="op">,</span> <span class="str">&quot;&quot;</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t859" href="#t859">859</a></span><span class="t">            <span class="key">if</span> <span class="nam">error_code</span> <span class="op">==</span> <span class="str">&quot;PreconditionFailed&quot;</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="mis show_mis"><span class="n"><a id="t859" href="#t859">859</a></span><span class="t">            <span class="key">if</span> <span class="nam">error_code</span> <span class="key">in</span> <span class="op">(</span><span class="str">&quot;PreconditionFailed&quot;</span><span class="op">,</span> <span class="str">&quot;ConditionalRequestConflict&quot;</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="mis show_mis"><span class="n"><a id="t860" href="#t860">860</a></span><span class="t">                <span class="nam">print</span><span class="op">(</span><span class="str">&quot;Precondition failed (concurrent write detected)&quot;</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="mis show_mis"><span class="n"><a id="t861" href="#t861">861</a></span><span class="t">                <span class="key">return</span> <span class="key">False</span>&nbsp;</span><span class="r"></span></p>
     <p class="mis show_mis"><span class="n"><a id="t862" href="#t862">862</a></span><span class="t">            <span class="nam">print</span><span class="op">(</span><span class="fst">f&quot;</span><span class="fst">ERROR: Failed to upload versioned file: </span><span class="op">{</span><span class="nam">error_code</span><span class="op">}</span><span class="fst">&quot;</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
@@ -987,8 +987,8 @@
             <a class="nav" href="index.html">&Hat; index</a> &nbsp; &nbsp;
             <a class="nav" href="z_41b380eec6705912_secret_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
-            <a class="nav" href="https://coverage.readthedocs.io/en/7.15.4">coverage.py v7.15.4</a>,
-            created at 2026-08-28 07:15 +0000
+            <a class="nav" href="https://coverage.readthedocs.io/en/7.16.0">coverage.py v7.16.0</a>,
+            created at 2026-09-02 13:13 +0000
         </p>
     </div>
 </footer>
