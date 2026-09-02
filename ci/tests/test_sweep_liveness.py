@@ -86,6 +86,7 @@ def _make_queued_state(job_names, started_at_offsets, fake_s3, run_id="run42"):
         js.runner_instance_id = None
         js.attempt = 1
         js.stale_flagged = False
+        js.rerun_count = 0
         js._workflow_state = state
         state.jobs[name] = js
     return state

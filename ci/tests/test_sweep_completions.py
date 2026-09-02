@@ -149,6 +149,7 @@ def _make_state(
         js.attempt = 1
         js.stale_flagged = False
         js.result = None
+        js.rerun_count = 0
         js._workflow_state = state
         state.jobs[name] = js
 

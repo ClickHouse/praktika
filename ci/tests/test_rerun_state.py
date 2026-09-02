@@ -72,6 +72,7 @@ def _make_state(s3, statuses, always_run=()):
         js.attempt = 1
         js.stale_flagged = False
         js.filter_reason = None
+        js.rerun_count = 0
         js._workflow_state = state
         state.jobs[name] = js
     state._deps = {"A": (), "B": ("A",), "C": ("B",)}
@@ -89,6 +90,10 @@ def test_apply_rerun_resets_job_and_failed_downstream():
     reset = state.apply_rerun(["A"])
     assert reset == {"A", "B", "C"}
     assert all(state.jobs[n].status == JobStatus.PENDING for n in ("A", "B", "C"))
+    # Reset bumps the per-job re-run counter (surfaced in the check output).
+    assert state.jobs["A"].rerun_count == 1
+    state.apply_rerun(["A"])
+    assert state.jobs["A"].rerun_count == 2
 
 
 def test_apply_rerun_leaves_successful_downstream_alone():
@@ -135,6 +140,7 @@ def test_snapshot_roundtrip():
         s3, {"A": JobStatus.SUCCESS, "B": JobStatus.FAILURE, "C": JobStatus.CANCELLED}
     )
     state.jobs["B"].rc = 1
+    state.jobs["B"].rerun_count = 2
     state.save_snapshot(finalized=True)
 
     raw = s3.store[("test-bucket", "runs/run42/state.json")]
@@ -148,6 +154,7 @@ def test_snapshot_roundtrip():
     assert fresh.jobs["A"].status == JobStatus.SUCCESS
     assert fresh.jobs["B"].status == JobStatus.FAILURE
     assert fresh.jobs["C"].status == JobStatus.CANCELLED
+    assert fresh.jobs["B"].rerun_count == 2
     assert fresh._environment == {"WORKFLOW_CONFIG": {}}
 
 

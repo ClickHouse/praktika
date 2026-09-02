@@ -39,6 +39,7 @@ class _Environment(MetaClasses.Serializable):
     # merged PR for "push" or "merge_group" workflow
     LINKED_PR_NUMBER: int = 0
     LOCAL_RUN: bool = False
+    PR_IS_DRAFT: bool = False
     PR_LABELS: List[str] = dataclasses.field(default_factory=list)
     REPORT_MESSAGES: List[Dict[str, str]] = dataclasses.field(default_factory=list)
     JOB_CONFIG: Optional[Job.Config] = None
@@ -81,6 +82,7 @@ class _Environment(MetaClasses.Serializable):
         PR_BODY = ""
         PR_TITLE = ""
         PR_LABELS = []
+        PR_IS_DRAFT = False
         LINKED_PR_NUMBER = 0
         EVENT_TIME = ""
         EVENT_ACTION = ""
@@ -104,6 +106,7 @@ class _Environment(MetaClasses.Serializable):
                 PR_LABELS = [
                     label["name"] for label in github_event["pull_request"]["labels"]
                 ]
+                PR_IS_DRAFT = bool(github_event["pull_request"].get("draft", False))
                 USER_LOGIN = github_event["pull_request"]["user"]["login"]
                 EVENT_TIME = github_event.get("pull_request", {}).get(
                     "updated_at", None

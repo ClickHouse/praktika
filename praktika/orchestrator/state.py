@@ -114,7 +114,7 @@ def _normalize_job_name_for_s3(name):
     return name.replace(" ", "_").replace("/", "_")
 
 
-def _build_check_output(result, rc, instance_id="", report_url="", pool=""):
+def _build_check_output(result, rc, instance_id="", report_url="", pool="", rerun_count=0):
     """Render a job's Result as the ``output`` dict for a check-run
     completion. ``result`` is a ``praktika.Result`` reconstructed from the
     completion payload (the runner ships it in ``final.json``). ``pool`` is
@@ -139,6 +139,9 @@ def _build_check_output(result, rc, instance_id="", report_url="", pool=""):
         if displayed_status == "FAIL":
             displayed_status = "FAILED"
         summary = f"**{displayed_status}**{dur}"
+        if rerun_count:
+            # "No." not "#N": GitHub auto-links "#N" in check markdown to PR/issue N.
+            summary += f" — 🔁 re-run No. {rerun_count}"
         if report_url:
             summary += f" — [CI Report]({report_url})"
         details = []
@@ -385,6 +388,11 @@ class JobState:
         # Populated by sweep_completions; rendered into the check-run output
         # and retained for AI observation.
         self.result = None
+        # How many times this job has been reset by a manual re-run (partial
+        # rerun). Surfaced in the check output so a reader can tell a re-run
+        # apart from the first attempt; persisted in the run snapshot so it
+        # survives a finished-run resume.
+        self.rerun_count = 0
 
     @property
     def name(self):
@@ -866,6 +874,7 @@ class WorkflowState:
                     "rc": js.rc,
                     "non_blocking": js.non_blocking,
                     "filter_reason": js.filter_reason,
+                    "rerun_count": js.rerun_count,
                 }
                 for name, js in self.jobs.items()
             },
@@ -901,6 +910,7 @@ class WorkflowState:
             js.rc = rec.get("rc")
             js.non_blocking = bool(rec.get("non_blocking"))
             js.filter_reason = rec.get("filter_reason")
+            js.rerun_count = rec.get("rerun_count", 0) or 0
             check_id = rec.get("check_id")
             if check_id and self.can_post_checks:
                 check_name = f"{self.workflow.name} / {name}"
@@ -968,12 +978,19 @@ class WorkflowState:
         js.attempt = 1
         js.stale_flagged = False
         js.filter_reason = None
+        js.rerun_count += 1
         # Reuse the existing check-run (flip it back to queued) rather than
         # duplicating it, so the PR shows the check going red -> queued -> final.
+        # Surface that this is a manual re-run, with its number, on the check.
         if js.check is not None:
             try:
                 js.check.requeue(
-                    output={"title": "QUEUED", "summary": "QUEUED: re-run requested."}
+                    output={
+                        "title": f"QUEUED (re-run No. {js.rerun_count})",
+                        "summary": (
+                            f"QUEUED: manual re-run No. {js.rerun_count} requested."
+                        ),
+                    }
                 )
             except Exception as e:
                 print(f"  [warn] could not requeue check for {name!r}: {e}")
@@ -1146,6 +1163,7 @@ class WorkflowState:
                         instance_id=js.runner_instance_id or "",
                         report_url=details_url or "",
                         pool=", ".join(js.job.runs_on) if js.job.runs_on else "",
+                        rerun_count=js.rerun_count,
                     )
                 except Exception as e:
                     print(

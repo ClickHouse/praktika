@@ -130,6 +130,10 @@ class Info:
         return self.env.PR_LABELS
 
     @property
+    def pr_is_draft(self):
+        return self.env.PR_IS_DRAFT
+
+    @property
     def instance_type(self):
         return self.env.INSTANCE_TYPE
 

@@ -488,9 +488,10 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
 
     # refresh PR data
     if env.PR_NUMBER > 0:
-        title, body, labels = GH.get_pr_title_body_labels()
+        title, body, labels, is_draft = GH.get_pr_title_body_labels()
         print(f"NOTE: PR title: {title}")
         print(f"NOTE: PR labels: {labels}")
+        print(f"NOTE: PR draft: {is_draft}")
         if title:
             if title != env.PR_TITLE:
                 print("PR title has been changed")
@@ -501,6 +502,9 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
             if env.PR_LABELS != labels:
                 print("PR labels have been changed")
                 env.PR_LABELS = labels
+            if env.PR_IS_DRAFT != is_draft:
+                print("PR draft state has been changed")
+                env.PR_IS_DRAFT = is_draft
             env.dump()
 
     if workflow.enable_report:
