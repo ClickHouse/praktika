@@ -188,7 +188,7 @@ def _current_attempt():
     return (os.environ.get("PRAKTIKA_ATTEMPT") or "").strip()
 
 
-def _check_output(workflow, state, error=None, report_url=None, phase=None):
+def _check_output(workflow, state, error=None, report_url=None, phase=None, is_rerun=False):
     """Assemble a Check API `output` dict (title, summary, text) from the
     live ``WorkflowState``. Called on every PATCH so the top-level check's
     Markdown body tracks the current per-job table.
@@ -197,7 +197,9 @@ def _check_output(workflow, state, error=None, report_url=None, phase=None):
     ``planning``/``running``/``finalizing``) surfaced alongside the
     orchestrator instance id so a stuck or failed run shows *where* it got to,
     not just that it is in progress. ``attempt`` (e.g. ``2/3``) makes
-    cross-instance infra retries visible."""
+    cross-instance infra retries visible. ``is_rerun`` marks the check as
+    triggered by a manual re-run (``check_run``/``check_suite.rerequested``)
+    rather than a fresh push/PR event."""
     instance_id = _current_instance_id()
     attempt = _current_attempt()
     if workflow is None:
@@ -222,6 +224,8 @@ def _check_output(workflow, state, error=None, report_url=None, phase=None):
         summary = f"Cancelled — {state.md_status_summary()}"
     else:
         summary = state.md_status_summary()
+    if is_rerun:
+        summary += " — 🔁 re-run"
     if report_url:
         summary += f" — [CI Report]({report_url})"
     if attempt:
@@ -229,6 +233,8 @@ def _check_output(workflow, state, error=None, report_url=None, phase=None):
     if instance_id:
         summary += f" — orchestrator `{instance_id}`"
     header_bits = []
+    if is_rerun:
+        header_bits.append("**Trigger:** re-run")
     if instance_id:
         header_bits.append(f"**Orchestrator instance:** `{instance_id}`")
     if attempt:
@@ -248,7 +254,7 @@ def _check_output(workflow, state, error=None, report_url=None, phase=None):
     return {"title": title, "summary": summary, "text": text}
 
 
-def _patch_top_check(check, workflow, state, error=None, details_url=None, phase=None):
+def _patch_top_check(check, workflow, state, error=None, details_url=None, phase=None, is_rerun=False):
     """PATCH the top-level workflow check with the current Markdown snapshot.
 
     Wrapped in try/except: a stuck GitHub API call must not kill the
@@ -258,7 +264,9 @@ def _patch_top_check(check, workflow, state, error=None, details_url=None, phase
         return
     try:
         check.update(
-            output=_check_output(workflow, state, error=error, report_url=details_url, phase=phase),
+            output=_check_output(
+                workflow, state, error=error, report_url=details_url, phase=phase, is_rerun=is_rerun
+            ),
             details_url=details_url,
         )
     except Exception as e:
@@ -359,6 +367,9 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
 
     repo = event.get("repo", "")
     head_sha = event.get("head_sha", "")
+    # Manual re-runs arrive as check_run/check_suite.rerequested (the lambda
+    # normalizes both to action="rerequested"); surface that on the check body.
+    is_rerun = event.get("action", "") == "rerequested"
 
     report_url = None
     if workflow.enable_report:
@@ -411,7 +422,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
     # controller to retry on a fresh instance; a failure after it is not
     # (jobs are already running) and is reported as an ordinary failure.
     dag_started = False
-    _patch_top_check(check, workflow, None, phase=phase, details_url=report_url)
+    _patch_top_check(check, workflow, None, phase=phase, details_url=report_url, is_rerun=is_rerun)
     try:
         # Startup (AI advisor + workflow plan build) talks to S3/GH and can
         # hit transient infra errors; retry it a bounded number of times.
@@ -421,7 +432,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
         for attempt in range(1, attempts + 1):
             try:
                 phase = "ai_setup"
-                _patch_top_check(check, workflow, None, phase=phase, details_url=report_url)
+                _patch_top_check(check, workflow, None, phase=phase, details_url=report_url, is_rerun=is_rerun)
                 # None when AI orchestration is disabled (the default) or the
                 # configured provider can't be resolved — the loop is unchanged.
                 # The patcher lets a cancel_and_patch decision land a fix. In CI
@@ -450,7 +461,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
                 )
 
                 phase = "planning"
-                _patch_top_check(check, workflow, None, phase=phase, details_url=report_url)
+                _patch_top_check(check, workflow, None, phase=phase, details_url=report_url, is_rerun=is_rerun)
                 state = WorkflowState(
                     workflow,
                     event=event,
@@ -481,12 +492,13 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
                     check, workflow, None,
                     phase=f"{phase} — retry {attempt + 1}/{attempts}",
                     details_url=report_url,
+                    is_rerun=is_rerun,
                 )
                 time.sleep(min(2 ** attempt, 30))
 
         phase = "running"
         dag_started = True
-        _patch_top_check(check, workflow, state, phase=phase, details_url=report_url)
+        _patch_top_check(check, workflow, state, phase=phase, details_url=report_url, is_rerun=is_rerun)
         if advisor is not None:
             advisor.on_run_start(state, event)
 
@@ -500,7 +512,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
             state.wait()
             if advisor is not None:
                 advisor.on_workflow_update(state, event)
-            _patch_top_check(check, workflow, state, phase=phase, details_url=report_url)
+            _patch_top_check(check, workflow, state, phase=phase, details_url=report_url, is_rerun=is_rerun)
 
         state.print_summary()
     except Exception as e:
@@ -523,7 +535,9 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
         try:
             check.complete(
                 conclusion,
-                output=_check_output(workflow, state, error=error, report_url=report_url, phase=phase),
+                output=_check_output(
+                    workflow, state, error=error, report_url=report_url, phase=phase, is_rerun=is_rerun
+                ),
                 details_url=report_url,
             )
         except Exception:

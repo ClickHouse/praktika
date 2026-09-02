@@ -179,6 +179,64 @@ def _is_allowed_repository(repo_full_name: str) -> bool:
     return not ALLOWED_REPOSITORIES or repo_full_name in ALLOWED_REPOSITORIES
 
 
+def _pr_metadata(pr, repo):
+    """Normalize a PR object into the metadata fields a workflow message carries.
+
+    One definition of "what we read off a PR", shared by the two ways a PR
+    reaches us: the ``pull_request`` webhook (whose payload embeds the full PR
+    object) and a PR refetched by number for reruns (whose ``check_run`` /
+    ``check_suite`` payload omits labels/title/draft/fork). Keeping this in one
+    place is what makes an internal-PR rerun schedule the same DAG the live PR
+    would — see ``_fetch_pr``.
+    """
+    head = pr.get("head", {}) or {}
+    base = pr.get("base", {}) or {}
+    return {
+        "head_ref": head.get("ref", ""),
+        "base_ref": base.get("ref", ""),
+        "title": pr.get("title", ""),
+        "draft": pr.get("draft", False),
+        "labels": [label.get("name", "") for label in pr.get("labels", [])],
+        "external_pr": _is_external_pr(pr, repo),
+        "head_repo": head.get("repo", {}).get("full_name", ""),
+    }
+
+
+def _fetch_pr(repo, pr_number):
+    """Authoritative live PR state by number: ``(current_head_sha, metadata)``.
+
+    The single source of truth for both trigger paths. ``check_run`` /
+    ``check_suite`` rerun payloads carry only the PR number and a sha, not
+    labels/title/draft/fork status; and even a ``pull_request`` payload can be a
+    delayed/redelivered older event. Refetching the live PR lets callers (a)
+    detect a stale event by comparing ``current_head_sha`` and (b) classify and
+    DAG-filter off the current PR state. Raises on any error so callers decide
+    whether to fail closed (rerun) or fall back to the payload (live event).
+    """
+    token = _get_github_token(required_permissions={"metadata": "read"})
+    pr = _gh_api("GET", f"/repos/{repo}/pulls/{pr_number}", token)
+    return pr.get("head", {}).get("sha", ""), _pr_metadata(pr, repo)
+
+
+def _build_pr_workflow(action, repo, pr_number, head_sha, sender, event_ts, meta):
+    """Assemble a pull_request workflow trigger message.
+
+    Single definition of the message shape; callers supply the metadata dict
+    (from ``_pr_metadata`` for a live payload, or ``_fetch_pr`` for a rerun).
+    ``meta`` last so its keys can't be silently overridden by a caller.
+    """
+    return {
+        "type": "pull_request",
+        "action": action,
+        "event_ts": event_ts,
+        "pr_number": pr_number,
+        "head_sha": head_sha,
+        "repo": repo,
+        "sender": sender,
+        **meta,
+    }
+
+
 def _build_workflow(action, payload, event_ts):
     """Build a CI workflow message from a pull_request event. Returns None to skip."""
     if action not in ("opened", "synchronize", "reopened", "rerequested"):
@@ -186,22 +244,15 @@ def _build_workflow(action, payload, event_ts):
 
     pr = payload.get("pull_request", {})
     repo = payload.get("repository", {}).get("full_name", "")
-    return {
-        "type": "pull_request",
-        "action": action,
-        "event_ts": event_ts,
-        "pr_number": pr.get("number"),
-        "head_sha": pr.get("head", {}).get("sha", ""),
-        "head_ref": pr.get("head", {}).get("ref", ""),
-        "base_ref": pr.get("base", {}).get("ref", ""),
-        "repo": repo,
-        "sender": payload.get("sender", {}).get("login", ""),
-        "title": pr.get("title", ""),
-        "draft": pr.get("draft", False),
-        "labels": [label.get("name", "") for label in pr.get("labels", [])],
-        "external_pr": _is_external_pr(pr, repo),
-        "head_repo": pr.get("head", {}).get("repo", {}).get("full_name", ""),
-    }
+    return _build_pr_workflow(
+        action,
+        repo,
+        pr.get("number"),
+        pr.get("head", {}).get("sha", ""),
+        payload.get("sender", {}).get("login", ""),
+        event_ts,
+        _pr_metadata(pr, repo),
+    )
 
 
 def _build_push_workflow(payload, event_ts):
@@ -224,74 +275,6 @@ def _build_push_workflow(payload, event_ts):
         "repo": payload.get("repository", {}).get("full_name", ""),
         "sender": payload.get("sender", {}).get("login", ""),
     }
-
-
-def _build_rerun_workflow(check_obj, payload, event_ts):
-    """Build a rerun workflow message from a check_suite or check_run payload.
-
-    Returns (workflow_dict, pr_number) or (None, None) if the event has no
-    associated PR (e.g. a push-based check suite with no PR).
-
-    TODO: the rerun feature is not yet ready. check_run/check_suite payloads
-    omit PR labels/title/draft, so the reconstruction below hardcodes empty
-    labels. Label-gated filters (filter_job.py do-not-test / ci-*,
-    new_tests_check.py bugfix validation) read these, so an internal-PR rerun
-    schedules a different DAG than the live PR state. Before enabling reruns,
-    refetch the PR by number (or persist full PR metadata for all PRs, not only
-    external ones) to populate labels/title/draft.
-    """
-    prs = check_obj.get("pull_requests", [])
-    if not prs:
-        return None, None
-    pr = prs[0]
-    pr_number = pr.get("number")
-    head_sha = check_obj.get("head_sha", "")
-    if not pr_number or not head_sha:
-        return None, None
-    repo = payload.get("repository", {}).get("full_name", "")
-    workflow = {
-        "type": "pull_request",
-        "action": "rerequested",
-        "event_ts": event_ts,
-        "pr_number": pr_number,
-        "head_sha": head_sha,
-        "head_ref": pr.get("head", {}).get("ref", ""),
-        "base_ref": pr.get("base", {}).get("ref", ""),
-        "repo": repo,
-        "sender": payload.get("sender", {}).get("login", ""),
-        "title": "",
-        "draft": False,
-        "labels": [],
-        # check_suite / check_run payloads don't carry the PR head repo's full
-        # name, labels, title, or draft flag. This reconstruction is only safe
-        # for internal PRs (external_pr False, head_repo is the base repo); the
-        # external path in _handle_external_rerun reuses the authoritative
-        # metadata stored in the approval state before enqueuing.
-        "external_pr": False,
-        "head_repo": repo,
-    }
-    return workflow, pr_number
-
-
-def _rerun_pr_is_internal(repo: str, pr_number: int) -> bool:
-    """Authoritatively decide whether a rerun's PR is same-repo (internal).
-
-    check_run/check_suite payloads do not carry the head repo's fork status, so
-    ``_build_rerun_workflow`` cannot tell an internal PR from an external one.
-    A rerun of a fork PR must never be enqueued on the ungated internal path, so
-    fetch the PR and fail closed (return ``False``) on any error rather than
-    defaulting to "internal".
-    """
-    try:
-        token = _get_github_token()
-        pr = _gh_api("GET", f"/repos/{repo}/pulls/{pr_number}", token)
-        return not _is_external_pr(pr, repo)
-    except Exception as e:
-        print(
-            f"  [warn] could not verify fork status of PR#{pr_number}, "
-            f"failing closed (treating as external): {e}"
-        )
-        return False
 
 
 _sqs_queue_url = None
@@ -809,50 +792,94 @@ def _handle_gate_action(payload, delivery_id: str, sender: str, identifier: str)
     print(f"SKIP: unknown approval action {identifier}")
 
 
+def _handle_rerun(check_obj, payload, delivery_id, sender, event_ts, source):
+    """Handle a ``check_run`` / ``check_suite`` ``rerequested`` event.
+
+    A rerun button only exists on a check that was already created for this exact
+    sha, so a rerun of a real CI check is inherently a rerun of a sha that ran
+    before (and, for a fork PR, was already approved). We still refetch the PR by
+    number: it is the single authoritative source of fork status (which decides
+    internal vs external routing) and of the labels/title/draft that the check
+    payload omits but the DAG is filtered on. ``source`` is "check_run" /
+    "check_suite" for logging.
+    """
+    prs = check_obj.get("pull_requests", [])
+    if not prs:
+        print(f"SKIP: {source}.rerequested — no associated PR")
+        return
+    pr_number = prs[0].get("number")
+    rerun_sha = check_obj.get("head_sha", "")
+    repo = payload.get("repository", {}).get("full_name", "")
+    if not pr_number or not rerun_sha:
+        print(f"SKIP: {source}.rerequested — missing PR number or head sha")
+        return
+    if ALLOWED_SENDERS and sender not in ALLOWED_SENDERS:
+        print(f"SKIP: {source}.rerequested — sender {sender} not allowed")
+        return
+
+    # One fetch gives both the fork status (routing) and the DAG-shaping metadata
+    # the check payload lacks. The rerun targets the exact sha of the check being
+    # rerun (``rerun_sha``), not the PR's current head, so the fetched head sha is
+    # ignored here. Fail closed on any error so a fork PR can never slip onto the
+    # ungated internal enqueue path.
+    try:
+        _, meta = _fetch_pr(repo, pr_number)
+    except Exception as e:
+        print(
+            f"SKIP: {source}.rerequested — could not fetch PR#{pr_number}, "
+            f"failing closed: {e}"
+        )
+        return
+
+    workflow = _build_pr_workflow(
+        "rerequested", repo, pr_number, rerun_sha, sender, event_ts, meta
+    )
+
+    if not meta["external_pr"]:
+        # Same-repo PR: trusted code, no approval gate. Enqueue directly.
+        _enqueue(workflow, delivery_id)
+        print(f"RERUN ({source}): PR#{pr_number} sha={rerun_sha[:12]}")
+        return
+
+    _handle_external_rerun(workflow, delivery_id, sender)
+
+
 def _handle_external_rerun(workflow: dict, delivery_id: str, sender: str):
+    """Enqueue a fork-PR rerun once it is authorized.
+
+    Metadata (labels/fork/etc.) is already authoritative on ``workflow`` from the
+    refetch in ``_handle_rerun``; this only re-derives *authorization*, which is
+    the one thing the internal path doesn't need:
+
+    - Require a maintainer. GitHub only shows the re-run button to write-access
+      users, but the webhook sender is not otherwise trusted for an authz call,
+      and this also blocks re-running the "awaiting approval" gate check of an
+      unapproved commit.
+    - Reject a rerun whose sha is no longer the approved head. Old check runs
+      persist after the PR head advances; a rerun of a stale check must run that
+      stale sha at most, never be treated as approval of the current head.
+    """
+    repo = workflow["repo"]
+    pr_number = workflow["pr_number"]
+    rerun_sha = workflow["head_sha"]
     token = _get_github_token(
         required_permissions={"checks": "write", "metadata": "read"}
     )
-    if not _can_maintain_repo(workflow["repo"], sender, token):
+    if not _can_maintain_repo(repo, sender, token):
         print(f"SKIP: external PR rerun by non-maintainer {sender}")
         return
-    state = _load_approval_state(workflow["repo"], workflow["pr_number"])
-    # Only a rerun of the CURRENT head may proceed. `workflow["head_sha"]` here
-    # is the SHA of the check being rerun (head A); if the PR head has since
-    # advanced (state["head_sha"] == B), this is a stale check. Rebinding it to
-    # the saved current workflow would approve/enqueue B off a rerun of A's
-    # check, breaking the "approve this exact commit" contract of the gate. Treat
-    # any mismatch as stale and stop before touching the saved (current) state.
-    rerun_sha = workflow.get("head_sha", "")
+    state = _load_approval_state(repo, pr_number)
     if not state or state.get("head_sha") != rerun_sha:
         print(
-            f"SKIP: stale external rerun of PR#{workflow['pr_number']} "
+            f"SKIP: stale external rerun of PR#{pr_number} "
             f"sha={rerun_sha[:12]} current={(state or {}).get('head_sha', '')[:12]}"
         )
         return
-    # `workflow` was reconstructed from the check_run/check_suite payload, which
-    # doesn't carry the fork repo, labels, title, or draft flag. Reuse the
-    # authentic PR metadata captured at pull_request time and stored in the
-    # approval state so the enqueued/persisted workflow stays classified as
-    # external, instead of an internal PR (head_repo == base repo) with no
-    # labels. Only the fields describing this rerun event are refreshed.
-    saved = dict((state or {}).get("workflow") or {})
-    if not saved:
-        print(
-            f"SKIP: no stored workflow for external rerun of PR#{workflow['pr_number']}"
-        )
-        return
-    saved["action"] = workflow["action"]
-    saved["event_ts"] = workflow["event_ts"]
-    saved["sender"] = sender
-    workflow = saved
-    if state and state.get("head_sha") == workflow["head_sha"] and state.get(
-        "approval_check_id"
-    ):
+    if state.get("approval_check_id"):
         _best_effort(
             "mark approval gate approved from rerun",
             _update_gate_check,
-            workflow["repo"],
+            repo,
             int(state["approval_check_id"]),
             token,
             status="completed",
@@ -863,7 +890,7 @@ def _handle_external_rerun(workflow: dict, delivery_id: str, sender: str):
         )
         _store_gate_state(workflow, int(state["approval_check_id"]), "approved", sender)
     _enqueue(workflow, delivery_id)
-    print(f"RERUN APPROVED: PR#{workflow['pr_number']} sha={workflow['head_sha'][:12]}")
+    print(f"RERUN APPROVED: PR#{pr_number} sha={rerun_sha[:12]}")
 
 
 def lambda_handler(event, context):
@@ -914,46 +941,28 @@ def lambda_handler(event, context):
             else:
                 _handle_gate_action(payload, delivery_id, sender, identifier)
         elif action == "rerequested":
-            workflow, pr_number = _build_rerun_workflow(
-                payload.get("check_run", {}), payload, event_ts
+            _handle_rerun(
+                payload.get("check_run", {}),
+                payload,
+                delivery_id,
+                sender,
+                event_ts,
+                "check_run",
             )
-            if workflow and (not ALLOWED_SENDERS or sender in ALLOWED_SENDERS):
-                state = _load_approval_state(workflow["repo"], pr_number)
-                if state and (state.get("workflow") or {}).get("external_pr"):
-                    _handle_external_rerun(workflow, delivery_id, sender)
-                elif _rerun_pr_is_internal(workflow["repo"], pr_number):
-                    _enqueue(workflow, delivery_id)
-                    print(f"RERUN (check_run): PR#{pr_number} sha={workflow['head_sha'][:12]}")
-                else:
-                    print(
-                        f"SKIP: check_run.rerequested — external/unverified PR#{pr_number} "
-                        f"without approval state, failing closed"
-                    )
-            else:
-                print("SKIP: check_run.rerequested — no associated PR or sender not allowed")
         else:
             print(f"SKIP: check_run.{action} not handled")
         return {"statusCode": 200, "body": "ok"}
 
     if gh_event == "check_suite":
         if action == "rerequested":
-            workflow, pr_number = _build_rerun_workflow(
-                payload.get("check_suite", {}), payload, event_ts
+            _handle_rerun(
+                payload.get("check_suite", {}),
+                payload,
+                delivery_id,
+                sender,
+                event_ts,
+                "check_suite",
             )
-            if workflow and (not ALLOWED_SENDERS or sender in ALLOWED_SENDERS):
-                state = _load_approval_state(workflow["repo"], pr_number)
-                if state and (state.get("workflow") or {}).get("external_pr"):
-                    _handle_external_rerun(workflow, delivery_id, sender)
-                elif _rerun_pr_is_internal(workflow["repo"], pr_number):
-                    _enqueue(workflow, delivery_id)
-                    print(f"RERUN (check_suite): PR#{pr_number} sha={workflow['head_sha'][:12]}")
-                else:
-                    print(
-                        f"SKIP: check_suite.rerequested — external/unverified PR#{pr_number} "
-                        f"without approval state, failing closed"
-                    )
-            else:
-                print("SKIP: check_suite.rerequested — no associated PR or sender not allowed")
         else:
             print(f"SKIP: check_suite.{action} not handled")
         return {"statusCode": 200, "body": "ok"}
@@ -984,35 +993,52 @@ def lambda_handler(event, context):
         print(f"SKIP: PR sender {sender} not in allowed users")
         return {"statusCode": 200, "body": "ok"}
 
-    workflow = _build_workflow(action, payload, event_ts)
-    if workflow:
-        # TODO: ordering hazard. We treat this payload as the newest PR state, but
-        # the only ordering signal is Lambda receive time (event_ts), not whether
-        # the payload still matches the PR's current head. A delayed or redelivered
-        # older `synchronize` for commit A arriving after newer head B writes a
-        # newer cancel-before marker for A, so sweep_cancel can cancel the running
-        # B workflow; for external PRs `_handle_external_pr` also overwrites the
-        # saved approval state with A. Fix: refetch the PR here and drop the event
-        # unless `pull_request.head.sha` still matches the current head before
-        # canceling/enqueuing.
-        if action == "synchronize":
-            _cancel_runs_before(
-                workflow["pr_number"], event_ts, workflow.get("head_sha", "")
-            )
-        if workflow.get("external_pr"):
-            _handle_external_pr(workflow, delivery_id)
-        else:
-            _enqueue(workflow, delivery_id)
-    else:
-        print(f"SKIP: action {action} does not trigger a workflow")
+    def _pr_response(enqueued):
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps(
+                {"ok": True, "event": gh_event, "action": action, "enqueued": enqueued}
+            ),
+        }
 
-    return {
-        "statusCode": 200,
-        "headers": {"Content-Type": "application/json"},
-        "body": json.dumps({
-            "ok": True,
-            "event": gh_event,
-            "action": action,
-            "enqueued": workflow is not None and not workflow.get("external_pr", False),
-        }),
-    }
+    workflow = _build_workflow(action, payload, event_ts)
+    if not workflow:
+        print(f"SKIP: action {action} does not trigger a workflow")
+        return _pr_response(False)
+
+    # Refetch the live PR by number — the same authoritative source the rerun
+    # path uses. The webhook payload is only ordered by Lambda receive time, so a
+    # delayed or redelivered older event (e.g. a `synchronize` for commit A) can
+    # arrive after the head advanced to B; acting on it would write a
+    # cancel-before marker that cancels the running B (and, for external PRs,
+    # overwrite the approval state with A). Drop any event whose head no longer
+    # matches the live PR, and otherwise replace the payload metadata with the
+    # live labels/title/draft/fork so every trigger schedules the DAG from one
+    # place. On fetch failure fall back to the payload — availability over the
+    # rare reorder-during-outage — rather than dropping a legitimate run.
+    try:
+        current_sha, meta = _fetch_pr(workflow["repo"], workflow["pr_number"])
+    except Exception as e:
+        print(
+            f"  [warn] could not refetch PR#{workflow['pr_number']}, using payload "
+            f"metadata: {e}"
+        )
+    else:
+        if workflow["head_sha"] != current_sha:
+            print(
+                f"SKIP: stale {action} for PR#{workflow['pr_number']} "
+                f"sha={workflow['head_sha'][:12]} current={current_sha[:12]}"
+            )
+            return _pr_response(False)
+        workflow.update(meta)
+
+    if action == "synchronize":
+        _cancel_runs_before(
+            workflow["pr_number"], event_ts, workflow.get("head_sha", "")
+        )
+    if workflow.get("external_pr"):
+        _handle_external_pr(workflow, delivery_id)
+        return _pr_response(False)
+    _enqueue(workflow, delivery_id)
+    return _pr_response(True)

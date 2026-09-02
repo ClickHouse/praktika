@@ -94,6 +94,22 @@ def test_build_workflow_marks_external_pr(monkeypatch):
 
     assert workflow["external_pr"] is True
     assert workflow["head_repo"] == "fork/repo"
+    # Metadata the DAG is filtered on must survive the shared builder.
+    assert workflow["labels"] == ["ci"]
+    assert workflow["title"] == "Test PR"
+    assert workflow["head_ref"] == "feature"
+
+
+def _rerun_meta(external, labels=None):
+    return {
+        "head_ref": "feature",
+        "base_ref": "main",
+        "title": "Test PR",
+        "draft": False,
+        "labels": labels if labels is not None else ["ci"],
+        "external_pr": external,
+        "head_repo": "fork/repo" if external else "owner/repo",
+    }
 
 
 def test_pull_request_sender_can_be_restricted_by_allowed_users(monkeypatch):
@@ -126,6 +142,7 @@ def test_pull_request_sender_allowed_by_allowed_users_is_enqueued(monkeypatch):
     enqueued = []
 
     monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr_number: ("b" * 40, _rerun_meta(external=False)))
     monkeypatch.setattr(
         mod,
         "_enqueue",
@@ -154,6 +171,7 @@ def test_pull_request_allowed_users_match_is_case_insensitive(monkeypatch):
     enqueued = []
 
     monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr_number: ("b" * 40, _rerun_meta(external=False)))
     monkeypatch.setattr(
         mod,
         "_enqueue",
@@ -173,6 +191,81 @@ def test_pull_request_allowed_users_match_is_case_insensitive(monkeypatch):
 
     assert len(enqueued) == 1
     assert enqueued[0][0]["sender"] == "contributor"
+
+
+def test_pull_request_stale_event_is_dropped(monkeypatch):
+    # A delayed/redelivered event whose head no longer matches the live PR must
+    # not enqueue or write a cancel-before marker that would kill the newer run.
+    mod = _reload_lambda(monkeypatch)
+    enqueued = []
+    cancels = []
+
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    # Payload head is A ("b"*40); the live PR has advanced to B ("e"*40).
+    monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr_number: ("e" * 40, _rerun_meta(external=False)))
+    monkeypatch.setattr(mod, "_cancel_runs_before", lambda *a, **k: cancels.append((a, k)))
+    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)))
+
+    mod.lambda_handler(
+        {
+            "headers": {"X-GitHub-Event": "pull_request", "X-GitHub-Delivery": "d-stale"},
+            "body": json.dumps(_pr_payload(external=False, action="synchronize")),
+        },
+        None,
+    )
+
+    assert enqueued == []
+    assert cancels == []
+
+
+def test_pull_request_uses_fetched_metadata(monkeypatch):
+    # The enqueued workflow carries the LIVE labels (from the refetch), not the
+    # possibly-stale labels embedded in the webhook payload.
+    mod = _reload_lambda(monkeypatch)
+    enqueued = []
+
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(
+        mod,
+        "_fetch_pr",
+        lambda repo, pr_number: ("b" * 40, _rerun_meta(external=False, labels=["live-label"])),
+    )
+    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)))
+
+    mod.lambda_handler(
+        {
+            "headers": {"X-GitHub-Event": "pull_request", "X-GitHub-Delivery": "d-meta"},
+            "body": json.dumps(_pr_payload(external=False)),  # payload labels=["ci"]
+        },
+        None,
+    )
+
+    assert len(enqueued) == 1
+    assert enqueued[0][0]["labels"] == ["live-label"]
+
+
+def test_pull_request_falls_back_to_payload_when_fetch_fails(monkeypatch):
+    # A refetch error must not drop a legitimate run: fall back to the payload.
+    mod = _reload_lambda(monkeypatch)
+    enqueued = []
+
+    def _boom(repo, pr_number):
+        raise RuntimeError("GitHub API down")
+
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(mod, "_fetch_pr", _boom)
+    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)))
+
+    mod.lambda_handler(
+        {
+            "headers": {"X-GitHub-Event": "pull_request", "X-GitHub-Delivery": "d-fallback"},
+            "body": json.dumps(_pr_payload(external=False)),
+        },
+        None,
+    )
+
+    assert len(enqueued) == 1
+    assert enqueued[0][0]["labels"] == ["ci"]  # payload metadata preserved
 
 
 def test_cancel_runs_before_stores_head_sha(monkeypatch):
@@ -204,6 +297,7 @@ def test_external_pr_creates_gate_check_instead_of_enqueuing(monkeypatch):
     enqueued = []
 
     monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr_number: ("b" * 40, _rerun_meta(external=True)))
     monkeypatch.setattr(mod, "_get_github_token", lambda required_permissions=None: "tok")
     monkeypatch.setattr(mod, "_load_approval_state", lambda repo, pr_number: None)
     monkeypatch.setattr(mod, "_create_gate_check", lambda *args, **kwargs: gate_calls.append((args, kwargs)) or {"id": 101})
@@ -245,6 +339,7 @@ def test_external_pr_autoapproves_after_safe_path_change(monkeypatch):
     enqueued = []
 
     monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr_number: ("c" * 40, _rerun_meta(external=True)))
     monkeypatch.setattr(
         mod, "_cancel_runs_before", lambda pr_number, event_ts, head_sha="": None
     )
@@ -326,110 +421,96 @@ def test_gate_approve_action_enqueues_saved_workflow(monkeypatch):
     assert enqueued == [(workflow, "d3")]
 
 
-def test_external_rerun_requires_maintainer(monkeypatch):
-    mod = _reload_lambda(monkeypatch)
-    workflow = {
-        "repo": "owner/repo",
-        "pr_number": 17,
-        "head_sha": "d" * 40,
-        "head_ref": "feature",
-        "base_ref": "main",
-        "type": "pull_request",
-        "action": "rerequested",
-        "event_ts": 123.0,
-        "sender": "contributor",
-        "title": "",
-        "draft": False,
-        "labels": [],
-        "external_pr": False,
-        "head_repo": "",
-    }
-    state = {
-        "workflow": {"external_pr": True},
-        "approval_check_id": 77,
-        "head_sha": workflow["head_sha"],
-    }
-    enqueued = []
-
-    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
-    monkeypatch.setattr(mod, "_build_rerun_workflow", lambda check_obj, payload, event_ts: (workflow, 17))
-    monkeypatch.setattr(mod, "_load_approval_state", lambda repo, pr_number: state)
-    monkeypatch.setattr(mod, "_get_github_token", lambda required_permissions=None: "tok")
-    monkeypatch.setattr(mod, "_can_maintain_repo", lambda repo, login, token: False)
-    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)))
-
-    mod.lambda_handler(
-        {
-            "headers": {
-                "X-GitHub-Event": "check_run",
-                "X-GitHub-Delivery": "d4",
-            },
-            "body": json.dumps(
-                {
-                    "action": "rerequested",
-                    "sender": {"login": "contributor"},
-                    "check_run": {"pull_requests": [{"number": 17}]},
-                    "repository": {"full_name": "owner/repo"},
-                }
-            ),
-        },
-        None,
-    )
-
-    assert enqueued == []
-
-
-def _rerun_event(delivery, sender="maintainer"):
+def _rerun_event(delivery, sender="maintainer", head_sha="b" * 40):
     return {
         "headers": {"X-GitHub-Event": "check_run", "X-GitHub-Delivery": delivery},
         "body": json.dumps(
             {
                 "action": "rerequested",
                 "sender": {"login": sender},
-                "check_run": {"pull_requests": [{"number": 17}]},
+                "check_run": {
+                    "head_sha": head_sha,
+                    "pull_requests": [{"number": 17}],
+                },
                 "repository": {"full_name": "owner/repo"},
             }
         ),
     }
 
 
+def test_external_rerun_requires_maintainer(monkeypatch):
+    mod = _reload_lambda(monkeypatch)
+    state = {"approval_check_id": 77, "head_sha": "b" * 40}
+    enqueued = []
+
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr_number: ("b" * 40, _rerun_meta(external=True)))
+    monkeypatch.setattr(mod, "_load_approval_state", lambda repo, pr_number: state)
+    monkeypatch.setattr(mod, "_get_github_token", lambda required_permissions=None: "tok")
+    monkeypatch.setattr(mod, "_can_maintain_repo", lambda repo, login, token: False)
+    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)))
+
+    mod.lambda_handler(_rerun_event("d4", sender="contributor"), None)
+
+    assert enqueued == []
+
+
+def test_internal_rerun_fetches_metadata_and_enqueues(monkeypatch):
+    # An internal (same-repo) rerun enqueues directly, and the fetched PR
+    # metadata (labels/title/draft) rides along so the DAG matches the live PR.
+    mod = _reload_lambda(monkeypatch)
+    enqueued = []
+
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(
+        mod,
+        "_fetch_pr",
+        lambda repo, pr_number: ("b" * 40, _rerun_meta(external=False, labels=["ci", "release"])),
+    )
+    monkeypatch.setattr(mod, "_load_approval_state", lambda repo, pr_number: None)
+    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)))
+
+    mod.lambda_handler(_rerun_event("d-internal", sender="contributor"), None)
+
+    assert len(enqueued) == 1
+    workflow = enqueued[0][0]
+    assert workflow["external_pr"] is False
+    assert workflow["action"] == "rerequested"
+    assert workflow["head_sha"] == "b" * 40
+    assert workflow["labels"] == ["ci", "release"]
+    assert workflow["title"] == "Test PR"
+
+
+def test_rerun_fails_closed_when_pr_fetch_fails(monkeypatch):
+    # If the PR refetch fails we cannot tell internal from external, so the
+    # rerun must be dropped rather than run down the ungated internal path.
+    mod = _reload_lambda(monkeypatch)
+    enqueued = []
+
+    def _boom(repo, pr_number):
+        raise RuntimeError("GitHub API down")
+
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(mod, "_fetch_pr", _boom)
+    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)))
+
+    mod.lambda_handler(_rerun_event("d-fail", sender="contributor"), None)
+
+    assert enqueued == []
+
+
 def test_external_rerun_of_stale_head_is_not_rebound_to_current(monkeypatch):
     # Security: a maintainer rerun of a STALE check (head A) must not approve or
-    # enqueue the current head (B). The reconstructed rerun workflow carries the
-    # stale sha A; state has advanced to B. A must not be silently rebound to B.
+    # enqueue the current head (B). The rerun carries the stale sha A; state has
+    # advanced to B. A must not be silently rebound to B.
     mod = _reload_lambda(monkeypatch)
-    workflow = {
-        "repo": "owner/repo",
-        "pr_number": 17,
-        "head_sha": "a" * 40,  # stale check being rerun
-        "head_ref": "feature",
-        "base_ref": "main",
-        "type": "pull_request",
-        "action": "rerequested",
-        "event_ts": 123.0,
-        "sender": "maintainer",
-        "title": "",
-        "draft": False,
-        "labels": [],
-        "external_pr": False,
-        "head_repo": "",
-    }
-    state = {
-        "workflow": {
-            "external_pr": True,
-            "repo": "owner/repo",
-            "pr_number": 17,
-            "head_sha": "b" * 40,
-        },
-        "approval_check_id": 77,
-        "head_sha": "b" * 40,  # PR head advanced to B
-    }
+    state = {"approval_check_id": 77, "head_sha": "b" * 40}  # PR head advanced to B
     enqueued = []
     gate_updates = []
     stored = []
 
     monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
-    monkeypatch.setattr(mod, "_build_rerun_workflow", lambda check_obj, payload, event_ts: (workflow, 17))
+    monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr_number: ("b" * 40, _rerun_meta(external=True)))
     monkeypatch.setattr(mod, "_load_approval_state", lambda repo, pr_number: state)
     monkeypatch.setattr(mod, "_get_github_token", lambda required_permissions=None: "tok")
     monkeypatch.setattr(mod, "_can_maintain_repo", lambda repo, login, token: True)
@@ -437,7 +518,7 @@ def test_external_rerun_of_stale_head_is_not_rebound_to_current(monkeypatch):
     monkeypatch.setattr(mod, "_store_gate_state", lambda *a, **k: stored.append((a, k)))
     monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)))
 
-    mod.lambda_handler(_rerun_event("d5"), None)
+    mod.lambda_handler(_rerun_event("d5", head_sha="a" * 40), None)  # stale check A
 
     assert enqueued == []
     assert gate_updates == []
@@ -446,38 +527,15 @@ def test_external_rerun_of_stale_head_is_not_rebound_to_current(monkeypatch):
 
 def test_external_rerun_of_current_head_approves_and_enqueues(monkeypatch):
     # A maintainer rerun of the CURRENT head (sha matches state) is an explicit
-    # approval of that exact commit: gate approved, saved workflow enqueued.
+    # approval of that exact commit: gate approved, workflow enqueued with the
+    # authoritative fetched metadata.
     mod = _reload_lambda(monkeypatch)
-    workflow = {
-        "repo": "owner/repo",
-        "pr_number": 17,
-        "head_sha": "b" * 40,  # matches current head
-        "head_ref": "feature",
-        "base_ref": "main",
-        "type": "pull_request",
-        "action": "rerequested",
-        "event_ts": 123.0,
-        "sender": "maintainer",
-        "title": "",
-        "draft": False,
-        "labels": [],
-        "external_pr": False,
-        "head_repo": "",
-    }
-    saved = {
-        "external_pr": True,
-        "repo": "owner/repo",
-        "pr_number": 17,
-        "head_sha": "b" * 40,
-        "head_ref": "feature",
-        "base_ref": "main",
-    }
-    state = {"workflow": saved, "approval_check_id": 77, "head_sha": "b" * 40}
+    state = {"approval_check_id": 77, "head_sha": "b" * 40}
     enqueued = []
     stored = []
 
     monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
-    monkeypatch.setattr(mod, "_build_rerun_workflow", lambda check_obj, payload, event_ts: (workflow, 17))
+    monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr_number: ("b" * 40, _rerun_meta(external=True)))
     monkeypatch.setattr(mod, "_load_approval_state", lambda repo, pr_number: state)
     monkeypatch.setattr(mod, "_get_github_token", lambda required_permissions=None: "tok")
     monkeypatch.setattr(mod, "_can_maintain_repo", lambda repo, login, token: True)
@@ -485,7 +543,7 @@ def test_external_rerun_of_current_head_approves_and_enqueues(monkeypatch):
     monkeypatch.setattr(mod, "_store_gate_state", lambda *a, **k: stored.append((a, k)))
     monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)))
 
-    mod.lambda_handler(_rerun_event("d6"), None)
+    mod.lambda_handler(_rerun_event("d6", head_sha="b" * 40), None)
 
     assert len(enqueued) == 1
     assert enqueued[0][0]["head_sha"] == "b" * 40
