@@ -46,7 +46,19 @@ way an in-flight SQS message never could.
 
 ## Limitations {#limitations}
 
-- **Partial rerun — "Re-run failed checks" restarts the whole workflow.** `check_run.rerequested` and `check_suite.rerequested` currently enqueue a plain `pull_request` trigger and the orchestrator runs every job in the DAG. Intended design: the Lambda captures the rerun job set — the single check's name on `check_run.rerequested`, or the names of every failed/cancelled check from the previous attempt on `check_suite.rerequested` — and passes it in the workflow message as `rerun_jobs`; the orchestrator reruns those jobs plus everything transitively downstream of them (since the target's artifact may change), and marks all other jobs `SKIPPED` (their artifacts are already in S3). Config Workflow always runs regardless so `WORKFLOW_CONFIG` is refreshed.
+- **Partial rerun — "re-run all checks" still restarts the whole workflow.** A single-check re-run (`check_run.rerequested`) is now partial — see [Partial re-run](#partial-rerun) — but the check-suite "re-run all / failed checks" button (`check_suite.rerequested`, which carries no per-job `external_id`) still falls back to a full-workflow re-run. Scoping it to just the previously-failed set would mean the Lambda enumerating the suite's failed checks; not done yet.
+
+## Partial re-run {#partial-rerun}
+
+Re-running one failed check re-runs **only that job and its failed downstream**, in place on the existing run — not the whole DAG. It is modelled as a state mutation, and works whether the run is still going or already finished.
+
+- **Self-identifying checks.** Every per-job check carries `{run_id, job}` in its `external_id`, so a `check_run.rerequested` webhook tells the Lambda exactly which run and job to re-run — no GitHub API lookup.
+- **Persisted state.** The orchestrator writes `runs/<run_id>/state.json` each loop and at finalize: per-job `{status, check_id, rc, …}`, the cumulative `environment`, and a `finalized` flag. This snapshot is both the manipulable state and the **liveness signal** — the Lambda reads `finalized` (never the GitHub API) to tell a running run from a finished one.
+- **The mutation.** Reset the target job + its `FAILURE`/`CANCELLED` transitive dependents to `PENDING`, delete their `final.json`, and flip their existing checks back to `queued` (reusing the check id). The normal `get_ready → kick` loop then re-drives them. Config Workflow is **not** re-run; the persisted `WORKFLOW_CONFIG`/environment is reused.
+- **Running vs finished.**
+  - *Running* → the Lambda drops `runs/<run_id>/rerun-request/<delivery>.json`; the live orchestrator's `sweep_rerun()` applies it (and consumes it) each loop, with a final sweep before finalizing to close the finish-race.
+  - *Finished* → the Lambda enqueues a `type: "rerun"` message; a fresh orchestrator reopens the same top-level check (reusing `run_id`), seeds from the snapshot, applies the reset, and re-drives.
+- **Only failed jobs.** GitHub only shows the re-run button on completed checks, so the target is always terminal; a still-running job is never re-run.
 
 ## Run lifecycle {#run-lifecycle}
 
