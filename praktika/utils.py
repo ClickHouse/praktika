@@ -281,10 +281,14 @@ class Shell:
         return not failed
 
     @classmethod
-    def _check_timeout(cls, timeout, process) -> None:
+    def _check_timeout(cls, timeout, process, finished) -> None:
         if not timeout:
             return
-        time.sleep(timeout)
+        # Waits on the caller being done with the process, not on the leader exiting: a background
+        # descendant holding stdout keeps the reader threads blocked past the leader's exit, and
+        # that group is exactly what the timeout has to reach.
+        if finished.wait(timeout):
+            return
         print(
             f"WARNING: Timeout exceeded [{timeout}], sending SIGTERM to process group [{process.pid}]"
         )
@@ -294,22 +298,21 @@ class Shell:
             print("Process already terminated.")
             return
 
-        time_wait = 0
-        wait_interval = 5
+        # Grace period keyed on the readers finishing (`finished`), not on the
+        # leader's own exit. The leader may already be dead while a backgrounded
+        # descendant keeps stdout/stderr open; polling process.poll() here would
+        # return immediately and skip the SIGKILL, leaving a SIGTERM-ignoring
+        # descendant to block the reader threads forever.
+        if finished.wait(100):
+            return
 
-        # Wait for process to terminate
-        while process.poll() is None and time_wait < 100:
-            print("Waiting for process to exit...")
-            time.sleep(wait_interval)
-            time_wait += wait_interval
-
-        # Force kill if still running
-        if process.poll() is None:
-            print("WARNING: Process still running after SIGTERM, sending SIGKILL")
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                print("Process already terminated.")
+        # Still not done after the grace period: escalate to SIGKILL on the whole
+        # group, even when the leader itself has already exited.
+        print("WARNING: Process still running after SIGTERM, sending SIGKILL")
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            print("Process already terminated.")
 
     @classmethod
     def run(
@@ -370,8 +373,11 @@ class Shell:
                     )
 
                     # Start the timeout thread if specified
+                    finished = Event()
                     if timeout:
-                        t = Thread(target=cls._check_timeout, args=(timeout, proc))
+                        t = Thread(
+                            target=cls._check_timeout, args=(timeout, proc, finished)
+                        )
                         t.daemon = True
                         t.start()
 
@@ -400,16 +406,22 @@ class Shell:
                     stdout_thread.start()
                     stderr_thread.start()
 
-                    stdout_thread.join()
-                    stderr_thread.join()
+                    try:
+                        stdout_thread.join()
+                        stderr_thread.join()
 
-                    proc.wait()  # Wait for the process to finish
-                    # Close the pipe FDs Popen opened so the GC doesn't
-                    # log ResourceWarning for "unclosed file" later.
-                    proc.stdout.close()
-                    proc.stderr.close()
-                    if proc.stdin is not None:
-                        proc.stdin.close()
+                        proc.wait()  # Wait for the process to finish
+                        # Close the pipe FDs Popen opened so the GC doesn't
+                        # log ResourceWarning for "unclosed file" later.
+                        proc.stdout.close()
+                        proc.stderr.close()
+                        if proc.stdin is not None:
+                            proc.stdin.close()
+                    finally:
+                        # Only here: the readers return when the last writer closes the pipe, so
+                        # setting this at the leader's exit would retire the watchdog while a
+                        # descendant it must still reach keeps this call blocked.
+                        finished.set()
 
                 if proc.returncode == 0:
                     return 0
@@ -636,8 +648,9 @@ class Utils:
         return False
 
     @staticmethod
-    def clear_dmesg():
-        Shell.check("sudo dmesg --clear", verbose=True)
+    def clear_dmesg() -> bool:
+        """True when the ring buffer was cleared, so a later read holds only this run's records."""
+        return Shell.check("sudo dmesg --clear", verbose=True)
 
     @staticmethod
     def to_base64(value):
@@ -836,7 +849,13 @@ openssl pkeyutl -encrypt -pubin -inkey {key_path} -in {aes_key_path} -out {aes_k
         return f"{path}.enc"
 
     @classmethod
-    def compress_files_gz(cls, files, archive_name):
+    def compress_files_gz(cls, files, archive_name, timeout=None, strict=True):
+        """Archive `files` into `archive_name`, returning the path, or `None` if it did not.
+
+        `timeout` bounds the `tar`; `strict=False` turns a failed archive into that `None` instead
+        of raising. A caller whose job is already being torn down wants both: an archive it cannot
+        finish is worth abandoning, and abandoning it must not lose the caller's remaining work.
+        """
         files = [
             os.path.relpath(file) if os.path.isabs(file) else file for file in files
         ]
@@ -846,11 +865,13 @@ openssl pkeyutl -encrypt -pubin -inkey {key_path} -in {aes_key_path} -out {aes_k
         with tempfile.NamedTemporaryFile() as f:
             f.write("\n".join(files).encode())
             f.flush()
-            Shell.check(
+            if not Shell.check(
                 f"tar -cf - -T {f.name} | gzip > {archive_name}",
                 verbose=True,
-                strict=True,
-            )
+                strict=strict,
+                timeout=timeout,
+            ):
+                return None
         return archive_name
 
     @classmethod
