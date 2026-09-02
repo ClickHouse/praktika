@@ -217,13 +217,19 @@ class OrchestratorPool:
         artifact_resources = (
             [
                 f"arn:aws:s3:::{artifact_bucket}/runs/*/cancel-request",
+                f"arn:aws:s3:::{artifact_bucket}/runs/*/rerun-request/*",
+                f"arn:aws:s3:::{artifact_bucket}/runs/*/state.json",
                 f"arn:aws:s3:::{artifact_bucket}/pr/*/cancel-before*",
+                f"arn:aws:s3:::{artifact_bucket}/pr/*/rerun-throttle",
                 f"arn:aws:s3:::{artifact_bucket}/external-pr-approvals/*",
             ]
             if artifact_bucket
             else [
                 "arn:aws:s3:::*/runs/*/cancel-request",
+                "arn:aws:s3:::*/runs/*/rerun-request/*",
+                "arn:aws:s3:::*/runs/*/state.json",
                 "arn:aws:s3:::*/pr/*/cancel-before*",
+                "arn:aws:s3:::*/pr/*/rerun-throttle",
                 "arn:aws:s3:::*/external-pr-approvals/*",
             ]
         )
