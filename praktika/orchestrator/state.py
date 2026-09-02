@@ -1352,6 +1352,7 @@ class WorkflowState:
             "final_state_s3_bucket": self._cancel_s3_bucket,
             "final_state_s3_key": self._final_state_s3_key(job_state.name),
             "check_run_id": job_state.check.id if job_state.check else None,
+            "rerun_count": job_state.rerun_count,
             "environment": self._environment,
         }
 

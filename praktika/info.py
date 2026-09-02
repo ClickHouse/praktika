@@ -58,6 +58,11 @@ class Info:
         return self.env.JOB_NAME
 
     @property
+    def rerun_count(self):
+        """How many times this job was manually re-run (0 = first attempt)."""
+        return self.env.RERUN_COUNT
+
+    @property
     def pr_body(self):
         return self.env.PR_BODY
 

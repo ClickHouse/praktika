@@ -209,6 +209,9 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
         "INSTANCE_LIFE_CYCLE": instance_life_cycle,
         "TRACEBACKS": [],
         "LOCAL_RUN": bool(local_run),
+        # Per-job re-run counter (0 = first attempt); never inherited from an
+        # upstream job's dump, so it lives in the per-runner overrides.
+        "RERUN_COUNT": int(task.get("rerun_count") or 0),
     }
 
     carried = task.get("environment")
@@ -257,6 +260,7 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
             },
             WORKFLOW_CONFIG=None,
             LOCAL_RUN=bool(local_run),
+            RERUN_COUNT=int(task.get("rerun_count") or 0),
         )
     env.dump()
     return env

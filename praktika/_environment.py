@@ -51,6 +51,9 @@ class _Environment(MetaClasses.Serializable):
     JOB_KV_DATA_BASE_KEYS: List[str] = dataclasses.field(default_factory=list)
     COMMIT_AUTHORS: List[str] = dataclasses.field(default_factory=list)
     WORKFLOW_CONFIG: Optional[Dict[str, Any]] = None
+    # How many times this job was manually re-run (0 = first attempt). Set
+    # per-job by the orchestrator; job code can read it via Info().
+    RERUN_COUNT: int = 0
     name = "environment"
 
     @classmethod
