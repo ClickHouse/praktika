@@ -108,6 +108,13 @@ HEARTBEAT_TIMEOUT_S = int(getattr(Settings, "HEARTBEAT_TIMEOUT_S", 900) or 900)
 # SQS long-poll any more).
 WAIT_POLL_INTERVAL_S = 10
 
+# Hard cap on how many times one job may be re-run within a single run (per
+# run_id / commit; a new push starts a fresh run at 0). A pure defence backstop:
+# even if a rerun-request key is never consumed (e.g. a delete failure), a job
+# stops being re-dispatched once it hits this many re-runs, so it can never loop
+# forever. Generous enough for real manual re-runs.
+MAX_RERUNS_PER_JOB = int(getattr(Settings, "MAX_RERUNS_PER_JOB", 5) or 5)
+
 
 def _normalize_job_name_for_s3(name):
     """Turn a job name into an S3-safe path segment (mirrors job log path)."""
@@ -950,11 +957,21 @@ class WorkflowState:
         for name in job_names:
             if name not in self.jobs or name in to_reset:
                 continue
+            js = self.jobs[name]
             # Only reset a job that has finished. If it is already PENDING/
             # QUEUED/RUNNING it is mid-(re-)run from an earlier request, so
             # resetting again would double-count rerun_count and re-dispatch —
             # a runaway if a rerun-request key lingers (e.g. delete failed).
-            if self.jobs[name].status not in _TERMINAL:
+            if js.status not in _TERMINAL:
+                continue
+            # Hard cap: never re-run one job more than MAX_RERUNS_PER_JOB times in
+            # a run. A last-resort bound so a stuck rerun-request can't loop
+            # forever regardless of the consume/guard logic above.
+            if js.rerun_count >= MAX_RERUNS_PER_JOB:
+                print(
+                    f"[RERUN] skip {name!r}: reached max re-runs "
+                    f"({js.rerun_count}/{MAX_RERUNS_PER_JOB})"
+                )
                 continue
             to_reset.add(name)
             frontier.append(name)

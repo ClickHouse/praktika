@@ -109,6 +109,19 @@ def test_apply_rerun_skips_job_already_rerunning():
     assert state.jobs["A"].rerun_count == 0
 
 
+def test_apply_rerun_hard_caps_reruns(monkeypatch):
+    # A job at the per-job re-run cap is not reset again — the loop backstop.
+    import praktika.orchestrator.state as state_mod
+    monkeypatch.setattr(state_mod, "MAX_RERUNS_PER_JOB", 5)
+    s3 = _FakeS3()
+    state = _make_state(s3, {"A": JobStatus.FAILURE, "B": JobStatus.SUCCESS, "C": JobStatus.SUCCESS})
+    state.jobs["A"].rerun_count = 5
+    reset = state.apply_rerun(["A"])
+    assert reset == set()
+    assert state.jobs["A"].status == JobStatus.FAILURE
+    assert state.jobs["A"].rerun_count == 5
+
+
 def test_apply_rerun_leaves_successful_downstream_alone():
     s3 = _FakeS3()
     # B succeeded (e.g. A was a non-blocking failure); it must not be reset.
