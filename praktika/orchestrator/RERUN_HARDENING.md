@@ -101,6 +101,36 @@ not close it: the request can land *after* that sweep.
    and completes the check with attempt 1's (old) result — before attempt 2
    finishes, or overwriting attempt 2's result.
 
+### P4 — Throttle window-refresh is not serialized
+
+The per-PR re-run throttle (`_rerun_throttled` in `lambda_gh_trigger.py`) is
+atomic only when the marker is **absent**: it claims a window with a conditional
+create (`put IfNoneMatch='*'`). When the marker **exists but the window has
+expired**, it refreshes with an **unconditional** `put` and returns "allowed" —
+and that path is not serialized.
+
+**Scenario**
+1. A re-run happened >`RERUN_MIN_INTERVAL_S` ago, so `pr/<pr>/rerun-throttle`
+   holds a stale timestamp.
+2. Two re-run webhooks for the PR arrive together. Both `IfNoneMatch` creates
+   fail (marker present), both read the same old `ts`, both see the window
+   expired, both do the unconditional `put`, and **both return allowed**.
+3. For a finished run that enqueues **two resume controllers**, racing on the
+   same `run_id` / snapshot / checkout / completion keys (the exact concurrency
+   the throttle exists to prevent — see P1).
+
+Note the common multi-select case (no marker yet) *is* serialized by the initial
+`IfNoneMatch` create; only the stale-window-refresh path has the hole.
+
+**Fix options**
+- Make the throttle *create-only*: encode the window in the key,
+  `pr/<pr>/rerun-throttle-<floor(event_ts / interval)>`, claimed with
+  `IfNoneMatch='*'`. Exactly one caller wins each window's create; no timestamp
+  read, no unconditional overwrite. (Minor: a boundary-straddling pair can each
+  win adjacent windows — a throttle-accuracy nit, not a concurrency race.)
+- Or rely on the per-run **lease** below (P1), which serializes resumes directly
+  and makes the throttle just a cheap first filter.
+
 ## Proposal — a per-run "resume generation" behind an atomic lease
 
 All three collapse into one primitive: each resume is a new **generation** of the
@@ -173,6 +203,7 @@ finished-run clicks converge into one resume.
 | P1 — concurrent resumes | the lease (single claimant per run) |
 | P2 — finish race / lost request | write-then-check + finalize-recheck handshake |
 | P3 — stale-attempt overwrite | generation-scoped `g<gen>` keys |
+| P4 — throttle window-refresh race | create-only window-keyed throttle, or the lease (P1) |
 
 With the lease in place, the per-PR throttle becomes an optional cheap
 first-line filter rather than the correctness mechanism, and could be removed.

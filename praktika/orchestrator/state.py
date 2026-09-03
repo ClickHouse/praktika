@@ -261,23 +261,6 @@ class JobCheckRun:
         )
         return cls(token, repo, data["id"], name)
 
-    def requeue(self, output=None):
-        """Flip an already-created (possibly completed) check back to ``queued``.
-
-        Used when a re-run resets a job: we reuse the existing check-run id
-        rather than creating a duplicate, so the PR's check goes
-        failure -> queued -> (in_progress) -> final in place.
-        """
-        body = {"status": "queued"}
-        if output is not None:
-            body["output"] = output
-        self._api(
-            "PATCH",
-            f"https://api.github.com/repos/{self.repo}/check-runs/{self.id}",
-            self.token,
-            body,
-        )
-
     @classmethod
     def create_completed(
         cls, token, repo, head_sha, name, conclusion, output=None, details_url=None,
@@ -1055,30 +1038,16 @@ class WorkflowState:
         js.stale_flagged = False
         js.filter_reason = None
         js.rerun_count += 1
-        # Reuse the existing check-run and refresh its output for the re-run.
-        #
-        # LIMITATION: GitHub does NOT allow un-completing a check run. PATCHing a
-        # completed check back to status=queued/in_progress returns HTTP 200 but
-        # is silently ignored — only the output/text updates, the status stays
-        # `completed`. So a re-run does not visibly go queued -> in_progress
-        # again; the check keeps its previous conclusion and we just refresh the
-        # output (with the re-run number) until the job re-completes. Showing a
-        # real pending->running transition would require posting a NEW check run
-        # per re-run (new id) instead of reusing this one. See PROTOCOL.md.
-        if js.check is not None:
-            try:
-                js.check.requeue(
-                    output={
-                        # Title is plain text (safe); summary is markdown so the
-                        # "#N" is backticked to avoid GitHub auto-linking it to PR N.
-                        "title": f"QUEUED (re-run #{js.rerun_count})",
-                        "summary": (
-                            f"QUEUED: manual re-run `#{js.rerun_count}` requested."
-                        ),
-                    }
-                )
-            except Exception as e:
-                print(f"  [warn] could not requeue check for {name!r}: {e}")
+        # Post a NEW check run for the re-run instead of reusing the old one.
+        # GitHub does NOT allow un-completing a check: PATCHing a completed check
+        # back to queued/in_progress is silently ignored (status stays
+        # `completed`), so a reused check can't show the re-run going
+        # queued -> in_progress. Dropping js.check makes kick() -> _create_check
+        # POST a fresh check with the same name + external_id {run_id, job}; it
+        # goes queued -> in_progress -> final, and GitHub surfaces the latest
+        # check per name (the previous same-name check collapses). The next
+        # snapshot records the new check_id.
+        js.check = None
         return True
 
     def _delete_run_key(self, key):
