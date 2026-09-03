@@ -15,10 +15,12 @@ per-job `result_<job>.json`, `runs/<run_id>/<job>/final.json`, and `state.json`
 all record `success`). It was a **false negative in the aggregate report**, not a
 real job failure — and it predated the manual Code Review re-run (which worked).
 
-Root trigger: **the pool autoscaler scaled the default orchestrator ASG in
-(`desired 1→0`) while attempt 1 was mid-run**, killing it; the redelivered
-attempt 2 restart then left the shared, PR/sha-keyed report tree inconsistent,
-and Finish Workflow trusts that tree.
+Root trigger: **a redeploy re-applied the default orchestrator ASG and reset
+`DesiredCapacity` from 1 to 0 while attempt 1 was mid-run**, terminating it (this
+was NOT the autoscaler — CloudTrail shows `UpdateAutoScalingGroup` by the deploy
+user, and the pool autoscaler only ever scales *up*). The redelivered attempt 2
+restart then left the shared, PR/sha-keyed report tree inconsistent, and Finish
+Workflow trusts that tree.
 
 ## Timeline (UTC)
 
@@ -28,7 +30,7 @@ and Finish Workflow trusts that tree.
 | 14:01:51 | i-08bf0876d1d804cc3 launches (default pool, attempt 1) |
 | 14:02:23 | i-08bf starts orchestrating PR#144 "Praktika CI Advanced"; kicks Config + level-2 jobs |
 | 14:02:29 | attempt-1 Config Workflow completes → resets the shared PR/sha report tree to the plan (`push_pending_ci_report`, version=0) |
-| 14:02:49 | **autoscaler `desired 1→0`** — reads visible queue depth = 0 (the message is in-flight/invisible) → concludes idle |
+| 14:02:49 | **redeploy** — `UpdateAutoScalingGroup` (by the deploy user, per CloudTrail) re-applies the ASG and forces `DesiredCapacity 1→0` (the configured value for a scale-from-zero pool) |
 | 14:02:55 | i-08bf terminated (`Client.UserInitiatedShutdown`) **mid-run**, without deleting its SQS message; buffered orchestrator stdout lost |
 | 14:02:56 | attempt-1 Praktika Pytests completes on its runner (kicked before the kill) |
 | 14:03:43 | autoscaler `desired 0→1` → i-043ed4b5fce591033 launches |
@@ -42,13 +44,17 @@ and Finish Workflow trusts that tree.
 
 ## Root causes
 
-1. **Autoscaler scale-in-while-processing race** (primary trigger; previously
-   deferred). The lambda autoscaler set the default orchestrator ASG `desired
-   1→0` at 14:02:49 based on **visible** queue depth, but the message was
-   in-flight (invisible) and being processed by i-08bf. It terminated the working
-   orchestrator, forcing a 600s-delayed redelivery + restart. ASG scaling
-   activity confirms it (`shrinking capacity 1→0 … i-08bf selected for
-   termination`).
+1. **Redeploy scales a busy pool down** (primary trigger). Provisioning
+   (`autoscaling_group.py`) re-applied the ASG on an update and forced
+   `DesiredCapacity` to the configured value (0 for a scale-from-zero pool),
+   overriding the running `1` and terminating the in-flight orchestrator i-08bf
+   at 14:02:49. CloudTrail attributes it to `UpdateAutoScalingGroup` by the
+   deploy user — **not** the autoscaler. Both runtime scalers are innocent: the
+   pool autoscaler lambda only ever scales *up* (`max(current, proposed)`, counts
+   in-flight), and the controller's `try_scale_in_if_idle` refuses to scale in
+   while `ApproximateNumberOfMessagesNotVisible != 0`. Runtime capacity is owned
+   by those two; the deploy should never touch it downward. **Fixed** (see
+   below).
 
 2. **Finish Workflow is not restart-tolerant.** It marks a job `NOT_FINALIZED`
    from the **aggregate** workflow-result tree alone
@@ -75,10 +81,12 @@ and Finish Workflow trusts that tree.
   `NOT_FINALIZED`, re-read that job's own `result_<job>.json` (or
   `runs/<run_id>/<job>/final.json`) and trust a terminal result there. This alone
   would have rendered this run all-green despite the dirty tree.
-- **[deferred] Autoscaler scale-in race.** Don't scale a pool in while any of its
-  messages are in-flight (account for in-flight/invisible messages, or gate
-  scale-in on the controller's own idle signal rather than visible queue depth).
-  This is the harder, known-deferred fix; it removes the trigger.
+- **[done] Deploys never scale a pool down.** On an ASG update, provisioning now
+  uses `DesiredCapacity = max(current_running_desired, configured_desired)` and
+  treats desired as up-to-date whenever `current >= configured`, so a redeploy
+  can raise the floor but never shrinks a busy pool out from under an in-flight
+  orchestrator/runner. (`praktika/infrastructure/autoscaling_group.py`) This
+  removes the trigger.
 
 ## Notes
 

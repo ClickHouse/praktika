@@ -219,7 +219,11 @@ class AutoScalingGroup:
             return (
                 self.ext.get("min_size") == self.min_size
                 and self.ext.get("max_size") == self.max_size
-                and self.ext.get("desired_capacity") == desired_capacity
+                # Deploys never scale down (see deploy()): the pool is up to date
+                # on desired as long as the current running capacity is at least
+                # the configured floor — so a busy pool (current > configured)
+                # isn't needlessly updated, and a deploy fires only to raise it.
+                and (self.ext.get("desired_capacity") or 0) >= desired_capacity
                 and self.ext.get("health_check_type") == self.health_check_type
                 and self.ext.get("health_check_grace_period")
                 == self.health_check_grace_period_sec
@@ -297,11 +301,22 @@ class AutoScalingGroup:
                     print(f"ASG '{self.name}' is already up to date, skipping")
                     return self
                 print(f"Updating ASG: {self.name}")
+                # Never scale a pool DOWN on a deploy. Runtime desired capacity is
+                # owned by the pool autoscaler (scale-up) and by each instance's
+                # idle self-scale-in — NOT by provisioning. Forcing the configured
+                # desired here would terminate an orchestrator/runner that is
+                # mid-job whenever someone redeploys while work is in flight (this
+                # is what killed an in-flight orchestrator and forced a 2nd attempt
+                # — see INCIDENT_2026-09-03_stale_report.md). Take the max of the
+                # current running desired and the configured one, so a deploy can
+                # still raise the floor but can never shrink a busy pool.
+                current_desired = self.ext.get("desired_capacity") or 0
+                effective_desired = max(current_desired, desired_capacity)
                 req: Dict[str, Any] = {
                     "AutoScalingGroupName": self.name,
                     "MinSize": self.min_size,
                     "MaxSize": self.max_size,
-                    "DesiredCapacity": desired_capacity,
+                    "DesiredCapacity": effective_desired,
                     "VPCZoneIdentifier": vpc_zone_identifier,
                     "HealthCheckType": self.health_check_type,
                     "HealthCheckGracePeriod": self.health_check_grace_period_sec,
