@@ -948,9 +948,16 @@ class WorkflowState:
         to_reset = set()
         frontier = []
         for name in job_names:
-            if name in self.jobs and name not in to_reset:
-                to_reset.add(name)
-                frontier.append(name)
+            if name not in self.jobs or name in to_reset:
+                continue
+            # Only reset a job that has finished. If it is already PENDING/
+            # QUEUED/RUNNING it is mid-(re-)run from an earlier request, so
+            # resetting again would double-count rerun_count and re-dispatch —
+            # a runaway if a rerun-request key lingers (e.g. delete failed).
+            if self.jobs[name].status not in _TERMINAL:
+                continue
+            to_reset.add(name)
+            frontier.append(name)
         while frontier:
             cur = frontier.pop()
             for dep in self._dependents.get(cur, ()):

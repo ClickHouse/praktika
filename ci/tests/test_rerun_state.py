@@ -92,8 +92,21 @@ def test_apply_rerun_resets_job_and_failed_downstream():
     assert all(state.jobs[n].status == JobStatus.PENDING for n in ("A", "B", "C"))
     # Reset bumps the per-job re-run counter (surfaced in the check output).
     assert state.jobs["A"].rerun_count == 1
+    # A second re-run only counts once the job has finished again (the guard
+    # skips a job still mid-re-run).
+    state.jobs["A"].status = JobStatus.FAILURE
     state.apply_rerun(["A"])
     assert state.jobs["A"].rerun_count == 2
+
+
+def test_apply_rerun_skips_job_already_rerunning():
+    # A job that is not terminal (already reset / re-running) must not be reset
+    # again — otherwise a lingering rerun-request would runaway rerun_count.
+    s3 = _FakeS3()
+    state = _make_state(s3, {"A": JobStatus.PENDING, "B": JobStatus.SUCCESS, "C": JobStatus.SUCCESS})
+    reset = state.apply_rerun(["A"])
+    assert reset == set()
+    assert state.jobs["A"].rerun_count == 0
 
 
 def test_apply_rerun_leaves_successful_downstream_alone():

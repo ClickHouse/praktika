@@ -272,6 +272,12 @@ class OrchestratorPool:
                                 "s3:ListBucket",
                                 "s3:GetBucketLocation",
                                 "s3:PutObject",
+                                # sweep_rerun consumes (deletes) rerun-request keys
+                                # and _reset_job deletes stale final.json/heartbeat;
+                                # without DeleteObject those deletes fail silently,
+                                # so a rerun-request is re-applied every wait() loop
+                                # and rerun_count climbs without bound.
+                                "s3:DeleteObject",
                                 "s3:AbortMultipartUpload",
                             ],
                             "Resource": iam_scope.project_bucket_arns(),
