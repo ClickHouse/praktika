@@ -1,6 +1,6 @@
 ---
 title: Partial Re-run — Hardening (design notes)
-description: Open concurrency/correctness problems in finished-run partial re-run, with scenarios, and a proposed generation + lease design.
+description: Unified running/finished re-run design (S3 request-log + finalized signal + per-run boot lock), the concurrency problems it closes, and the one remaining orthogonal problem (stale-attempt overwrite).
 sidebar_label: Partial Re-run Hardening
 doc_type: design
 ---
@@ -33,201 +33,191 @@ Two review findings are already fixed:
   `cancel-request` / `cancel` markers so a re-run of a job from a *cancelled*
   workflow isn't immediately re-cancelled.
 
-A coarse **per-PR throttle** (`RERUN_MIN_INTERVAL_S`, default 120s) also limits
-re-runs to one per PR per window as a first line of defence.
+A coarse **per-PR throttle** (`RERUN_MIN_INTERVAL_S`, default 120s) currently
+limits re-runs to one per PR per window as a first line of defence.
 
-The problems below are the **finished-run** path specifically — they don't apply
-to the running-run path (single live orchestrator + batching).
+The two paths above (separate S3-request vs SQS handling, plus a per-PR
+rate-limit) are what the **Unified re-run** design below replaces.
 
-## The remaining problems
+## Unified re-run (the plan)
 
-### P1 — Concurrent finished-run resumes are not serialized
+The running and finished paths collapse into **one** rule with a single shared
+request log in S3. Three signals carry all the coordination — no generation
+counter, no TTL, no user-facing rate-limit:
 
-The finished-run path enqueues **one SQS message per click**. The orchestrator
-pool is `size=0`/Auto, so N messages can be picked up by **N orchestrator
-instances at once**, all resuming the **same `run_id`**.
+- **`runs/<run_id>/rerun-request/<delivery>.json`** — the request log. *Every*
+  re-run writes here, always, after validation. Delivery-id-named so concurrent
+  clicks never collide; consumed (deleted) by whichever orchestrator drains them.
+- **`finalized` in `state.json`** — the "is a live orchestrator present?" signal.
+  `false` while an orchestrator is driving (original run *or* an in-flight
+  resume); `true` only when no orchestrator is running.
+- **`runs/<run_id>/resume.lock`** — a per-run **boot lock** that serializes
+  *spawning* a resume orchestrator for a finished run. Created by the lambda
+  (conditional), deleted by the orchestrator once it's up. It only has to cover
+  the SQS→orchestrator-ready boot window; after that, `finalized=false` is the
+  live signal. No timer — see "Why no TTL".
 
-**Scenario**
-1. Run 500 for PR#144 finishes; `Test` and `Style Check` are both red.
-2. User multi-selects both and clicks "Re-run" → two `check_run.rerequested`
-   webhooks fire ~simultaneously.
-3. Lambda reads `finalized=true` for both → enqueues **two** `type:"rerun"`
-   messages.
-4. Autoscaler starts **two** orchestrator instances. Both:
-   - clone into the same per-PR dir (`/opt/praktika/work/pr-144`),
-   - reopen the same check ids,
-   - load the same `state.json`, reset their own job, and both
-     `save_snapshot()` — last writer wins, so one reset is lost,
-   - dispatch to the same `runs/<run_id>/…` completion keys.
-5. Result: clobbered snapshots, one job's reset silently dropped, possibly a
-   checkout yanked out from under the other instance.
+### Lambda — every re-run (after SHA / maintainer validation)
 
-The throttle mitigates this (a resume takes ~15s ≪ 120s window) but it's a
-rate-limit, not a guarantee — if the throttle fails open (e.g. an S3 error) or
-the window is tuned down, the race is back.
+```
+1. write runs/<run_id>/rerun-request/<delivery>.json   (the job list)
+2. read finalized from state.json
+3. finalized == false  → done. A live orchestrator will sweep it.
+4. finalized == true    → create runs/<run_id>/resume.lock  (IfNoneMatch='*')
+     win  → send SQS {type: rerun, run_id}
+     lose → done. Another resume is already being spawned; it will batch-drain
+            this request too (it's already in S3).
+```
 
-### P2 — Finish race: a re-run request can be silently lost
+There is **no throttle**. A user clicking five jobs on a running workflow just
+writes five request keys; the live orchestrator batches them, and the existing
+`MAX_RERUNS_PER_JOB` cap + terminal-only guard in `apply_rerun` stop any
+runaway. The `resume.lock` is not a rate-limit — it's a spawn-lease that stops
+*two orchestrators* starting for the same finished run, nothing more.
 
-The lambda decides running-vs-finished by reading the `finalized` flag in
-`state.json`. There's a read/write gap against the orchestrator finalizing.
+### Orchestrator — resume (`_orchestrate_resume`)
 
-**Scenario**
-1. Run 500 is on its last job; the orchestrator is about to finalize.
-2. Lambda handles a re-run click: reads `state.json` → `finalized=false` (still
-   running) → writes `runs/<run_id>/rerun-request/<d>.json`, expecting the live
-   orchestrator to pick it up. It does **not** enqueue a resume message.
-3. The orchestrator had *already* run its final `sweep_rerun()` (found nothing)
-   an instant earlier, and now writes `finalized=true` and exits.
-4. No live orchestrator remains to consume the request, and no resume message
-   was enqueued → **the user's re-run is silently lost** (the check just stays
-   red, nothing happens).
+```
+1. load snapshot
+2. seed_from_snapshot + apply_rerun + sweep_rerun   (batch-drain ALL pending requests)
+3. save_snapshot(finalized=false, required=True)    ← live signal now ON
+4. delete runs/<run_id>/resume.lock                 ← only AFTER step 3 (see below)
+5. drive DAG …
+   finalize: write finalized=true → one more sweep_rerun()
+       found → set finalized=false, keep driving
+       none  → delete resume.lock + exit
+```
 
-The current "final `sweep_rerun()` before finalize" narrows the window but does
-not close it: the request can land *after* that sweep.
+**Ordering matters.** The lock must be deleted *after* the `finalized=false`
+write, not before. If it were deleted first there'd be a gap where the lock is
+gone **and** `finalized` is still `true` — a concurrent click would create a new
+lock and spawn a *second* orchestrator on the same `run_id`. Deleting after
+`finalized=false` hands the "live orchestrator present" signal over atomically:
+by the time the lock is gone, new clicks already read `finalized=false` and take
+the running path. Deleting the lock again on later sweeps / in the exit path is
+harmless idempotent insurance — only the *first* delete's ordering matters.
 
-### P3 — A stale redelivered runner can overwrite a re-run's result
+The resume orchestrator **batch-drains all** pending `rerun-request` keys under
+its lock, not just its own message's jobs. This is what lets multiple
+finished-run clicks (and the losers of the lock race) converge into one resume.
 
-`heartbeat.json` and `final.json` are keyed per **job**, not per **attempt**.
+### Orchestrator finalize handshake (closes the running-path finish race)
+
+Finalize is not "write `finalized=true` and exit" — it's write `finalized=true`,
+then run **one more** `sweep_rerun()`; if that finds a request, set
+`finalized=false` and keep driving. This is what makes the lambda's
+"write-request-then-read-finalized" safe on the *running* path:
+
+- lambda read sees `false` → the orchestrator hasn't finalized yet, so its
+  post-finalize recheck runs *after* the request write (happens-before via S3
+  strong consistency) and drains it;
+- lambda read sees `true` → the orchestrator has finalized, so the lambda takes
+  the finished path and spawns a resume.
+
+Either way the request is never stranded.
+
+### Why no TTL on the lock
+
+**SQS redelivery is the crash-recovery, so the lock needs no timer.** The lock
+only covers the boot window (lambda sends SQS → orchestrator writes
+`finalized=false` → deletes lock). The only way it's left set is an orchestrator
+that crashed *inside* that window — but that same crash means the `type:rerun`
+SQS message was never acked, so it redelivers on visibility-timeout and a fresh
+orchestrator picks up the same `run_id`, deletes the (now stale) lock
+unconditionally on boot, and proceeds. The lock being present never blocks the
+*orchestrator* — only the *lambda* from spawning duplicates — so a redelivered
+orchestrator sails past it.
+
+The one case redelivery doesn't cover is the message exhausting
+`maxReceiveCount` → DLQ (the orchestrator crashed on every attempt). Then the run
+stays wedged with the lock set — but that's **visible** (a message parked in the
+DLQ), identical to any other terminally-failing run, and strictly better than a
+silent timer-based takeover. Accept it.
+
+### Concurrency walkthrough
+
+- **Multi-select on a finished run** — user re-runs `Test` + `Style Check`; two
+  `rerequested` webhooks fire together. Both lambdas write their request to S3,
+  both read `finalized=true`, both try to create `resume.lock`; the conditional
+  create lets exactly one win → one SQS → one orchestrator. It batch-drains
+  *both* requests. The loser sent no SQS. **One resume, both jobs.** (closes P1)
+- **Finish race on a running run** — lambda writes request, reads
+  `finalized=false`, relies on the live orchestrator; the orchestrator is
+  finalizing at that instant. Its post-finalize recheck sweep runs after the
+  request write → drains it and keeps driving. (closes P2)
+- **Stale throttle window** — there is no throttle window to go stale; the lock
+  is create-only and explicitly deleted. (closes P4)
+- **Resume orchestrator dies during boot** — SQS message redelivers → fresh
+  orchestrator removes the stale lock and resumes.
+
+## Still remaining — P3: a stale redelivered runner can overwrite a re-run result
+
+This one is **orthogonal** to the running/finished unification above and is *not*
+closed by it. `heartbeat.json` and `final.json` are keyed per **job**, not per
+**attempt**.
 
 **Scenario**
 1. `Test` (attempt 1) is dispatched; its runner is declared dead (heartbeat
-   timeout) but its SQS `job_task` is still within `maxReceiveCount` and will be
+   timeout) but its `job_task` is still within `maxReceiveCount` and will be
    redelivered.
-2. User re-runs `Test`. `_reset_job` deletes the old `final.json`/`heartbeat.json`
-   and dispatches attempt 2 to a fresh runner (writing the **same** keys).
-3. The redelivered attempt-1 runner now wakes up, finishes, and writes
-   `runs/<run_id>/Test/final.json` — **the same key attempt 2 uses**.
+2. User re-runs `Test`. `_reset_job` deletes the old
+   `final.json`/`heartbeat.json` and dispatches attempt 2 to a fresh runner
+   (writing the **same** keys).
+3. The redelivered attempt-1 runner wakes up, finishes, and writes
+   `runs/<run_id>/Test/final.json` — the same key attempt 2 uses.
 4. The orchestrator's `sweep_completions` reads attempt 1's stale `final.json`
    and completes the check with attempt 1's (old) result — before attempt 2
-   finishes, or overwriting attempt 2's result.
+   finishes, or overwriting attempt 2's.
 
-### P4 — Throttle window-refresh is not serialized
-
-The per-PR re-run throttle (`_rerun_throttled` in `lambda_gh_trigger.py`) is
-atomic only when the marker is **absent**: it claims a window with a conditional
-create (`put IfNoneMatch='*'`). When the marker **exists but the window has
-expired**, it refreshes with an **unconditional** `put` and returns "allowed" —
-and that path is not serialized.
-
-**Scenario**
-1. A re-run happened >`RERUN_MIN_INTERVAL_S` ago, so `pr/<pr>/rerun-throttle`
-   holds a stale timestamp.
-2. Two re-run webhooks for the PR arrive together. Both `IfNoneMatch` creates
-   fail (marker present), both read the same old `ts`, both see the window
-   expired, both do the unconditional `put`, and **both return allowed**.
-3. For a finished run that enqueues **two resume controllers**, racing on the
-   same `run_id` / snapshot / checkout / completion keys (the exact concurrency
-   the throttle exists to prevent — see P1).
-
-Note the common multi-select case (no marker yet) *is* serialized by the initial
-`IfNoneMatch` create; only the stale-window-refresh path has the hole.
-
-**Fix options**
-- Make the throttle *create-only*: encode the window in the key,
-  `pr/<pr>/rerun-throttle-<floor(event_ts / interval)>`, claimed with
-  `IfNoneMatch='*'`. Exactly one caller wins each window's create; no timestamp
-  read, no unconditional overwrite. (Minor: a boundary-straddling pair can each
-  win adjacent windows — a throttle-accuracy nit, not a concurrency race.)
-- Or rely on the per-run **lease** below (P1), which serializes resumes directly
-  and makes the throttle just a cheap first filter.
-
-## Proposal — a per-run "resume generation" behind an atomic lease
-
-All three collapse into one primitive: each resume is a new **generation** of the
-run, and only one orchestrator may own a generation at a time (an atomic
-**lease**).
-
-### 1. Generation counter
-
-Add `generation: int` to `state.json` (0 = original run, +1 per resume).
-
-### 2. Generation-scoped S3 keys — fixes **P3**
-
-Move the per-attempt signals under the generation:
+**Fix — attempt-scoped completion keys.** `_reset_job` already bumps
+`rerun_count`; carry it on the `job_task` and key the per-attempt signals by it:
 
 ```
-runs/<run_id>/g<gen>/<job>/heartbeat.json
-runs/<run_id>/g<gen>/<job>/final.json
-runs/<run_id>/g<gen>/cancel
+runs/<run_id>/<job>/a<rerun_count>/heartbeat.json
+runs/<run_id>/<job>/a<rerun_count>/final.json
 ```
 
-The `job_task` carries `generation`; the runner writes/reads `g<gen>` keys; the
-orchestrator sweeps only its own generation. A stale attempt-1 runner writes
-`g0` keys, which the `g1` resume never reads → no overwrite, no premature
-completion. (`state.json`, `cancel-request`, and `rerun-request` stay
-run-scoped — they are generation-agnostic control signals.)
-
-### 3. Atomic lease — fixes **P1**
-
-On resume, claim the run before touching anything, using an S3 conditional
-create (S3 supports `If-None-Match: *`):
-
-```
-put runs/<run_id>/resume.lock  (If-None-Match:*, body={generation, instance_id, ts})
-  win  → own this resume; generation = prev+1; drain requests + run; delete lock at end
-  lose → another resume in flight → drop this delivery (its jobs are already in the
-         batched rerun-request keys the winner will drain)
-```
-
-Stale-lease recovery: if the existing lock's `ts` is older than a timeout (the
-owner died), allow a conditional takeover. This is the real serialization — one
-claimant per run — so concurrent finished-run resumes can no longer reuse each
-other's checkout / keys.
-
-### 4. Write-then-check handshake — fixes **P2**
-
-- **Lambda** (every re-run): (a) write the `rerun-request` key **first**;
-  (b) *then* read `finalized`; (c) if `finalized == true` → enqueue a resume
-  trigger.
-- **Orchestrator finalize**: write `finalized=true`, then run **one more**
-  `sweep_rerun()`; if it finds a request → set `finalized=false` and keep going.
-
-Because the request write happens-before the lambda's `finalized` read:
-- if that read sees `true` → the lambda enqueues a resume (a fresh orchestrator
-  claims + drains the request);
-- if it sees `false` → the orchestrator hasn't finalized yet, so its
-  post-finalize recheck runs *after* the request write and drains it.
-
-Either path → the request is never stranded.
-
-Also make the finished-run path **always write a `rerun-request` key** (like the
-running path), and have the resume orchestrator **batch-drain all** pending
-requests under its lease, instead of acting only on its own message's
-`rerun_jobs`. This unifies running and finished handling and lets multiple
-finished-run clicks converge into one resume.
+The runner writes/reads `a<n>` keys; the orchestrator sweeps only the current
+attempt's key. A stale attempt-1 runner writes `a0` keys, which the `a1`
+orchestrator never reads → no overwrite, no premature completion. (`state.json`,
+`cancel-request`, and `rerun-request` stay run-scoped — they're
+attempt-agnostic control signals.)
 
 ## Mapping
 
 | Problem | Closed by |
 |---|---|
-| P1 — concurrent resumes | the lease (single claimant per run) |
-| P2 — finish race / lost request | write-then-check + finalize-recheck handshake |
-| P3 — stale-attempt overwrite | generation-scoped `g<gen>` keys |
-| P4 — throttle window-refresh race | create-only window-keyed throttle, or the lease (P1) |
-
-With the lease in place, the per-PR throttle becomes an optional cheap
-first-line filter rather than the correctness mechanism, and could be removed.
+| P1 — concurrent finished-run resumes | conditional `resume.lock` create (single spawner) + batch-drain |
+| P2 — finish race / lost request | write-request-then-read-`finalized` + finalize-recheck handshake |
+| P4 — throttle window-refresh race | throttle removed; lock is create-only |
+| P3 — stale-attempt overwrite | **still open** — attempt-scoped `a<n>` completion keys |
 
 ## Suggested increments
 
-1. **Generation-scoped keys (P3)** — self-contained: add `generation` to the
-   snapshot + `job_task`, key `heartbeat`/`final`/`cancel` by generation, sweep
-   the current generation. High value, low blast radius.
-2. **Lease (P1)** — `resume.lock` conditional-create + stale takeover; losers
-   drop.
-3. **Handshake + always-write-request + batch-drain (P2)** — lambda writes
-   request first then checks `finalized`; orchestrator finalize-recheck.
+1. **Unify the request path** — lambda always writes `rerun-request` then reads
+   `finalized`; finished path guarded by the conditional `resume.lock`; resume
+   orchestrator batch-drains all requests, writes `finalized=false`, then deletes
+   the lock (in that order). Remove the per-PR throttle. Closes P1/P2/P4.
+2. **Finalize handshake** — orchestrator finalize writes `finalized=true`, does
+   one more `sweep_rerun()`, un-finalizes + continues if it finds anything.
+3. **Attempt-scoped keys (P3)** — carry `rerun_count` on the `job_task`, key
+   `heartbeat`/`final` by `a<n>`, sweep the current attempt. Self-contained, low
+   blast radius; can land independently of 1–2.
 
 ## Touch points
 
-- `praktika/orchestrator/state.py` — `generation` field; `g<gen>` key builders;
-  `save_snapshot`/`seed_from_snapshot`; lease helpers; finalize recheck.
-- `praktika/orchestrator/__init__.py` — `_orchestrate_resume`: claim lease, bump
-  generation, batch-drain, run; `_drive_dag` finalize recheck.
-- `praktika/orchestrator/job_runner.py` — read `generation` from the task, write
-  `g<gen>` keys.
-- `praktika/infrastructure/native/lambda_gh_trigger.py` — always write
-  `rerun-request`; write-then-check-`finalized` handshake; enqueue-on-finalized.
+- `praktika/infrastructure/native/lambda_gh_trigger.py` — `_handle_partial_rerun`:
+  always write the `rerun-request` key, then read `finalized`; on `finalized`,
+  conditional-create `runs/<run_id>/resume.lock` and only send SQS if the create
+  won; delete `_rerun_throttled` / `RERUN_MIN_INTERVAL_S`.
+- `praktika/orchestrator/__init__.py` — `_orchestrate_resume`: batch-drain,
+  `save_snapshot(finalized=false, required=True)`, then delete the lock;
+  `_drive_dag` finalize recheck (already writes the snapshot each loop — add the
+  post-finalize sweep + un-finalize).
+- `praktika/orchestrator/state.py` — lock helpers (create/delete);
+  `sweep_rerun()` already batches; finalize recheck support.
+- `praktika/orchestrator/job_runner.py` — (P3) read `rerun_count` from the task,
+  write `a<n>` keys.
 - IAM: the webhook role already has `runs/*/rerun-request/*` and
-  `runs/*/state.json`; add `runs/*/resume.lock` if the lambda ever writes it
-  (currently only orchestrators would).
+  `runs/*/state.json`; add `runs/*/resume.lock` (create + the orchestrator's
+  delete lives under the EC2 role, which already has `s3:DeleteObject`).
