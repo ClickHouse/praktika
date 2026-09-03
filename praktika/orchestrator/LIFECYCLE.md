@@ -46,7 +46,6 @@ Bucket: `Settings.S3_ARTIFACT_BUCKET` (e.g. `praktika-artifacts-eu-north-1`).
 | `runs/<run_id>/cancel` (kill flag) | Orchestrator (`cancel_unfinished_jobs`) | Runner (`CancelWatchdog` + pre-clone guard) | tells running runners to kill the job subprocess |
 | `runs/<run_id>/cancel-request` | Lambda (UI Cancel button) | Orchestrator (`sweep_cancel`) | manual cancel of one run |
 | `pr/<pr>/cancel-before-<scope>` | Lambda (`synchronize` / new push) | Orchestrator (`sweep_cancel`) | `ts` + `head_sha`; older in-scope runs self-cancel |
-| `pr/<pr>/rerun-throttle` | Lambda (conditional `IfNoneMatch`) | Lambda | full-workflow re-run only: one per PR per `RERUN_MIN_INTERVAL_S` |
 | `runs/<run_id>/rerun-request/<delivery>.json` | Lambda (every partial re-run) | Orchestrator (`sweep_rerun`, consume-once) | `jobs` to reset + re-run; single request log both running and resume paths drain |
 | `runs/<run_id>/resume.lock` | Lambda (conditional `IfNoneMatch`, finished-run partial re-run) | resume Orchestrator (delete after `finalized=false`) | per-run boot-lease: serializes spawning one resume; no TTL (SQS redelivery recovers a crashed boot) |
 | `external-pr-approvals/<repo>/pr/<n>.json` | Lambda (gate approve/store) | Lambda | fork-PR approval state |

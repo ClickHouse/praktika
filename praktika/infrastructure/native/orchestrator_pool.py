@@ -216,10 +216,10 @@ class OrchestratorPool:
         artifact_bucket = (Settings.S3_ARTIFACT_BUCKET or "").strip()
         # Scope the webhook role by *area prefix*, not per-key: it may Get/Put any
         # control object the lambda writes under runs/ (cancel-request,
-        # rerun-request, resume.lock, state.json, …), pr/ (cancel-before,
-        # rerun-throttle) and external-pr-approvals/. Prefix-level so adding a new
-        # per-run/per-PR signal key never needs an IAM redeploy. Still far tighter
-        # than the orchestrator EC2 role, which is bucket-wide (project_bucket_arns).
+        # rerun-request, resume.lock, state.json, …), pr/ (cancel-before) and
+        # external-pr-approvals/. Prefix-level so adding a new per-run/per-PR
+        # signal key never needs an IAM redeploy. Still far tighter than the
+        # orchestrator EC2 role, which is bucket-wide (project_bucket_arns).
         bucket = artifact_bucket or "*"
         artifact_resources = [
             f"arn:aws:s3:::{bucket}/runs/*",

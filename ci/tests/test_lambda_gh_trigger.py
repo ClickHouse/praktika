@@ -699,7 +699,7 @@ def test_external_rerun_of_current_head_approves_and_enqueues(monkeypatch):
 
 
 class _ThrottleS3:
-    """Fake S3 supporting the conditional put (IfNoneMatch) the rerun throttle uses."""
+    """Fake S3 supporting the conditional put (IfNoneMatch) the resume lock uses."""
 
     def __init__(self):
         self.store = {}
@@ -718,29 +718,6 @@ class _ThrottleS3:
             err.response = {"Error": {"Code": "NoSuchKey"}}
             raise err
         return {"Body": io.BytesIO(self.store[Key])}
-
-
-def test_rerun_throttle_blocks_second_within_window(monkeypatch):
-    mod = _reload_lambda(monkeypatch)
-    monkeypatch.setattr(mod, "S3_BUCKET", "bucket")
-    monkeypatch.setattr(mod, "RERUN_MIN_INTERVAL_S", 120)
-    monkeypatch.setattr(mod, "_s3", lambda: _shared_s3, raising=False)
-    global _shared_s3
-    _shared_s3 = _ThrottleS3()
-
-    assert mod._rerun_throttled(17, 1000.0) is False   # first: claims the window
-    assert mod._rerun_throttled(17, 1030.0) is True    # +30s: throttled
-    assert mod._rerun_throttled(17, 1200.0) is False   # +200s: window elapsed, allowed
-    # A different PR is independent.
-    assert mod._rerun_throttled(18, 1030.0) is False
-
-
-def test_rerun_throttle_disabled_when_interval_zero(monkeypatch):
-    mod = _reload_lambda(monkeypatch)
-    monkeypatch.setattr(mod, "S3_BUCKET", "bucket")
-    monkeypatch.setattr(mod, "RERUN_MIN_INTERVAL_S", 0)
-    monkeypatch.setattr(mod, "_s3", lambda: _ThrottleS3())
-    assert mod._rerun_throttled(17, 1000.0) is False
 
 
 def test_rapid_partial_reruns_on_running_are_not_throttled(monkeypatch):
@@ -775,14 +752,11 @@ def test_claim_resume_lock_serializes_concurrent_spawns(monkeypatch):
     assert mod._claim_resume_lock("run99", 1000.0) is True    # other run independent
 
 
-def test_rejected_rerun_does_not_burn_throttle_window(monkeypatch):
-    # A stale click (rejected before the throttle claim) must not block a valid
-    # click that follows immediately (review #20 — validate before throttling).
+def test_stale_partial_rerun_rejected_does_not_block_next(monkeypatch):
+    # A stale click (head advanced past the check's sha) is rejected before it
+    # writes anything, and must not block a valid click that follows immediately.
     mod = _reload_lambda(monkeypatch)
     monkeypatch.setattr(mod, "S3_BUCKET", "bucket")
-    monkeypatch.setattr(mod, "RERUN_MIN_INTERVAL_S", 120)
-    s3 = _ThrottleS3()
-    monkeypatch.setattr(mod, "_s3", lambda: s3)
     requests = []
     monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
     # Live head is "b"*40; a click on the old "a"*40 check is stale.
@@ -791,9 +765,9 @@ def test_rejected_rerun_does_not_burn_throttle_window(monkeypatch):
     monkeypatch.setattr(mod, "_write_rerun_request", lambda run_id, jobs, delivery_id: requests.append((run_id, jobs)))
     monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: None)
 
-    # Stale click -> rejected, must NOT claim the throttle window.
+    # Stale click -> rejected before writing a request.
     mod.lambda_handler(_partial_rerun_event("d-stale", head_sha="a" * 40), None)
     assert requests == []
-    # Valid current-head click immediately after -> should proceed (not throttled).
+    # Valid current-head click immediately after -> proceeds.
     mod.lambda_handler(_partial_rerun_event("d-valid", head_sha="b" * 40), None)
     assert requests == [("run42", ["Style check"])]

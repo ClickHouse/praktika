@@ -91,13 +91,6 @@ def _parse_allowed_users():
     return {str(user).strip().casefold() for user in value if str(user).strip()}
 
 
-# Minimum spacing between re-runs for one PR. A re-run of a finished run spawns
-# a fresh orchestrator; without this, several near-simultaneous "re-run" clicks
-# (e.g. multi-select) would enqueue several resumes racing on the same run's
-# state. Throttling to one per window keeps at most one resume in flight. 0
-# disables. See _rerun_throttled.
-RERUN_MIN_INTERVAL_S = int(os.environ.get("RERUN_MIN_INTERVAL_S", "120") or "120")
-
 ALLOWED_PUSH_BRANCHES = _parse_allowed_push_branches()
 EXTERNAL_PR_AUTOAPPROVE_PATHS = _parse_autoapprove_paths()
 ALLOWED_REPOSITORIES = _parse_allowed_repositories()
@@ -242,51 +235,6 @@ def _claim_resume_lock(run_id: str, event_ts) -> bool:
             return False  # another resume already claimed this run
         print(f"  [warn] resume lock claim failed, not spawning: {e}")
         return False
-
-
-def _rerun_throttle_key(pr_number) -> str:
-    return f"pr/{pr_number}/rerun-throttle"
-
-
-def _rerun_throttled(pr_number, event_ts) -> bool:
-    """Return True if a re-run for this PR happened within RERUN_MIN_INTERVAL_S.
-
-    Uses an atomic conditional create (``IfNoneMatch='*'``) so that several
-    near-simultaneous clicks (multi-select "re-run") don't all pass: exactly one
-    create wins the window, the rest see the fresh marker and are throttled. Once
-    the window elapses the marker is refreshed unconditionally. Fails open on any
-    unexpected error so a throttle glitch never blocks CI.
-    """
-    if not S3_BUCKET or RERUN_MIN_INTERVAL_S <= 0 or not pr_number:
-        return False
-    key = _rerun_throttle_key(pr_number)
-    body = json.dumps({"ts": event_ts}).encode("utf-8")
-    try:
-        _s3().put_object(
-            Bucket=S3_BUCKET, Key=key, Body=body,
-            IfNoneMatch="*", ContentType="application/json",
-        )
-        return False  # created it — first re-run in this window
-    except Exception as e:
-        if not _is_precondition_failed(e):
-            print(f"  [warn] rerun throttle check failed, allowing: {e}")
-            return False
-    # Marker already exists — throttle if it is still fresh.
-    try:
-        resp = _s3().get_object(Bucket=S3_BUCKET, Key=key)
-        prev_ts = float(json.loads(resp["Body"].read()).get("ts", 0))
-    except Exception as e:
-        print(f"  [warn] rerun throttle read failed, allowing: {e}")
-        return False
-    if event_ts - prev_ts < RERUN_MIN_INTERVAL_S:
-        return True
-    try:
-        _s3().put_object(
-            Bucket=S3_BUCKET, Key=key, Body=body, ContentType="application/json"
-        )
-    except Exception:
-        pass
-    return False
 
 
 def _get_raw_body(event) -> str:
@@ -958,10 +906,9 @@ def _handle_rerun(check_obj, payload, delivery_id, sender, event_ts, source):
     that marker (the check_suite "re-run all", the top-level check, or a run from
     before external_ids) falls back to a full-workflow re-run.
     """
-    # The full-rerun path claims a per-PR throttle *after* validation (so a
-    # rejected click — stale head, non-maintainer — doesn't burn the window). The
-    # partial-rerun path takes no throttle: it is serialized instead by a per-run
-    # resume.lock and absorbs unlimited live requests (see _handle_partial_rerun).
+    # Neither path rate-limits: the partial-rerun path is serialized by a per-run
+    # resume.lock and absorbs unlimited live requests; the full-rerun path mints a
+    # fresh run per click (rapid clicks just waste compute — see _handle_full_rerun).
     parsed = _parse_job_check_external_id(check_obj.get("external_id", ""))
     if parsed:
         _handle_partial_rerun(parsed[0], parsed[1], check_obj, payload, delivery_id, sender, event_ts)
@@ -1120,14 +1067,10 @@ def _handle_full_rerun(check_obj, payload, delivery_id, sender, event_ts, source
         )
         return
 
-    # Claim the throttle window only after validation (see _handle_partial_rerun).
-    if _rerun_throttled(pr_number, event_ts):
-        print(
-            f"SKIP: {source}.rerequested — throttled for PR#{pr_number} "
-            f"(< {RERUN_MIN_INTERVAL_S}s since last re-run)"
-        )
-        return
-
+    # No throttle / dedup here: a full re-run mints a brand-new run (new run_id,
+    # new S3 prefix) and writes no cancel marker, so two rapid "re-run all" clicks
+    # simply spawn two independent full workflows — wasteful, but harmless (see
+    # PROTOCOL.md). Users should avoid mashing the button.
     workflow = _build_pr_workflow(
         "rerequested", repo, pr_number, rerun_sha, sender, event_ts, meta
     )

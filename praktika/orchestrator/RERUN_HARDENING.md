@@ -37,11 +37,14 @@ Two review findings are already fixed:
   `cancel-request` / `cancel` markers so a re-run of a job from a *cancelled*
   workflow isn't immediately re-cancelled.
 
-A coarse **per-PR throttle** (`RERUN_MIN_INTERVAL_S`, default 120s) currently
-limits re-runs to one per PR per window as a first line of defence.
+Earlier this had a coarse **per-PR throttle** (`RERUN_MIN_INTERVAL_S`) as a first
+line of defence against concurrent resumes. It has been **removed**: the
+`resume.lock` serializes partial-rerun spawns directly, and the full-rerun path
+mints a fresh run per click (rapid clicks there just waste compute — a UX note,
+not a race).
 
-The two paths above (separate S3-request vs SQS handling, plus a per-PR
-rate-limit) are what the **Unified re-run** design below replaces.
+The two paths above (separate S3-request vs SQS handling) are what the
+**Unified re-run** design below replaces.
 
 ## Unified re-run (implemented)
 
@@ -215,7 +218,7 @@ attempt-agnostic control signals.)
 |---|---|
 | P1 — concurrent finished-run resumes | **closed** — conditional `resume.lock` create (single spawner) + batch-drain |
 | P2 — finish race / lost request | **closed** — write-request-then-read-`finalized` + finalize-recheck handshake |
-| P4 — throttle window-refresh race | **closed** — partial-path throttle removed; lock is create-only (full-rerun path keeps the coarse throttle) |
+| P4 — throttle window-refresh race | **closed** — the per-PR throttle is removed entirely; the lock is create-only |
 | Finalize-window redundant resume | **open** (narrow, benign) — closed only by the lease-generation design |
 | P3 — stale-attempt overwrite | **open** (narrow) — attempt-scoped `a<n>` completion keys |
 
@@ -224,9 +227,9 @@ attempt-agnostic control signals.)
 1. **Unify the request path** — *done.* The lambda always writes `rerun-request`
    then reads `finalized`; the finished path is guarded by the conditional
    `resume.lock`; the resume orchestrator batch-drains all requests, writes
-   `finalized=false`, then deletes the lock (in that order). The partial-path
-   throttle is removed (the full-rerun path keeps its coarse throttle). Closed
-   P1/P4.
+   `finalized=false`, then deletes the lock (in that order). The per-PR throttle
+   is removed entirely (the full-rerun path is left un-deduplicated — rapid clicks
+   just waste compute). Closed P1/P4.
 2. **Finalize handshake** — *done.* `_drive_dag` finalize writes `finalized=true`,
    does one more `sweep_rerun()`, and un-finalizes + continues if it finds
    anything. Closed P2 (at the cost of the narrow finalize-window residual above).
