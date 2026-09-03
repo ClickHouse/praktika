@@ -112,6 +112,13 @@ def _praktika_env(
     bootstrap_check_id=None,
 ) -> dict[str, str]:
     env = venv_env(venv_dir)
+    # Stream the orchestrator/runner subprocess stdout live to CloudWatch. Python
+    # block-buffers stdout when it isn't a TTY, so without this the progress lines
+    # (Trigger/KICK/DONE) only flush at process exit — and are LOST if the process
+    # is killed mid-run (e.g. the autoscaler scaling the ASG in while a message is
+    # in-flight). Unbuffered output survives the kill, so we can see how far the
+    # orchestrator got.
+    env["PYTHONUNBUFFERED"] = "1"
     env["PRAKTIKA_CONTROLLER_QUEUE"] = queue_name
     if attempt:
         # Surfaced on the GitHub check so cross-instance infra retries are
