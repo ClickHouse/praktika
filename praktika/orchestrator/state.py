@@ -862,6 +862,28 @@ class WorkflowState:
             except Exception as e:
                 print(f"  [warn] could not clear cancel marker {key}: {e}")
 
+    def _resume_lock_s3_key(self):
+        return f"{self._runs_s3_prefix}/resume.lock"
+
+    def delete_resume_lock(self):
+        """Release this run's resume boot-lease (``runs/<run_id>/resume.lock``).
+
+        The lambda claims the lock (atomic conditional create) before enqueuing a
+        resume so only one orchestrator is spawned per finished run; the resume
+        orchestrator drops it once it has published ``finalized=false`` — from
+        there the finalized flag itself is the "a live orchestrator exists"
+        signal. Idempotent + best-effort: a missing lock or an S3 error is fine,
+        because SQS redelivery re-runs a crashed boot, so the lock needs no TTL.
+        """
+        if self._s3 is None or self.local_mode:
+            return
+        try:
+            self._s3.delete_object(
+                Bucket=self._cancel_s3_bucket, Key=self._resume_lock_s3_key()
+            )
+        except Exception as e:
+            print(f"  [warn] could not delete resume lock: {e}")
+
     def save_snapshot(self, finalized=False, required=False):
         """Persist the DAG snapshot to ``runs/<run_id>/state.json``.
 

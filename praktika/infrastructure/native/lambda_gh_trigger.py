@@ -207,6 +207,43 @@ def _is_precondition_failed(error: Exception) -> bool:
     return code in ("PreconditionFailed", "412")
 
 
+def _resume_lock_key(run_id: str) -> str:
+    return f"runs/{run_id}/resume.lock"
+
+
+def _claim_resume_lock(run_id: str, event_ts) -> bool:
+    """Claim a finished run's *resume boot-lease* with an atomic conditional create.
+
+    Returns True if we won the lease (the caller enqueues exactly one resume) and
+    False if a resume is already being spawned for this run — in which case our
+    re-run request is already in S3 and that resume will batch-drain it, so we
+    must not spawn a second orchestrator.
+
+    The lease only covers the SQS→orchestrator boot window; the resume
+    orchestrator deletes it once it publishes finalized=false, and a boot crash
+    is recovered by SQS redelivery — so it needs no TTL. On an unexpected S3
+    error we fail CLOSED (return False, don't spawn): the request is already
+    recorded, so a subsequent click resumes it — safer than risking the
+    concurrent double-spawn this lease exists to prevent (see RERUN_HARDENING.md).
+    """
+    if not S3_BUCKET or not run_id:
+        return False
+    try:
+        _s3().put_object(
+            Bucket=S3_BUCKET,
+            Key=_resume_lock_key(run_id),
+            Body=json.dumps({"ts": event_ts}).encode("utf-8"),
+            IfNoneMatch="*",
+            ContentType="application/json",
+        )
+        return True
+    except Exception as e:
+        if _is_precondition_failed(e):
+            return False  # another resume already claimed this run
+        print(f"  [warn] resume lock claim failed, not spawning: {e}")
+        return False
+
+
 def _rerun_throttle_key(pr_number) -> str:
     return f"pr/{pr_number}/rerun-throttle"
 
@@ -921,9 +958,10 @@ def _handle_rerun(check_obj, payload, delivery_id, sender, event_ts, source):
     that marker (the check_suite "re-run all", the top-level check, or a run from
     before external_ids) falls back to a full-workflow re-run.
     """
-    # Note: the per-PR throttle is claimed inside the handlers *after* validation
-    # (see _rerun_throttled calls), so a rejected click — stale head, non-maintainer
-    # — doesn't burn the window and block a subsequent legitimate re-run.
+    # The full-rerun path claims a per-PR throttle *after* validation (so a
+    # rejected click — stale head, non-maintainer — doesn't burn the window). The
+    # partial-rerun path takes no throttle: it is serialized instead by a per-run
+    # resume.lock and absorbs unlimited live requests (see _handle_partial_rerun).
     parsed = _parse_job_check_external_id(check_obj.get("external_id", ""))
     if parsed:
         _handle_partial_rerun(parsed[0], parsed[1], check_obj, payload, delivery_id, sender, event_ts)
@@ -934,12 +972,15 @@ def _handle_rerun(check_obj, payload, delivery_id, sender, event_ts, source):
 def _handle_partial_rerun(run_id, job, check_obj, payload, delivery_id, sender, event_ts):
     """Re-run a single failed job (+ its failed downstream) on an existing run.
 
-    Running vs finished is decided from S3, never the GitHub API: the
-    orchestrator persists ``runs/<run_id>/state.json`` with a ``finalized`` flag.
-      - finished (finalized) → enqueue a ``rerun`` message; a fresh orchestrator
-        reloads the snapshot, resets the job, and re-drives.
-      - running (not finalized, or no snapshot yet) → drop a request under
-        ``runs/<run_id>/rerun-request/`` that the live orchestrator picks up.
+    Every re-run first records the job under ``runs/<run_id>/rerun-request/`` —
+    the single request log that both paths drain. Running vs finished is then
+    decided from S3, never the GitHub API, via the ``finalized`` flag in
+    ``runs/<run_id>/state.json``:
+      - running (not finalized, or no snapshot yet) → nothing more to do; the
+        live orchestrator's ``sweep_rerun`` picks up the request we just wrote.
+      - finished (finalized) → claim the per-run ``resume.lock`` and, if we win
+        it, enqueue one ``rerun`` message; a fresh orchestrator reloads the
+        snapshot, batch-drains all pending requests, and re-drives.
     """
     repo = payload.get("repository", {}).get("full_name", "")
     if ALLOWED_SENDERS and sender not in ALLOWED_SENDERS:
@@ -975,15 +1016,18 @@ def _handle_partial_rerun(run_id, job, check_obj, payload, delivery_id, sender, 
             print(f"SKIP: partial rerun run={run_id} — fork PR rerun by non-maintainer {sender}")
             return
 
-    # Claim the throttle window only now that the click is validated (valid
-    # sender, current head, authorized) — so a rejected click above doesn't burn
-    # the window and block a legitimate re-run. One re-run per PR per window
-    # prevents near-simultaneous clicks from racing concurrent resumes.
-    if _rerun_throttled(pr_number, event_ts):
-        print(
-            f"SKIP: partial rerun run={run_id} — throttled for PR#{pr_number} "
-            f"(< {RERUN_MIN_INTERVAL_S}s since last re-run)"
-        )
+    # Record the request in S3 FIRST — before reading finalized — so a run that
+    # finalizes concurrently can't strand it: the orchestrator's finalize recheck
+    # sweep runs after this write (see _drive_dag). One key per delivery,
+    # consumed once. This is the single request log for both paths; the live
+    # orchestrator's sweep_rerun drains it on a running run, a resume drains it on
+    # a finished one. No throttle — the resume.lock below serializes spawns
+    # without rate-limiting the user, and a running orchestrator absorbs any
+    # number of requests (bounded per job by MAX_RERUNS_PER_JOB).
+    try:
+        _write_rerun_request(run_id, [job], delivery_id)
+    except Exception as e:
+        print(f"SKIP: partial rerun run={run_id} — could not write request: {e}")
         return
 
     try:
@@ -992,29 +1036,41 @@ def _handle_partial_rerun(run_id, job, check_obj, payload, delivery_id, sender, 
         print(f"SKIP: partial rerun run={run_id} — could not read state: {e}")
         return
 
-    if snap and snap.get("finalized"):
-        # Carry the authoritative PR metadata (fork repo, labels, title, draft,
-        # refs) so the resume reconstructs a real pull_request context even when
-        # the run's snapshot has no environment to inherit it from — otherwise a
-        # fork PR could look internal and lose its metadata (see _orchestrate_resume).
-        workflow = {
-            "type": "rerun",
-            "run_id": run_id,
-            "rerun_jobs": [job],
-            "repo": snap.get("repo") or repo,
-            "head_sha": snap.get("head_sha", ""),
-            "pr_number": snap.get("pr_number"),
-            "sender": sender,
-            "event_ts": event_ts,
-            **meta,
-        }
-        _enqueue(workflow, delivery_id)
-        print(f"RERUN (partial, resume): run={run_id} job={job!r}")
+    if not (snap and snap.get("finalized")):
+        # Running (or snapshot not written yet): the live orchestrator's sweep
+        # picks up the request we just wrote. Nothing else to do.
+        print(f"RERUN (partial, live): run={run_id} job={job!r}")
         return
 
-    # Running (or snapshot not written yet): hand the job to the live orchestrator.
-    _write_rerun_request(run_id, [job], delivery_id)
-    print(f"RERUN (partial, live): run={run_id} job={job!r}")
+    # Finished: spawn a resume — but only one. resume.lock is a per-run boot lease
+    # claimed with an atomic conditional create; the winner enqueues the resume
+    # and its orchestrator batch-drains every pending request (this one plus any
+    # from clicks that lost the lease). Losers just return — their request is
+    # already in S3.
+    if not _claim_resume_lock(run_id, event_ts):
+        print(
+            f"RERUN (partial, resume): run={run_id} job={job!r} — "
+            f"resume already in flight; request queued"
+        )
+        return
+
+    # Carry the authoritative PR metadata (fork repo, labels, title, draft, refs)
+    # so the resume reconstructs a real pull_request context even when the run's
+    # snapshot has no environment to inherit it from — otherwise a fork PR could
+    # look internal and lose its metadata (see _orchestrate_resume).
+    workflow = {
+        "type": "rerun",
+        "run_id": run_id,
+        "rerun_jobs": [job],
+        "repo": snap.get("repo") or repo,
+        "head_sha": snap.get("head_sha", ""),
+        "pr_number": snap.get("pr_number"),
+        "sender": sender,
+        "event_ts": event_ts,
+        **meta,
+    }
+    _enqueue(workflow, delivery_id)
+    print(f"RERUN (partial, resume, spawned): run={run_id} job={job!r}")
 
 
 def _handle_full_rerun(check_obj, payload, delivery_id, sender, event_ts, source):

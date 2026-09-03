@@ -270,6 +270,16 @@ def test_sweep_rerun_no_requests_is_noop():
     assert state.sweep_rerun() is False
 
 
+def test_delete_resume_lock_removes_key():
+    s3 = _FakeS3()
+    s3.put_object("test-bucket", "runs/run42/resume.lock", b"{}")
+    state = _make_state(s3, {"A": JobStatus.SUCCESS, "B": JobStatus.SUCCESS, "C": JobStatus.SUCCESS})
+    state.delete_resume_lock()
+    assert ("test-bucket", "runs/run42/resume.lock") not in s3.store
+    # Idempotent: deleting an absent lock is a no-op, not an error.
+    state.delete_resume_lock()
+
+
 def test_save_snapshot_required_raises_on_failure(monkeypatch):
     import praktika.orchestrator.state as state_mod
     monkeypatch.setattr(state_mod.time, "sleep", lambda *_: None)

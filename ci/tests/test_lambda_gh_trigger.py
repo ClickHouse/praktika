@@ -580,8 +580,9 @@ def test_partial_rerun_external_non_maintainer_skipped(monkeypatch):
 
 
 def test_partial_rerun_finished_enqueues_resume(monkeypatch):
-    # Single-check re-run on a finished run (snapshot finalized): enqueue a
-    # `rerun` resume message targeting just that job.
+    # Single-check re-run on a finished run (snapshot finalized): record the
+    # request in S3, win the resume boot-lease, and enqueue one `rerun` resume
+    # message targeting just that job.
     mod = _reload_lambda(monkeypatch)
     requests = []
     enqueued = []
@@ -591,17 +592,42 @@ def test_partial_rerun_finished_enqueues_resume(monkeypatch):
     monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr_number: ("b" * 40, _rerun_meta(external=False)))
     monkeypatch.setattr(mod, "_load_run_snapshot", lambda run_id: snap)
     monkeypatch.setattr(mod, "_write_rerun_request", lambda run_id, jobs, delivery_id: requests.append((run_id, jobs)))
+    monkeypatch.setattr(mod, "_claim_resume_lock", lambda run_id, event_ts: True)
     monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append(workflow))
 
     mod.lambda_handler(_partial_rerun_event("dp2"), None)
 
-    assert requests == []
+    # The request is always recorded (single log both paths drain), then a
+    # resume is spawned because we won the lease.
+    assert requests == [("run42", ["Style check"])]
     assert len(enqueued) == 1
     wf = enqueued[0]
     assert wf["type"] == "rerun"
     assert wf["run_id"] == "run42"
     assert wf["rerun_jobs"] == ["Style check"]
     assert wf["head_sha"] == "b" * 40
+
+
+def test_partial_rerun_finished_lock_lost_queues_without_spawn(monkeypatch):
+    # On a finished run, if another resume already holds the boot-lease, the click
+    # still records its request but does NOT spawn a second resume — the in-flight
+    # resume batch-drains it.
+    mod = _reload_lambda(monkeypatch)
+    requests = []
+    enqueued = []
+
+    snap = {"finalized": True, "repo": "owner/repo", "head_sha": "b" * 40, "pr_number": 17}
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr_number: ("b" * 40, _rerun_meta(external=False)))
+    monkeypatch.setattr(mod, "_load_run_snapshot", lambda run_id: snap)
+    monkeypatch.setattr(mod, "_write_rerun_request", lambda run_id, jobs, delivery_id: requests.append((run_id, jobs)))
+    monkeypatch.setattr(mod, "_claim_resume_lock", lambda run_id, event_ts: False)
+    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append(workflow))
+
+    mod.lambda_handler(_partial_rerun_event("dp3"), None)
+
+    assert requests == [("run42", ["Style check"])]
+    assert enqueued == []
 
 
 def test_rerun_without_external_id_uses_full_path(monkeypatch):
@@ -717,13 +743,11 @@ def test_rerun_throttle_disabled_when_interval_zero(monkeypatch):
     assert mod._rerun_throttled(17, 1000.0) is False
 
 
-def test_second_rapid_partial_rerun_is_throttled(monkeypatch):
-    # Two near-simultaneous partial-rerun clicks: only the first is honored.
+def test_rapid_partial_reruns_on_running_are_not_throttled(monkeypatch):
+    # The partial-rerun path has no throttle: two near-simultaneous clicks on a
+    # running run each record a request, and the live orchestrator batches them.
     mod = _reload_lambda(monkeypatch)
     monkeypatch.setattr(mod, "S3_BUCKET", "bucket")
-    monkeypatch.setattr(mod, "RERUN_MIN_INTERVAL_S", 120)
-    s3 = _ThrottleS3()
-    monkeypatch.setattr(mod, "_s3", lambda: s3)
     requests = []
     monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
     monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr_number: ("b" * 40, _rerun_meta(external=False)))
@@ -734,7 +758,21 @@ def test_second_rapid_partial_rerun_is_throttled(monkeypatch):
     mod.lambda_handler(_partial_rerun_event("t1", job="Test"), None)
     mod.lambda_handler(_partial_rerun_event("t2", job="Style Check"), None)
 
-    assert requests == [("run42", ["Test"])]  # second click throttled
+    assert requests == [("run42", ["Test"]), ("run42", ["Style Check"])]
+
+
+def test_claim_resume_lock_serializes_concurrent_spawns(monkeypatch):
+    # The resume boot-lease is an atomic conditional create: the first claim on a
+    # run wins, a second concurrent claim on the same run loses, and a different
+    # run is independent.
+    mod = _reload_lambda(monkeypatch)
+    monkeypatch.setattr(mod, "S3_BUCKET", "bucket")
+    s3 = _ThrottleS3()
+    monkeypatch.setattr(mod, "_s3", lambda: s3)
+
+    assert mod._claim_resume_lock("run42", 1000.0) is True    # first spawn wins
+    assert mod._claim_resume_lock("run42", 1000.1) is False   # concurrent: loses
+    assert mod._claim_resume_lock("run99", 1000.0) is True    # other run independent
 
 
 def test_rejected_rerun_does_not_burn_throttle_window(monkeypatch):

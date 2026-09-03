@@ -7,9 +7,13 @@ doc_type: design
 
 # Partial re-run — hardening {#rerun-hardening}
 
-Status: **design / not yet implemented.** Captures the remaining hardening work
-for partial re-run (see [PROTOCOL.md → Partial re-run](./PROTOCOL.md#partial-rerun)
-for how the shipped feature works). Written up so it can be picked up later.
+Status: **unified re-run implemented; P3 + one narrow residual remain.** The
+running/finished unification below (a single S3 request log, the `finalized`
+liveness signal, a per-run `resume.lock` boot-lease, and the finalize-recheck
+handshake) is now the shipped behaviour and closed **P1/P2/P4**. What's left is
+**P3** (stale-attempt overwrite) and the **finalize-window redundant-resume**
+residual — both documented below. See
+[PROTOCOL.md → Partial re-run](./PROTOCOL.md#partial-rerun) for the shipped flow.
 
 ## Background (what's already shipped)
 
@@ -39,7 +43,7 @@ limits re-runs to one per PR per window as a first line of defence.
 The two paths above (separate S3-request vs SQS handling, plus a per-PR
 rate-limit) are what the **Unified re-run** design below replaces.
 
-## Unified re-run (the plan)
+## Unified re-run (implemented)
 
 The running and finished paths collapse into **one** rule with a single shared
 request log in S3. Three signals carry all the coordination — no generation
@@ -150,11 +154,33 @@ silent timer-based takeover. Accept it.
 - **Resume orchestrator dies during boot** — SQS message redelivers → fresh
   orchestrator removes the stale lock and resumes.
 
+## Still remaining — finalize-window redundant resume
+
+The finalize-recheck handshake orders the write as `finalized=true` **then**
+recheck-sweep, which guarantees no *lost* request (P2). The cost is a tiny window
+between those two steps where a click sees `finalized=true` (so the lambda claims
+`resume.lock` and spawns a resume) **and** the still-alive orchestrator's recheck
+sweep also drains the same request and keeps driving — so the job runs twice: once
+on the live orchestrator, once on the spawned resume, racing on the same run_id.
+It is **redundant work, never a lost or wrong result** (both attempts delete
+stale `final.json` on reset, and `MAX_RERUNS_PER_JOB` caps the churn), and the
+window is sub-second, once per finalize. Chosen deliberately over the reverse
+order (sweep-then-finalize), which trades this for a *silently lost* request —
+the worse failure. The lease-generation design closes it fully; deferred.
+
 ## Still remaining — P3: a stale redelivered runner can overwrite a re-run result
 
 This one is **orthogonal** to the running/finished unification above and is *not*
 closed by it. `heartbeat.json` and `final.json` are keyed per **job**, not per
 **attempt**.
+
+**Already mostly covered:** the runner's pre-clone `_run_is_finalized` guard
+(`controller.py`) makes a redelivered stale runner skip whenever the run is
+finalized — which is the normal state a re-runnable job is in. The scenario below
+only bites in the narrow overlap where the stale runner redelivers *during* an
+active resume (which deliberately sets `finalized=false`), and even then
+`_reset_job` has already deleted the old `final.json`. So this is a low-
+probability residual, not a routine failure.
 
 **Scenario**
 1. `Test` (attempt 1) is dispatched; its runner is declared dead (heartbeat
@@ -185,39 +211,45 @@ attempt-agnostic control signals.)
 
 ## Mapping
 
-| Problem | Closed by |
+| Problem | Status |
 |---|---|
-| P1 — concurrent finished-run resumes | conditional `resume.lock` create (single spawner) + batch-drain |
-| P2 — finish race / lost request | write-request-then-read-`finalized` + finalize-recheck handshake |
-| P4 — throttle window-refresh race | throttle removed; lock is create-only |
-| P3 — stale-attempt overwrite | **still open** — attempt-scoped `a<n>` completion keys |
+| P1 — concurrent finished-run resumes | **closed** — conditional `resume.lock` create (single spawner) + batch-drain |
+| P2 — finish race / lost request | **closed** — write-request-then-read-`finalized` + finalize-recheck handshake |
+| P4 — throttle window-refresh race | **closed** — partial-path throttle removed; lock is create-only (full-rerun path keeps the coarse throttle) |
+| Finalize-window redundant resume | **open** (narrow, benign) — closed only by the lease-generation design |
+| P3 — stale-attempt overwrite | **open** (narrow) — attempt-scoped `a<n>` completion keys |
 
-## Suggested increments
+## Increments
 
-1. **Unify the request path** — lambda always writes `rerun-request` then reads
-   `finalized`; finished path guarded by the conditional `resume.lock`; resume
-   orchestrator batch-drains all requests, writes `finalized=false`, then deletes
-   the lock (in that order). Remove the per-PR throttle. Closes P1/P2/P4.
-2. **Finalize handshake** — orchestrator finalize writes `finalized=true`, does
-   one more `sweep_rerun()`, un-finalizes + continues if it finds anything.
-3. **Attempt-scoped keys (P3)** — carry `rerun_count` on the `job_task`, key
-   `heartbeat`/`final` by `a<n>`, sweep the current attempt. Self-contained, low
-   blast radius; can land independently of 1–2.
+1. **Unify the request path** — *done.* The lambda always writes `rerun-request`
+   then reads `finalized`; the finished path is guarded by the conditional
+   `resume.lock`; the resume orchestrator batch-drains all requests, writes
+   `finalized=false`, then deletes the lock (in that order). The partial-path
+   throttle is removed (the full-rerun path keeps its coarse throttle). Closed
+   P1/P4.
+2. **Finalize handshake** — *done.* `_drive_dag` finalize writes `finalized=true`,
+   does one more `sweep_rerun()`, and un-finalizes + continues if it finds
+   anything. Closed P2 (at the cost of the narrow finalize-window residual above).
+3. **Attempt-scoped keys (P3)** — *not done.* Carry `rerun_count` on the
+   `job_task`, key `heartbeat`/`final` by `a<n>`, sweep the current attempt.
+   Self-contained, low blast radius; can land independently.
+4. **Lease-generation** — *not done.* The full lease + generation counter from
+   the earlier proposal closes both the finalize-window residual and P3 together;
+   only worth it if the narrow residuals prove to bite in practice.
 
-## Touch points
+## Touch points (implemented for 1–2; remaining for 3–4)
 
-- `praktika/infrastructure/native/lambda_gh_trigger.py` — `_handle_partial_rerun`:
-  always write the `rerun-request` key, then read `finalized`; on `finalized`,
-  conditional-create `runs/<run_id>/resume.lock` and only send SQS if the create
-  won; delete `_rerun_throttled` / `RERUN_MIN_INTERVAL_S`.
-- `praktika/orchestrator/__init__.py` — `_orchestrate_resume`: batch-drain,
-  `save_snapshot(finalized=false, required=True)`, then delete the lock;
-  `_drive_dag` finalize recheck (already writes the snapshot each loop — add the
-  post-finalize sweep + un-finalize).
-- `praktika/orchestrator/state.py` — lock helpers (create/delete);
-  `sweep_rerun()` already batches; finalize recheck support.
-- `praktika/orchestrator/job_runner.py` — (P3) read `rerun_count` from the task,
-  write `a<n>` keys.
-- IAM: the webhook role already has `runs/*/rerun-request/*` and
-  `runs/*/state.json`; add `runs/*/resume.lock` (create + the orchestrator's
-  delete lives under the EC2 role, which already has `s3:DeleteObject`).
+- `praktika/infrastructure/native/lambda_gh_trigger.py` — `_handle_partial_rerun`
+  writes the `rerun-request` key first, then reads `finalized`; on `finalized`,
+  `_claim_resume_lock` conditional-creates `runs/<run_id>/resume.lock` and only
+  sends SQS if it won. The partial path no longer throttles.
+- `praktika/orchestrator/__init__.py` — `_orchestrate_resume` batch-drains,
+  `save_snapshot(finalized=false, required=True)`, then `delete_resume_lock()`;
+  `_drive_dag` finalize writes `finalized=true` then re-sweeps + un-finalizes.
+- `praktika/orchestrator/state.py` — `delete_resume_lock()`; `sweep_rerun()`
+  batches; `save_snapshot` carries the `finalized` flag.
+- `praktika/orchestrator/job_runner.py` — (P3, remaining) read `rerun_count` from
+  the task, write `a<n>` keys.
+- IAM — `runs/*/resume.lock` added to the webhook role's `artifact_resources`
+  (create); the orchestrator EC2 role deletes it under its bucket-wide
+  `s3:DeleteObject`.

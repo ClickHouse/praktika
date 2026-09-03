@@ -389,9 +389,18 @@ def _drive_dag(state, check, workflow, event, advisor, report_url, is_rerun):
             if advisor is not None:
                 advisor.on_workflow_update(state, event)
             _patch_top_check(check, workflow, state, phase="running", details_url=report_url, is_rerun=is_rerun)
-        # DAG drained — final re-run check before finalizing (closes the
-        # lambda-sees-running-then-run-finishes race).
+        # DAG drained. Finalize handshake (closes the P2 finish race): publish
+        # finalized=true FIRST, then recheck for a re-run request. The lambda
+        # writes its rerun-request BEFORE reading finalized, so any request this
+        # sweep can't see must have been written after a lambda read of
+        # finalized=false — i.e. the lambda saw us still running and this live
+        # sweep already owns it; and any request whose lambda read finalized=true
+        # spawns a fresh resume. Either way nothing is stranded. (A click landing
+        # in the tiny finalized-true→sweep window can both re-drive here AND spawn
+        # a resume — a rare redundant run, never a lost one; see RERUN_HARDENING.md.)
+        state.save_snapshot(finalized=True)
         if state.sweep_rerun():
+            state.save_snapshot()  # un-finalize: we are driving again
             _patch_top_check(check, workflow, state, phase="running", details_url=report_url, is_rerun=is_rerun)
             continue
         break
@@ -673,6 +682,11 @@ def _orchestrate_resume(event, gh_token=None, ci=True):
     # would skip its task via the finalized guard. Fail as INFRA (retry on a
     # fresh orchestrator) rather than dispatch jobs that will be skipped.
     state.save_snapshot(required=True)
+    # Boot done: the finalized=false snapshot above is now the "live orchestrator
+    # exists" signal, so release the boot-lease. Deleted only AFTER that write, so
+    # there is never a window where the lock is gone yet finalized is still true
+    # (which would let a concurrent click spawn a second resume on this run).
+    state.delete_resume_lock()
 
     advisor = None  # advisory AI is not resumed for a targeted re-run
     error = None
@@ -685,6 +699,7 @@ def _orchestrate_resume(event, gh_token=None, ci=True):
     finally:
         state.cleanup()
         state.save_snapshot(finalized=True)
+        state.delete_resume_lock()  # insurance if the post-boot delete failed
 
     if check is not None:
         conclusion = "failure" if error else ("cancelled" if state.cancelled else "neutral")

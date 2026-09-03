@@ -218,6 +218,7 @@ class OrchestratorPool:
             [
                 f"arn:aws:s3:::{artifact_bucket}/runs/*/cancel-request",
                 f"arn:aws:s3:::{artifact_bucket}/runs/*/rerun-request/*",
+                f"arn:aws:s3:::{artifact_bucket}/runs/*/resume.lock",
                 f"arn:aws:s3:::{artifact_bucket}/runs/*/state.json",
                 f"arn:aws:s3:::{artifact_bucket}/pr/*/cancel-before*",
                 f"arn:aws:s3:::{artifact_bucket}/pr/*/rerun-throttle",
@@ -227,6 +228,7 @@ class OrchestratorPool:
             else [
                 "arn:aws:s3:::*/runs/*/cancel-request",
                 "arn:aws:s3:::*/runs/*/rerun-request/*",
+                "arn:aws:s3:::*/runs/*/resume.lock",
                 "arn:aws:s3:::*/runs/*/state.json",
                 "arn:aws:s3:::*/pr/*/cancel-before*",
                 "arn:aws:s3:::*/pr/*/rerun-throttle",

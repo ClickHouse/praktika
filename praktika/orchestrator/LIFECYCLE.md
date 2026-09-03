@@ -46,8 +46,9 @@ Bucket: `Settings.S3_ARTIFACT_BUCKET` (e.g. `praktika-artifacts-eu-north-1`).
 | `runs/<run_id>/cancel` (kill flag) | Orchestrator (`cancel_unfinished_jobs`) | Runner (`CancelWatchdog` + pre-clone guard) | tells running runners to kill the job subprocess |
 | `runs/<run_id>/cancel-request` | Lambda (UI Cancel button) | Orchestrator (`sweep_cancel`) | manual cancel of one run |
 | `pr/<pr>/cancel-before-<scope>` | Lambda (`synchronize` / new push) | Orchestrator (`sweep_cancel`) | `ts` + `head_sha`; older in-scope runs self-cancel |
-| `pr/<pr>/rerun-throttle` | Lambda (conditional `IfNoneMatch`) | Lambda | one re-run per PR per `RERUN_MIN_INTERVAL_S` |
-| `runs/<run_id>/rerun-request/<delivery>.json` | Lambda (live partial re-run) | Orchestrator (`sweep_rerun`, consume-once) | `jobs` a live run should reset + re-run |
+| `pr/<pr>/rerun-throttle` | Lambda (conditional `IfNoneMatch`) | Lambda | full-workflow re-run only: one per PR per `RERUN_MIN_INTERVAL_S` |
+| `runs/<run_id>/rerun-request/<delivery>.json` | Lambda (every partial re-run) | Orchestrator (`sweep_rerun`, consume-once) | `jobs` to reset + re-run; single request log both running and resume paths drain |
+| `runs/<run_id>/resume.lock` | Lambda (conditional `IfNoneMatch`, finished-run partial re-run) | resume Orchestrator (delete after `finalized=false`) | per-run boot-lease: serializes spawning one resume; no TTL (SQS redelivery recovers a crashed boot) |
 | `external-pr-approvals/<repo>/pr/<n>.json` | Lambda (gate approve/store) | Lambda | fork-PR approval state |
 
 ## Normal run (push / PR)
@@ -123,14 +124,15 @@ sequenceDiagram
     GH->>L: check_run rerequested on a per-job check
     Note over L: parse external_id into run_id and job
     Note over L: refetch PR, reject if head advanced, fork requires maintainer
+    L->>S3: put runs rerun-request delivery.json with jobs, first
     L->>S3: read state.json, finalized false means running
-    L->>S3: put pr rerun-throttle, one per window
-    L->>S3: put runs rerun-request delivery.json with jobs
+    Note over L: running so nothing more to do, live orchestrator will sweep
     O->>S3: sweep_rerun lists and reads rerun-request
     O->>S3: delete each read request, consume once
     Note over O: apply_rerun resets job and failed downstream to pending, capped
     O->>S3: delete final.json and heartbeat.json so stale completion cannot finish it
     O->>RQ: re-kick job_task, then normal runner flow
+    Note over O: at finalize write finalized true then one more sweep_rerun as handshake
 ```
 
 ## Partial re-run — finished workflow (resume)
@@ -145,16 +147,19 @@ sequenceDiagram
     participant CK as Checks
 
     GH->>L: check_run rerequested on a per-job check
-    Note over L: parse external_id, validate head and maintainer, throttle
+    Note over L: parse external_id, validate head and maintainer
+    L->>S3: put runs rerun-request delivery.json with jobs, first
     L->>S3: read state.json, finalized true means finished
+    L->>S3: claim runs resume.lock, conditional create, must win to spawn
     L->>WQ: enqueue rerun message with run_id, rerun_jobs, PR meta
     WQ->>O2: deliver rerun message
     O2->>S3: read state.json, load snapshot
     O2->>CK: reopen the same top-level check, reuse run_id
     Note over O2: seed jobs from snapshot statuses check_ids env
     O2->>S3: clear stale cancel-request and cancel
-    Note over O2: apply_rerun on rerun_jobs, reset target and failed downstream
+    Note over O2: apply_rerun and sweep_rerun batch-drain all pending requests
     O2->>S3: put state.json finalized false
+    O2->>S3: delete resume.lock, boot done, finalized false is now the live signal
     Note over O2: drive DAG loop, re-dispatch reset jobs, normal runner flow
     O2->>S3: put state.json finalized true
     O2->>CK: complete top-level check
