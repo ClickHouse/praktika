@@ -182,21 +182,20 @@ def _write_rerun_request(run_id: str, jobs, delivery_id: str) -> None:
 
     One key per delivery so concurrent requests for the same run don't clobber;
     the orchestrator aggregates and deletes them (consume-once) in sweep_rerun.
+
+    Raises on failure — the caller must NOT report success when the request
+    wasn't actually written, or the user's re-run is silently lost.
     """
     if not S3_BUCKET:
-        print("  [warn] S3_BUCKET not set; cannot write rerun-request")
-        return
+        raise RuntimeError("S3_BUCKET not set; cannot write rerun-request")
     key = f"runs/{run_id}/rerun-request/{delivery_id}.json"
-    try:
-        _s3().put_object(
-            Bucket=S3_BUCKET,
-            Key=key,
-            Body=json.dumps({"jobs": list(jobs)}).encode("utf-8"),
-            ContentType="application/json",
-        )
-        print(f"RERUN request written: s3://{S3_BUCKET}/{key}")
-    except Exception as e:
-        print(f"  [warn] could not write rerun-request: {e}")
+    _s3().put_object(
+        Bucket=S3_BUCKET,
+        Key=key,
+        Body=json.dumps({"jobs": list(jobs)}).encode("utf-8"),
+        ContentType="application/json",
+    )
+    print(f"RERUN request written: s3://{S3_BUCKET}/{key}")
 
 
 def _is_precondition_failed(error: Exception) -> bool:

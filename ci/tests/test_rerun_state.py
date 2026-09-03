@@ -221,6 +221,49 @@ def test_clear_stale_cancel_deletes_markers():
     assert ("test-bucket", "runs/run42/cancel") not in s3.store
 
 
+class _DenyDeleteS3(_FakeS3):
+    def __init__(self, deny_substr):
+        super().__init__()
+        self._deny = deny_substr
+
+    def delete_object(self, Bucket, Key):  # noqa: N803
+        if self._deny in Key:
+            err = Exception("denied")
+            err.response = {"Error": {"Code": "AccessDenied"}}
+            raise err
+        return super().delete_object(Bucket=Bucket, Key=Key)
+
+
+class _ReadFailS3(_FakeS3):
+    def get_object(self, Bucket, Key):  # noqa: N803
+        if "rerun-request" in Key:
+            err = Exception("throttled")
+            err.response = {"Error": {"Code": "SlowDown"}}
+            raise err
+        return super().get_object(Bucket=Bucket, Key=Key)
+
+
+def test_reset_job_not_reset_when_final_delete_fails():
+    # If the stale final.json can't be removed, the job must NOT be reset (else a
+    # stale completion finishes the new attempt without it running).
+    s3 = _DenyDeleteS3("final.json")
+    s3.put_object("test-bucket", "runs/run42/A/final.json", b"{}")
+    state = _make_state(s3, {"A": JobStatus.FAILURE, "B": JobStatus.SUCCESS, "C": JobStatus.SUCCESS})
+    reset = state.apply_rerun(["A"])
+    assert reset == set()
+    assert state.jobs["A"].status == JobStatus.FAILURE
+    assert state.jobs["A"].rerun_count == 0
+
+
+def test_sweep_rerun_keeps_unreadable_request():
+    # A request key we couldn't read must be left for the next sweep, not deleted.
+    s3 = _ReadFailS3()
+    s3.put_object("test-bucket", "runs/run42/rerun-request/d1.json", b'{"jobs":["A"]}')
+    state = _make_state(s3, {"A": JobStatus.FAILURE, "B": JobStatus.CANCELLED, "C": JobStatus.CANCELLED})
+    assert state.sweep_rerun() is False
+    assert ("test-bucket", "runs/run42/rerun-request/d1.json") in s3.store
+
+
 def test_sweep_rerun_no_requests_is_noop():
     s3 = _FakeS3()
     state = _make_state(s3, {"A": JobStatus.SUCCESS, "B": JobStatus.SUCCESS, "C": JobStatus.SUCCESS})

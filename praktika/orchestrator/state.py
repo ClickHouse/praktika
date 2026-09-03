@@ -56,9 +56,15 @@ def load_run_snapshot(run_id):
     key = f"runs/{run_id}/state.json"
     try:
         obj = s3.get_object(Bucket=Settings.S3_ARTIFACT_BUCKET, Key=key)
-        return json.loads(obj["Body"].read())
-    except Exception:
-        return None
+    except Exception as e:
+        # Only a genuinely absent snapshot is "None" (nothing to resume). A
+        # transient/permission error must propagate so the resume fails as an
+        # INFRA error and the controller retries the message on a fresh
+        # orchestrator — otherwise the finished-run rerun would be silently lost.
+        if _is_missing_s3_key_error(e):
+            return None
+        raise
+    return json.loads(obj["Body"].read())
 
 
 def _queue_prefix():
@@ -147,8 +153,9 @@ def _build_check_output(result, rc, instance_id="", report_url="", pool="", reru
             displayed_status = "FAILED"
         summary = f"**{displayed_status}**{dur}"
         if rerun_count:
-            # "No." not "#N": GitHub auto-links "#N" in check markdown to PR/issue N.
-            summary += f" — 🔁 re-run No. {rerun_count}"
+            # Backtick the "#N": summary is markdown and a bare #N auto-links to
+            # PR/issue N; inline code is not auto-linked.
+            summary += f" — 🔁 re-run `#{rerun_count}`"
         if report_url:
             summary += f" — [CI Report]({report_url})"
         details = []
@@ -905,15 +912,31 @@ class WorkflowState:
                 for name, js in self.jobs.items()
             },
         }
-        try:
-            self._s3.put_object(
-                Bucket=self._cancel_s3_bucket,
-                Key=self._state_s3_key,
-                Body=json.dumps(snap).encode("utf-8"),
-                ContentType="application/json",
-            )
-        except Exception as e:
-            print(f"  [warn] could not save state snapshot: {type(e).__name__}: {e}")
+        body = json.dumps(snap).encode("utf-8")
+        # The finalized=True write is the sole durable "no live orchestrator"
+        # signal the lambda routes re-runs on; if it silently fails, the snapshot
+        # stays finalized=false and a later re-run is sent to a dead orchestrator
+        # and lost. So retry the terminal write hard. Per-loop writes stay
+        # best-effort (the next loop rewrites anyway).
+        attempts = 5 if finalized else 1
+        last_err = None
+        for attempt in range(attempts):
+            try:
+                self._s3.put_object(
+                    Bucket=self._cancel_s3_bucket,
+                    Key=self._state_s3_key,
+                    Body=body,
+                    ContentType="application/json",
+                )
+                return
+            except Exception as e:
+                last_err = e
+                if attempt + 1 < attempts:
+                    time.sleep(min(2 ** attempt, 10))
+        print(
+            f"  [warn] could not save state snapshot "
+            f"(finalized={finalized}): {type(last_err).__name__}: {last_err}"
+        )
 
     def seed_from_snapshot(self, snap):
         """Rehydrate job statuses / check handles / environment from a snapshot.
@@ -991,24 +1014,34 @@ class WorkflowState:
                 ):
                     to_reset.add(dep)
                     frontier.append(dep)
-        for name in to_reset:
-            self._reset_job(name)
-        return to_reset
+        reset_ok = {name for name in to_reset if self._reset_job(name)}
+        return reset_ok
 
     def _reset_job(self, name):
+        """Reset a finished job to PENDING for re-run. Returns True on success.
+
+        Returns False (and leaves the job untouched) if the stale ``final.json``
+        could not be removed — redispatching then would let ``sweep_completions``
+        immediately finish the new attempt from the *previous* run's completion
+        without it ever running. A missing key counts as removed (S3 delete is
+        idempotent), so this only fails on a real permission/transient error.
+        """
         js = self.jobs[name]
-        # Drop the stale completion AND heartbeat so the redispatched attempt
-        # starts clean: a leftover final.json would let sweep_completions
-        # immediately re-finish the job from the previous run, and a leftover
-        # heartbeat.json (if older than HEARTBEAT_TIMEOUT_S) would let the first
-        # liveness sweep flip the new attempt to RUNNING and fail_dead() it
-        # before its fresh runner ever posts a heartbeat.
         if self._s3 is not None:
-            for key in (self._final_state_s3_key(name), self._heartbeat_s3_key(name)):
-                try:
-                    self._s3.delete_object(Bucket=self._cancel_s3_bucket, Key=key)
-                except Exception:
-                    pass
+            if not self._delete_run_key(self._final_state_s3_key(name)):
+                print(
+                    f"  [warn] not resetting {name!r}: stale final.json could not "
+                    f"be cleared (would prematurely finish the re-run)"
+                )
+                return False
+            # heartbeat: best-effort — a stale heartbeat only risks a spurious
+            # unresponsive flag, not a wrong result.
+            try:
+                self._s3.delete_object(
+                    Bucket=self._cancel_s3_bucket, Key=self._heartbeat_s3_key(name)
+                )
+            except Exception:
+                pass
         js.status = JobStatus.PENDING
         js.rc = None
         js.non_blocking = False
@@ -1036,14 +1069,27 @@ class WorkflowState:
             try:
                 js.check.requeue(
                     output={
-                        "title": f"QUEUED (re-run No. {js.rerun_count})",
+                        # Title is plain text (safe); summary is markdown so the
+                        # "#N" is backticked to avoid GitHub auto-linking it to PR N.
+                        "title": f"QUEUED (re-run #{js.rerun_count})",
                         "summary": (
-                            f"QUEUED: manual re-run No. {js.rerun_count} requested."
+                            f"QUEUED: manual re-run `#{js.rerun_count}` requested."
                         ),
                     }
                 )
             except Exception as e:
                 print(f"  [warn] could not requeue check for {name!r}: {e}")
+        return True
+
+    def _delete_run_key(self, key):
+        """Delete an S3 object; True if removed or already absent, False if the
+        delete failed for another reason (e.g. missing DeleteObject permission)."""
+        try:
+            self._s3.delete_object(Bucket=self._cancel_s3_bucket, Key=key)
+            return True
+        except Exception as e:
+            print(f"  [warn] could not delete {key}: {type(e).__name__}: {e}")
+            return False
 
     def sweep_rerun(self):
         """Apply any pending re-run requests dropped under
@@ -1063,20 +1109,24 @@ class WorkflowState:
         if not contents:
             return False
         jobs = set()
-        keys = []
+        read_keys = []
         for obj in contents:
             key = obj["Key"]
-            keys.append(key)
             try:
                 body = self._s3.get_object(Bucket=self._cancel_s3_bucket, Key=key)[
                     "Body"
                 ].read()
-                for j in (json.loads(body).get("jobs") or []):
-                    jobs.add(j)
-            except Exception:
+            except Exception as e:
+                # A key we couldn't read must NOT be deleted — leave it for the
+                # next sweep, else its jobs are lost without ever being applied.
+                print(f"  [warn] could not read rerun-request {key}: {e}")
                 continue
+            read_keys.append(key)
+            for j in (json.loads(body).get("jobs") or []):
+                jobs.add(j)
         reset = self.apply_rerun(list(jobs)) if jobs else set()
-        for key in keys:
+        # Consume only the requests we successfully read (and thus applied).
+        for key in read_keys:
             try:
                 self._s3.delete_object(Bucket=self._cancel_s3_bucket, Key=key)
             except Exception:
