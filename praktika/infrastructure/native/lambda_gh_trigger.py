@@ -990,6 +990,10 @@ def _handle_partial_rerun(run_id, job, check_obj, payload, delivery_id, sender, 
         return
 
     if snap and snap.get("finalized"):
+        # Carry the authoritative PR metadata (fork repo, labels, title, draft,
+        # refs) so the resume reconstructs a real pull_request context even when
+        # the run's snapshot has no environment to inherit it from — otherwise a
+        # fork PR could look internal and lose its metadata (see _orchestrate_resume).
         workflow = {
             "type": "rerun",
             "run_id": run_id,
@@ -997,9 +1001,9 @@ def _handle_partial_rerun(run_id, job, check_obj, payload, delivery_id, sender, 
             "repo": snap.get("repo") or repo,
             "head_sha": snap.get("head_sha", ""),
             "pr_number": snap.get("pr_number"),
-            "head_ref": snap.get("head_ref", ""),
             "sender": sender,
             "event_ts": event_ts,
+            **meta,
         }
         _enqueue(workflow, delivery_id)
         print(f"RERUN (partial, resume): run={run_id} job={job!r}")

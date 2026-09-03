@@ -267,6 +267,27 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
             log=log,
         )
 
+        # Stale-head guard (TOCTOU): clone_repo fetches the live refs/pull/N/head,
+        # which can have advanced since the lambda verified the head. Running the
+        # requested workflow/checks against a different (possibly unapproved fork)
+        # commit is unsafe, so abort when the checked-out sha isn't the one the
+        # event asked for. Only for PR runs where we have a specific head_sha.
+        if pr_number and head_sha and actual_sha and actual_sha != head_sha:
+            log.warning(
+                "PR head advanced (checked out %s != requested %s); aborting to "
+                "avoid running unintended code",
+                actual_sha, head_sha,
+            )
+            finalize_check(
+                repo, early_check_id, gh_token, "cancelled",
+                "Head advanced",
+                f"The PR head moved to {actual_sha[:12]} after this run was "
+                f"requested for {head_sha[:12]}; skipping to avoid running the "
+                f"wrong commit. A run for the new head will proceed.",
+                log=log,
+            )
+            return {"status": "skipped", "reason": "stale head", "sha": actual_sha}
+
         base_venv, venv_dir = _resolve_runtime(clone_dir, log)
 
         event_file = os.path.join(clone_dir, "ci", "tmp", "event.json")

@@ -601,6 +601,14 @@ def _orchestrate_resume(event, gh_token=None, ci=True):
         print("Resume: missing run_id, nothing to do")
         return 1
 
+    # The lambda routes on type="rerun", but for building the per-job environment
+    # this run IS a pull_request. Re-shape the event so _build_ci_environment
+    # classifies it as a PR (uses head_repo/labels/draft the lambda carried);
+    # otherwise a run whose snapshot has no environment would appear internal
+    # (FORK_NAME == REPOSITORY) and drop PR metadata. See review #18.
+    event = dict(event)
+    event["type"] = "pull_request"
+
     snap = load_run_snapshot(run_id)
     if not snap:
         print(f"Resume: no state snapshot for run {run_id}; cannot resume")
