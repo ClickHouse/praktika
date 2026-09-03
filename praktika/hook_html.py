@@ -112,9 +112,33 @@ class GitCommit:
 
 class HtmlRunnerHooks:
     @classmethod
+    def _report_summary_exists(cls, workflow_name):
+        try:
+            _ResultS3.copy_result_from_s3_with_version(
+                Result.file_name_static(workflow_name)
+            )
+            return True
+        except Exception:
+            return False
+
+    @classmethod
     def push_pending_ci_report(cls, _workflow):
         # generate pending Results for all jobs in the workflow
         env = _Environment.get()
+        # Native path: the orchestrator re-asserts each finished job's row into
+        # this summary, so there is no single "exclusive access" moment. A
+        # duplicate/late Config (e.g. from a restart) must NOT destructively reset
+        # a summary that already holds finished jobs' rows — that wipe left
+        # succeeded jobs PENDING and got them wrongly marked NOT_FINALIZED (see
+        # REPORT_OWNERSHIP.md / INCIDENT_2026-09-03_stale_report.md). Create the
+        # summary once; never reset an existing one. (GitHub Actions keeps the
+        # version=0 reset — there is no orchestrator there to rebuild rows.)
+        if env.ORCHESTRATOR_OWNS_REPORT and cls._report_summary_exists(_workflow.name):
+            print(
+                "CI report summary already exists - not resetting "
+                "(orchestrator owns the per-job rows)"
+            )
+            return
         results = []
         for job in _workflow.jobs:
             if job.name == Settings.CI_CONFIG_JOB_NAME:

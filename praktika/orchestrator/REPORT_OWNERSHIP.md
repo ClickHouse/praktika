@@ -55,72 +55,91 @@ Not gated on `GITHUB_ACTIONS` alone, because a **local** run (`praktika run`) al
 lacks `GITHUB_ACTIONS` yet has no orchestrator — it must keep writing its own
 report.
 
-### Job side — skip summary writes when `ORCHESTRATOR_OWNS_REPORT`
+### Job side — what actually changed (and why not a full gate)
 
-- `hook_html.push_pending_ci_report` → no-op (orchestrator writes the initial
-  pending summary).
-- `hook_html.configure` (cache-SKIPPED rows) → no-op (orchestrator includes
-  cached jobs).
-- `hook_html.pre_run` (clear stale messages) → no-op.
-- `hook_html.post_run` → **still** `copy_result_to_s3(result)` (the per-job
-  `result_<job>.json` stays authoritative) and upload files; **skip**
-  `update_workflow_results`.
-- `native_jobs._finish_workflow` → skip loading the summary and the per-job
-  `NOT_FINALIZED` reconciliation loop and the final summary write; still run
-  merge-ready status / open-issues / post-hooks (compute `failed_results` from the
-  orchestrator-authored summary / per-job results instead).
+The clean "gate every job-side writer off" plan hit a constraint: the runner's
+`post_run` computes the usage KPIs (storage/compute/pipeline) **inside the same
+`update_workflow_results` call** that writes the rows, and Finish Workflow reads
+them back for the **CIDB usage insert** (`runner.py`). CIDB stays on the runner,
+so `post_run`'s `update_workflow_results` must stay too — you can't gate it off
+without first splitting usage aggregation out (a larger change).
 
-### Orchestrator side — become the writer
+So instead of gating the writers, we **neutralise the one destructive
+operation** — `push_pending_ci_report`'s `version=0` reset:
 
-Add `WorkflowState.publish_report(finalized=False)`:
+- `hook_html.push_pending_ci_report` → on the native path (`ORCHESTRATOR_OWNS_REPORT`),
+  **create the summary once; never reset an existing one** (`_report_summary_exists`
+  guard). A duplicate/late Config from a restart no longer wipes finished rows.
+  GitHub Actions keeps the `version=0` reset (no orchestrator to rebuild rows).
+- `hook_html.configure` / `pre_run` / `post_run` → **unchanged** (rows + usage +
+  the per-job `result_<job>.json` keep flowing; CIDB untouched).
+- `native_jobs._finish_workflow` → **unchanged**: with no destructive reset and
+  the orchestrator re-asserting rows, a row that is still non-terminal at Finish
+  time is a *genuine* problem, so its `NOT_FINALIZED` marking is now correct
+  rather than spurious.
 
-1. Ensure a usable `_Environment` in the orchestrator process (construct from the
-   event: `WORKFLOW_NAME`, `PR_NUMBER`, `BRANCH=head_ref`, `SHA=head_sha`,
-   `REPOSITORY`, plus report ext fields; dump once) so `_ResultS3` /
-   `get_s3_prefix()` resolve.
-2. Build the summary `Result` tree (top = workflow; one sub-result per job):
-   - **terminal** job → `Result.from_dict(js.result)`, merged with
-     `drop_nested_results=True` (flatten failed leaves) to match today's render;
-   - **cached/skipped** → `Result.create_new(name, SKIPPED, [cache_link], "reused from cache")`;
-   - **pending/running** → `Result.create_new(name, PENDING|RUNNING)`.
-3. Set the top-level ext (pr_title, report_url, commit_sha, branch, …) as
-   `push_pending_ci_report` does today.
-4. Write via `_ResultS3.copy_result_to_s3(summary)` (handles gzip + naming).
-5. Call it each `_drive_dag` loop iteration (after `sweep_completions`) and once
-   more at finalize — same cadence as `save_snapshot`.
+Combined with the orchestrator re-assert (increment 1), the wipe is structurally
+impossible: no reset can erase a finished row, and even if one somehow did, the
+orchestrator restores it next loop.
 
-Because there is one writer, no version metadata / precondition is needed; a plain
-overwrite each loop is correct and idempotent.
+### Orchestrator side — re-assert each job's row (increment 1, shipped)
+
+`WorkflowState.publish_report()`:
+
+1. Lazily construct + dump an `_Environment` in the orchestrator process
+   (`_ensure_report_env`, from the event: `WORKFLOW_NAME`, `PR_NUMBER`,
+   `BRANCH=head_ref`, `SHA=head_sha`, `REPOSITORY`, …) so `_ResultS3` /
+   `get_s3_prefix()` resolve. Done on first publish (after `_get_workflows`
+   matching) so it can't change the env matching read.
+2. For every job with a terminal `js.result` (parsed from `final.json`), call
+   `_ResultS3.update_workflow_results(new_sub_results=[Result.from_dict(js.result)])`
+   — the same version-CAS merge the runner uses (`drop_nested_results=True`), so
+   rows render identically. Only jobs the orchestrator knows finished are
+   re-asserted; cached/pending rows are left to the runner's `configure`/plan.
+3. Called each `_drive_dag` loop (after `save_snapshot`), so the summary is
+   corrected continuously — including while Finish Workflow is running.
+
+Both steps are best-effort — report upkeep never crashes the run.
+
+### Increment 2 (shipped) — remove the destructive reset
+
+See "Job side" above: `push_pending_ci_report` no longer resets an existing
+summary on the native path. This + the re-assert makes the wipe impossible.
 
 ### Deferred (follow-up, not correctness)
 
-- **Usage KPIs** (`storage_usage` / `compute_usage` / `pipeline_utilization`)
-  were accumulated inside `update_workflow_results`. Re-aggregate them in the
-  orchestrator from `js.result.ext.metrics` — monitoring data, so it can land
-  after the core. Note the gap in `log()` until then.
-- **`report_messages`** (warning/error banners) are user-facing; fold them in
-  from each `js.result` when present so they aren't lost.
+- **Full sole-writer / retire runner row-writes.** Requires splitting usage-KPI
+  aggregation out of `update_workflow_results` (or porting it to the
+  orchestrator) so `post_run`'s row-merge can be gated off while CIDB usage stays
+  on the runner. Not needed for correctness now.
+- **Reset reset-jobs' rows on resume.** On a re-run, a reset job's row shows its
+  previous terminal result until it completes again (the orchestrator only
+  re-asserts *terminal* jobs). Cosmetic/transient.
 
 ## Rollout / risk
 
-This removes the job-side writers on the native path, so if the orchestrator
-writer regresses, native reports break. It is easily reverted (flip
-`ORCHESTRATOR_OWNS_REPORT` default to False → the old per-job path resumes).
-Validate on the live pipeline right after deploy: confirm a normal run's report
-renders identically, then confirm the incident case (a killed+restarted run) no
-longer shows `NOT_FINALIZED`.
+Both increments are additive on the native path and easily reverted (flip
+`ORCHESTRATOR_OWNS_REPORT` default to False → old per-job path resumes; the
+`push_pending` guard then never triggers). GitHub Actions and local runs are
+unchanged. Validate on the live pipeline after deploy: confirm a normal run's
+report renders identically, then confirm the incident case (a killed+restarted
+run) no longer shows `NOT_FINALIZED`.
 
 ## Supersedes
 
 - The Finish-Workflow "re-read `result_<job>.json`" fallback (Fix B) — dropped;
   the orchestrator writing truth makes it unnecessary.
 
-## Touch points
+## Touch points (shipped)
 
 - `praktika/_environment.py` — `ORCHESTRATOR_OWNS_REPORT` field.
-- `praktika/orchestrator/job_runner.py` — set it True in `_build_ci_environment`.
-- `praktika/hook_html.py` — gate `push_pending_ci_report` / `configure` /
-  `pre_run` / `post_run`.
-- `praktika/native_jobs.py` — gate `_finish_workflow`'s summary logic.
-- `praktika/orchestrator/state.py` (+ `__init__.py`) — `publish_report()` + calls
-  in `_drive_dag` / finalize; construct the orchestrator `_Environment`.
+- `praktika/orchestrator/job_runner.py` — set it True in `_build_ci_environment`
+  (False for local runs).
+- `praktika/orchestrator/state.py` — `publish_report()` + `_ensure_report_env()`.
+- `praktika/orchestrator/__init__.py` — call `publish_report()` each `_drive_dag`
+  loop.
+- `praktika/hook_html.py` — `push_pending_ci_report` is create-once (no
+  destructive reset) on the native path; `_report_summary_exists` guard.
+
+Deferred (see above): splitting usage aggregation out of `update_workflow_results`
+so `post_run`/`configure`/Finish row-writes can be retired on the native path.
