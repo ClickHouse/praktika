@@ -862,7 +862,7 @@ class WorkflowState:
             except Exception as e:
                 print(f"  [warn] could not clear cancel marker {key}: {e}")
 
-    def save_snapshot(self, finalized=False):
+    def save_snapshot(self, finalized=False, required=False):
         """Persist the DAG snapshot to ``runs/<run_id>/state.json``.
 
         Captures each job's status + reusable check_id and the cumulative
@@ -870,6 +870,12 @@ class WorkflowState:
         signal the lambda reads to decide running-vs-finished (no GitHub API).
         Cheap PUT; called each loop iteration and at finalize. No-op in local
         mode / without S3.
+
+        ``required=True`` makes the write mandatory: retry hard and **raise** on
+        ultimate failure so the caller can abort. Used for the resume's
+        pre-dispatch ``finalized=false`` write — if it silently failed, the run's
+        stale ``finalized=true`` snapshot would survive and every reset job's
+        runner would skip its task via the finalized guard, stalling the resume.
         """
         if self._s3 is None or self.local_mode:
             return
@@ -901,7 +907,7 @@ class WorkflowState:
         # stays finalized=false and a later re-run is sent to a dead orchestrator
         # and lost. So retry the terminal write hard. Per-loop writes stay
         # best-effort (the next loop rewrites anyway).
-        attempts = 5 if finalized else 1
+        attempts = 5 if (finalized or required) else 1
         last_err = None
         for attempt in range(attempts):
             try:
@@ -916,10 +922,13 @@ class WorkflowState:
                 last_err = e
                 if attempt + 1 < attempts:
                     time.sleep(min(2 ** attempt, 10))
-        print(
-            f"  [warn] could not save state snapshot "
+        msg = (
+            f"could not save state snapshot "
             f"(finalized={finalized}): {type(last_err).__name__}: {last_err}"
         )
+        if required:
+            raise RuntimeError(msg)
+        print(f"  [warn] {msg}")
 
     def seed_from_snapshot(self, snap):
         """Rehydrate job statuses / check handles / environment from a snapshot.

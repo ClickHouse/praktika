@@ -668,7 +668,11 @@ def _orchestrate_resume(event, gh_token=None, ci=True):
     reset = state.apply_rerun(rerun_jobs)
     state.sweep_rerun()
     print(f"Resume: run {run_id} re-running {sorted(reset)}")
-    state.save_snapshot()
+    # This finalized=false write MUST land before we dispatch: it clears the
+    # run's stale finalized=true snapshot, without which every reset job's runner
+    # would skip its task via the finalized guard. Fail as INFRA (retry on a
+    # fresh orchestrator) rather than dispatch jobs that will be skipped.
+    state.save_snapshot(required=True)
 
     advisor = None  # advisory AI is not resumed for a targeted re-run
     error = None

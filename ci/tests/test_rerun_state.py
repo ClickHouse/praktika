@@ -268,3 +268,23 @@ def test_sweep_rerun_no_requests_is_noop():
     s3 = _FakeS3()
     state = _make_state(s3, {"A": JobStatus.SUCCESS, "B": JobStatus.SUCCESS, "C": JobStatus.SUCCESS})
     assert state.sweep_rerun() is False
+
+
+def test_save_snapshot_required_raises_on_failure(monkeypatch):
+    import praktika.orchestrator.state as state_mod
+    monkeypatch.setattr(state_mod.time, "sleep", lambda *_: None)
+
+    class _PutFailS3(_FakeS3):
+        def put_object(self, Bucket, Key, Body, **k):  # noqa: N803
+            raise RuntimeError("s3 down")
+
+    state = _make_state(_PutFailS3(), {"A": JobStatus.SUCCESS, "B": JobStatus.SUCCESS, "C": JobStatus.SUCCESS})
+    # best-effort write: logs, does not raise
+    state.save_snapshot(finalized=False)
+    # required write: must raise so the caller can abort as INFRA
+    raised = False
+    try:
+        state.save_snapshot(required=True)
+    except RuntimeError:
+        raised = True
+    assert raised
