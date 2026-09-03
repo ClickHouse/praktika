@@ -554,3 +554,39 @@ def test_cancel_watchdog_terminates_process_group(monkeypatch):
     watchdog._run()
 
     assert calls == [proc]
+
+
+class _StateS3:
+    """Minimal S3 stub for _run_is_finalized."""
+
+    def __init__(self, store):
+        self._store = store
+
+    def get_object(self, Bucket, Key):  # noqa: N803
+        import io
+        if (Bucket, Key) not in self._store:
+            err = Exception("missing")
+            err.response = {"Error": {"Code": "NoSuchKey"}}
+            raise err
+        return {"Body": io.BytesIO(self._store[(Bucket, Key)])}
+
+
+class _NullLog:
+    def warning(self, *a, **k):
+        pass
+
+
+def test_run_is_finalized_true_false_and_failopen():
+    key = ("b", "runs/1/state.json")
+    log = _NullLog()
+    # finalized run -> True
+    s3 = _StateS3({key: json.dumps({"finalized": True}).encode()})
+    assert controller._run_is_finalized(s3, "b", "runs/1/state.json", log) is True
+    # active run -> False
+    s3 = _StateS3({key: json.dumps({"finalized": False}).encode()})
+    assert controller._run_is_finalized(s3, "b", "runs/1/state.json", log) is False
+    # missing snapshot -> fail open (False) so first-run/legacy jobs still run
+    s3 = _StateS3({})
+    assert controller._run_is_finalized(s3, "b", "runs/1/state.json", log) is False
+    # missing key arg -> False
+    assert controller._run_is_finalized(s3, "b", "", log) is False

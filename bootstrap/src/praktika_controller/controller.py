@@ -124,6 +124,26 @@ def _praktika_env(
     return env
 
 
+def _run_is_finalized(s3, bucket: str, key: str, log) -> bool:
+    """True if the run's state snapshot marks it finalized. A finalized run has
+    no live orchestrator to consume this job's result, so running it is wasted
+    work (stale/redundant dispatch). Fail open (return False) on any error or a
+    missing snapshot so normal/first-run jobs are never blocked."""
+    if not bucket or not key:
+        return False
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        return bool(json.loads(obj["Body"].read()).get("finalized"))
+    except Exception as e:
+        code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
+        if str(code) not in {"404", "NoSuchKey", "NotFound"}:
+            log.warning(
+                "Could not read run state s3://%s/%s: %s: %s",
+                bucket, key, type(e).__name__, e,
+            )
+        return False
+
+
 def _s3_key_exists(s3, bucket: str, key: str, log) -> bool:
     if not bucket or not key:
         return False
@@ -334,6 +354,15 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
             job_name,
         )
         return {"status": "skipped", "reason": "cancelled", "job": job_name}
+
+    # A finalized run has no orchestrator left to consume the result, so a stale
+    # or redundant dispatch (e.g. a leftover job_task) would just do pointless
+    # work. Skip it. An active re-run writes finalized=false before dispatching,
+    # so this never blocks a legitimate resume; missing snapshot -> run (fail open).
+    state_s3_key = task.get("state_s3_key", "")
+    if _run_is_finalized(s3, cancel_s3_bucket, state_s3_key, log):
+        log.info("Task %r belongs to a finalized run, skipping before clone", job_name)
+        return {"status": "skipped", "reason": "run finalized", "job": job_name}
 
     cm_heartbeat = (
         Heartbeat(

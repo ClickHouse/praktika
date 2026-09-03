@@ -1396,6 +1396,10 @@ class WorkflowState:
             "runs_on": list(job_state.job.runs_on) if job_state.job.runs_on else [],
             "cancel_s3_bucket": self._cancel_s3_bucket,
             "cancel_s3_key": self._cancel_s3_key,
+            # Lets the runner skip a task whose run has already finalized (an
+            # orchestrator that has finished won't consume the result) — a guard
+            # against stale/redundant dispatches running pointless work.
+            "state_s3_key": self._state_s3_key,
             "heartbeat_s3_bucket": self._cancel_s3_bucket,
             "heartbeat_s3_key": self._heartbeat_s3_key(job_state.name),
             "heartbeat_interval_s": HEARTBEAT_INTERVAL_S,
