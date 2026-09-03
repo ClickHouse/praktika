@@ -386,6 +386,12 @@ def _drive_dag(state, check, workflow, event, advisor, report_url, is_rerun):
                 job.kick()
             state.wait()
             state.save_snapshot()
+            # Re-assert completed jobs into the workflow report summary so a
+            # destructive summary reset can't leave a finished job PENDING (and
+            # get it wrongly marked NOT_FINALIZED by Finish Workflow). Runs each
+            # loop so it also corrects the summary while Finish Workflow itself is
+            # running. See orchestrator/REPORT_OWNERSHIP.md.
+            state.publish_report()
             if advisor is not None:
                 advisor.on_workflow_update(state, event)
             _patch_top_check(check, workflow, state, phase="running", details_url=report_url, is_rerun=is_rerun)

@@ -884,6 +884,92 @@ class WorkflowState:
         except Exception as e:
             print(f"  [warn] could not delete resume lock: {e}")
 
+    def _ensure_report_env(self):
+        """Lazily construct + dump an ``_Environment`` for the orchestrator process
+        so the ``_ResultS3`` report helpers can resolve the report S3 prefix.
+
+        Done lazily (on first ``publish_report``, i.e. after workflow matching)
+        rather than at startup, so it can't change the env that ``_get_workflows``
+        already read. Returns True once a usable env is in place. Best-effort.
+        """
+        if getattr(self, "_report_env_ok", None) is not None:
+            return self._report_env_ok
+        self._report_env_ok = False
+        if self._s3 is None or self.local_mode:
+            return False
+        try:
+            from .._environment import _Environment
+
+            ev = self._event if isinstance(self._event, dict) else {}
+            _Environment(
+                WORKFLOW_NAME=self.workflow.name,
+                JOB_NAME="",
+                REPOSITORY=self._repo or "",
+                BRANCH=ev.get("head_ref", "") or "",
+                SHA=self._head_sha or "",
+                PR_NUMBER=int(self._pr_number or 0),
+                EVENT_TYPE=ev.get("type", "") or "pull_request",
+                EVENT_TIME="",
+                JOB_OUTPUT_STREAM="",
+                EVENT_FILE_PATH="",
+                CHANGE_URL=ev.get("change_url", "") or "",
+                COMMIT_URL="",
+                BASE_BRANCH=ev.get("base_ref", "") or "",
+                RUN_ID=str(self._run_id or ""),
+                RUN_URL="",
+                INSTANCE_TYPE="",
+                INSTANCE_ID="",
+                INSTANCE_LIFE_CYCLE="",
+                PR_BODY="",
+                PR_TITLE=ev.get("title", "") or "",
+                USER_LOGIN=ev.get("sender", "") or "",
+                FORK_NAME=ev.get("head_repo", "") or "",
+                PR_LABELS=list(ev.get("labels", []) or []),
+            ).dump()
+            self._report_env_ok = True
+        except Exception as e:
+            print(f"  [warn] orchestrator report env setup failed: {e}")
+        return self._report_env_ok
+
+    def publish_report(self):
+        """Re-assert completed jobs' results into the workflow report summary.
+
+        The orchestrator is the authoritative source of each job's outcome (it
+        reads ``final.json``). A job's report row is otherwise written only by the
+        runner's ``post_run``, which runs once — so a destructive summary reset
+        (Config's ``version=0`` ``push_pending_ci_report``, which can be duplicated
+        across attempts) can wipe a finished job's row with nothing to restore it,
+        leaving it PENDING and getting it wrongly marked ``NOT_FINALIZED`` by
+        Finish Workflow (see INCIDENT_2026-09-03_stale_report.md / REPORT_OWNERSHIP.md).
+        Re-asserting each loop restores truth before Finish Workflow reads it.
+
+        Increment 1 is *additive*: the runner still writes rows (CIDB usage /
+        commit status stay on the runner); the orchestrator just re-asserts the
+        ones it knows are terminal. Best-effort — report upkeep never crashes the run.
+        """
+        if self._s3 is None or self.local_mode:
+            return
+        if not getattr(self.workflow, "enable_report", False):
+            return
+        payloads = [
+            js.result for js in self.jobs.values() if isinstance(js.result, dict)
+        ]
+        if not payloads:
+            return
+        if not self._ensure_report_env():
+            return
+        try:
+            from copy import deepcopy
+
+            from ..result import Result, _ResultS3
+
+            results = [Result.from_dict(deepcopy(p)) for p in payloads]
+            _ResultS3.update_workflow_results(
+                workflow_name=self.workflow.name, new_sub_results=results
+            )
+        except Exception as e:
+            print(f"  [warn] could not re-publish workflow report: {e}")
+
     def save_snapshot(self, finalized=False, required=False):
         """Persist the DAG snapshot to ``runs/<run_id>/state.json``.
 

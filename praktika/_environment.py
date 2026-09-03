@@ -54,6 +54,13 @@ class _Environment(MetaClasses.Serializable):
     # How many times this job was manually re-run (0 = first attempt). Set
     # per-job by the orchestrator; job code can read it via Info().
     RERUN_COUNT: int = 0
+    # True when this run is driven by the native orchestrator, which is the SOLE
+    # writer of the workflow report summary. Job-side report writers
+    # (push_pending_ci_report / configure / pre_run / post_run's summary merge /
+    # Finish Workflow's NOT_FINALIZED loop) skip when this is set — see
+    # orchestrator/REPORT_OWNERSHIP.md. False for local runs and GitHub Actions,
+    # which keep the per-job writers.
+    ORCHESTRATOR_OWNS_REPORT: bool = False
     name = "environment"
 
     @classmethod
