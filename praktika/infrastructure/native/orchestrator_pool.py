@@ -214,27 +214,18 @@ class OrchestratorPool:
         asg_name = self._asg_name()
 
         artifact_bucket = (Settings.S3_ARTIFACT_BUCKET or "").strip()
-        artifact_resources = (
-            [
-                f"arn:aws:s3:::{artifact_bucket}/runs/*/cancel-request",
-                f"arn:aws:s3:::{artifact_bucket}/runs/*/rerun-request/*",
-                f"arn:aws:s3:::{artifact_bucket}/runs/*/resume.lock",
-                f"arn:aws:s3:::{artifact_bucket}/runs/*/state.json",
-                f"arn:aws:s3:::{artifact_bucket}/pr/*/cancel-before*",
-                f"arn:aws:s3:::{artifact_bucket}/pr/*/rerun-throttle",
-                f"arn:aws:s3:::{artifact_bucket}/external-pr-approvals/*",
-            ]
-            if artifact_bucket
-            else [
-                "arn:aws:s3:::*/runs/*/cancel-request",
-                "arn:aws:s3:::*/runs/*/rerun-request/*",
-                "arn:aws:s3:::*/runs/*/resume.lock",
-                "arn:aws:s3:::*/runs/*/state.json",
-                "arn:aws:s3:::*/pr/*/cancel-before*",
-                "arn:aws:s3:::*/pr/*/rerun-throttle",
-                "arn:aws:s3:::*/external-pr-approvals/*",
-            ]
-        )
+        # Scope the webhook role by *area prefix*, not per-key: it may Get/Put any
+        # control object the lambda writes under runs/ (cancel-request,
+        # rerun-request, resume.lock, state.json, …), pr/ (cancel-before,
+        # rerun-throttle) and external-pr-approvals/. Prefix-level so adding a new
+        # per-run/per-PR signal key never needs an IAM redeploy. Still far tighter
+        # than the orchestrator EC2 role, which is bucket-wide (project_bucket_arns).
+        bucket = artifact_bucket or "*"
+        artifact_resources = [
+            f"arn:aws:s3:::{bucket}/runs/*",
+            f"arn:aws:s3:::{bucket}/pr/*",
+            f"arn:aws:s3:::{bucket}/external-pr-approvals/*",
+        ]
 
         self.ec2_role = IAMRole.Config(
             name=self.ec2_role_name,

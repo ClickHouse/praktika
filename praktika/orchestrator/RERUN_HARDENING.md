@@ -250,6 +250,7 @@ attempt-agnostic control signals.)
   batches; `save_snapshot` carries the `finalized` flag.
 - `praktika/orchestrator/job_runner.py` — (P3, remaining) read `rerun_count` from
   the task, write `a<n>` keys.
-- IAM — `runs/*/resume.lock` added to the webhook role's `artifact_resources`
-  (create); the orchestrator EC2 role deletes it under its bucket-wide
-  `s3:DeleteObject`.
+- IAM — the webhook role's `artifact_resources` is scoped by *area prefix*
+  (`runs/*`, `pr/*`, `external-pr-approvals/*`), so `resume.lock` (and any future
+  per-run/per-PR signal key) needs no IAM redeploy; the orchestrator EC2 role
+  deletes it under its bucket-wide `s3:DeleteObject`.
