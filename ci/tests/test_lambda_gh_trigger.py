@@ -499,7 +499,7 @@ def test_rerun_fails_closed_when_pr_fetch_fails(monkeypatch):
     assert enqueued == []
 
 
-def _partial_rerun_event(delivery, run_id="run42", job="Style check"):
+def _partial_rerun_event(delivery, run_id="run42", job="Style check", head_sha="b" * 40):
     external_id = json.dumps(
         {"kind": "praktika_job_check", "run_id": run_id, "job": job}, sort_keys=True
     )
@@ -510,7 +510,7 @@ def _partial_rerun_event(delivery, run_id="run42", job="Style check"):
                 "action": "rerequested",
                 "sender": {"login": "maxknv"},
                 "check_run": {
-                    "head_sha": "b" * 40,
+                    "head_sha": head_sha,
                     "external_id": external_id,
                     "pull_requests": [{"number": 17}],
                 },
@@ -735,3 +735,27 @@ def test_second_rapid_partial_rerun_is_throttled(monkeypatch):
     mod.lambda_handler(_partial_rerun_event("t2", job="Style Check"), None)
 
     assert requests == [("run42", ["Test"])]  # second click throttled
+
+
+def test_rejected_rerun_does_not_burn_throttle_window(monkeypatch):
+    # A stale click (rejected before the throttle claim) must not block a valid
+    # click that follows immediately (review #20 — validate before throttling).
+    mod = _reload_lambda(monkeypatch)
+    monkeypatch.setattr(mod, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(mod, "RERUN_MIN_INTERVAL_S", 120)
+    s3 = _ThrottleS3()
+    monkeypatch.setattr(mod, "_s3", lambda: s3)
+    requests = []
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    # Live head is "b"*40; a click on the old "a"*40 check is stale.
+    monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr_number: ("b" * 40, _rerun_meta(external=False)))
+    monkeypatch.setattr(mod, "_load_run_snapshot", lambda run_id: {"finalized": False})
+    monkeypatch.setattr(mod, "_write_rerun_request", lambda run_id, jobs, delivery_id: requests.append((run_id, jobs)))
+    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: None)
+
+    # Stale click -> rejected, must NOT claim the throttle window.
+    mod.lambda_handler(_partial_rerun_event("d-stale", head_sha="a" * 40), None)
+    assert requests == []
+    # Valid current-head click immediately after -> should proceed (not throttled).
+    mod.lambda_handler(_partial_rerun_event("d-valid", head_sha="b" * 40), None)
+    assert requests == [("run42", ["Style check"])]

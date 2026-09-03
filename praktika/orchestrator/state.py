@@ -1440,6 +1440,7 @@ class WorkflowState:
             "sender": self._event.get("sender", ""),
             "title": self._event.get("title", ""),
             "labels": self._event.get("labels", []),
+            "draft": bool(self._event.get("draft", False)),
             "workflow_name": self.workflow.name,
             "job_name": job_state.name,
             "always_run": bool(job_state.job.always_run),

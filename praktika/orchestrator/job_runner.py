@@ -243,6 +243,7 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
             INSTANCE_LIFE_CYCLE=instance_life_cycle,
             PR_BODY="",
             PR_TITLE=task.get("title", ""),
+            PR_IS_DRAFT=bool(task.get("draft", False)),
             USER_LOGIN=task.get("sender", ""),
             FORK_NAME=head_repo,
             COMMIT_MESSAGE=commit_message,

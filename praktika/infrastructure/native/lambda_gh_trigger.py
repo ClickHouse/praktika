@@ -921,17 +921,9 @@ def _handle_rerun(check_obj, payload, delivery_id, sender, event_ts, source):
     that marker (the check_suite "re-run all", the top-level check, or a run from
     before external_ids) falls back to a full-workflow re-run.
     """
-    # One re-run per PR per window: prevents several near-simultaneous clicks
-    # (multi-select) from spawning concurrent resumes that race on the run state.
-    prs = check_obj.get("pull_requests", [])
-    pr_number = prs[0].get("number") if prs else None
-    if pr_number and _rerun_throttled(pr_number, event_ts):
-        print(
-            f"SKIP: {source}.rerequested — re-run throttled for PR#{pr_number} "
-            f"(< {RERUN_MIN_INTERVAL_S}s since last re-run)"
-        )
-        return
-
+    # Note: the per-PR throttle is claimed inside the handlers *after* validation
+    # (see _rerun_throttled calls), so a rejected click — stale head, non-maintainer
+    # — doesn't burn the window and block a subsequent legitimate re-run.
     parsed = _parse_job_check_external_id(check_obj.get("external_id", ""))
     if parsed:
         _handle_partial_rerun(parsed[0], parsed[1], check_obj, payload, delivery_id, sender, event_ts)
@@ -982,6 +974,17 @@ def _handle_partial_rerun(run_id, job, check_obj, payload, delivery_id, sender, 
         if not _can_maintain_repo(repo, sender, token):
             print(f"SKIP: partial rerun run={run_id} — fork PR rerun by non-maintainer {sender}")
             return
+
+    # Claim the throttle window only now that the click is validated (valid
+    # sender, current head, authorized) — so a rejected click above doesn't burn
+    # the window and block a legitimate re-run. One re-run per PR per window
+    # prevents near-simultaneous clicks from racing concurrent resumes.
+    if _rerun_throttled(pr_number, event_ts):
+        print(
+            f"SKIP: partial rerun run={run_id} — throttled for PR#{pr_number} "
+            f"(< {RERUN_MIN_INTERVAL_S}s since last re-run)"
+        )
+        return
 
     try:
         snap = _load_run_snapshot(run_id)
@@ -1058,6 +1061,14 @@ def _handle_full_rerun(check_obj, payload, delivery_id, sender, event_ts, source
         print(
             f"SKIP: {source}.rerequested — stale (rerun sha {rerun_sha[:12]} "
             f"!= current head {current_sha[:12]})"
+        )
+        return
+
+    # Claim the throttle window only after validation (see _handle_partial_rerun).
+    if _rerun_throttled(pr_number, event_ts):
+        print(
+            f"SKIP: {source}.rerequested — throttled for PR#{pr_number} "
+            f"(< {RERUN_MIN_INTERVAL_S}s since last re-run)"
         )
         return
 
