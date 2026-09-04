@@ -11,8 +11,7 @@ How the pieces talk. **SQS carries forward dispatch only** (two hops); **everyth
 that flows back — completion, liveness, cancel, re-run, run state — goes through
 S3.** GitHub Checks is the only channel to the user.
 
-See also [PROTOCOL.md](./PROTOCOL.md) (contracts) and
-[RERUN_HARDENING.md](./RERUN_HARDENING.md) (open re-run work).
+See also [PROTOCOL.md](./PROTOCOL.md) (contracts).
 
 ## Components
 

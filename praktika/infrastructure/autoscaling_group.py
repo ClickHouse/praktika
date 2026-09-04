@@ -306,8 +306,8 @@ class AutoScalingGroup:
                 # idle self-scale-in — NOT by provisioning. Forcing the configured
                 # desired here would terminate an orchestrator/runner that is
                 # mid-job whenever someone redeploys while work is in flight (this
-                # is what killed an in-flight orchestrator and forced a 2nd attempt
-                # — see INCIDENT_2026-09-03_stale_report.md). Take the max of the
+                # is what killed an in-flight orchestrator and forced a 2nd
+                # attempt). Take the max of the
                 # current running desired and the configured one, so a deploy can
                 # still raise the floor but can never shrink a busy pool.
                 # Clamp to the new max_size: an explicit max reduction below the

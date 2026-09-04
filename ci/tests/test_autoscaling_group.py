@@ -66,8 +66,7 @@ def test_asg_deploy_never_scales_down_a_busy_pool(monkeypatch):
     # Configured desired is 0 (scale-from-zero pool) but the pool currently has a
     # running instance (desired=1). A deploy that updates for another reason (here
     # a tag change) must NOT force desired back to 0 and kill the in-flight
-    # instance — it must preserve the running capacity. See
-    # INCIDENT_2026-09-03_stale_report.md.
+    # instance — it must preserve the running capacity.
     config = AutoScalingGroup.Config(
         name="praktika-workflow-orchestrator",
         region="eu-north-1",

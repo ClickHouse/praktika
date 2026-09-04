@@ -940,9 +940,8 @@ class WorkflowState:
         runner's ``post_run``, which runs once — so a destructive summary reset
         (Config's ``version=0`` ``push_pending_ci_report``, which can be duplicated
         across attempts) can wipe a finished job's row with nothing to restore it,
-        leaving it PENDING and wrongly marked ``NOT_FINALIZED`` by Finish Workflow
-        (see INCIDENT_2026-09-03_stale_report.md). Re-asserting each loop restores
-        truth before Finish Workflow reads it.
+        leaving it PENDING and wrongly marked ``NOT_FINALIZED`` by Finish Workflow.
+        Re-asserting each loop restores truth before Finish Workflow reads it.
 
         Usage (storage/compute/pipeline) is now owned by the orchestrator on the
         native path: it is recomputed from every finished job's Result and SET

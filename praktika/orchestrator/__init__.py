@@ -420,7 +420,7 @@ def _drive_dag(state, check, workflow, event, advisor, report_url, is_rerun):
         # sweep already owns it; and any request whose lambda read finalized=true
         # spawns a fresh resume. Either way nothing is stranded. (A click landing
         # in the tiny finalized-true→sweep window can both re-drive here AND spawn
-        # a resume — a rare redundant run, never a lost one; see RERUN_HARDENING.md.)
+        # a resume — a rare redundant run, never a lost one.)
         state.save_snapshot(finalized=True)
         if state.sweep_rerun():
             state.save_snapshot()  # un-finalize: we are driving again

@@ -6,8 +6,9 @@ doc_type: design
 
 # Orchestrator-owned workflow report {#orchestrator-owned-report}
 
-Status: **design — to implement.** Fixes the report-corruption class in
-[INCIDENT_2026-09-03_stale_report.md](./INCIDENT_2026-09-03_stale_report.md).
+Status: **implemented.** Fixes the report-corruption class where a
+killed-and-restarted orchestrator run left succeeded jobs wrongly marked
+`NOT_FINALIZED`.
 
 ## Problem
 

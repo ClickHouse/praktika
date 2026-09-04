@@ -130,8 +130,8 @@ class HtmlRunnerHooks:
         # duplicate/late Config (e.g. from a restart) must NOT destructively reset
         # a summary that already holds finished jobs' rows — that wipe left
         # succeeded jobs PENDING and got them wrongly marked NOT_FINALIZED (see
-        # REPORT_OWNERSHIP.md / INCIDENT_2026-09-03_stale_report.md). Create the
-        # summary once; never reset an existing one. (GitHub Actions keeps the
+        # REPORT_OWNERSHIP.md). Create the summary once; never reset an existing
+        # one. (GitHub Actions keeps the
         # version=0 reset — there is no orchestrator there to rebuild rows.)
         if env.ORCHESTRATOR_OWNS_REPORT and cls._report_summary_exists(_workflow.name):
             print(
