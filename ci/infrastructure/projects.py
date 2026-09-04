@@ -149,7 +149,67 @@ def _runner_user_data(controller_update_cmd: str) -> str:
     )
 
 
-def _runner_pool(name: str, instance_type: str, image_builder: str, max_size: int = 10, user_data: str = "", ext=None):
+# OSS trust boundary for the merge-commit snapshot tiers. Two trust tiers live at
+# the top of the artifact bucket: praktika-artifacts-eu-north-1/untrusted/... is
+# written by fork / pull_request runs (which route to the pr-* pools via the PR
+# workflow's runs_on_label_prefix="pr-"), and .../trusted/... is written by push
+# runs (non-pr pools). The runner S3 grant is bucket-wide for convenience (fine on
+# a private project with no untrusted actor), so on this OSS project we carve the
+# tiers back out per pool with explicit Deny statements (Deny always overrides
+# Allow). The information-flow rule is: reads may go down-trust but never up, and
+# writes never go up.
+#
+#   untrusted pool: may READ trusted (reuse), must NOT WRITE trusted (no poisoning)
+#   trusted pool:   must NOT READ or WRITE untrusted (no tainted input into trusted)
+#
+# The tiers are empty until a workflow sets enable_merge_commit, so these denies
+# are inert for existing CI. Bare bucket names are namespaced to
+# praktika-artifacts-eu-north-1 by the deploy-time policy sweep.
+_UNTRUSTED_DENY_WRITE_TRUSTED_STATEMENT = {
+    "Sid": "DenyUntrustedWriteToTrusted",
+    "Effect": "Deny",
+    "Action": [
+        "s3:PutObject",
+        "s3:PutObjectTagging",
+        "s3:DeleteObject",
+        "s3:AbortMultipartUpload",
+    ],
+    "Resource": "arn:aws:s3:::artifacts-eu-north-1/trusted/*",
+}
+_TRUSTED_DENY_ACCESS_UNTRUSTED_STATEMENT = {
+    "Sid": "DenyTrustedAccessToUntrusted",
+    "Effect": "Deny",
+    "Action": [
+        "s3:GetObject",
+        "s3:GetObjectTagging",
+        "s3:HeadObject",
+        "s3:PutObject",
+        "s3:PutObjectTagging",
+        "s3:DeleteObject",
+        "s3:AbortMultipartUpload",
+    ],
+    "Resource": "arn:aws:s3:::artifacts-eu-north-1/untrusted/*",
+}
+
+
+def _runner_pool(
+    name: str,
+    instance_type: str,
+    image_builder: str,
+    max_size: int = 10,
+    user_data: str = "",
+    ext=None,
+    untrusted: bool = False,
+):
+    ext = dict(ext) if ext is not None else {}
+    # Append (don't replace) so pools that already carry ext statements (e.g. the
+    # bedrock pool) keep them.
+    trust_deny = (
+        _UNTRUSTED_DENY_WRITE_TRUSTED_STATEMENT
+        if untrusted
+        else _TRUSTED_DENY_ACCESS_UNTRUSTED_STATEMENT
+    )
+    ext["iam_statements"] = list(ext.get("iam_statements", [])) + [trust_deny]
     return Components.RunnerPool(
         name=name,
         instance_type=instance_type,
@@ -165,7 +225,7 @@ def _runner_pool(name: str, instance_type: str, image_builder: str, max_size: in
         allow_all_s3_prefixes=_RUNNER_ALLOW_ALL_S3_PREFIXES,
         allow_ssm_debug=_RUNNER_ALLOW_SSM_DEBUG,
         user_data=user_data,
-        ext=ext if ext is not None else {},
+        ext=ext,
     )
 
 
@@ -221,6 +281,7 @@ _runner_pools = [
         name="pr-arm-2xsmall",
         instance_type="t4g.small",
         image_builder="ci-arm64-image",
+        untrusted=True,
         user_data=_runner_user_data(
             "# Update the controller if changed (to test new version w/o image rebuild)\n"
             f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages"
@@ -230,6 +291,7 @@ _runner_pools = [
         name="pr-amd-2xsmall",
         instance_type="t3.small",
         image_builder="ci-x86_64-image",
+        untrusted=True,
         user_data=_runner_user_data(
             "# Update the controller if changed (to test new version w/o image rebuild)\n"
             f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages"
@@ -239,6 +301,7 @@ _runner_pools = [
         name="pr-amd-2xsmall-ubuntu",
         instance_type="t3.small",
         image_builder="ci-ubuntu-x86_64-image",
+        untrusted=True,
         user_data=_runner_user_data(
             "# Update the controller if changed (to test new version w/o image rebuild)\n"
             f"python3.12 -m pip install --ignore-installed {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages"
@@ -251,6 +314,7 @@ _runner_pools = [
         name="pr-arm-2xsmall-bedrock",
         instance_type="t4g.small",
         image_builder="ci-arm64-image",
+        untrusted=True,
         ext={"iam_statements": [_CODE_REVIEW_BEDROCK_IAM_STATEMENT]},
         user_data=_runner_user_data(
             "# Update the controller if changed (to test new version w/o image rebuild)\n"

@@ -2035,6 +2035,49 @@ def test_projects_grant_bedrock_to_both_orchestrator_pools():
     assert "BedrockRuntimeInference" in _sids(_orchestrator_pool_base)
 
 
+def test_runner_pools_enforce_merge_snapshot_trust_boundary():
+    # OSS trust boundary for merge-commit snapshot tiers. Information flow rule:
+    # reads may go down-trust but never up, writes never go up.
+    #   untrusted (pr-*) pool: may READ trusted, must NOT WRITE trusted.
+    #   trusted (non-pr) pool: must NOT READ or WRITE untrusted.
+    cloud = _get_infra_config("praktika")
+    untrusted_sid = "DenyUntrustedWriteToTrusted"
+    trusted_sid = "DenyTrustedAccessToUntrusted"
+    trusted_res = "arn:aws:s3:::praktika-artifacts-eu-north-1/trusted/*"
+    untrusted_res = "arn:aws:s3:::praktika-artifacts-eu-north-1/untrusted/*"
+
+    pr_pools = [p for p in cloud.runner_pools if p.name.startswith("pr-")]
+    trusted_pools = [p for p in cloud.runner_pools if not p.name.startswith("pr-")]
+    assert pr_pools and trusted_pools, "expected both pr-* and non-pr runner pools"
+
+    def _sids(pool):
+        return {s.get("Sid") for s in _runner_access_statements(pool)}
+
+    for pool in pr_pools:
+        assert untrusted_sid in _sids(pool), f"{pool.name} missing {untrusted_sid}"
+        stmt = _statement_by_sid(pool, untrusted_sid)
+        assert stmt["Effect"] == "Deny"
+        # Namespaced from the bare bucket name by the deploy-time policy sweep.
+        assert stmt["Resource"] == trusted_res
+        # Writes to trusted are denied; reads are NOT (untrusted may reuse trusted).
+        assert "s3:PutObject" in stmt["Action"]
+        assert "s3:DeleteObject" in stmt["Action"]
+        assert "s3:GetObject" not in stmt["Action"]
+        # An untrusted pool must not carry the trusted-pool deny.
+        assert trusted_sid not in _sids(pool)
+
+    for pool in trusted_pools:
+        assert trusted_sid in _sids(pool), f"{pool.name} missing {trusted_sid}"
+        stmt = _statement_by_sid(pool, trusted_sid)
+        assert stmt["Effect"] == "Deny"
+        assert stmt["Resource"] == untrusted_res
+        # Both reads and writes of untrusted are denied for a trusted pool.
+        assert "s3:GetObject" in stmt["Action"]
+        assert "s3:PutObject" in stmt["Action"]
+        # A trusted pool must not carry the untrusted-pool deny.
+        assert untrusted_sid not in _sids(pool)
+
+
 def test_native_configs_accept_ext_maps():
     runner = RunnerPool(
         name="runner",

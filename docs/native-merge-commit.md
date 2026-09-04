@@ -183,28 +183,42 @@ not grant PR jobs any new access.
 
 ## Permissions
 
-No IAM change is required for phase 1. The Config Workflow runs on the runner
-pool (`CI_CONFIG_RUNS_ON`) whose role grants whole-bucket read+write on the
-artifact bucket (`ci/infrastructure/projects.py`: `allowed_s3_prefixes` is the
-bare bucket name, no key prefix), and the `praktika-controller` runs on the same
-instance under the same role. So the Config Workflow's `PutObject`/`HeadObject`
-and the controller's `GetObject` on `{trusted,untrusted}/merge-snapshots/...` are
-already covered by the bucket-wide grant.
+The runner role grants whole-bucket read+write on the artifact bucket
+(`ci/infrastructure/projects.py`: `allowed_s3_prefixes` is the bare bucket name),
+which already covers snapshot `PutObject`/`HeadObject`/`GetObject`. On top of that
+bucket-wide grant, this (OSS) project **enforces the trust boundary at the IAM
+layer** with per-pool explicit Deny statements, because the trust tier is the
+outermost path segment.
 
-The trust tier being the outermost prefix is what makes the two caveats below
-cleanly actionable:
+Runner pools are split by trust: fork / `pull_request` runs route to the `pr-*`
+pools (via the PR workflow's `runs_on_label_prefix="pr-"`, applied to every job
+including the injected Config Workflow — `praktika/mangle.py`); `push` runs use the
+non-`pr-*` pools. Each pool's role (`ci/infrastructure/projects.py`, via a Deny in
+`ext["iam_statements"]`) carries:
 
-- **If a future hardening pass narrows `allowed_s3_prefixes`** to specific key
-  prefixes, `trusted/` and `untrusted/` must be granted explicitly, or snapshot
-  put/head/get will start failing. Because the tier is the top segment, each can
-  be granted different actions (e.g. `untrusted/*` write-restricted).
-- **The trusted/untrusted tier segregation is logical, not IAM-enforced today.**
-  The runner role is bucket-wide, so IAM alone would not stop a fork-PR job writing
-  a `trusted/`-tier key or reading another tier's object. What prevents a poisoned
-  snapshot from being *consumed* is the content-hash key + write-once upload + the
-  `HEAD == authorized merge_sha` check, and the fact that the orchestrator (not the
-  job) chooses the key. The tier-first layout makes enforcing the boundary at the
-  IAM layer (prefix-scoped roles, or a bucket per tier) a clean follow-up.
+| Pool (trust) | `trusted/*` | `untrusted/*` |
+|---|---|---|
+| `pr-*` (untrusted) | read allowed, **write Deny** | read+write (own tier) |
+| non-`pr-*` (trusted) | read+write (own tier) | **read+write Deny** |
+
+Information-flow rule: reads may go down-trust but never up; writes never go up. So
+a fork job cannot plant (or overwrite) a `trusted/` snapshot, and a trusted run
+cannot ingest `untrusted/` (fork-produced) content. This is *defence in depth* on
+top of the content-hash key + write-once upload + `HEAD == authorized merge_sha`
+checks, which independently prevent a poisoned snapshot from being consumed.
+
+Notes / caveats:
+
+- **Whole bucket for private, scoped for OSS.** A private project with no untrusted
+  actor can skip these Denys entirely (whole-bucket is fine). The split is applied
+  per-project in `projects.py`, not via a framework flag — matching the framework's
+  convention of expressing trust by routing to dedicated pools.
+- The Deny resources use the bare bucket name and are namespaced to
+  `praktika-artifacts-eu-north-1` by the deploy-time policy sweep (`cloud.py`).
+- The tiers are empty until a workflow sets `enable_merge_commit`, so the Denys are
+  inert for existing CI.
+- The orchestrator role is not restricted here: it relays the snapshot *key*, never
+  downloads snapshot *content*, so no untrusted bytes flow into it.
 
 ## Phasing
 
