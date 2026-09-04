@@ -106,15 +106,30 @@ Both steps are best-effort — report upkeep never crashes the run.
 See "Job side" above: `push_pending_ci_report` no longer resets an existing
 summary on the native path. This + the re-assert makes the wipe impossible.
 
+### Increment 3 (shipped) — usage aggregation moves to the orchestrator
+
+`update_workflow_results` gained `replace_usage` (SET instead of accumulate). On
+the native path `publish_report` recomputes the **full** storage/compute/pipeline
+aggregate from every finished job's `Result` (`js.result.ext` carries
+`storage_usage`/`metrics`; compute is derived from runner + duration) and SETs it
+each loop — idempotent, so re-publishing can't multiply the totals. The runner's
+`post_run` stops contributing usage (`ORCHESTRATOR_OWNS_REPORT`) but still writes
+rows / report messages and still sets `result.ext` for the orchestrator to read.
+CIDB usage insertion stays on the runner and reads the totals off the summary.
+
 ### Deferred (follow-up, not correctness)
 
-- **Full sole-writer / retire runner row-writes.** Requires splitting usage-KPI
-  aggregation out of `update_workflow_results` (or porting it to the
-  orchestrator) so `post_run`'s row-merge can be gated off while CIDB usage stays
-  on the runner. Not needed for correctness now.
+- **Retire the runner's row-writes (true "runner writes nothing").** Now that
+  usage is off the runner, only rows/messages remain. Retiring those needs the
+  orchestrator to author cached-job (SKIPPED) rows and per-job report messages,
+  the top-level ext, and Finish Workflow to read the summary from S3. Larger
+  change, no correctness benefit over the current state.
+- **Finish Workflow's own usage.** The orchestrator counts a job's usage only
+  after its `final.json` lands; Finish Workflow reads the summary for the CIDB
+  insert *before* it finishes, so its own (cheap, native) usage isn't counted.
+  Minor accuracy nit.
 - **Reset reset-jobs' rows on resume.** On a re-run, a reset job's row shows its
-  previous terminal result until it completes again (the orchestrator only
-  re-asserts *terminal* jobs). Cosmetic/transient.
+  previous terminal result until it completes again. Cosmetic/transient.
 
 ## Rollout / risk
 

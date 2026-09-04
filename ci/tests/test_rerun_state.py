@@ -298,3 +298,58 @@ def test_save_snapshot_required_raises_on_failure(monkeypatch):
     except RuntimeError:
         raised = True
     assert raised
+
+
+def test_publish_report_aggregates_usage_idempotently(monkeypatch):
+    """Orchestrator recomputes the full usage aggregate from each finished job's
+    Result and SETs it (replace_usage=True) — so re-publishing every loop is
+    idempotent and never multiplies the totals."""
+    import dataclasses as dc
+
+    import praktika.result as result_mod
+    from praktika.result import Result
+
+    captured = {}
+    monkeypatch.setattr(
+        result_mod._ResultS3,
+        "update_workflow_results",
+        staticmethod(lambda **kw: captured.update(kw)),
+    )
+
+    s3 = _FakeS3()
+    state = _make_state(
+        s3, {"A": JobStatus.SUCCESS, "B": JobStatus.SUCCESS, "C": JobStatus.PENDING}
+    )
+    state.workflow = types.SimpleNamespace(name="PR", enable_report=True)
+    state._report_env_ok = True  # short-circuit orchestrator report-env setup
+
+    def _result_dict(name, duration, downloaded, uploaded):
+        r = Result.create_new(name, Result.Status.OK)
+        r.duration = duration
+        r.ext = {
+            "storage_usage": {
+                "downloaded": downloaded,
+                "uploaded": uploaded,
+                "downloaded_details": {},
+                "uploaded_details": {},
+            }
+        }
+        return dc.asdict(r)
+
+    state.jobs["A"].result = _result_dict("A", 10, 5, 0)
+    state.jobs["A"].job.runs_on = ["arm-small"]
+    state.jobs["B"].result = _result_dict("B", 20, 3, 7)
+    state.jobs["B"].job.runs_on = ["arm-small"]
+
+    state.publish_report()
+    assert captured["replace_usage"] is True
+    assert {r.name for r in captured["new_sub_results"]} == {"A", "B"}  # only terminal
+    assert captured["storage_usage"].downloaded == 8  # 5 + 3
+    assert captured["storage_usage"].uploaded == 7  # 0 + 7
+    assert captured["compute_usage"].runners_usage["arm-small"] == 30  # 10 + 20
+
+    # Idempotent: a second publish yields the same totals, not doubled.
+    captured.clear()
+    state.publish_report()
+    assert captured["storage_usage"].downloaded == 8
+    assert captured["compute_usage"].runners_usage["arm-small"] == 30

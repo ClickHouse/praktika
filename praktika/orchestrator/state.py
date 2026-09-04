@@ -932,40 +932,78 @@ class WorkflowState:
         return self._report_env_ok
 
     def publish_report(self):
-        """Re-assert completed jobs' results into the workflow report summary.
+        """Re-assert completed jobs' rows into the workflow report summary and
+        own the usage aggregates.
 
         The orchestrator is the authoritative source of each job's outcome (it
         reads ``final.json``). A job's report row is otherwise written only by the
         runner's ``post_run``, which runs once — so a destructive summary reset
         (Config's ``version=0`` ``push_pending_ci_report``, which can be duplicated
         across attempts) can wipe a finished job's row with nothing to restore it,
-        leaving it PENDING and getting it wrongly marked ``NOT_FINALIZED`` by
-        Finish Workflow (see INCIDENT_2026-09-03_stale_report.md / REPORT_OWNERSHIP.md).
-        Re-asserting each loop restores truth before Finish Workflow reads it.
+        leaving it PENDING and wrongly marked ``NOT_FINALIZED`` by Finish Workflow
+        (see INCIDENT_2026-09-03_stale_report.md). Re-asserting each loop restores
+        truth before Finish Workflow reads it.
 
-        Increment 1 is *additive*: the runner still writes rows (CIDB usage /
-        commit status stay on the runner); the orchestrator just re-asserts the
-        ones it knows are terminal. Best-effort — report upkeep never crashes the run.
+        Usage (storage/compute/pipeline) is now owned by the orchestrator on the
+        native path: it is recomputed from every finished job's Result and SET
+        (``replace_usage=True``) each loop — idempotent, so re-publishing can't
+        multiply the totals. The runner's ``post_run`` stops contributing usage
+        (it still writes rows / report messages, and the CIDB insert still reads
+        the totals off the summary). Best-effort — report upkeep never crashes the
+        run.
         """
         if self._s3 is None or self.local_mode:
             return
         if not getattr(self.workflow, "enable_report", False):
             return
-        payloads = [
-            js.result for js in self.jobs.values() if isinstance(js.result, dict)
+        terminal = [
+            (name, js)
+            for name, js in self.jobs.items()
+            if isinstance(js.result, dict)
         ]
-        if not payloads:
+        if not terminal:
             return
         if not self._ensure_report_env():
             return
         try:
             from copy import deepcopy
 
+            from ..host_metrics import HostMetricsCollector
             from ..result import Result, _ResultS3
+            from ..usage import ComputeUsage, PipelineUtilization, StorageUsage
 
-            results = [Result.from_dict(deepcopy(p)) for p in payloads]
+            rows = [Result.from_dict(deepcopy(js.result)) for _, js in terminal]
+
+            # Recompute the FULL usage aggregate from every finished job's Result
+            # (idempotent — see docstring). storage_usage + metrics ride in each
+            # job's result.ext; compute is derived from its runner + duration.
+            storage = StorageUsage()
+            compute = ComputeUsage()
+            pipeline = PipelineUtilization()
+            has_pipeline = False
+            for name, js in terminal:
+                ext = js.result.get("ext") or {}
+                su = ext.get("storage_usage")
+                if isinstance(su, dict):
+                    storage.merge_with(StorageUsage.from_dict(su))
+                runner_str = "_".join(js.job.runs_on) if js.job.runs_on else ""
+                compute.merge_with(
+                    ComputeUsage().set_usage(
+                        runner_str, js.result.get("duration") or 0, name
+                    )
+                )
+                metrics = ext.get("metrics")
+                if metrics and HostMetricsCollector.qualifies(metrics):
+                    pipeline.merge_with(PipelineUtilization.from_job_metrics(metrics))
+                    has_pipeline = True
+
             _ResultS3.update_workflow_results(
-                workflow_name=self.workflow.name, new_sub_results=results
+                workflow_name=self.workflow.name,
+                new_sub_results=rows,
+                storage_usage=storage,
+                compute_usage=compute,
+                pipeline_utilization=pipeline if has_pipeline else None,
+                replace_usage=True,
             )
         except Exception as e:
             print(f"  [warn] could not re-publish workflow report: {e}")

@@ -275,15 +275,24 @@ class HtmlRunnerHooks:
                 dropped_result.add_note(ResultInfo.DROPPED_DUE_TO_PREVIOUS_FAILURE + f" [{_job.name}]")
                 new_sub_results.append(dropped_result)
 
+        compute_usage = ComputeUsage().set_usage(
+            runner_str="_".join(_job.runs_on),
+            duration=result.duration,
+            job_name=_job.name,
+        )
+        if env.ORCHESTRATOR_OWNS_REPORT:
+            # The native orchestrator aggregates usage from each job's Result
+            # (result.ext still carries storage_usage/metrics, set above), so the
+            # runner must NOT also contribute it here or the workflow totals would
+            # double-count. Rows and report messages still flow from the runner.
+            storage_usage = None
+            compute_usage = None
+            pipeline_utilization = None
         updated_status = _ResultS3.update_workflow_results(
             new_sub_results=new_sub_results,
             workflow_name=_workflow.name,
             storage_usage=storage_usage,
-            compute_usage=ComputeUsage().set_usage(
-                runner_str="_".join(_job.runs_on),
-                duration=result.duration,
-                job_name=_job.name,
-            ),
+            compute_usage=compute_usage,
             pipeline_utilization=pipeline_utilization,
             report_messages=report_messages,
         )
