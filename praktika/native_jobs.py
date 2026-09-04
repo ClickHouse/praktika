@@ -460,8 +460,13 @@ def _prepare_merge_commit(workflow, workflow_config: RunConfig) -> Result:
             if env.PR_NUMBER
             else Utils.normalize_string(base_branch or "unknown")
         )
+        # Dedicated top-level prefix (sibling of PRs/, runs/, ci_cache/), NOT under
+        # ci_cache/: ci_cache holds only small, safe cache metadata (success
+        # records), whereas a snapshot is a heavy artifact of potentially untrusted
+        # (fork) repo content. Keeping artifacts on their own prefix lets access,
+        # retention and trust be governed separately from cache metadata.
         s3_path = (
-            f"{Settings.CACHE_S3_PATH}/merge-snapshots/v1/"
+            f"{Settings.S3_ARTIFACT_BUCKET}/merge-snapshots/v1/"
             f"{tier}/{scope}/{content_hash}.tar.zst"
         )
 

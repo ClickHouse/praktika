@@ -125,13 +125,21 @@ Performed in the Config Workflow, the one setup job that already has full histor
 
 **Trusted vs untrusted segregation.** Mirrors the existing cache trust model
 (`praktika/cache.py`: a `pull_request` `CacheRecord` is untrusted and only reused
-by `pull_request` workflows). Snapshots are keyed in a trust- and PR-scoped
-namespace:
+by `pull_request` workflows). Snapshots live under a **dedicated top-level prefix**
+in the artifact bucket (`<bucket>/merge-snapshots/...`, a sibling of `PRs/`,
+`runs/`, `ci_cache/`), keyed in a trust- and PR-scoped namespace:
 
 ```
 merge-snapshots/v1/pull_request/pr-<N>/<content-hash>     # untrusted (incl. fork PRs)
-merge-snapshots/v1/push/<branch>/<content-hash>           # trusted
+merge-snapshots/v1/trusted/<branch>/<content-hash>        # trusted
 ```
+
+**Not under `ci_cache/`.** `ci_cache/` holds only small, safe cache *metadata*
+(success records), which is why the runner role can freely read+write it. A
+snapshot is a heavy *artifact* of potentially untrusted (fork) repo content, so it
+must not share that prefix. A dedicated prefix keeps artifacts separable from
+metadata and lets access, retention, and trust be governed independently (e.g. a
+future prefix-scoped IAM policy, or per-tier lifecycle rules).
 
 A `pull_request`-tier snapshot is **only** ever consumed by `pull_request` runs; a
 trusted run never reads a PR-tier object. Fork and non-fork PRs, and trusted runs,
@@ -172,21 +180,24 @@ pool (`CI_CONFIG_RUNS_ON`) whose role grants whole-bucket read+write on the
 artifact bucket (`ci/infrastructure/projects.py`: `allowed_s3_prefixes` is the
 bare bucket name, no key prefix), and the `praktika-controller` runs on the same
 instance under the same role. So the Config Workflow's `PutObject`/`HeadObject`
-and the controller's `GetObject` on `ci_cache/merge-snapshots/...` are already
-covered, exactly as the existing submodule cache under `ci_cache/submodules/...`.
+and the controller's `GetObject` on `merge-snapshots/...` are already covered by
+the bucket-wide grant.
 
-Two caveats:
+Snapshots deliberately use a top-level `merge-snapshots/` prefix rather than
+`ci_cache/` — see "Not under `ci_cache/`" above. This is what makes the two
+caveats below actionable:
 
 - **If a future hardening pass narrows `allowed_s3_prefixes`** to specific key
-  prefixes, `ci_cache` (or `ci_cache/merge-snapshots`) must be added explicitly,
-  or snapshot put/head/get will start failing.
-- **The trusted/untrusted tier segregation is logical, not IAM-enforced.** The
-  runner role is bucket-wide, so IAM alone would not stop a fork-PR job writing a
-  `trusted/`-tier key or reading another PR's object. What prevents a poisoned
+  prefixes, `merge-snapshots` must be added explicitly, or snapshot
+  put/head/get will start failing. Because it is its own prefix (not commingled
+  with `ci_cache` metadata), it can be granted with different actions per tier.
+- **The trusted/untrusted tier segregation is logical, not IAM-enforced today.**
+  The runner role is bucket-wide, so IAM alone would not stop a fork-PR job writing
+  a `trusted/`-tier key or reading another PR's object. What prevents a poisoned
   snapshot from being *consumed* is the content-hash key + write-once upload + the
   `HEAD == authorized merge_sha` check, and the fact that the orchestrator (not the
-  job) chooses the key. Enforcing the boundary at the IAM layer (prefix-scoped
-  roles, or a bucket per tier) is a possible follow-up, not required here.
+  job) chooses the key. The dedicated prefix makes enforcing the boundary at the
+  IAM layer (prefix-scoped roles, or a bucket per tier) a clean follow-up.
 
 ## Phasing
 
