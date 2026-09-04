@@ -142,6 +142,11 @@ workflow = Workflow.Config(
     enable_cidb=True,
     enable_gh_summary_comment=True,
     enable_exit_code_result=True,
+    # Run CI on the ephemeral merge commit (PR head merged into base_branches[0])
+    # instead of the raw PR head. The Config Workflow computes the merge once and
+    # publishes a snapshot every job restores; fork/pull_request runs use the
+    # untrusted/ snapshot tier (pr-* pools). See docs/native-merge-commit.md.
+    enable_merge_commit=True,
 )
 
 WORKFLOWS = [workflow]
