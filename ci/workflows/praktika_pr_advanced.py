@@ -100,28 +100,6 @@ workflow = Workflow.Config(
             Job.ParamSet(parameter={"key_1": [1, 2, "ABC"], "key_2": None}),
             Job.ParamSet(parameter={"key_1": [2, 3]}),
         ),
-        # --- TEMP scaffolding to exercise re-run + report live (remove before merge) ---
-        # "Fake Fail" fails on the first attempt (rerun_count == 0) and passes on
-        # re-run (rerun_count > 0), so a manual re-run drives it fail -> green.
-        # "Fake Fail Downstream" run_after it, so it is DROPPED on the first
-        # failure and re-runs (green) once the parent passes — exercising the
-        # partial re-run reset + downstream re-drive + report re-assert + usage.
-        Job.Config(
-            name="Fake Fail",
-            runs_on=[RunnerLabels.SMALL_ARM],
-            command=(
-                "python3 -c \"from praktika.info import Info; import sys; "
-                "n = Info().rerun_count; print('Fake Fail rerun_count =', n); "
-                "sys.exit(0 if n > 0 else 1)\""
-            ),
-        ),
-        Job.Config(
-            name="Fake Fail Downstream",
-            runs_on=[RunnerLabels.SMALL_ARM],
-            command="echo 'Fake Fail Downstream ran'",
-            run_after=["Fake Fail"],
-        ),
-        # --- end TEMP scaffolding ---
         # Native AI code review: consults an OpenAI model on Bedrock for a
         # structured result, then posts the summary / inline findings and
         # resolves its own threads from trusted job code (see praktika.ai_review).
