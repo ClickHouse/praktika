@@ -214,10 +214,10 @@ def _claim_resume_lock(run_id: str, event_ts) -> bool:
 
     The lease only covers the SQS→orchestrator boot window; the resume
     orchestrator deletes it once it publishes finalized=false, and a boot crash
-    is recovered by SQS redelivery — so it needs no TTL. On an unexpected S3
-    error we fail CLOSED (return False, don't spawn): the request is already
-    recorded, so a subsequent click resumes it — safer than risking the
-    concurrent double-spawn this lease exists to prevent (see RERUN_HARDENING.md).
+    is recovered by SQS redelivery — so it needs no TTL. Only a genuine
+    precondition failure (the key already exists) counts as "lost the race" and
+    returns False; any other S3 error is RAISED, not swallowed — swallowing it
+    would strand the already-written request behind a phantom "resume in flight".
     """
     if not S3_BUCKET or not run_id:
         return False
@@ -232,9 +232,25 @@ def _claim_resume_lock(run_id: str, event_ts) -> bool:
         return True
     except Exception as e:
         if _is_precondition_failed(e):
-            return False  # another resume already claimed this run
-        print(f"  [warn] resume lock claim failed, not spawning: {e}")
-        return False
+            return False  # another resume already claimed this run — real contention
+        # Unexpected error: propagate so the webhook fails visibly / can be
+        # retried, rather than returning False and stranding the request.
+        raise
+
+
+def _release_resume_lock(run_id: str) -> None:
+    """Best-effort delete of the resume boot-lease.
+
+    Used to roll back a claimed lock when the resume message could not be
+    enqueued, so a webhook retry can re-claim and re-send instead of finding a
+    stranded lock that makes it wrongly conclude a resume is already in flight.
+    """
+    if not S3_BUCKET or not run_id:
+        return
+    try:
+        _s3().delete_object(Bucket=S3_BUCKET, Key=_resume_lock_key(run_id))
+    except Exception as e:
+        print(f"  [warn] could not release resume lock for {run_id}: {e}")
 
 
 def _get_raw_body(event) -> str:
@@ -971,17 +987,13 @@ def _handle_partial_rerun(run_id, job, check_obj, payload, delivery_id, sender, 
     # a finished one. No throttle — the resume.lock below serializes spawns
     # without rate-limiting the user, and a running orchestrator absorbs any
     # number of requests (bounded per job by MAX_RERUNS_PER_JOB).
-    try:
-        _write_rerun_request(run_id, [job], delivery_id)
-    except Exception as e:
-        print(f"SKIP: partial rerun run={run_id} — could not write request: {e}")
-        return
+    # These handoff steps must not silently claim success on failure — that
+    # loses the user's click (the running-run request would be absent, or a
+    # finished run would never get a resume). Propagate so the webhook surfaces
+    # a failure and can be retried, rather than returning HTTP 200.
+    _write_rerun_request(run_id, [job], delivery_id)
 
-    try:
-        snap = _load_run_snapshot(run_id)
-    except Exception as e:
-        print(f"SKIP: partial rerun run={run_id} — could not read state: {e}")
-        return
+    snap = _load_run_snapshot(run_id)
 
     if not (snap and snap.get("finalized")):
         # Running (or snapshot not written yet): the live orchestrator's sweep
@@ -1016,7 +1028,14 @@ def _handle_partial_rerun(run_id, job, check_obj, payload, delivery_id, sender, 
         "event_ts": event_ts,
         **meta,
     }
-    _enqueue(workflow, delivery_id)
+    try:
+        _enqueue(workflow, delivery_id)
+    except Exception:
+        # The lock is claimed but the resume was never sent — release it so a
+        # retry re-claims and re-enqueues instead of seeing a stranded lock and
+        # wrongly concluding a resume is already in flight. Then propagate.
+        _release_resume_lock(run_id)
+        raise
     print(f"RERUN (partial, resume, spawned): run={run_id} job={job!r}")
 
 

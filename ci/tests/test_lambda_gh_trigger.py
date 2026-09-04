@@ -771,3 +771,69 @@ def test_stale_partial_rerun_rejected_does_not_block_next(monkeypatch):
     # Valid current-head click immediately after -> proceeds.
     mod.lambda_handler(_partial_rerun_event("d-valid", head_sha="b" * 40), None)
     assert requests == [("run42", ["Style check"])]
+
+
+def test_claim_resume_lock_raises_on_unexpected_s3_error(monkeypatch):
+    # A non-precondition S3 error must propagate (not be swallowed as "lost the
+    # race"), so the already-written request isn't stranded behind a phantom lock.
+    mod = _reload_lambda(monkeypatch)
+    monkeypatch.setattr(mod, "S3_BUCKET", "bucket")
+
+    class _BoomS3:
+        def put_object(self, **k):
+            raise RuntimeError("s3 down")
+
+    monkeypatch.setattr(mod, "_s3", lambda: _BoomS3())
+    raised = False
+    try:
+        mod._claim_resume_lock("run42", 1000.0)
+    except RuntimeError:
+        raised = True
+    assert raised
+
+
+def test_partial_rerun_propagates_request_write_failure(monkeypatch):
+    # A failed request write must surface (HTTP non-200), not return 200 and lose
+    # the click.
+    mod = _reload_lambda(monkeypatch)
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr: ("b" * 40, _rerun_meta(external=False)))
+
+    def _boom(run_id, jobs, delivery_id):
+        raise RuntimeError("put failed")
+
+    monkeypatch.setattr(mod, "_write_rerun_request", _boom)
+    raised = False
+    try:
+        mod.lambda_handler(_partial_rerun_event("d-fail"), None)
+    except RuntimeError:
+        raised = True
+    assert raised
+
+
+def test_partial_rerun_finished_enqueue_failure_releases_lock(monkeypatch):
+    # If the resume can't be enqueued after the lock was claimed, the lock must be
+    # released (so a retry re-claims) and the error must propagate.
+    mod = _reload_lambda(monkeypatch)
+    released = []
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr: ("b" * 40, _rerun_meta(external=False)))
+    monkeypatch.setattr(mod, "_write_rerun_request", lambda *a: None)
+    monkeypatch.setattr(
+        mod, "_load_run_snapshot",
+        lambda run_id: {"finalized": True, "repo": "owner/repo", "head_sha": "b" * 40, "pr_number": 17},
+    )
+    monkeypatch.setattr(mod, "_claim_resume_lock", lambda run_id, ts: True)
+    monkeypatch.setattr(mod, "_release_resume_lock", lambda run_id: released.append(run_id))
+
+    def _boom(workflow, delivery_id):
+        raise RuntimeError("sqs down")
+
+    monkeypatch.setattr(mod, "_enqueue", _boom)
+    raised = False
+    try:
+        mod.lambda_handler(_partial_rerun_event("d-enq"), None)
+    except RuntimeError:
+        raised = True
+    assert raised
+    assert released == ["run42"]

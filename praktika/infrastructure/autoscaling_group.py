@@ -310,8 +310,14 @@ class AutoScalingGroup:
                 # — see INCIDENT_2026-09-03_stale_report.md). Take the max of the
                 # current running desired and the configured one, so a deploy can
                 # still raise the floor but can never shrink a busy pool.
+                # Clamp to the new max_size: an explicit max reduction below the
+                # current desired must still produce a valid request (AWS rejects
+                # DesiredCapacity > MaxSize), and reducing max is itself an
+                # explicit shrink, so honouring it there is correct.
                 current_desired = self.ext.get("desired_capacity") or 0
-                effective_desired = max(current_desired, desired_capacity)
+                effective_desired = min(
+                    max(current_desired, desired_capacity), self.max_size
+                )
                 req: Dict[str, Any] = {
                     "AutoScalingGroupName": self.name,
                     "MinSize": self.min_size,

@@ -234,3 +234,60 @@ def test_asg_deploy_skips_create_when_launch_template_is_missing(monkeypatch, ca
         "'praktika-workflow-orchestrator'; skipping until the launch template exists"
     )
     assert "WARNING: Launch Template is not available yet" in capsys.readouterr().out
+
+
+def test_asg_deploy_clamps_desired_to_reduced_max(monkeypatch):
+    # Reducing max_size below the current desired must still send a valid request
+    # (DesiredCapacity <= MaxSize) — not desired=10 with max=5, which AWS rejects.
+    config = AutoScalingGroup.Config(
+        name="praktika-workflow-orchestrator",
+        region="eu-north-1",
+        vpc_name="praktika-ci",
+        subnet_ids=["subnet-1"],
+        min_size=0,
+        max_size=5,
+        desired_capacity=0,
+        launch_template_name="praktika-workflow-orchestrator-lt",
+        launch_template_version="$Default",
+        praktika_resource_tag="workflow_orchestrator",
+    )
+
+    def _fetch():
+        config.ext.update(
+            {
+                "min_size": 0,
+                "max_size": 10,
+                "desired_capacity": 10,  # a busy pool
+                "health_check_type": "EC2",
+                "health_check_grace_period": 0,
+                "vpc_zone_identifier": "subnet-1",
+                "target_group_arns": [],
+                "launch_template": {"name": "praktika-workflow-orchestrator-lt", "version": "1"},
+                "tags": {},  # forces an update
+            }
+        )
+        return config
+
+    monkeypatch.setattr(config, "fetch", _fetch)
+
+    class _Client:
+        def __init__(self):
+            self.update_kwargs = None
+
+        def update_auto_scaling_group(self, **kwargs):
+            self.update_kwargs = kwargs
+
+        def create_or_update_tags(self, **kwargs):
+            pass
+
+    client = _Client()
+    monkeypatch.setattr(
+        "praktika.infrastructure.autoscaling_group.aws_client",
+        lambda *args, **kwargs: client,
+    )
+
+    config.deploy()
+    assert client.update_kwargs is not None
+    assert client.update_kwargs["MaxSize"] == 5
+    # max(current 10, configured 0) = 10, clamped to max_size 5.
+    assert client.update_kwargs["DesiredCapacity"] == 5
