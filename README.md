@@ -80,6 +80,17 @@ For deployment security considerations, see [SECURITY.md](./SECURITY.md).
 - Webhook ingestion via AWS Lambda
 - `pull_request` and `push` pipeline triggers
 - Status reporting through the GitHub Checks API
+- Cancel and re-run from the GitHub UI:
+  - **Cancel** the top-level check to stop an in-flight run.
+  - **Re-run a single failed check** re-runs only that job and its failed
+    downstream, in place on the same run — not the whole workflow. Every other
+    job keeps its result, and Config Workflow is not re-run (the previous
+    `WORKFLOW_CONFIG` is reused). Works whether the run is still going (the live
+    orchestrator picks up the request) or already finished (a fresh orchestrator
+    reopens the run from its persisted state). The re-run is rejected if the PR
+    head has advanced past the check's commit, and fork-PR re-runs require a
+    maintainer.
+  - **Re-run all checks** re-runs the full workflow.
 - GitHub App authentication through a token-broker Lambda
 - GitHub Pages publishing for hosted reports
 
@@ -95,7 +106,6 @@ For deployment security considerations, see [SECURITY.md](./SECURITY.md).
 - CI DB integration for analytics: every job and test result can be streamed to a CI DB, and Praktika can also provision its own native CI DB component (`Components.CIDBCluster`) or use an existing endpoint via `Settings.SECRET_CI_DB_CONNECTION`
 
 ## High priority / blockers
-- **Job cancel / job rerun** — cancel an in-flight job from the GitHub UI and re-run a single failed job without rerunning the whole workflow
 - **Native DockerHub proxy component** — stand up an in-VPC DockerHub pull-through cache for runner pools so image pulls stay local and do not depend on the legacy cross-VPC proxy
 - **Ephemeral merge-commit PR runs** — run pull-request CI against an ephemeral merge commit by default instead of the branch head, with an explicit opt-in mode for testing the raw head commit when needed
 - **In-flight Praktika install** — install Praktika at run time, ideally through `Workflow.Config`, so current-repo CI can test the version from `.` and other projects can opt into always using the latest Praktika version instead of a pinned or baked runner-image version
@@ -105,8 +115,9 @@ For deployment security considerations, see [SECURITY.md](./SECURITY.md).
 - **Approve and Run alternative for forks in OSS** — provide a standalone-engine
   flow for safely reviewing and explicitly allowing CI runs from forked pull
   requests
-- **Job cancel / job rerun** — cancel an in-flight job from the GitHub UI;
-  re-run a single failed job without rerunning the whole workflow
+- **Re-run all / failed checks (check-suite)** — the check-suite "re-run all"
+  button re-runs the whole workflow; scoping it to just the previously-failed
+  set (like the per-check re-run) is not done yet
 - **Dispatch and cron workflows** — support manually-triggered
   `workflow_dispatch` runs and scheduled `cron` / `schedule` pipelines on the
   standalone engine

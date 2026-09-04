@@ -86,6 +86,7 @@ def _make_queued_state(job_names, started_at_offsets, fake_s3, run_id="run42"):
         js.runner_instance_id = None
         js.attempt = 1
         js.stale_flagged = False
+        js.rerun_count = 0
         js._workflow_state = state
         state.jobs[name] = js
     return state
@@ -137,7 +138,7 @@ def test_queued_check_output_names_state_and_pool(monkeypatch):
     )
     calls = []
 
-    def fake_queue(token, repo, head_sha, name, output=None):
+    def fake_queue(token, repo, head_sha, name, output=None, external_id=None):
         calls.append(
             {
                 "token": token,

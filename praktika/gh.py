@@ -1216,19 +1216,20 @@ class GH:
         if not pr:
             pr = _Environment.get().PR_NUMBER
 
-        cmd = f"gh pr view {pr} --json title,body,labels --repo {repo}"
+        cmd = f"gh pr view {pr} --json title,body,labels,isDraft --repo {repo}"
         output = Shell.get_output(cmd, verbose=True)
         try:
             pr_data = json.loads(output)
             title = pr_data["title"]
             body = pr_data["body"]
             labels = [label["name"] for label in pr_data["labels"]]
+            is_draft = bool(pr_data["isDraft"])
         except Exception:
             print("ERROR: Failed to get PR data")
             traceback.print_exc()
             Info().store_traceback()
-            return "", "", []
-        return title, body, labels
+            return "", "", [], False
+        return title, body, labels, is_draft
 
     @classmethod
     def get_pr_label_assigner(cls, label, pr=None, repo=None):

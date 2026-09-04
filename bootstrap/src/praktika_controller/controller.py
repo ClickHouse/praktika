@@ -112,6 +112,13 @@ def _praktika_env(
     bootstrap_check_id=None,
 ) -> dict[str, str]:
     env = venv_env(venv_dir)
+    # Stream the orchestrator/runner subprocess stdout live to CloudWatch. Python
+    # block-buffers stdout when it isn't a TTY, so without this the progress lines
+    # (Trigger/KICK/DONE) only flush at process exit — and are LOST if the process
+    # is killed mid-run (e.g. the autoscaler scaling the ASG in while a message is
+    # in-flight). Unbuffered output survives the kill, so we can see how far the
+    # orchestrator got.
+    env["PYTHONUNBUFFERED"] = "1"
     env["PRAKTIKA_CONTROLLER_QUEUE"] = queue_name
     if attempt:
         # Surfaced on the GitHub check so cross-instance infra retries are
@@ -122,6 +129,26 @@ def _praktika_env(
         # a fresh one.
         env["PRAKTIKA_BOOTSTRAP_CHECK_RUN_ID"] = str(bootstrap_check_id)
     return env
+
+
+def _run_is_finalized(s3, bucket: str, key: str, log) -> bool:
+    """True if the run's state snapshot marks it finalized. A finalized run has
+    no live orchestrator to consume this job's result, so running it is wasted
+    work (stale/redundant dispatch). Fail open (return False) on any error or a
+    missing snapshot so normal/first-run jobs are never blocked."""
+    if not bucket or not key:
+        return False
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        return bool(json.loads(obj["Body"].read()).get("finalized"))
+    except Exception as e:
+        code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
+        if str(code) not in {"404", "NoSuchKey", "NotFound"}:
+            log.warning(
+                "Could not read run state s3://%s/%s: %s: %s",
+                bucket, key, type(e).__name__, e,
+            )
+        return False
 
 
 def _s3_key_exists(s3, bucket: str, key: str, log) -> bool:
@@ -206,9 +233,13 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
     wf_type = event.get("type", "unknown")
     log.info("Processing: %s", wf_type)
 
-    if wf_type not in ("pull_request", "push"):
+    # "rerun" resumes a finished run to re-run a failed job (+ its downstream);
+    # it reopens the run's existing top-level check itself, so it takes the same
+    # clone -> `orchestrate workflow` path but without a fresh bootstrap check.
+    if wf_type not in ("pull_request", "push", "rerun"):
         log.info("Unknown event type: %s, skipping", wf_type)
         return {"status": "skipped", "reason": f"unknown type: {wf_type}"}
+    is_resume = wf_type == "rerun"
 
     repo = event.get("repo", "")
     pr_number = event.get("pr_number")
@@ -227,7 +258,7 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
     # interrupted clone still leaves a signal. The orchestrator subprocess
     # adopts this id and renames it to the matched workflow.
     early_check_id = None
-    if head_sha:
+    if head_sha and not is_resume:
         early_check_id = post_early_check(
             repo, head_sha, gh_token, EARLY_CHECK_NAME, log=log
         )
@@ -242,6 +273,27 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
             branch=branch,
             log=log,
         )
+
+        # Stale-head guard (TOCTOU): clone_repo fetches the live refs/pull/N/head,
+        # which can have advanced since the lambda verified the head. Running the
+        # requested workflow/checks against a different (possibly unapproved fork)
+        # commit is unsafe, so abort when the checked-out sha isn't the one the
+        # event asked for. Only for PR runs where we have a specific head_sha.
+        if pr_number and head_sha and actual_sha and actual_sha != head_sha:
+            log.warning(
+                "PR head advanced (checked out %s != requested %s); aborting to "
+                "avoid running unintended code",
+                actual_sha, head_sha,
+            )
+            finalize_check(
+                repo, early_check_id, gh_token, "cancelled",
+                "Head advanced",
+                f"The PR head moved to {actual_sha[:12]} after this run was "
+                f"requested for {head_sha[:12]}; skipping to avoid running the "
+                f"wrong commit. A run for the new head will proceed.",
+                log=log,
+            )
+            return {"status": "skipped", "reason": "stale head", "sha": actual_sha}
 
         base_venv, venv_dir = _resolve_runtime(clone_dir, log)
 
@@ -330,6 +382,15 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
             job_name,
         )
         return {"status": "skipped", "reason": "cancelled", "job": job_name}
+
+    # A finalized run has no orchestrator left to consume the result, so a stale
+    # or redundant dispatch (e.g. a leftover job_task) would just do pointless
+    # work. Skip it. An active re-run writes finalized=false before dispatching,
+    # so this never blocks a legitimate resume; missing snapshot -> run (fail open).
+    state_s3_key = task.get("state_s3_key", "")
+    if _run_is_finalized(s3, cancel_s3_bucket, state_s3_key, log):
+        log.info("Task %r belongs to a finalized run, skipping before clone", job_name)
+        return {"status": "skipped", "reason": "run finalized", "job": job_name}
 
     cm_heartbeat = (
         Heartbeat(

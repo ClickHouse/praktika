@@ -610,20 +610,16 @@ def clone_repo(
 
     git(["init", clone_dir])
     git(["remote", "add", "origin", clone_url], cwd=clone_dir)
-    if pr_number:
-        git(
-            [
-                "fetch",
-                "--depth=1",
-                "origin",
-                f"+refs/pull/{pr_number}/head:refs/heads/pr-head",
-            ],
-            cwd=clone_dir,
-        )
-        git(["checkout", "pr-head"], cwd=clone_dir)
-    else:
-        git(["fetch", "--depth=1", "origin", head_sha], cwd=clone_dir)
-        git(["checkout", head_sha], cwd=clone_dir)
+    # Always pin the checkout to the authorized head_sha, never the live
+    # refs/pull/N/head. The PR head can advance after a run is authorized, and
+    # BOTH the orchestrator and every job runner clone through here — checking
+    # out the live ref would let a later job clone and execute a newly pushed,
+    # unapproved fork commit under this run's authorization. Fetching by sha is a
+    # reachable-SHA fetch (GitHub advertises PR commits, so a fork PR's head_sha
+    # is fetchable from the base repo); if the sha was force-pushed away and is no
+    # longer reachable, the fetch fails and the caller aborts — the safe outcome.
+    git(["fetch", "--depth=1", "origin", head_sha], cwd=clone_dir)
+    git(["checkout", head_sha], cwd=clone_dir)
 
     actual_sha = git(["rev-parse", "HEAD"], cwd=clone_dir).strip()
     if log is not None:

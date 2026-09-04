@@ -461,7 +461,10 @@ def _setup_handle_workflow(monkeypatch, tmp_path, clone_error=None):
     def fake_clone(*_a, **_k):
         if clone_error is not None:
             raise clone_error
-        return (str(tmp_path), "actualsha")
+        # Echo the requested head_sha (clone_repo(repo, head_sha, ...)) so the
+        # stale-head guard sees a matching checkout (normal case).
+        requested_sha = _a[1] if len(_a) > 1 else _k.get("head_sha", "")
+        return (str(tmp_path), requested_sha or "actualsha")
 
     monkeypatch.setattr(controller, "clone_repo", fake_clone)
     return runs
@@ -532,6 +535,30 @@ def test_handle_workflow_finalizes_early_check_on_clone_failure(monkeypatch, tmp
     assert finalize_calls == [(555, "failure")]
 
 
+def test_handle_workflow_aborts_when_head_advanced(monkeypatch, tmp_path):
+    # clone_repo checks out the live head; if it differs from the requested
+    # head_sha (PR advanced), abort without running the orchestrator.
+    monkeypatch.setattr(controller, "post_early_check", lambda *_a, **_k: 777)
+    finalize_calls = []
+    monkeypatch.setattr(
+        controller,
+        "finalize_check",
+        lambda repo, cid, tok, conclusion, *a, **_k: finalize_calls.append((cid, conclusion)),
+    )
+    runs = _setup_handle_workflow(monkeypatch, tmp_path)
+    monkeypatch.setattr(controller, "clone_repo", lambda *a, **k: (str(tmp_path), "newhead999"))
+
+    result = controller.handle_workflow(
+        {"type": "pull_request", "repo": "o/r", "pr_number": 5, "head_sha": "oldhead111"},
+        _Log(),
+        "q",
+    )
+
+    assert result["reason"] == "stale head"
+    assert finalize_calls == [(777, "cancelled")]
+    assert not any(r[0] == ["orch"] for r in runs)  # orchestrator never ran
+
+
 def test_cancel_watchdog_terminates_process_group(monkeypatch):
     calls = []
 
@@ -554,3 +581,39 @@ def test_cancel_watchdog_terminates_process_group(monkeypatch):
     watchdog._run()
 
     assert calls == [proc]
+
+
+class _StateS3:
+    """Minimal S3 stub for _run_is_finalized."""
+
+    def __init__(self, store):
+        self._store = store
+
+    def get_object(self, Bucket, Key):  # noqa: N803
+        import io
+        if (Bucket, Key) not in self._store:
+            err = Exception("missing")
+            err.response = {"Error": {"Code": "NoSuchKey"}}
+            raise err
+        return {"Body": io.BytesIO(self._store[(Bucket, Key)])}
+
+
+class _NullLog:
+    def warning(self, *a, **k):
+        pass
+
+
+def test_run_is_finalized_true_false_and_failopen():
+    key = ("b", "runs/1/state.json")
+    log = _NullLog()
+    # finalized run -> True
+    s3 = _StateS3({key: json.dumps({"finalized": True}).encode()})
+    assert controller._run_is_finalized(s3, "b", "runs/1/state.json", log) is True
+    # active run -> False
+    s3 = _StateS3({key: json.dumps({"finalized": False}).encode()})
+    assert controller._run_is_finalized(s3, "b", "runs/1/state.json", log) is False
+    # missing snapshot -> fail open (False) so first-run/legacy jobs still run
+    s3 = _StateS3({})
+    assert controller._run_is_finalized(s3, "b", "runs/1/state.json", log) is False
+    # missing key arg -> False
+    assert controller._run_is_finalized(s3, "b", "", log) is False
