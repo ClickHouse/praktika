@@ -448,26 +448,24 @@ def _prepare_merge_commit(workflow, workflow_config: RunConfig) -> Result:
         # re-hashes the downloaded bytes and rejects any mismatch).
         content_hash = _sha256_file(archive_path)
 
-        # Trust segregation: a pull_request snapshot (untrusted, includes forks) is
-        # only ever consumed by pull_request runs, never by a trusted tier.
+        # Trust tier is the OUTERMOST path segment so the boundary can be
+        # prefix-scoped wholesale in IAM (untrusted/* vs trusted/*), and so it is
+        # not under ci_cache/ (which holds only small, safe metadata the runner may
+        # freely read+write). A pull_request (fork-reachable) snapshot is untrusted
+        # and only ever consumed by pull_request runs; everything else is trusted.
         tier = (
-            "pull_request"
+            "untrusted"
             if env.EVENT_TYPE == Workflow.Event.PULL_REQUEST
             else "trusted"
         )
-        scope = (
-            f"pr-{env.PR_NUMBER}"
-            if env.PR_NUMBER
-            else Utils.normalize_string(base_branch or "unknown")
-        )
-        # Dedicated top-level prefix (sibling of PRs/, runs/, ci_cache/), NOT under
-        # ci_cache/: ci_cache holds only small, safe cache metadata (success
-        # records), whereas a snapshot is a heavy artifact of potentially untrusted
-        # (fork) repo content. Keeping artifacts on their own prefix lets access,
-        # retention and trust be governed separately from cache metadata.
+        # No PR/branch in the key: the object is content-addressed by its sha256,
+        # which is globally unique and self-verifying, so a scope segment adds
+        # nothing for correctness or security (a different tree -> different key;
+        # an identical tree -> identical bytes). Retention is handled by S3
+        # lifecycle rules on the tier prefix.
         s3_path = (
-            f"{Settings.S3_ARTIFACT_BUCKET}/merge-snapshots/v1/"
-            f"{tier}/{scope}/{content_hash}.tar.zst"
+            f"{Settings.S3_ARTIFACT_BUCKET}/{tier}/merge-snapshots/v1/"
+            f"{content_hash}.tar.zst"
         )
 
         if S3.head_object(s3_path):
