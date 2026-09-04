@@ -237,7 +237,7 @@ def test_interim_text_accumulates_across_rounds():
     assert "now checking bar.py" in structuring_user
 
 
-def test_blank_write_up_aborts_before_structuring():
+def test_blank_write_up_aborts_before_structuring(capsys):
     # The model burns the whole budget on tools and the forced write-up still
     # returns no text: complete() must abort with an error and never structure.
     responses = [_tool_msg(f"t{i}") for i in range(_MAX_TOOL_ROUNDS + 1)]
@@ -255,3 +255,10 @@ def test_blank_write_up_aborts_before_structuring():
     # No structuring call was made (the queue was not drained past the write-up).
     assert not p._client._responses  # all consumed; no extra phase-2 pop
     assert len(p._client.requests) == _MAX_TOOL_ROUNDS + 2  # cap rounds + write-up
+    # The abort log explains WHY: cap hit, and the final turn had only
+    # reasoningContent (no text block).
+    out = capsys.readouterr().out
+    assert "structured=aborted" in out
+    assert "hit round cap" in out
+    assert "reasoningContent" in out
+    assert "text_len=0" in out
