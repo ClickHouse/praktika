@@ -1558,6 +1558,18 @@ class WorkflowState:
         failure ``kick()`` fails the job with ``reason`` surfaced on the check —
         nothing else will ever drive it forward.
         """
+        # Merge-commit mode: the Config Workflow (first job) computes the merge and
+        # publishes a snapshot; those values arrive here via the relayed
+        # environment (WORKFLOW_CONFIG) once it completes. They are empty for the
+        # Config Workflow's own dispatch (self._environment is still None then), so
+        # it clones the head normally and builds the snapshot. Every later job
+        # carries merge_snapshot_key and restores that exact tree instead of
+        # cloning + re-merging.
+        _wf_cfg = (self._environment or {}).get("WORKFLOW_CONFIG") or {}
+        merge_sha = _wf_cfg.get("merge_sha", "")
+        base_sha = _wf_cfg.get("base_sha", "")
+        merge_snapshot_key = _wf_cfg.get("merge_snapshot_key", "")
+
         task = {
             "type": "job_task",
             "event_type": self._event.get("type", ""),
@@ -1565,6 +1577,9 @@ class WorkflowState:
             "head_repo": self._event.get("head_repo", ""),
             "pr_number": self._event.get("pr_number"),
             "head_sha": self._event.get("head_sha", ""),
+            "merge_sha": merge_sha,
+            "base_sha": base_sha,
+            "merge_snapshot_key": merge_snapshot_key,
             "head_ref": self._event.get("head_ref", ""),
             "base_ref": self._event.get("base_ref", ""),
             "sender": self._event.get("sender", ""),

@@ -23,6 +23,7 @@ from praktika_controller.common import (
     post_early_check,
     instance_tag,
     resolve_praktika_base_venv,
+    restore_merge_snapshot,
     terminate_instance_for_replacement,
     terminate_process_group,
     try_scale_in_if_idle,
@@ -366,6 +367,11 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
     repo = task.get("repo", "")
     pr_number = task.get("pr_number")
     head_sha = task.get("head_sha", "")
+    # Merge-commit mode: set by the orchestrator once the Config Workflow has
+    # published the snapshot. Empty for head mode and for the Config Workflow's
+    # own task (which clones the head and builds the snapshot).
+    merge_sha = task.get("merge_sha", "")
+    merge_snapshot_key = task.get("merge_snapshot_key", "")
     always_run = bool(task.get("always_run", False))
     cancel_s3_bucket = task.get("cancel_s3_bucket", "")
     cancel_s3_key = task.get("cancel_s3_key", "")
@@ -425,15 +431,26 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
 
         if cm_heartbeat is not None:
             cm_heartbeat.update(phase="cloning")
-        clone_dir, actual_sha = clone_repo(
-            repo,
-            head_sha,
-            pr_number,
-            gh_token,
-            work_dir=WORK_DIR,
-            clean_existing=False,
-            log=log,
-        )
+        if merge_snapshot_key and merge_sha:
+            clone_dir, actual_sha = restore_merge_snapshot(
+                s3,
+                merge_snapshot_key,
+                merge_sha,
+                pr_number,
+                work_dir=WORK_DIR,
+                branch=task.get("head_ref", ""),
+                log=log,
+            )
+        else:
+            clone_dir, actual_sha = clone_repo(
+                repo,
+                head_sha,
+                pr_number,
+                gh_token,
+                work_dir=WORK_DIR,
+                clean_existing=False,
+                log=log,
+            )
 
         if cm_heartbeat is not None:
             cm_heartbeat.update(phase="resolving_runtime")
