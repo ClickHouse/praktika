@@ -353,3 +353,29 @@ def test_publish_report_aggregates_usage_idempotently(monkeypatch):
     state.publish_report()
     assert captured["storage_usage"].downloaded == 8
     assert captured["compute_usage"].runners_usage["arm-small"] == 30
+
+
+def test_reset_posts_pending_check_at_reset_time(monkeypatch):
+    """On re-run every reset job (target + downstream) gets a fresh QUEUED check
+    immediately, so a downstream check doesn't linger stale until it re-runs."""
+    import praktika.orchestrator.state as state_mod
+
+    posted = []
+    monkeypatch.setattr(
+        state_mod.JobCheckRun,
+        "queue",
+        staticmethod(
+            lambda token, repo, head_sha, name, output=None, external_id=None: (
+                posted.append(name),
+                types.SimpleNamespace(id=len(posted)),
+            )[1]
+        ),
+    )
+    s3 = _FakeS3()
+    state = _make_state(
+        s3, {"A": JobStatus.FAILURE, "B": JobStatus.CANCELLED, "C": JobStatus.CANCELLED}
+    )
+    state._gh_token = "tok"  # enable can_post_checks (repo + head_sha already set)
+    reset = state.apply_rerun(["A"])
+    assert reset == {"A", "B", "C"}
+    assert len(posted) == 3  # a pending check for each reset job, at reset time

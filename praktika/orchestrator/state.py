@@ -1203,6 +1203,13 @@ class WorkflowState:
         # check per name (the previous same-name check collapses). The next
         # snapshot records the new check_id.
         js.check = None
+        # Post the fresh QUEUED check now, not at kick() time. The target job is
+        # kicked immediately, but a reset *downstream* job isn't kicked until its
+        # deps finish — so without this its stale failed/cancelled check would
+        # linger for the whole re-run. Posting here (same path kick() uses) shows
+        # every reset job as pending the moment the re-run is applied; each flips
+        # to in_progress when it actually runs. No-op without a GH token.
+        js._create_check()
         return True
 
     def _delete_run_key(self, key):
