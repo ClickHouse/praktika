@@ -188,6 +188,19 @@ def _current_attempt():
     return (os.environ.get("PRAKTIKA_ATTEMPT") or "").strip()
 
 
+def _is_retry_attempt(attempt):
+    """True only when ``attempt`` ("N/M") is a genuine infra retry (N > 1).
+
+    The first attempt (``1/M``) is the normal case and just clutters the check;
+    more importantly a re-run resume is always a fresh orchestrator at ``1/M``,
+    so surfacing it there reads as the attempt counter "resetting" next to the
+    re-run marker. Show it only when a redelivery actually happened."""
+    try:
+        return int(attempt.split("/", 1)[0]) > 1
+    except (ValueError, IndexError, AttributeError):
+        return bool(attempt)
+
+
 def _check_output(workflow, state, error=None, report_url=None, phase=None, is_rerun=False):
     """Assemble a Check API `output` dict (title, summary, text) from the
     live ``WorkflowState``. Called on every PATCH so the top-level check's
@@ -202,6 +215,10 @@ def _check_output(workflow, state, error=None, report_url=None, phase=None, is_r
     rather than a fresh push/PR event."""
     instance_id = _current_instance_id()
     attempt = _current_attempt()
+    # Only surface the attempt counter on a genuine infra retry (N > 1); a plain
+    # "1/3" is noise and, on a re-run resume (always a fresh 1/3 orchestrator),
+    # looks like the counter reset next to the 🔁 re-run marker.
+    show_attempt = attempt and _is_retry_attempt(attempt)
     if workflow is None:
         summary = "No workflow matched this event"
         if instance_id:
@@ -228,7 +245,7 @@ def _check_output(workflow, state, error=None, report_url=None, phase=None, is_r
         summary += " — 🔁 re-run"
     if report_url:
         summary += f" — [CI Report]({report_url})"
-    if attempt:
+    if show_attempt:
         summary += f" — attempt {attempt}"
     if instance_id:
         summary += f" — orchestrator `{instance_id}`"
@@ -237,7 +254,7 @@ def _check_output(workflow, state, error=None, report_url=None, phase=None, is_r
         header_bits.append("**Trigger:** re-run")
     if instance_id:
         header_bits.append(f"**Orchestrator instance:** `{instance_id}`")
-    if attempt:
+    if show_attempt:
         header_bits.append(f"**Attempt:** `{attempt}`")
     if phase:
         header_bits.append(f"**Phase:** `{phase}`")

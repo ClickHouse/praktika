@@ -101,3 +101,37 @@ def test_check_output_rc_nonzero_fail_result_shows_fail_status():
     assert output["title"] == "FAILED"
     assert "ERROR" not in output["summary"]
     assert "rc=" not in output["text"]
+
+
+def _running_state():
+    return SimpleNamespace(
+        cancelled=False,
+        md_status_summary=lambda: "1 running",
+        md_status=lambda: "status table",
+    )
+
+
+def test_check_output_hides_first_attempt(monkeypatch):
+    # attempt 1/3 is the normal first attempt — not surfaced (it's noise).
+    monkeypatch.setenv("PRAKTIKA_ATTEMPT", "1/3")
+    out = _check_output(SimpleNamespace(name="PR"), _running_state())
+    assert "attempt 1/3" not in out["summary"]
+    assert "Attempt" not in out["text"]
+
+
+def test_check_output_shows_genuine_retry_attempt(monkeypatch):
+    # A real infra retry (N > 1) IS surfaced.
+    monkeypatch.setenv("PRAKTIKA_ATTEMPT", "2/3")
+    out = _check_output(SimpleNamespace(name="PR"), _running_state())
+    assert "attempt 2/3" in out["summary"]
+    assert "**Attempt:** `2/3`" in out["text"]
+
+
+def test_check_output_rerun_does_not_show_reset_attempt(monkeypatch):
+    # A re-run resume is a fresh 1/3 orchestrator: show the re-run marker but not
+    # a "reset" attempt counter next to it.
+    monkeypatch.setenv("PRAKTIKA_ATTEMPT", "1/3")
+    out = _check_output(SimpleNamespace(name="PR"), _running_state(), is_rerun=True)
+    assert "🔁 re-run" in out["summary"]
+    assert "attempt 1/3" not in out["summary"]
+    assert "Attempt" not in out["text"]
