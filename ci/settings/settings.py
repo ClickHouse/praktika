@@ -11,8 +11,8 @@ class RunnerLabels:
 CI_CONFIG_RUNS_ON = [RunnerLabels.SMALL_ARM]
 
 # Attach each job's full controller log (clone/restore/dispatch/teardown) to the
-# job result for debugging. See docs/native-merge-commit.md and Settings.DEBUG.
-DEBUG = True
+# job result for debugging. See Settings.PRAKTIKA_DEBUG.
+PRAKTIKA_DEBUG = True
 
 AWS_REGION = "eu-north-1"
 AWS_PROFILE = "Box"

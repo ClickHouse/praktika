@@ -58,10 +58,10 @@ class Workflow:
         enable_job_filtering_by_changes: bool = False
         enable_cache: bool = False
         enable_report: bool = False
-        # When true (or when Settings.DEBUG is set), the praktika-controller's
-        # per-job clone/restore log is attached to each job's result for
-        # debugging (native engine only).
-        enable_debug: bool = False
+        # When true (or when Settings.PRAKTIKA_DEBUG is set), the
+        # praktika-controller's full per-job log is attached to each job's result
+        # for debugging (native engine only).
+        praktika_debug: bool = False
         # do a best effort to merge the PR if all jobs are successful
         enable_automerge: bool = False
         enable_merge_ready_status: bool = False

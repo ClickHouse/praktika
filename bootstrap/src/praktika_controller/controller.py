@@ -418,10 +418,11 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
     if cm_heartbeat is not None:
         cm_heartbeat.start()
 
-    # Debug: capture this task's full controller log and upload it next to
-    # final.json in the finally below; the job result links to it.
-    debug = bool(task.get("debug"))
-    log_capture = TaskLogCapture(INSTANCE_ID).start() if debug else None
+    # When enabled, capture this task's full controller log and upload it next to
+    # final.json in the finally below; the job result links to it. Distinct from
+    # the runner's task["debug"] (which appends --debug to the job command).
+    praktika_debug = bool(task.get("praktika_debug"))
+    log_capture = TaskLogCapture(INSTANCE_ID).start() if praktika_debug else None
 
     proc = None
     try:
@@ -510,9 +511,24 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
             fb = task.get("final_state_s3_bucket", "")
             fk = task.get("final_state_s3_key", "")
             if fb and fk:
-                controller_key = fk.rsplit("/", 1)[0] + "/controller.log"
+                controller_key = fk.rsplit("/", 1)[0] + "/praktika_controller.log"
                 try:
-                    s3.upload_file(log_capture.path, fb, controller_key)
+                    import gzip
+
+                    with open(log_capture.path, "rb") as f:
+                        body = gzip.compress(f.read())
+                    # text/plain + inline so it opens in a browser rather than
+                    # downloading; gzip (with ContentEncoding) so the browser
+                    # transparently decompresses. Uploaded via put_object because
+                    # upload_file can't set ContentEncoding.
+                    s3.put_object(
+                        Bucket=fb,
+                        Key=controller_key,
+                        Body=body,
+                        ContentType="text/plain; charset=utf-8",
+                        ContentEncoding="gzip",
+                        ContentDisposition="inline",
+                    )
                     log.info(
                         "Uploaded controller job log to s3://%s/%s", fb, controller_key
                     )

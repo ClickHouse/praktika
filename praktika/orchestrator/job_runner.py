@@ -387,14 +387,19 @@ def run_job(task, gh_token=None, local=False):
     final_bucket = task.get("final_state_s3_bucket", "")
     final_key = task.get("final_state_s3_key", "")
 
-    # Debug: link the controller's full per-job log (clone/restore/dispatch/
-    # teardown), which the controller uploads next to final.json after this
-    # process exits. Same S3 coordinates as final.json, so no extra plumbing.
-    if task.get("debug") and result_dict is not None and final_bucket and final_key:
+    # Link the controller's full per-job log (clone/restore/dispatch/teardown),
+    # which the controller uploads next to final.json after this process exits.
+    # Same S3 coordinates as final.json, so no extra plumbing.
+    if (
+        task.get("praktika_debug")
+        and result_dict is not None
+        and final_bucket
+        and final_key
+    ):
         try:
             from ..settings import Settings
 
-            controller_key = final_key.rsplit("/", 1)[0] + "/controller.log"
+            controller_key = final_key.rsplit("/", 1)[0] + "/praktika_controller.log"
             endpoint = (Settings.S3_BUCKET_TO_HTTP_ENDPOINT or {}).get(
                 final_bucket, f"{final_bucket}.s3.amazonaws.com"
             )
