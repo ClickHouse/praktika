@@ -23,6 +23,8 @@ from praktika_controller.common import (
     post_early_check,
     instance_tag,
     resolve_praktika_base_venv,
+    restore_merge_snapshot,
+    TaskLogCapture,
     terminate_instance_for_replacement,
     terminate_process_group,
     try_scale_in_if_idle,
@@ -241,6 +243,14 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
         return {"status": "skipped", "reason": f"unknown type: {wf_type}"}
     is_resume = wf_type == "rerun"
 
+    # Capture the controller's handling of this workflow (clone / stale-head guard
+    # / runtime resolve) so praktika_debug can attach it to the top-level result.
+    # Flushed into the clone dir before launching orchestrate; the orchestrate
+    # process (which knows the S3 report prefix) uploads and links it. The event
+    # doesn't carry the debug flag, so we always capture (cheap, local file) and
+    # let the orchestrate side decide whether to upload.
+    log_capture = TaskLogCapture(INSTANCE_ID).start()
+
     repo = event.get("repo", "")
     pr_number = event.get("pr_number")
     head_sha = event.get("head_sha", "")
@@ -293,6 +303,8 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
                 f"wrong commit. A run for the new head will proceed.",
                 log=log,
             )
+            log_capture.stop()
+            log_capture.cleanup()
             return {"status": "skipped", "reason": "stale head", "sha": actual_sha}
 
         base_venv, venv_dir = _resolve_runtime(clone_dir, log)
@@ -301,11 +313,22 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
         os.makedirs(os.path.dirname(event_file), exist_ok=True)
         with open(event_file, "w", encoding="utf-8") as f:
             json.dump(event, f, indent=2)
+
+        # Flush the controller log into the clone's ci/tmp so the orchestrate
+        # process can upload it; then stop capturing (its later stderr-on-failure
+        # lines aren't needed in the attached log).
+        log_capture.save_to(
+            os.path.join(clone_dir, "ci", "tmp", "praktika_controller.log")
+        )
+        log_capture.stop()
+        log_capture.cleanup()
     except BaseException as e:
         # Failure before the orchestrator subprocess takes over the check
         # (clone, runtime resolution, disk). Finalize the early check so the PR
         # shows the failure rather than a check stuck in_progress. The poll loop
         # still handles retry/replacement as before.
+        log_capture.stop()
+        log_capture.cleanup()
         finalize_check(
             repo,
             early_check_id,
@@ -366,6 +389,11 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
     repo = task.get("repo", "")
     pr_number = task.get("pr_number")
     head_sha = task.get("head_sha", "")
+    # Merge-commit mode: set by the orchestrator once the Config Workflow has
+    # published the snapshot. Empty for head mode and for the Config Workflow's
+    # own task (which clones the head and builds the snapshot).
+    merge_sha = task.get("merge_sha", "")
+    merge_snapshot_key = task.get("merge_snapshot_key", "")
     always_run = bool(task.get("always_run", False))
     cancel_s3_bucket = task.get("cancel_s3_bucket", "")
     cancel_s3_key = task.get("cancel_s3_key", "")
@@ -411,6 +439,12 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
     if cm_heartbeat is not None:
         cm_heartbeat.start()
 
+    # When enabled, capture this task's full controller log and upload it next to
+    # final.json in the finally below; the job result links to it. Distinct from
+    # the runner's task["debug"] (which appends --debug to the job command).
+    praktika_debug = bool(task.get("praktika_debug"))
+    log_capture = TaskLogCapture(INSTANCE_ID).start() if praktika_debug else None
+
     proc = None
     try:
         if cm_heartbeat is not None:
@@ -425,15 +459,26 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
 
         if cm_heartbeat is not None:
             cm_heartbeat.update(phase="cloning")
-        clone_dir, actual_sha = clone_repo(
-            repo,
-            head_sha,
-            pr_number,
-            gh_token,
-            work_dir=WORK_DIR,
-            clean_existing=False,
-            log=log,
-        )
+        if merge_snapshot_key and merge_sha:
+            clone_dir, actual_sha = restore_merge_snapshot(
+                s3,
+                merge_snapshot_key,
+                merge_sha,
+                pr_number,
+                work_dir=WORK_DIR,
+                branch=task.get("head_ref", ""),
+                log=log,
+            )
+        else:
+            clone_dir, actual_sha = clone_repo(
+                repo,
+                head_sha,
+                pr_number,
+                gh_token,
+                work_dir=WORK_DIR,
+                clean_existing=False,
+                log=log,
+            )
 
         if cm_heartbeat is not None:
             cm_heartbeat.update(phase="resolving_runtime")
@@ -482,6 +527,35 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
             terminate_process_group(proc, log, grace_s=1)
         if cm_heartbeat is not None:
             cm_heartbeat.stop()
+        if log_capture is not None:
+            log_capture.stop()
+            fb = task.get("final_state_s3_bucket", "")
+            fk = task.get("final_state_s3_key", "")
+            if fb and fk:
+                controller_key = fk.rsplit("/", 1)[0] + "/praktika_controller.log"
+                try:
+                    import gzip
+
+                    with open(log_capture.path, "rb") as f:
+                        body = gzip.compress(f.read())
+                    # text/plain + inline so it opens in a browser rather than
+                    # downloading; gzip (with ContentEncoding) so the browser
+                    # transparently decompresses. Uploaded via put_object because
+                    # upload_file can't set ContentEncoding.
+                    s3.put_object(
+                        Bucket=fb,
+                        Key=controller_key,
+                        Body=body,
+                        ContentType="text/plain; charset=utf-8",
+                        ContentEncoding="gzip",
+                        ContentDisposition="inline",
+                    )
+                    log.info(
+                        "Uploaded controller job log to s3://%s/%s", fb, controller_key
+                    )
+                except Exception as e:
+                    log.warning("Failed to upload controller job log: %s", e)
+            log_capture.cleanup()
 
 
 # How long to wait for the ASG to tear the box down before forcing a local
@@ -525,7 +599,9 @@ def poll():
 
     role, queue_name = _resolve_role_and_queue()
     log_name, _ = _role_config(role)
-    log = configure_logging(log_name, INSTANCE_ID)
+    log = configure_logging(
+        log_name, INSTANCE_ID, os.path.join(WORK_DIR, "praktika-controller.log")
+    )
     log.info("Resolved controller role=%s queue=%s", role, queue_name)
 
     sqs = boto3.client("sqs", region_name=REGION)

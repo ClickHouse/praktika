@@ -54,6 +54,9 @@ def _make_state(s3, statuses, always_run=()):
     state._pr_number = 7
     state._event_ts = 1000.0
     state._environment = {"WORKFLOW_CONFIG": {}}
+    state._merge_sha = ""
+    state._base_sha = ""
+    state._merge_snapshot_key = ""
     state._gh_token = None  # can_post_checks False -> no check API calls
     state.jobs = {}
     for name, status in statuses.items():
@@ -379,3 +382,34 @@ def test_reset_posts_pending_check_at_reset_time(monkeypatch):
     reset = state.apply_rerun(["A"])
     assert reset == {"A", "B", "C"}
     assert len(posted) == 3  # a pending check for each reset job, at reset time
+
+
+def test_merge_target_pinned_from_config_workflow_and_frozen_against_later_jobs():
+    # Security: the merge target is pinned once (Config Workflow, the DAG root)
+    # and must not be redirected by a later untrusted job's relayed WORKFLOW_CONFIG.
+    s3 = _FakeS3()
+    state = _make_state(s3, {"A": JobStatus.PENDING})
+
+    state.apply_workflow_config(
+        {
+            "merge_sha": "m1",
+            "base_sha": "b1",
+            "merge_snapshot_key": "untrusted/merge-snapshots/v1/HASH1.tar.zst",
+        }
+    )
+    assert state._merge_sha == "m1"
+    assert state._base_sha == "b1"
+    assert state._merge_snapshot_key.endswith("HASH1.tar.zst")
+
+    # A subsequent (untrusted) job attempts to redirect the merge target.
+    state.apply_workflow_config(
+        {
+            "merge_sha": "evil",
+            "base_sha": "evil",
+            "merge_snapshot_key": "untrusted/merge-snapshots/v1/EVIL.tar.zst",
+        }
+    )
+    # Frozen: the attacker's values are ignored.
+    assert state._merge_sha == "m1"
+    assert state._base_sha == "b1"
+    assert state._merge_snapshot_key.endswith("HASH1.tar.zst")

@@ -16,13 +16,19 @@ Whenever the user asks to investigate, address, or fix CI failures — or refers
 
 ### Building the JSON URL
 
-This fetch flow is only for PR workflows:
+This fetch flow is only for PR workflows. The object lives under the **normalized
+workflow name** directory, and the filename embeds that same normalized name:
 
 ```
-https://praktika-artifacts-eu-north-1.s3.amazonaws.com/PRs/{PR}/{sha}/result_pr.json
+https://praktika-artifacts-eu-north-1.s3.amazonaws.com/PRs/{PR}/{sha}/{name}/result_{name}.json
 ```
 
-Fetch this URL with WebFetch.
+where `{name}` is the normalized workflow name from above (e.g. `praktika_ci_advanced`).
+Example: `PRs/145/<sha>/praktika_ci_advanced/result_praktika_ci_advanced.json`.
+
+Fetch this URL with WebFetch. Note the artifact bucket returns HTTP 403 (not 404)
+for a missing key, so a 403 usually means the path is wrong (bad sha or workflow
+name), not an auth problem.
 
 ### Result structure
 

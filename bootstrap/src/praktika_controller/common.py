@@ -5,11 +5,13 @@ import errno
 import importlib.util
 import json
 import logging
+import logging.handlers
 import os
 import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -59,14 +61,80 @@ def resolve_praktika_base_venv(clone_dir: str | os.PathLike[str], log) -> str:
     return base_venv
 
 
-def configure_logging(name: str, instance_id: str) -> logging.Logger:
+def configure_logging(
+    name: str, instance_id: str, log_file: str = ""
+) -> logging.Logger:
     logging.basicConfig(
         level=logging.INFO,
         format=f"%(asctime)s [{instance_id}] %(levelname)s %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         stream=sys.stdout,
     )
+    # Also persist the controller log to a rotating file on the instance, so it is
+    # inspectable on the box independently of CloudWatch. Best-effort: never let a
+    # logging-setup failure take down the controller.
+    if log_file:
+        try:
+            os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
+            fh = logging.handlers.RotatingFileHandler(
+                log_file, maxBytes=50 * 1024 * 1024, backupCount=3, encoding="utf-8"
+            )
+            fh.setFormatter(
+                logging.Formatter(
+                    f"%(asctime)s [{instance_id}] %(levelname)s %(message)s",
+                    datefmt="%Y-%m-%d %H:%M:%S",
+                )
+            )
+            logging.getLogger().addHandler(fh)
+        except Exception as e:  # noqa: BLE001
+            logging.getLogger(name).warning("Could not set up file logging: %s", e)
     return logging.getLogger(name)
+
+
+class TaskLogCapture:
+    """Capture ALL controller log records emitted while handling one job into a
+    temp file, so a debug run can attach the full per-job controller log (auth,
+    clone/restore, dispatch, teardown) to the job result. Attaches to the root
+    logger, so child-logger records (clone_repo, restore_merge_snapshot,
+    heartbeats) are included. The caller uploads ``path`` and then calls cleanup().
+    """
+
+    def __init__(self, instance_id: str = "", level: int = logging.INFO) -> None:
+        fd, self.path = tempfile.mkstemp(prefix="controller-job-", suffix=".log")
+        os.close(fd)
+        self._handler = logging.FileHandler(self.path, encoding="utf-8")
+        self._handler.setLevel(level)
+        self._handler.setFormatter(
+            logging.Formatter(
+                f"%(asctime)s [{instance_id}] %(levelname)s %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+        )
+
+    def start(self) -> "TaskLogCapture":
+        logging.getLogger().addHandler(self._handler)
+        return self
+
+    def save_to(self, dest_path) -> None:
+        """Copy the captured log so far to dest_path (best-effort)."""
+        try:
+            os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
+            self._handler.flush()
+            shutil.copyfile(self.path, dest_path)
+        except Exception:
+            pass
+
+    def stop(self) -> None:
+        root = logging.getLogger()
+        if self._handler in root.handlers:
+            root.removeHandler(self._handler)
+        self._handler.close()
+
+    def cleanup(self) -> None:
+        try:
+            os.remove(self.path)
+        except OSError:
+            pass
 
 
 def get_github_token(region: str = "") -> str:
@@ -624,4 +692,94 @@ def clone_repo(
     actual_sha = git(["rev-parse", "HEAD"], cwd=clone_dir).strip()
     if log is not None:
         log.info("Checked out %s in %s", actual_sha[:12], clone_dir)
+    return clone_dir, actual_sha
+
+
+def restore_merge_snapshot(
+    s3_client,
+    snapshot_key,
+    merge_sha,
+    pr_number,
+    work_dir,
+    branch=None,
+    log=None,
+):
+    """Restore the merge-commit snapshot published by the Config Workflow.
+
+    Merge-commit mode: the first job merges the PR head into the target-branch tip
+    once and uploads a minimal, history-free snapshot to S3, content-addressed by
+    its sha256. Every later job restores that exact tree here instead of cloning
+    and re-merging — with no GitHub interaction at all, which is more reliable and
+    faster than N independent clones on a large pipeline.
+
+    Security mirrors clone_repo's model:
+    - Content-addressed integrity: the object basename is its sha256; we re-hash
+      the download and reject any mismatch (tamper-evidence).
+    - Authorized-commit guard: the restored HEAD must equal the authorized
+      merge_sha (the merge-mode equivalent of clone_repo's stale-head guard).
+    - The snapshot_key is stamped by the orchestrator from the trusted Config
+      Workflow's RunConfig — a job cannot redirect it — and trusted vs untrusted
+      (fork PR) snapshots live in disjoint key namespaces that never mix.
+    """
+    import hashlib
+    import shlex
+
+    work_dir = str(work_dir)
+    if pr_number:
+        clone_dir = os.path.join(work_dir, f"pr-{pr_number}")
+    else:
+        slug = (branch or merge_sha[:12] or "push").replace("/", "_")
+        clone_dir = os.path.join(work_dir, f"push-{slug}")
+    if os.path.exists(clone_dir):
+        shutil.rmtree(clone_dir)
+    os.makedirs(clone_dir, exist_ok=True)
+
+    # snapshot_key is "<bucket>/<key...>"; the object basename is "<sha256>.tar.zst".
+    cleaned = (
+        snapshot_key[len("s3://") :]
+        if snapshot_key.startswith("s3://")
+        else snapshot_key
+    )
+    bucket, key = cleaned.split("/", 1)
+    expected_hash = os.path.basename(key)
+    if expected_hash.endswith(".tar.zst"):
+        expected_hash = expected_hash[: -len(".tar.zst")]
+    if log is not None:
+        log.info("Restoring merge snapshot %s (merge %s)", key, merge_sha[:12])
+
+    archive_path = os.path.join(work_dir, f".merge_snapshot_{merge_sha[:12]}.tar.zst")
+    try:
+        s3_client.download_file(bucket, key, archive_path)
+
+        h = hashlib.sha256()
+        with open(archive_path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        actual_hash = h.hexdigest()
+        if actual_hash != expected_hash:
+            raise RuntimeError(
+                f"Merge snapshot hash mismatch for {key}: expected "
+                f"{expected_hash}, got {actual_hash} — refusing to run"
+            )
+
+        # Self-contained shallow repo (.git + worktree at merge_sha, no history).
+        subprocess.run(
+            f"zstd -dc {shlex.quote(archive_path)} | "
+            f"tar -xf - -C {shlex.quote(clone_dir)}",
+            shell=True,
+            check=True,
+            executable="/bin/bash",
+        )
+    finally:
+        if os.path.exists(archive_path):
+            os.remove(archive_path)
+
+    actual_sha = git(["rev-parse", "HEAD"], cwd=clone_dir).strip()
+    if actual_sha != merge_sha:
+        raise RuntimeError(
+            f"Restored snapshot HEAD {actual_sha} != authorized merge commit "
+            f"{merge_sha} — refusing to run"
+        )
+    if log is not None:
+        log.info("Restored merge %s in %s", actual_sha[:12], clone_dir)
     return clone_dir, actual_sha

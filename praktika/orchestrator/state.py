@@ -688,6 +688,16 @@ class WorkflowState:
         # GHA. Later completions overwrite earlier ones — the serialized
         # environment is already cumulative.
         self._environment = None
+        # Merge-commit fields, pinned ONCE when the Config Workflow completes.
+        # They must not be read from the mutable self._environment (overwritten by
+        # every job's completion), or a later untrusted PR job could rewrite the
+        # merge target and point dependent jobs at an attacker-controlled snapshot
+        # (it controls both the content-hash key and HEAD==merge_sha). Frozen on
+        # the first non-empty observation — the Config Workflow is the DAG root, so
+        # it is always the first job to report them. See apply_workflow_config.
+        self._merge_sha = ""
+        self._base_sha = ""
+        self._merge_snapshot_key = ""
         self.cancelled = (
             False  # set by sweep_cancel() on cancel-request / cancel-before
         )
@@ -771,6 +781,16 @@ class WorkflowState:
         """
         if not isinstance(workflow_config, dict):
             return
+
+        # Pin the merge-commit target once (see __init__). Freeze on the first
+        # non-empty snapshot key — the Config Workflow reports it first — and never
+        # accept changes from a later (untrusted) job's relayed WORKFLOW_CONFIG.
+        if not self._merge_snapshot_key:
+            msk = workflow_config.get("merge_snapshot_key") or ""
+            if msk:
+                self._merge_sha = workflow_config.get("merge_sha") or ""
+                self._base_sha = workflow_config.get("base_sha") or ""
+                self._merge_snapshot_key = msk
 
         filtered = workflow_config.get("filtered_jobs") or {}
         cache_success = workflow_config.get("cache_success") or []
@@ -1007,6 +1027,45 @@ class WorkflowState:
         except Exception as e:
             print(f"  [warn] could not re-publish workflow report: {e}")
 
+    def attach_debug_logs(self):
+        """When praktika_debug is set, upload the orchestrator instance's two logs
+        and link them from the TOP-LEVEL workflow result: the bootstrap controller
+        log (clone/TOCTOU/resolve, flushed by the controller before launch) and the
+        orchestrate process log (teed stdout). Best-effort; runs once at the end."""
+        if self._s3 is None or self.local_mode:
+            return
+        if not (
+            Settings.PRAKTIKA_DEBUG or getattr(self.workflow, "praktika_debug", False)
+        ):
+            return
+        if not getattr(self.workflow, "enable_report", False):
+            return
+        if not self._ensure_report_env():
+            return
+        try:
+            from .._environment import _Environment
+            from ..result import _ResultS3
+            from ..s3 import S3
+
+            prefix = f"{Settings.S3_REPORT_BUCKET}/{_Environment.get().get_s3_prefix()}"
+            links = []
+            for fname in ("praktika_controller.log", "praktika_orchestrator.log"):
+                local = f"{Settings.TEMP_DIR}/{fname}"
+                if not os.path.isfile(local):
+                    continue
+                url = S3.copy_file_to_s3(
+                    local_path=local, s3_path=f"{prefix}/{fname}", text=True
+                )
+                if url:
+                    links.append(url)
+            if links:
+                _ResultS3.update_workflow_results(
+                    workflow_name=self.workflow.name, top_links=links
+                )
+                print(f"Attached orchestrator debug logs: {links}")
+        except Exception as e:
+            print(f"  [warn] could not attach orchestrator debug logs: {e}")
+
     def save_snapshot(self, finalized=False, required=False):
         """Persist the DAG snapshot to ``runs/<run_id>/state.json``.
 
@@ -1034,6 +1093,12 @@ class WorkflowState:
             "finalized": bool(finalized),
             "updated_at": time.time(),
             "environment": self._environment,
+            # Persist the pinned merge target so a resumed orchestrator keeps the
+            # Config-Workflow-authorized value rather than re-deriving it from the
+            # (mutable) environment snapshot.
+            "merge_sha": self._merge_sha,
+            "base_sha": self._base_sha,
+            "merge_snapshot_key": self._merge_snapshot_key,
             "jobs": {
                 name: {
                     "status": js.status.value,
@@ -1085,6 +1150,11 @@ class WorkflowState:
         if not isinstance(snap, dict):
             return
         self._environment = snap.get("environment")
+        # Restore the pinned merge target directly from the snapshot (do not
+        # re-derive from the mutable environment on resume).
+        self._merge_sha = snap.get("merge_sha") or ""
+        self._base_sha = snap.get("base_sha") or ""
+        self._merge_snapshot_key = snap.get("merge_snapshot_key") or ""
         for name, rec in (snap.get("jobs") or {}).items():
             js = self.jobs.get(name)
             if js is None or not isinstance(rec, dict):
@@ -1558,6 +1628,17 @@ class WorkflowState:
         failure ``kick()`` fails the job with ``reason`` surfaced on the check —
         nothing else will ever drive it forward.
         """
+        # Merge-commit mode: the Config Workflow (first job) computes the merge and
+        # publishes a snapshot; these are pinned once when it completes (see
+        # apply_workflow_config) and read from immutable state here — NOT from the
+        # mutable self._environment — so a later untrusted job cannot redirect
+        # dependent jobs. Empty for the Config Workflow's own dispatch (nothing has
+        # pinned them yet), so it clones the head and builds the snapshot; every
+        # later job restores that exact tree instead of cloning + re-merging.
+        merge_sha = self._merge_sha
+        base_sha = self._base_sha
+        merge_snapshot_key = self._merge_snapshot_key
+
         task = {
             "type": "job_task",
             "event_type": self._event.get("type", ""),
@@ -1565,6 +1646,17 @@ class WorkflowState:
             "head_repo": self._event.get("head_repo", ""),
             "pr_number": self._event.get("pr_number"),
             "head_sha": self._event.get("head_sha", ""),
+            "merge_sha": merge_sha,
+            "base_sha": base_sha,
+            "merge_snapshot_key": merge_snapshot_key,
+            # When set, the controller uploads its full per-job log next to
+            # final.json and the job result links to it (Settings.PRAKTIKA_DEBUG or
+            # the workflow's praktika_debug). Distinct from the runner's "debug"
+            # flag, which appends --debug to the job command.
+            "praktika_debug": bool(
+                Settings.PRAKTIKA_DEBUG
+                or getattr(self.workflow, "praktika_debug", False)
+            ),
             "head_ref": self._event.get("head_ref", ""),
             "base_ref": self._event.get("base_ref", ""),
             "sender": self._event.get("sender", ""),

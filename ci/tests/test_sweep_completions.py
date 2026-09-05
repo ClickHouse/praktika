@@ -123,6 +123,9 @@ def _make_state(
     state.local_mode = False
     state.cancelled = False
     state._environment = None
+    state._merge_sha = ""
+    state._base_sha = ""
+    state._merge_snapshot_key = ""
     state.workflow = types.SimpleNamespace(name="CI")
     state._gh_token = None
     state._repo = None

@@ -1463,6 +1463,7 @@ class _ResultS3:
         report_messages=None,
         clear_report_sources=None,
         replace_usage=False,
+        top_links=None,
     ):
         # ``replace_usage=True`` SETS the usage aggregates instead of merging
         # (accumulating) them. The native orchestrator recomputes the full
@@ -1470,7 +1471,7 @@ class _ResultS3:
         # it every loop, so it must overwrite — not add — or the totals would
         # multiply. The per-job runner path keeps replace_usage=False (each job
         # contributes its slice once). See orchestrator/REPORT_OWNERSHIP.md.
-        assert new_sub_results
+        assert new_sub_results or top_links
 
         attempt = 1
         prev_status = ""
@@ -1518,6 +1519,11 @@ class _ResultS3:
 
             if report_messages:
                 cls.append_report_messages(workflow_result, report_messages)
+
+            if top_links:
+                for _lnk in top_links:
+                    if _lnk and _lnk not in workflow_result.links:
+                        workflow_result.links.append(_lnk)
 
             new_status = workflow_result.status
             if cls.copy_result_to_s3_with_version(
