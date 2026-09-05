@@ -688,6 +688,16 @@ class WorkflowState:
         # GHA. Later completions overwrite earlier ones — the serialized
         # environment is already cumulative.
         self._environment = None
+        # Merge-commit fields, pinned ONCE when the Config Workflow completes.
+        # They must not be read from the mutable self._environment (overwritten by
+        # every job's completion), or a later untrusted PR job could rewrite the
+        # merge target and point dependent jobs at an attacker-controlled snapshot
+        # (it controls both the content-hash key and HEAD==merge_sha). Frozen on
+        # the first non-empty observation — the Config Workflow is the DAG root, so
+        # it is always the first job to report them. See apply_workflow_config.
+        self._merge_sha = ""
+        self._base_sha = ""
+        self._merge_snapshot_key = ""
         self.cancelled = (
             False  # set by sweep_cancel() on cancel-request / cancel-before
         )
@@ -771,6 +781,16 @@ class WorkflowState:
         """
         if not isinstance(workflow_config, dict):
             return
+
+        # Pin the merge-commit target once (see __init__). Freeze on the first
+        # non-empty snapshot key — the Config Workflow reports it first — and never
+        # accept changes from a later (untrusted) job's relayed WORKFLOW_CONFIG.
+        if not self._merge_snapshot_key:
+            msk = workflow_config.get("merge_snapshot_key") or ""
+            if msk:
+                self._merge_sha = workflow_config.get("merge_sha") or ""
+                self._base_sha = workflow_config.get("base_sha") or ""
+                self._merge_snapshot_key = msk
 
         filtered = workflow_config.get("filtered_jobs") or {}
         cache_success = workflow_config.get("cache_success") or []
@@ -1034,6 +1054,12 @@ class WorkflowState:
             "finalized": bool(finalized),
             "updated_at": time.time(),
             "environment": self._environment,
+            # Persist the pinned merge target so a resumed orchestrator keeps the
+            # Config-Workflow-authorized value rather than re-deriving it from the
+            # (mutable) environment snapshot.
+            "merge_sha": self._merge_sha,
+            "base_sha": self._base_sha,
+            "merge_snapshot_key": self._merge_snapshot_key,
             "jobs": {
                 name: {
                     "status": js.status.value,
@@ -1085,6 +1111,11 @@ class WorkflowState:
         if not isinstance(snap, dict):
             return
         self._environment = snap.get("environment")
+        # Restore the pinned merge target directly from the snapshot (do not
+        # re-derive from the mutable environment on resume).
+        self._merge_sha = snap.get("merge_sha") or ""
+        self._base_sha = snap.get("base_sha") or ""
+        self._merge_snapshot_key = snap.get("merge_snapshot_key") or ""
         for name, rec in (snap.get("jobs") or {}).items():
             js = self.jobs.get(name)
             if js is None or not isinstance(rec, dict):
@@ -1559,16 +1590,15 @@ class WorkflowState:
         nothing else will ever drive it forward.
         """
         # Merge-commit mode: the Config Workflow (first job) computes the merge and
-        # publishes a snapshot; those values arrive here via the relayed
-        # environment (WORKFLOW_CONFIG) once it completes. They are empty for the
-        # Config Workflow's own dispatch (self._environment is still None then), so
-        # it clones the head normally and builds the snapshot. Every later job
-        # carries merge_snapshot_key and restores that exact tree instead of
-        # cloning + re-merging.
-        _wf_cfg = (self._environment or {}).get("WORKFLOW_CONFIG") or {}
-        merge_sha = _wf_cfg.get("merge_sha", "")
-        base_sha = _wf_cfg.get("base_sha", "")
-        merge_snapshot_key = _wf_cfg.get("merge_snapshot_key", "")
+        # publishes a snapshot; these are pinned once when it completes (see
+        # apply_workflow_config) and read from immutable state here — NOT from the
+        # mutable self._environment — so a later untrusted job cannot redirect
+        # dependent jobs. Empty for the Config Workflow's own dispatch (nothing has
+        # pinned them yet), so it clones the head and builds the snapshot; every
+        # later job restores that exact tree instead of cloning + re-merging.
+        merge_sha = self._merge_sha
+        base_sha = self._base_sha
+        merge_snapshot_key = self._merge_snapshot_key
 
         task = {
             "type": "job_task",

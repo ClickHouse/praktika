@@ -477,11 +477,20 @@ def _prepare_merge_commit(workflow, workflow_config: RunConfig) -> Result:
                 if_none_matched=True,
                 no_strict=True,
             )
-            print(
-                f"Merge snapshot uploaded: {s3_path}"
-                if created
-                else f"Merge snapshot created concurrently: {s3_path}"
-            )
+            if created:
+                print(f"Merge snapshot uploaded: {s3_path}")
+            elif S3.head_object(s3_path):
+                # Lost a write-once race with a concurrent writer — the object
+                # exists, so this is a success, not an error.
+                print(f"Merge snapshot created concurrently: {s3_path}")
+            else:
+                # no_strict makes S3.put return False for AccessDenied / network /
+                # service errors too, not only precondition conflicts. The object
+                # is genuinely absent, so fail here rather than record a key that
+                # every downstream restore would 404 on.
+                raise RuntimeError(
+                    f"Failed to upload merge snapshot; object absent from S3: {s3_path}"
+                )
         Shell.check(f"rm -rf {snap_dir} {archive_path}")
 
         workflow_config.base_sha = base_sha
