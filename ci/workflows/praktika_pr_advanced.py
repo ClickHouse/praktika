@@ -30,7 +30,7 @@ workflow = Workflow.Config(
                 "python3 -c \"import importlib.metadata as m; "
                 f"praktika=m.version('praktika'); "
                 "print('praktika=', praktika); "
-                f"assert praktika == '{_HEAD_PRAKTIKA_VERSION}', praktika\"; "
+                f"assert praktika == '{_HEAD_PRAKTIKA_VERSION}', praktika\""
             ),
         ),
         Job.Config(
