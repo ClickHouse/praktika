@@ -24,6 +24,7 @@ from praktika_controller.common import (
     instance_tag,
     resolve_praktika_base_venv,
     restore_merge_snapshot,
+    TaskLogCapture,
     terminate_instance_for_replacement,
     terminate_process_group,
     try_scale_in_if_idle,
@@ -417,6 +418,11 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
     if cm_heartbeat is not None:
         cm_heartbeat.start()
 
+    # Debug: capture this task's full controller log and upload it next to
+    # final.json in the finally below; the job result links to it.
+    debug = bool(task.get("debug"))
+    log_capture = TaskLogCapture(INSTANCE_ID).start() if debug else None
+
     proc = None
     try:
         if cm_heartbeat is not None:
@@ -499,6 +505,20 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
             terminate_process_group(proc, log, grace_s=1)
         if cm_heartbeat is not None:
             cm_heartbeat.stop()
+        if log_capture is not None:
+            log_capture.stop()
+            fb = task.get("final_state_s3_bucket", "")
+            fk = task.get("final_state_s3_key", "")
+            if fb and fk:
+                controller_key = fk.rsplit("/", 1)[0] + "/controller.log"
+                try:
+                    s3.upload_file(log_capture.path, fb, controller_key)
+                    log.info(
+                        "Uploaded controller job log to s3://%s/%s", fb, controller_key
+                    )
+                except Exception as e:
+                    log.warning("Failed to upload controller job log: %s", e)
+            log_capture.cleanup()
 
 
 # How long to wait for the ASG to tear the box down before forcing a local
@@ -542,7 +562,9 @@ def poll():
 
     role, queue_name = _resolve_role_and_queue()
     log_name, _ = _role_config(role)
-    log = configure_logging(log_name, INSTANCE_ID)
+    log = configure_logging(
+        log_name, INSTANCE_ID, os.path.join(WORK_DIR, "praktika-controller.log")
+    )
     log.info("Resolved controller role=%s queue=%s", role, queue_name)
 
     sqs = boto3.client("sqs", region_name=REGION)

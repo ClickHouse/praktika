@@ -1580,6 +1580,12 @@ class WorkflowState:
             "merge_sha": merge_sha,
             "base_sha": base_sha,
             "merge_snapshot_key": merge_snapshot_key,
+            # Debug: when set, the controller uploads its full per-job log next to
+            # final.json and the job result links to it (Settings.DEBUG or the
+            # workflow's enable_debug).
+            "debug": bool(
+                Settings.DEBUG or getattr(self.workflow, "enable_debug", False)
+            ),
             "head_ref": self._event.get("head_ref", ""),
             "base_ref": self._event.get("base_ref", ""),
             "sender": self._event.get("sender", ""),

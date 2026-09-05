@@ -5,11 +5,13 @@ import errno
 import importlib.util
 import json
 import logging
+import logging.handlers
 import os
 import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -59,14 +61,71 @@ def resolve_praktika_base_venv(clone_dir: str | os.PathLike[str], log) -> str:
     return base_venv
 
 
-def configure_logging(name: str, instance_id: str) -> logging.Logger:
+def configure_logging(
+    name: str, instance_id: str, log_file: str = ""
+) -> logging.Logger:
     logging.basicConfig(
         level=logging.INFO,
         format=f"%(asctime)s [{instance_id}] %(levelname)s %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         stream=sys.stdout,
     )
+    # Also persist the controller log to a rotating file on the instance, so it is
+    # inspectable on the box independently of CloudWatch. Best-effort: never let a
+    # logging-setup failure take down the controller.
+    if log_file:
+        try:
+            os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
+            fh = logging.handlers.RotatingFileHandler(
+                log_file, maxBytes=50 * 1024 * 1024, backupCount=3, encoding="utf-8"
+            )
+            fh.setFormatter(
+                logging.Formatter(
+                    f"%(asctime)s [{instance_id}] %(levelname)s %(message)s",
+                    datefmt="%Y-%m-%d %H:%M:%S",
+                )
+            )
+            logging.getLogger().addHandler(fh)
+        except Exception as e:  # noqa: BLE001
+            logging.getLogger(name).warning("Could not set up file logging: %s", e)
     return logging.getLogger(name)
+
+
+class TaskLogCapture:
+    """Capture ALL controller log records emitted while handling one job into a
+    temp file, so a debug run can attach the full per-job controller log (auth,
+    clone/restore, dispatch, teardown) to the job result. Attaches to the root
+    logger, so child-logger records (clone_repo, restore_merge_snapshot,
+    heartbeats) are included. The caller uploads ``path`` and then calls cleanup().
+    """
+
+    def __init__(self, instance_id: str = "", level: int = logging.INFO) -> None:
+        fd, self.path = tempfile.mkstemp(prefix="controller-job-", suffix=".log")
+        os.close(fd)
+        self._handler = logging.FileHandler(self.path, encoding="utf-8")
+        self._handler.setLevel(level)
+        self._handler.setFormatter(
+            logging.Formatter(
+                f"%(asctime)s [{instance_id}] %(levelname)s %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+        )
+
+    def start(self) -> "TaskLogCapture":
+        logging.getLogger().addHandler(self._handler)
+        return self
+
+    def stop(self) -> None:
+        root = logging.getLogger()
+        if self._handler in root.handlers:
+            root.removeHandler(self._handler)
+        self._handler.close()
+
+    def cleanup(self) -> None:
+        try:
+            os.remove(self.path)
+        except OSError:
+            pass
 
 
 def get_github_token(region: str = "") -> str:

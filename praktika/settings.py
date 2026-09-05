@@ -86,6 +86,9 @@ class _Settings:
     PYTHON_PACKET_MANAGER: str = "pip3"
     ENVIRONMENT_VAR_FILE: str = f"{TEMP_DIR}/environment.json"
     RUN_LOG: str = f"{TEMP_DIR}/job.log"
+    # Global debug toggle. When true (or a workflow sets enable_debug), the
+    # praktika-controller's per-job clone/restore log is attached to the job result.
+    DEBUG: bool = False
 
     SECRET_GH_APP: str = "gh-app"
 
@@ -202,6 +205,7 @@ class _Settings:
 
 _USER_DEFINED_SETTINGS = [
     "PROJECT_SLUG",
+    "DEBUG",
     "S3_ARTIFACT_BUCKET",
     "CACHE_S3_PATH",
     "S3_REPORT_BUCKET",

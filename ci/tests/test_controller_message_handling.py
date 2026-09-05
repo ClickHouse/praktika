@@ -617,3 +617,34 @@ def test_run_is_finalized_true_false_and_failopen():
     assert controller._run_is_finalized(s3, "b", "runs/1/state.json", log) is False
     # missing key arg -> False
     assert controller._run_is_finalized(s3, "b", "", log) is False
+
+
+def test_task_log_capture_records_full_controller_log_to_file():
+    import logging
+
+    root = logging.getLogger()
+    prev_level = root.level
+    root.setLevel(logging.INFO)  # production sets this via configure_logging
+    cap = common.TaskLogCapture("i-test").start()
+    try:
+        # A record on any controller logger (root + children) must be captured,
+        # so the full per-job controller log is collected, not just one module's.
+        logging.getLogger("praktika_controller.controller").info("clone step %s", 1)
+        logging.getLogger("praktika_controller.common").warning("restore step")
+    finally:
+        cap.stop()
+        root.setLevel(prev_level)
+
+    with open(cap.path, encoding="utf-8") as f:
+        contents = f.read()
+    assert "clone step 1" in contents
+    assert "restore step" in contents
+    assert "i-test" in contents  # instance id in the formatter
+
+    # A stopped capture no longer receives records.
+    logging.getLogger("praktika_controller.controller").info("after stop")
+    with open(cap.path, encoding="utf-8") as f:
+        assert "after stop" not in f.read()
+
+    cap.cleanup()
+    assert not __import__("os").path.exists(cap.path)
