@@ -115,6 +115,15 @@ class TaskLogCapture:
         logging.getLogger().addHandler(self._handler)
         return self
 
+    def save_to(self, dest_path) -> None:
+        """Copy the captured log so far to dest_path (best-effort)."""
+        try:
+            os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
+            self._handler.flush()
+            shutil.copyfile(self.path, dest_path)
+        except Exception:
+            pass
+
     def stop(self) -> None:
         root = logging.getLogger()
         if self._handler in root.handlers:

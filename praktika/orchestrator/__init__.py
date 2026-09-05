@@ -299,6 +299,48 @@ def orchestrate(
     workflow_name=None,
     bootstrap_check_id=None,
 ):
+    """Tee the orchestrator's stdout to ci/tmp/praktika_orchestrator.log (CI only)
+    so praktika_debug can attach it to the top-level result, then delegate.
+
+    stdout only — stderr is left on fd 2 for the controller's error pipe /
+    INFRA_EXIT_CODE detection. Local (ci=False) runs are not teed (no buffering,
+    per the impl docstring).
+    """
+    args = (event, check, gh_token, run_id, ci, workflow_name, bootstrap_check_id)
+    if not ci:
+        return _orchestrate_event(*args)
+    orch_log = f"{Settings.TEMP_DIR}/praktika_orchestrator.log"
+    log_file = None
+    try:
+        os.makedirs(os.path.dirname(orch_log) or ".", exist_ok=True)
+        log_file = open(orch_log, "w", buffering=1)
+    except Exception as e:
+        print(f"  [warn] could not open orchestrator log file: {e}")
+    if log_file is None:
+        return _orchestrate_event(*args)
+    from ..runner import _TeeStream
+
+    original_stdout = sys.stdout
+    sys.stdout = _TeeStream(original_stdout, log_file)
+    try:
+        return _orchestrate_event(*args)
+    finally:
+        sys.stdout = original_stdout
+        try:
+            log_file.close()
+        except Exception:
+            pass
+
+
+def _orchestrate_event(
+    event,
+    check=None,
+    gh_token=None,
+    run_id=None,
+    ci=True,
+    workflow_name=None,
+    bootstrap_check_id=None,
+):
     """Single orchestrator entry-point used by both the SQS runner and the CLI.
 
     Finds all workflows matching ``event`` and runs them sequentially. Each
@@ -588,6 +630,9 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
             # reads this flag to route a re-run to a fresh orchestrator (resume)
             # instead of a live one.
             state.save_snapshot(finalized=True)
+            # praktika_debug: attach the orchestrator instance's controller +
+            # orchestrate logs to the top-level result (best-effort).
+            state.attach_debug_logs()
 
     if check is not None:
         if error is not None:

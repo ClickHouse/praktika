@@ -95,6 +95,9 @@ class _FakeState:
     def save_snapshot(self, finalized=False):
         pass
 
+    def attach_debug_logs(self):
+        pass
+
     def md_status_summary(self):
         return "all done"
 

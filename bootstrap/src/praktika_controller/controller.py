@@ -243,6 +243,14 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
         return {"status": "skipped", "reason": f"unknown type: {wf_type}"}
     is_resume = wf_type == "rerun"
 
+    # Capture the controller's handling of this workflow (clone / stale-head guard
+    # / runtime resolve) so praktika_debug can attach it to the top-level result.
+    # Flushed into the clone dir before launching orchestrate; the orchestrate
+    # process (which knows the S3 report prefix) uploads and links it. The event
+    # doesn't carry the debug flag, so we always capture (cheap, local file) and
+    # let the orchestrate side decide whether to upload.
+    log_capture = TaskLogCapture(INSTANCE_ID).start()
+
     repo = event.get("repo", "")
     pr_number = event.get("pr_number")
     head_sha = event.get("head_sha", "")
@@ -295,6 +303,8 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
                 f"wrong commit. A run for the new head will proceed.",
                 log=log,
             )
+            log_capture.stop()
+            log_capture.cleanup()
             return {"status": "skipped", "reason": "stale head", "sha": actual_sha}
 
         base_venv, venv_dir = _resolve_runtime(clone_dir, log)
@@ -303,11 +313,22 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
         os.makedirs(os.path.dirname(event_file), exist_ok=True)
         with open(event_file, "w", encoding="utf-8") as f:
             json.dump(event, f, indent=2)
+
+        # Flush the controller log into the clone's ci/tmp so the orchestrate
+        # process can upload it; then stop capturing (its later stderr-on-failure
+        # lines aren't needed in the attached log).
+        log_capture.save_to(
+            os.path.join(clone_dir, "ci", "tmp", "praktika_controller.log")
+        )
+        log_capture.stop()
+        log_capture.cleanup()
     except BaseException as e:
         # Failure before the orchestrator subprocess takes over the check
         # (clone, runtime resolution, disk). Finalize the early check so the PR
         # shows the failure rather than a check stuck in_progress. The poll loop
         # still handles retry/replacement as before.
+        log_capture.stop()
+        log_capture.cleanup()
         finalize_check(
             repo,
             early_check_id,

@@ -1027,6 +1027,45 @@ class WorkflowState:
         except Exception as e:
             print(f"  [warn] could not re-publish workflow report: {e}")
 
+    def attach_debug_logs(self):
+        """When praktika_debug is set, upload the orchestrator instance's two logs
+        and link them from the TOP-LEVEL workflow result: the bootstrap controller
+        log (clone/TOCTOU/resolve, flushed by the controller before launch) and the
+        orchestrate process log (teed stdout). Best-effort; runs once at the end."""
+        if self._s3 is None or self.local_mode:
+            return
+        if not (
+            Settings.PRAKTIKA_DEBUG or getattr(self.workflow, "praktika_debug", False)
+        ):
+            return
+        if not getattr(self.workflow, "enable_report", False):
+            return
+        if not self._ensure_report_env():
+            return
+        try:
+            from .._environment import _Environment
+            from ..result import _ResultS3
+            from ..s3 import S3
+
+            prefix = f"{Settings.S3_REPORT_BUCKET}/{_Environment.get().get_s3_prefix()}"
+            links = []
+            for fname in ("praktika_controller.log", "praktika_orchestrator.log"):
+                local = f"{Settings.TEMP_DIR}/{fname}"
+                if not os.path.isfile(local):
+                    continue
+                url = S3.copy_file_to_s3(
+                    local_path=local, s3_path=f"{prefix}/{fname}", text=True
+                )
+                if url:
+                    links.append(url)
+            if links:
+                _ResultS3.update_workflow_results(
+                    workflow_name=self.workflow.name, top_links=links
+                )
+                print(f"Attached orchestrator debug logs: {links}")
+        except Exception as e:
+            print(f"  [warn] could not attach orchestrator debug logs: {e}")
+
     def save_snapshot(self, finalized=False, required=False):
         """Persist the DAG snapshot to ``runs/<run_id>/state.json``.
 
