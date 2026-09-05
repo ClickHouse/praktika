@@ -89,6 +89,11 @@ class _Settings:
     # Global toggle. When true (or a workflow sets praktika_debug), the
     # praktika-controller's full per-job log is attached to the job result.
     PRAKTIKA_DEBUG: bool = False
+    # Sticky merge base (merge-commit mode, PR only). When > 0, a new run reuses
+    # the previous run's pinned target-branch commit if it started within this
+    # many hours of the PR's previous run — keeping the digest cache warm across
+    # rapid iterations. 0 disables it (always merge against the live tip).
+    STICKY_MERGE_BASE_HOURS: float = 0
 
     SECRET_GH_APP: str = "gh-app"
 
@@ -206,6 +211,7 @@ class _Settings:
 _USER_DEFINED_SETTINGS = [
     "PROJECT_SLUG",
     "PRAKTIKA_DEBUG",
+    "STICKY_MERGE_BASE_HOURS",
     "S3_ARTIFACT_BUCKET",
     "CACHE_S3_PATH",
     "S3_REPORT_BUCKET",

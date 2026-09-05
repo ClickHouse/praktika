@@ -222,15 +222,27 @@ Notes / caveats:
 
 ## Phasing
 
-- **Phase 1 (this change): configurable merge-commit via snapshot.** Goals 1–4.
-- **Phase 2 (deferred): sticky base for the AI-fix loop.** Hold `base_sha` fixed
-  across successive runs of the same PR when (a) the new push is an AI fix and (b)
-  the run starts within N hours of the first pin, to maximize digest-cache hits
-  during rapid AI iteration. Requires: a per-PR pin record in S3, an N-hour window
-  anchored to the **first** pin (hard-capped total staleness), an AI-fix signal
-  reusing the existing `ai_orchestrator` marker rather than a new gate, and
-  merge-ready/automerge **re-verification against the live base** before landing
-  (a pinned-base green is stale by construction and must be surfaced).
+- **Phase 1: configurable merge-commit via snapshot.** Goals 1–4.
+- **Phase 2: sticky merge base (implemented, simplified).** A new run reuses the
+  PR's previously pinned target-branch commit — even if the branch has advanced —
+  when it starts within `Settings.STICKY_MERGE_BASE_HOURS` of the PR's **previous
+  run**, so the digest cache stays warm across rapid iterations instead of
+  re-merging a moving base. `0` disables it (always the live tip). PR events only.
+  - Per-PR pin record `{S3_ARTIFACT_BUCKET}/pr/<pr>/merge-base-pin.json` =
+    `{base_sha, pinned_ts, base_branch}`. Per-PR, so a fork can only affect its own
+    runs; the base itself is fixed for the run via the usual `RunConfig` pinning.
+  - The pinned base is reused only if it is still an **ancestor of the live tip**
+    (an older tip on the same branch), guarding against a stale/forged pin;
+    otherwise it resets to the live tip.
+  - **Deliberately dropped from the original idea:** the "AI-fix only" gate (the
+    window applies to any run) and the first-pin anchor.
+  - **Known trade-offs (accepted):** the window is measured from the *previous
+    run*, so a steady stream of runs within the window keeps the base pinned
+    indefinitely — there is no absolute staleness cap. And a green from a pinned
+    (older) base does not necessarily reflect mergeability against the current
+    tip; the merge-ready/automerge gate does **not** re-verify against the live
+    base. Add a hard cap and/or a live-base re-verify before landing if either
+    becomes a problem.
 
 ## Open questions
 

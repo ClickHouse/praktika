@@ -4,6 +4,7 @@ import json
 import os
 import platform
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -319,6 +320,71 @@ def _sha256_file(path) -> str:
     return h.hexdigest()
 
 
+def _resolve_sticky_base(pr_number, base_branch, live_base_sha, sticky_hours) -> str:
+    """Sticky merge base (per PR). Reuse the previously pinned target-branch commit
+    when the new run starts within ``sticky_hours`` of this PR's previous run;
+    otherwise reset the pin to the live tip. Keeps the digest cache warm across
+    rapid iterations without re-merging a moving base. Best-effort — any failure
+    falls back to the live tip.
+
+    Pin record (per PR, so a fork can only affect its own runs):
+    ``{S3_ARTIFACT_BUCKET}/pr/<pr>/merge-base-pin.json`` =
+    ``{base_sha, pinned_ts, base_branch}``. A pinned base is reused only if it is
+    still an ancestor of the live tip (an older tip on the same branch), guarding
+    against a stale/forged pin.
+    """
+    pin_s3 = f"{Settings.S3_ARTIFACT_BUCKET}/pr/{pr_number}/merge-base-pin.json"
+    local = f"{Settings.TEMP_DIR}/merge-base-pin.json"
+    now = time.time()
+    base_sha = live_base_sha
+    reason = "reset to live tip (no prior pin)"
+    try:
+        pinned = None
+        if S3.copy_file_from_s3(s3_path=pin_s3, local_path=local, no_strict=True):
+            with open(local, "r", encoding="utf-8") as f:
+                pinned = json.load(f)
+        if isinstance(pinned, dict):
+            p_base = str(pinned.get("base_sha") or "")
+            p_ts = float(pinned.get("pinned_ts") or 0)
+            p_branch = str(pinned.get("base_branch") or "")
+            age_h = (now - p_ts) / 3600
+            if not p_base or p_branch != base_branch:
+                reason = "reset to live tip (no usable pin)"
+            elif age_h > sticky_hours:
+                reason = f"reset to live tip (previous run {age_h:.1f}h ago > {sticky_hours}h)"
+            else:
+                # Reuse only if the pinned base is still an ancestor of the live
+                # tip. Fetch it first — it may not be in the partial clone.
+                Shell.check(
+                    f"git fetch --no-tags --filter=tree:0 origin {p_base}",
+                    verbose=True,
+                )
+                if Shell.check(
+                    f"git merge-base --is-ancestor {p_base} {live_base_sha}",
+                    verbose=True,
+                ):
+                    base_sha = p_base
+                    reason = f"reused (pinned {age_h:.1f}h ago, window {sticky_hours}h)"
+                else:
+                    reason = "reset (pinned base not an ancestor of live tip)"
+    except Exception as e:
+        print(f"WARNING: sticky base lookup failed, using live tip: {e}")
+        base_sha = live_base_sha
+    # Refresh the pin: keep the chosen base_sha, stamp the current run time so the
+    # window is measured from this (the previous) run next time.
+    try:
+        with open(local, "w", encoding="utf-8") as f:
+            json.dump(
+                {"base_sha": base_sha, "pinned_ts": now, "base_branch": base_branch},
+                f,
+            )
+        S3.copy_file_to_s3(s3_path=pin_s3, local_path=local, text=True)
+    except Exception as e:
+        print(f"WARNING: could not persist sticky base pin: {e}")
+    print(f"Sticky merge base: {reason} -> {base_sha[:12]}")
+    return base_sha
+
+
 def _prepare_merge_commit(workflow, workflow_config: RunConfig) -> Result:
     """Merge-commit mode (Workflow.Config.enable_merge_commit).
 
@@ -346,19 +412,64 @@ def _prepare_merge_commit(workflow, workflow_config: RunConfig) -> Result:
                 info="No base branch (not a pull_request) — running head",
             )
 
-        base_sha = Shell.get_output(
+        live_base_sha = Shell.get_output(
             f"git rev-parse origin/{base_branch}", verbose=True
         ).strip()
-        if not base_sha:
+        if not live_base_sha:
             return Result.create_from(
                 name="Merge Commit",
                 status=Result.Status.FAIL,
                 stopwatch=stop_watch,
                 info=f"Failed to resolve tip of base branch [{base_branch}]",
             )
+        # Sticky merge base: within a window after this PR's previous run, reuse
+        # the same target-branch commit even if the branch has advanced, so the
+        # digest cache stays warm across rapid iterations instead of re-merging a
+        # moving base. Off unless Settings.STICKY_MERGE_BASE_HOURS > 0; PR only;
+        # always falls back to the live tip.
+        base_sha = live_base_sha
+        sticky_hours = float(getattr(Settings, "STICKY_MERGE_BASE_HOURS", 0) or 0)
+        if env.PR_NUMBER and sticky_hours > 0:
+            base_sha = _resolve_sticky_base(
+                env.PR_NUMBER, base_branch, live_base_sha, sticky_hours
+            )
         print(
-            f"Merge-commit mode: base [{base_branch}] {base_sha[:12]} + head {head_sha[:12]}"
+            f"Merge-commit mode: base [{base_branch}] {base_sha[:12]} "
+            f"(live tip {live_base_sha[:12]}) + head {head_sha[:12]}"
         )
+
+        # Sticky mode runs the merge against an older pinned base for cache warmth.
+        # Still verify the PR merges cleanly with the CURRENT target HEAD, so a
+        # green never hides a real conflict with the live branch. Non-destructive
+        # (git merge-tree, >= 2.38); only needed when the pinned base differs from
+        # the live tip (otherwise the real merge below is already against live).
+        if base_sha != live_base_sha:
+            rc_, out_, _err_ = Shell.get_res_stdout_stderr(
+                f"git merge-tree --write-tree --name-only {live_base_sha} {head_sha}",
+                verbose=True,
+            )
+            if rc_ == 1:
+                # Drop the first line (the merged tree oid); the rest lists the
+                # conflicting paths.
+                conflicts = "\n".join(out_.splitlines()[1:])
+                info = (
+                    f"PR head {head_sha[:12]} conflicts with the current "
+                    f"{base_branch} HEAD ({live_base_sha[:12]}) and needs a "
+                    f"rebase/merge. (CI ran against the pinned base "
+                    f"{base_sha[:12]}.)\n{conflicts}"
+                )
+                print(f"ERROR: {info}")
+                return Result.create_from(
+                    name="Merge Commit",
+                    status=Result.Status.FAIL,
+                    stopwatch=stop_watch,
+                    info=info,
+                )
+            if rc_ != 0:
+                print(
+                    f"WARNING: could not verify merge with live {base_branch} HEAD "
+                    f"(git merge-tree rc={rc_}); skipping live-conflict check"
+                )
 
         # Deterministic identity/dates so merge_sha depends only on the two parents
         # and the resulting tree — not on wall-clock or runner identity — so a
