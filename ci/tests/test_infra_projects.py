@@ -2035,16 +2035,16 @@ def test_projects_grant_bedrock_to_both_orchestrator_pools():
     assert "BedrockRuntimeInference" in _sids(_orchestrator_pool_base)
 
 
-def test_runner_pools_enforce_merge_snapshot_trust_boundary():
-    # OSS trust boundary for merge-commit snapshot tiers. Information flow rule:
+def test_runner_pools_enforce_repo_snapshot_trust_boundary():
+    # OSS trust boundary for repo-snapshot tiers. Information flow rule:
     # reads may go down-trust but never up, writes never go up.
-    #   untrusted (pr-*) pool: may READ trusted, must NOT WRITE trusted.
-    #   trusted (non-pr) pool: must NOT READ or WRITE untrusted.
+    #   untrusted (pr-*) pool: may READ REFs, must NOT WRITE REFs.
+    #   trusted (non-pr) pool: must NOT READ or WRITE PRs.
     cloud = _get_infra_config("praktika")
-    untrusted_sid = "DenyUntrustedWriteToTrusted"
-    trusted_sid = "DenyTrustedAccessToUntrusted"
-    trusted_res = "arn:aws:s3:::praktika-artifacts-eu-north-1/trusted/*"
-    untrusted_res = "arn:aws:s3:::praktika-artifacts-eu-north-1/untrusted/*"
+    untrusted_sid = "DenyUntrustedWriteToTrustedSnapshots"
+    trusted_sid = "DenyTrustedAccessToUntrustedSnapshots"
+    trusted_res = "arn:aws:s3:::praktika-artifacts-eu-north-1/repo-snapshots/v1/REFs/*"
+    untrusted_res = "arn:aws:s3:::praktika-artifacts-eu-north-1/repo-snapshots/v1/PRs/*"
 
     pr_pools = [p for p in cloud.runner_pools if p.name.startswith("pr-")]
     trusted_pools = [p for p in cloud.runner_pools if not p.name.startswith("pr-")]

@@ -95,7 +95,7 @@ class TaskLogCapture:
     """Capture ALL controller log records emitted while handling one job into a
     temp file, so a debug run can attach the full per-job controller log (auth,
     clone/restore, dispatch, teardown) to the job result. Attaches to the root
-    logger, so child-logger records (clone_repo, restore_merge_snapshot,
+    logger, so child-logger records (clone_repo, restore_repo_snapshot,
     heartbeats) are included. The caller uploads ``path`` and then calls cleanup().
     """
 
@@ -695,31 +695,31 @@ def clone_repo(
     return clone_dir, actual_sha
 
 
-def restore_merge_snapshot(
+def restore_repo_snapshot(
     s3_client,
     snapshot_key,
-    merge_sha,
+    snapshot_sha,
     pr_number,
     work_dir,
     branch=None,
     log=None,
 ):
-    """Restore the merge-commit snapshot published by the Config Workflow.
+    """Restore the repo snapshot published by the Config Workflow.
 
-    Merge-commit mode: the first job merges the PR head into the target-branch tip
-    once and uploads a minimal, history-free snapshot to S3, content-addressed by
-    its sha256. Every later job restores that exact tree here instead of cloning
-    and re-merging — with no GitHub interaction at all, which is more reliable and
-    faster than N independent clones on a large pipeline.
+    In repo-snapshot mode the first job builds the repo state once (the ephemeral
+    PR merge, or the plain head) and uploads a minimal, history-free snapshot to
+    S3, content-addressed by its sha256. Every later job restores that exact tree
+    here instead of cloning — with no GitHub interaction at all, which is more
+    reliable and faster than N independent clones on a large pipeline.
 
     Security mirrors clone_repo's model:
     - Content-addressed integrity: the object basename is its sha256; we re-hash
       the download and reject any mismatch (tamper-evidence).
     - Authorized-commit guard: the restored HEAD must equal the authorized
-      merge_sha (the merge-mode equivalent of clone_repo's stale-head guard).
+      snapshot_sha (the repo-snapshot equivalent of clone_repo's stale-head guard).
     - The snapshot_key is stamped by the orchestrator from the trusted Config
-      Workflow's RunConfig — a job cannot redirect it — and trusted vs untrusted
-      (fork PR) snapshots live in disjoint key namespaces that never mix.
+      Workflow's RunConfig — a job cannot redirect it — and the PRs/ (untrusted)
+      and REFs/ (trusted) tiers are IAM-scoped so they never mix.
     """
     import hashlib
     import shlex
@@ -728,7 +728,7 @@ def restore_merge_snapshot(
     if pr_number:
         clone_dir = os.path.join(work_dir, f"pr-{pr_number}")
     else:
-        slug = (branch or merge_sha[:12] or "push").replace("/", "_")
+        slug = (branch or snapshot_sha[:12] or "push").replace("/", "_")
         clone_dir = os.path.join(work_dir, f"push-{slug}")
     if os.path.exists(clone_dir):
         shutil.rmtree(clone_dir)
@@ -745,9 +745,9 @@ def restore_merge_snapshot(
     if expected_hash.endswith(".tar.zst"):
         expected_hash = expected_hash[: -len(".tar.zst")]
     if log is not None:
-        log.info("Restoring merge snapshot %s (merge %s)", key, merge_sha[:12])
+        log.info("Restoring repo snapshot %s (sha %s)", key, snapshot_sha[:12])
 
-    archive_path = os.path.join(work_dir, f".merge_snapshot_{merge_sha[:12]}.tar.zst")
+    archive_path = os.path.join(work_dir, f".repo_snapshot_{snapshot_sha[:12]}.tar.zst")
     try:
         s3_client.download_file(bucket, key, archive_path)
 
@@ -758,11 +758,11 @@ def restore_merge_snapshot(
         actual_hash = h.hexdigest()
         if actual_hash != expected_hash:
             raise RuntimeError(
-                f"Merge snapshot hash mismatch for {key}: expected "
+                f"Repo snapshot hash mismatch for {key}: expected "
                 f"{expected_hash}, got {actual_hash} — refusing to run"
             )
 
-        # Self-contained shallow repo (.git + worktree at merge_sha, no history).
+        # Self-contained shallow repo (.git + worktree at snapshot_sha, no history).
         subprocess.run(
             f"zstd -dc {shlex.quote(archive_path)} | "
             f"tar -xf - -C {shlex.quote(clone_dir)}",
@@ -775,11 +775,11 @@ def restore_merge_snapshot(
             os.remove(archive_path)
 
     actual_sha = git(["rev-parse", "HEAD"], cwd=clone_dir).strip()
-    if actual_sha != merge_sha:
+    if actual_sha != snapshot_sha:
         raise RuntimeError(
-            f"Restored snapshot HEAD {actual_sha} != authorized merge commit "
-            f"{merge_sha} — refusing to run"
+            f"Restored snapshot HEAD {actual_sha} != authorized snapshot commit "
+            f"{snapshot_sha} — refusing to run"
         )
     if log is not None:
-        log.info("Restored merge %s in %s", actual_sha[:12], clone_dir)
+        log.info("Restored repo snapshot %s in %s", actual_sha[:12], clone_dir)
     return clone_dir, actual_sha

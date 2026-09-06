@@ -306,10 +306,10 @@ def _prepare_submodule_cache(workflow, workflow_config: RunConfig) -> Result:
     )
 
 
-# Short-lived local tag used only to advertise the freshly-created merge commit to
-# the shallow local fetch that builds the snapshot; created and deleted within
-# _prepare_merge_commit.
-_MERGE_SNAPSHOT_TAG = "_praktika_merge_snapshot"
+# Short-lived local tag used only to advertise the snapshot commit to the shallow
+# local fetch that builds the archive; created and deleted within
+# _prepare_repo_snapshot.
+_REPO_SNAPSHOT_TAG = "_praktika_repo_snapshot"
 
 
 def _sha256_file(path) -> str:
@@ -385,158 +385,167 @@ def _resolve_sticky_base(pr_number, base_branch, live_base_sha, sticky_hours) ->
     return base_sha
 
 
-def _prepare_merge_commit(workflow, workflow_config: RunConfig) -> Result:
-    """Merge-commit mode (Workflow.Config.enable_merge_commit).
+def _prepare_repo_snapshot(workflow, workflow_config: RunConfig) -> Result:
+    """S3 repo snapshot (Settings.ENABLE_S3_REPO_SNAPSHOT).
 
-    Merge the PR head into the current target-branch tip once, pin the resulting
-    commit for the whole run, and publish a minimal history-free snapshot of it to
-    S3 so every downstream job restores that exact tree instead of cloning and
-    re-merging. Mirrors _prepare_submodule_cache: a content-addressed, write-once
+    Build a minimal, history-free snapshot of the repo state once, in the Config
+    Workflow, and publish it to S3 so every downstream job restores it instead of
+    cloning. Mirrors _prepare_submodule_cache: a content-addressed, write-once
     archive.
 
-    The merge is performed in-place so the remaining Config Workflow steps (docker
-    digests, changed-file filtering, cache lookup) all reflect the merged tree,
-    matching GitHub Actions semantics.
+    For a pull_request with Settings.ENABLE_PR_EPHEMERAL_MERGE_COMMIT the snapshot
+    is the ephemeral merge of the PR head into the target-branch tip (GitHub
+    Actions style), computed in-place so the remaining Config Workflow steps
+    (docker digests, changed-file filtering, cache lookup) reflect the merged tree.
+    Otherwise (or on push) it is the head as-is — a plain snapshot, no merge.
+
+    Objects live under repo-snapshots/v1/PRs/ (pull_request) or
+    repo-snapshots/v1/REFs/ (push and other trusted events). The PRs/ tier is the
+    former "untrusted" path and REFs/ the "trusted" one; IAM scopes them so a
+    pr-* pool cannot write REFs/ and a trusted pool cannot read/write PRs/.
     """
     stop_watch = Utils.Stopwatch()
     env = _Environment.get()
+    is_pr = bool(env.PR_NUMBER) and env.EVENT_TYPE == Workflow.Event.PULL_REQUEST
+    do_merge = is_pr and bool(
+        getattr(Settings, "ENABLE_PR_EPHEMERAL_MERGE_COMMIT", False)
+    )
     try:
         head_sha = env.SHA
-        base_branch = env.BASE_BRANCH
-        if not base_branch:
-            # Merge-commit only applies to pull_request runs against a base branch.
-            return Result.create_from(
-                name="Merge Commit",
-                status=Result.Status.OK,
-                stopwatch=stop_watch,
-                info="No base branch (not a pull_request) — running head",
+        base_sha = ""
+        # The commit every downstream job restores to: the ephemeral merge for a
+        # PR in merge mode, otherwise the head as-is.
+        snapshot_sha = head_sha
+
+        if do_merge:
+            base_branch = env.BASE_BRANCH
+            if not base_branch:
+                return Result.create_from(
+                    name="Repo Snapshot",
+                    status=Result.Status.FAIL,
+                    stopwatch=stop_watch,
+                    info="Ephemeral merge requested but no base branch on the event",
+                )
+            live_base_sha = Shell.get_output(
+                f"git rev-parse origin/{base_branch}", verbose=True
+            ).strip()
+            if not live_base_sha:
+                return Result.create_from(
+                    name="Repo Snapshot",
+                    status=Result.Status.FAIL,
+                    stopwatch=stop_watch,
+                    info=f"Failed to resolve tip of base branch [{base_branch}]",
+                )
+            # Sticky merge base: within a window after this PR's previous run,
+            # reuse the same target-branch commit even if the branch advanced, so
+            # the digest cache stays warm across rapid iterations. Off unless
+            # Settings.STICKY_MERGE_BASE_HOURS > 0; always falls back to live tip.
+            base_sha = live_base_sha
+            sticky_hours = float(getattr(Settings, "STICKY_MERGE_BASE_HOURS", 0) or 0)
+            if sticky_hours > 0:
+                base_sha = _resolve_sticky_base(
+                    env.PR_NUMBER, base_branch, live_base_sha, sticky_hours
+                )
+            print(
+                f"Ephemeral merge: base [{base_branch}] {base_sha[:12]} "
+                f"(live tip {live_base_sha[:12]}) + head {head_sha[:12]}"
             )
 
-        live_base_sha = Shell.get_output(
-            f"git rev-parse origin/{base_branch}", verbose=True
-        ).strip()
-        if not live_base_sha:
-            return Result.create_from(
-                name="Merge Commit",
-                status=Result.Status.FAIL,
-                stopwatch=stop_watch,
-                info=f"Failed to resolve tip of base branch [{base_branch}]",
-            )
-        # Sticky merge base: within a window after this PR's previous run, reuse
-        # the same target-branch commit even if the branch has advanced, so the
-        # digest cache stays warm across rapid iterations instead of re-merging a
-        # moving base. Off unless Settings.STICKY_MERGE_BASE_HOURS > 0; PR only;
-        # always falls back to the live tip.
-        base_sha = live_base_sha
-        sticky_hours = float(getattr(Settings, "STICKY_MERGE_BASE_HOURS", 0) or 0)
-        if env.PR_NUMBER and sticky_hours > 0:
-            base_sha = _resolve_sticky_base(
-                env.PR_NUMBER, base_branch, live_base_sha, sticky_hours
-            )
-        print(
-            f"Merge-commit mode: base [{base_branch}] {base_sha[:12]} "
-            f"(live tip {live_base_sha[:12]}) + head {head_sha[:12]}"
-        )
+            # When the pinned base differs from the live tip (sticky), still verify
+            # the PR merges cleanly with the CURRENT target HEAD so a green never
+            # hides a real conflict with live main. Non-destructive (git merge-tree,
+            # >= 2.38).
+            if base_sha != live_base_sha:
+                rc_, out_, _err_ = Shell.get_res_stdout_stderr(
+                    f"git merge-tree --write-tree --name-only {live_base_sha} {head_sha}",
+                    verbose=True,
+                )
+                if rc_ == 1:
+                    conflicts = "\n".join(out_.splitlines()[1:])
+                    info = (
+                        f"PR head {head_sha[:12]} conflicts with the current "
+                        f"{base_branch} HEAD ({live_base_sha[:12]}) and needs a "
+                        f"rebase/merge. (CI ran against the pinned base "
+                        f"{base_sha[:12]}.)\n{conflicts}"
+                    )
+                    print(f"ERROR: {info}")
+                    return Result.create_from(
+                        name="Repo Snapshot",
+                        status=Result.Status.FAIL,
+                        stopwatch=stop_watch,
+                        info=info,
+                    )
+                if rc_ != 0:
+                    print(
+                        f"WARNING: could not verify merge with live {base_branch} "
+                        f"HEAD (git merge-tree rc={rc_}); skipping live-conflict check"
+                    )
 
-        # Sticky mode runs the merge against an older pinned base for cache warmth.
-        # Still verify the PR merges cleanly with the CURRENT target HEAD, so a
-        # green never hides a real conflict with the live branch. Non-destructive
-        # (git merge-tree, >= 2.38); only needed when the pinned base differs from
-        # the live tip (otherwise the real merge below is already against live).
-        if base_sha != live_base_sha:
-            rc_, out_, _err_ = Shell.get_res_stdout_stderr(
-                f"git merge-tree --write-tree --name-only {live_base_sha} {head_sha}",
+            # Deterministic identity/dates so the merge sha depends only on the two
+            # parents and the resulting tree, not on wall-clock or runner identity.
+            merge_env = {
+                **os.environ,
+                "GIT_AUTHOR_NAME": "praktika",
+                "GIT_AUTHOR_EMAIL": "praktika@localhost",
+                "GIT_COMMITTER_NAME": "praktika",
+                "GIT_COMMITTER_EMAIL": "praktika@localhost",
+                "GIT_AUTHOR_DATE": "2000-01-01T00:00:00 +0000",
+                "GIT_COMMITTER_DATE": "2000-01-01T00:00:00 +0000",
+            }
+            # base_sha is the first parent (matches GitHub's refs/pull/N/merge).
+            Shell.check(
+                f"git checkout --quiet --force {base_sha}", verbose=True, strict=True
+            )
+            merged = Shell.check(
+                f"git merge --no-ff --no-edit "
+                f"-m 'Merge {head_sha} into {base_branch} ({base_sha})' {head_sha}",
                 verbose=True,
+                env=merge_env,
             )
-            if rc_ == 1:
-                # Drop the first line (the merged tree oid); the rest lists the
-                # conflicting paths.
-                conflicts = "\n".join(out_.splitlines()[1:])
+            if not merged:
+                conflicts = Shell.get_output(
+                    "git diff --name-only --diff-filter=U", verbose=True
+                ).strip()
+                Shell.check("git merge --abort", verbose=True)
                 info = (
-                    f"PR head {head_sha[:12]} conflicts with the current "
-                    f"{base_branch} HEAD ({live_base_sha[:12]}) and needs a "
-                    f"rebase/merge. (CI ran against the pinned base "
-                    f"{base_sha[:12]}.)\n{conflicts}"
+                    f"PR head {head_sha[:12]} does not cleanly merge into "
+                    f"{base_branch} ({base_sha[:12]}). Conflicting files:\n{conflicts}"
                 )
                 print(f"ERROR: {info}")
                 return Result.create_from(
-                    name="Merge Commit",
+                    name="Repo Snapshot",
                     status=Result.Status.FAIL,
                     stopwatch=stop_watch,
                     info=info,
                 )
-            if rc_ != 0:
-                print(
-                    f"WARNING: could not verify merge with live {base_branch} HEAD "
-                    f"(git merge-tree rc={rc_}); skipping live-conflict check"
-                )
-
-        # Deterministic identity/dates so merge_sha depends only on the two parents
-        # and the resulting tree — not on wall-clock or runner identity — so a
-        # fallback reconstruction from the pinned parents yields the same sha.
-        merge_env = {
-            **os.environ,
-            "GIT_AUTHOR_NAME": "praktika",
-            "GIT_AUTHOR_EMAIL": "praktika@localhost",
-            "GIT_COMMITTER_NAME": "praktika",
-            "GIT_COMMITTER_EMAIL": "praktika@localhost",
-            "GIT_AUTHOR_DATE": "2000-01-01T00:00:00 +0000",
-            "GIT_COMMITTER_DATE": "2000-01-01T00:00:00 +0000",
-        }
-
-        # base_sha is the first parent (matches GitHub's refs/pull/N/merge).
-        Shell.check(
-            f"git checkout --quiet --force {base_sha}", verbose=True, strict=True
-        )
-        merged = Shell.check(
-            f"git merge --no-ff --no-edit "
-            f"-m 'Merge {head_sha} into {base_branch} ({base_sha})' {head_sha}",
-            verbose=True,
-            env=merge_env,
-        )
-        if not merged:
-            conflicts = Shell.get_output(
-                "git diff --name-only --diff-filter=U", verbose=True
-            ).strip()
-            Shell.check("git merge --abort", verbose=True)
-            info = (
-                f"PR head {head_sha[:12]} does not cleanly merge into "
-                f"{base_branch} ({base_sha[:12]}). Conflicting files:\n{conflicts}"
-            )
-            print(f"ERROR: {info}")
-            return Result.create_from(
-                name="Merge Commit",
-                status=Result.Status.FAIL,
-                stopwatch=stop_watch,
-                info=info,
-            )
-
-        merge_sha = Shell.get_output("git rev-parse HEAD", verbose=True).strip()
-        print(f"Merge commit created: {merge_sha}")
+            snapshot_sha = Shell.get_output("git rev-parse HEAD", verbose=True).strip()
+            print(f"Ephemeral merge commit created: {snapshot_sha}")
+        else:
+            print(f"Repo snapshot: head {head_sha[:12]} (no merge)")
 
         # Build a minimal, history-free snapshot: a fresh depth-1 repo whose single
-        # commit is merge_sha (keeps .git for tooling, drops all ancestry). A
+        # commit is snapshot_sha (keeps .git for tooling, drops all ancestry). A
         # shallow fetch of the tip brings that commit's complete tree + blobs (all
-        # materialized locally by the checkout/merge above), so the archive is
+        # materialized locally by the clone/merge above), so the archive is
         # self-contained.
-        snap_dir = f"{Settings.TEMP_DIR}/merge_snapshot"
-        archive_path = f"{Settings.TEMP_DIR}/merge_snapshot.tar.zst"
+        snap_dir = f"{Settings.TEMP_DIR}/repo_snapshot"
+        archive_path = f"{Settings.TEMP_DIR}/repo_snapshot.tar.zst"
         Shell.check(f"rm -rf {snap_dir} {archive_path}", verbose=True)
         Shell.check(f"git init -q {snap_dir}", verbose=True, strict=True)
         # Tag the commit first so it is advertised to the fetch (an unadvertised
         # sha would require uploadpack.allowAnySHA1InWant on the source).
         Shell.check(
-            f"git tag -f {_MERGE_SNAPSHOT_TAG} {merge_sha}", verbose=True, strict=True
+            f"git tag -f {_REPO_SNAPSHOT_TAG} {snapshot_sha}", verbose=True, strict=True
         )
         try:
             Shell.check(
                 f"git -C {snap_dir} fetch --depth=1 -q "
-                f"file://{os.path.abspath('.')} refs/tags/{_MERGE_SNAPSHOT_TAG}",
+                f"file://{os.path.abspath('.')} refs/tags/{_REPO_SNAPSHOT_TAG}",
                 verbose=True,
                 strict=True,
             )
         finally:
-            Shell.check(f"git tag -d {_MERGE_SNAPSHOT_TAG}", verbose=True)
+            Shell.check(f"git tag -d {_REPO_SNAPSHOT_TAG}", verbose=True)
         Shell.check(
             f"git -C {snap_dir} checkout -q --detach FETCH_HEAD",
             verbose=True,
@@ -546,8 +555,8 @@ def _prepare_merge_commit(workflow, workflow_config: RunConfig) -> Result:
             f"git -C {snap_dir} rev-parse HEAD", verbose=True
         ).strip()
         assert (
-            snap_sha == merge_sha
-        ), f"snapshot HEAD {snap_sha} != merge commit {merge_sha}"
+            snap_sha == snapshot_sha
+        ), f"snapshot HEAD {snap_sha} != expected {snapshot_sha}"
 
         Shell.check(
             f"tar -C {snap_dir} -cf - . | zstd -c -T0 -q > {archive_path}",
@@ -556,31 +565,20 @@ def _prepare_merge_commit(workflow, workflow_config: RunConfig) -> Result:
         )
 
         # Key = content hash of the archive (tamper-evident: a downstream job
-        # re-hashes the downloaded bytes and rejects any mismatch).
+        # re-hashes the downloaded bytes and rejects any mismatch). No PR/branch in
+        # the key — the sha256 is globally unique and self-verifying.
         content_hash = _sha256_file(archive_path)
-
-        # Trust tier is the OUTERMOST path segment so the boundary can be
-        # prefix-scoped wholesale in IAM (untrusted/* vs trusted/*), and so it is
-        # not under ci_cache/ (which holds only small, safe metadata the runner may
-        # freely read+write). A pull_request (fork-reachable) snapshot is untrusted
-        # and only ever consumed by pull_request runs; everything else is trusted.
-        tier = (
-            "untrusted"
-            if env.EVENT_TYPE == Workflow.Event.PULL_REQUEST
-            else "trusted"
-        )
-        # No PR/branch in the key: the object is content-addressed by its sha256,
-        # which is globally unique and self-verifying, so a scope segment adds
-        # nothing for correctness or security (a different tree -> different key;
-        # an identical tree -> identical bytes). Retention is handled by S3
-        # lifecycle rules on the tier prefix.
+        # Trust tier: PRs/ (pull_request, fork-reachable) vs REFs/ (push/trusted).
+        # IAM scopes these so a pr-* pool can read but not write REFs/, and a
+        # trusted pool can neither read nor write PRs/.
+        tier = "PRs" if is_pr else "REFs"
         s3_path = (
-            f"{Settings.S3_ARTIFACT_BUCKET}/{tier}/merge-snapshots/v1/"
-            f"{content_hash}.tar.zst"
+            f"{Settings.S3_ARTIFACT_BUCKET}/repo-snapshots/v1/"
+            f"{tier}/{content_hash}.tar.zst"
         )
 
         if S3.head_object(s3_path):
-            print(f"Merge snapshot already present: {s3_path}")
+            print(f"Repo snapshot already present: {s3_path}")
         else:
             created = S3.put(
                 s3_path=s3_path,
@@ -589,40 +587,44 @@ def _prepare_merge_commit(workflow, workflow_config: RunConfig) -> Result:
                 no_strict=True,
             )
             if created:
-                print(f"Merge snapshot uploaded: {s3_path}")
+                print(f"Repo snapshot uploaded: {s3_path}")
             elif S3.head_object(s3_path):
                 # Lost a write-once race with a concurrent writer — the object
                 # exists, so this is a success, not an error.
-                print(f"Merge snapshot created concurrently: {s3_path}")
+                print(f"Repo snapshot created concurrently: {s3_path}")
             else:
                 # no_strict makes S3.put return False for AccessDenied / network /
                 # service errors too, not only precondition conflicts. The object
                 # is genuinely absent, so fail here rather than record a key that
                 # every downstream restore would 404 on.
                 raise RuntimeError(
-                    f"Failed to upload merge snapshot; object absent from S3: {s3_path}"
+                    f"Failed to upload repo snapshot; object absent from S3: {s3_path}"
                 )
         Shell.check(f"rm -rf {snap_dir} {archive_path}")
 
         workflow_config.base_sha = base_sha
-        workflow_config.merge_sha = merge_sha
-        workflow_config.merge_snapshot_key = s3_path
+        workflow_config.snapshot_sha = snapshot_sha
+        workflow_config.repo_snapshot_key = s3_path
         workflow_config.dump()
 
+        if do_merge:
+            info = (
+                f"merge {snapshot_sha[:12]} = base {base_sha[:12]} + head "
+                f"{head_sha[:12]}"
+            )
+        else:
+            info = f"head snapshot {snapshot_sha[:12]}"
         return Result.create_from(
-            name="Merge Commit",
+            name="Repo Snapshot",
             status=Result.Status.OK,
             stopwatch=stop_watch,
-            info=(
-                f"merge {merge_sha[:12]} = base {base_sha[:12]} + head "
-                f"{head_sha[:12]}"
-            ),
+            info=info,
         )
     except Exception as e:
-        print(f"ERROR: Merge commit preparation failed: {e}")
+        print(f"ERROR: Repo snapshot preparation failed: {e}")
         traceback.print_exc()
         return Result.create_from(
-            name="Merge Commit",
+            name="Repo Snapshot",
             status=Result.Status.FAIL,
             stopwatch=stop_watch,
             info=f"{e}\n{traceback.format_exc()}",
@@ -926,13 +928,14 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
     # read object from fs after .pre_hooks as some users's custom data may be added there
     workflow_config = RunConfig.from_fs(workflow.name)
 
-    # Merge-commit mode: merge head into the target branch tip once, in-place, so
-    # every step below (docker digests, changed-file filtering, cache lookup) sees
-    # the merged tree, and publish a snapshot for downstream jobs. On conflict this
-    # appends a FAIL result, which short-circuits the remaining steps via the
-    # results[-1].is_ok() guards and fails the workflow early.
-    if workflow.enable_merge_commit and results[-1].is_ok():
-        results.append(_prepare_merge_commit(workflow, workflow_config))
+    # S3 repo snapshot: build the repo state once (the ephemeral PR merge when
+    # Settings.ENABLE_PR_EPHEMERAL_MERGE_COMMIT, otherwise the plain head) and
+    # publish it so downstream jobs restore instead of cloning. Done in-place so
+    # the steps below (docker digests, changed-file filtering, cache lookup) see
+    # the merged tree. On conflict this appends a FAIL result, which short-circuits
+    # the remaining steps via the results[-1].is_ok() guards and fails early.
+    if getattr(Settings, "ENABLE_S3_REPO_SNAPSHOT", False) and results[-1].is_ok():
+        results.append(_prepare_repo_snapshot(workflow, workflow_config))
 
     if results[-1].is_ok() and workflow.dockers:
         sw_ = Utils.Stopwatch()

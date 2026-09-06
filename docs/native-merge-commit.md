@@ -72,17 +72,27 @@ Config Workflow (first job, has full history)
   ├─ package a MINIMAL, history-free snapshot of the merged tree
   ├─ content-hash the archive  →  snapshot_key (trust-scoped)
   ├─ upload write-once to S3 (if_none_matched)
-  └─ record base_sha / merge_sha / merge_snapshot_key in RunConfig  →  relayed to all jobs
+  └─ record base_sha / snapshot_sha / repo_snapshot_key in RunConfig  →  relayed to all jobs
 
 Every downstream job
   └─ restore snapshot from S3 by key, verify content hash == key
-       →  working tree already at merge_sha, zero GitHub interaction
+       →  working tree already at snapshot_sha, zero GitHub interaction
 ```
 
 ### 1. Configuration (Goal 1)
 
-Reuse the existing `Workflow.Config.enable_merge_commit: bool = False`. No new
-knob. `False` = head (unchanged default); `True` = merge-commit mode.
+Two project-wide Settings (not a per-workflow flag):
+
+- `Settings.ENABLE_S3_REPO_SNAPSHOT` — snapshot the repo once in the Config
+  Workflow and publish it to S3 so downstream jobs restore instead of cloning.
+  Applies to both `pull_request` and `push`.
+- `Settings.ENABLE_PR_EPHEMERAL_MERGE_COMMIT` — for `pull_request` runs (and only
+  when `ENABLE_S3_REPO_SNAPSHOT` is on, which is the distribution mechanism),
+  snapshot the ephemeral merge of head into the target tip instead of the plain
+  head. `push` is always a plain head snapshot (no merge).
+
+Both default `False`. (The earlier `Workflow.Config.enable_merge_commit` flag was
+removed in favor of these.)
 
 ### 2. Computing the merge once (Goal 2)
 
@@ -98,7 +108,7 @@ Performed in the Config Workflow, the one setup job that already has full histor
   returns a `FAIL` result with the conflicting paths in `info`, and no downstream
   jobs run. This surfaces un-mergeable PRs clearly instead of as a confusing
   downstream break.
-- `base_sha`, `merge_sha`, and `merge_snapshot_key` are written to `RunConfig`
+- `base_sha`, `snapshot_sha`, and `repo_snapshot_key` are written to `RunConfig`
   (new fields) and relayed to every job via the existing mechanism. This is what
   makes the merge immutable for the run: the target branch may advance, but the
   run keeps using the commit computed here.
@@ -108,7 +118,7 @@ Performed in the Config Workflow, the one setup job that already has full histor
 - **Minimal / no history.** History is only needed to compute PR authors and
   pre-merge commit messages, and that work happens *in the Config Workflow*, which
   keeps its full clone. The snapshot handed to downstream jobs is history-free: a
-  depth-1 shallow repo at `merge_sha` (`.git` present so tooling like
+  depth-1 shallow repo at `snapshot_sha` (`.git` present so tooling like
   `git describe` / diff-vs-base works, but no ancestry), or a pure `git archive`
   tree if we confirm no downstream job needs `.git`. This keeps the payload small
   even for very large repositories.
@@ -125,17 +135,17 @@ Performed in the Config Workflow, the one setup job that already has full histor
 
 **Trusted vs untrusted segregation.** Mirrors the existing cache trust model
 (`praktika/cache.py`: a `pull_request` `CacheRecord` is untrusted and only reused
-by `pull_request` workflows). The **trust tier is the outermost path segment** in
-the artifact bucket, so the boundary can be prefix-scoped wholesale by IAM and
-generalizes to other untrusted artifacts later:
+by `pull_request` workflows). Snapshots live under `repo-snapshots/v1/` with the
+trust tier as a dedicated segment (`PRs` = untrusted, `REFs` = trusted), so the
+boundary can be prefix-scoped by IAM:
 
 ```
-untrusted/merge-snapshots/v1/<content-hash>.tar.zst    # pull_request (incl. fork PRs)
-trusted/merge-snapshots/v1/<content-hash>.tar.zst      # push and other trusted events
+repo-snapshots/v1/PRs/<content-hash>.tar.zst    # pull_request (incl. fork PRs)
+repo-snapshots/v1/REFs/<content-hash>.tar.zst   # push and other trusted events
 ```
 
-An `untrusted/` snapshot is only ever consumed by `pull_request` runs; a trusted
-run never reads it, even if the content would hash identically.
+A `PRs/` snapshot is only ever consumed by `pull_request` runs; a trusted run
+never reads it, even if the content would hash identically.
 
 **No PR/branch scope in the key.** The object is content-addressed by its sha256,
 which is globally unique and self-verifying, so a scope segment adds nothing for
@@ -163,7 +173,7 @@ for a key, and cannot overwrite an existing snapshot.
 pinned at Config-Workflow authorization time and recorded in `RunConfig`; the
 merge is built from exactly those two commits. Downstream jobs never resolve a live
 ref and never fetch from GitHub for checkout. The TOCTOU guard adapts from
-"checked-out sha == head_sha" to "restored HEAD == recorded merge_sha".
+"checked-out sha == head_sha" to "restored HEAD == recorded snapshot_sha".
 
 **Threat model note.** Merging trusted base code with untrusted fork code and
 running it is the standard `pull_request` merge-commit risk (the same one GitHub
@@ -174,12 +184,12 @@ not grant PR jobs any new access.
 
 | Concern | Location | Change |
 |---|---|---|
-| Config surface | `praktika/workflow.py` (`enable_merge_commit`) | none (already exists) |
-| Run-level state | `praktika/runtime.py` (`RunConfig`) | add `base_sha`, `merge_sha`, `merge_snapshot_key` (+ `setdefault` back-compat) |
-| Merge + snapshot | `praktika/native_jobs.py` (Config Workflow) | replace `assert False` with merge, conflict-fail, snapshot build + upload |
-| Relay to jobs | `praktika/orchestrator/state.py` | stamp merge fields into each `job_task`; mark full-clone jobs |
-| Per-job restore | `bootstrap/src/praktika_controller/common.py`, `controller.py` | snapshot-download branch + hash verify + adapted TOCTOU guard |
-| Submodules | `praktika/native_jobs.py` | compute `submodule_cache_hash` from the merged tree in merge mode |
+| Config surface | `praktika/settings.py` | `ENABLE_S3_REPO_SNAPSHOT`, `ENABLE_PR_EPHEMERAL_MERGE_COMMIT` |
+| Run-level state | `praktika/runtime.py` (`RunConfig`) | `base_sha`, `snapshot_sha`, `repo_snapshot_key` (+ `setdefault` back-compat) |
+| Snapshot (+ PR merge) | `praktika/native_jobs.py` (`_prepare_repo_snapshot`, Config Workflow) | resolve state, optional PR merge + conflict-fail, snapshot build + upload |
+| Relay to jobs | `praktika/orchestrator/state.py` | pin + stamp `snapshot_sha`/`repo_snapshot_key` into each `job_task` |
+| Per-job restore | `bootstrap/src/praktika_controller/{common,controller}.py` | `restore_repo_snapshot`: download + hash verify + `HEAD == snapshot_sha` guard |
+| IAM | `ci/infrastructure/projects.py` | per-pool Deny on the `PRs/`/`REFs/` tiers |
 
 ## Permissions
 
@@ -196,16 +206,16 @@ including the injected Config Workflow — `praktika/mangle.py`); `push` runs us
 non-`pr-*` pools. Each pool's role (`ci/infrastructure/projects.py`, via a Deny in
 `ext["iam_statements"]`) carries:
 
-| Pool (trust) | `trusted/*` | `untrusted/*` |
+| Pool (trust) | `repo-snapshots/v1/REFs/*` | `repo-snapshots/v1/PRs/*` |
 |---|---|---|
 | `pr-*` (untrusted) | read allowed, **write Deny** | read+write (own tier) |
 | non-`pr-*` (trusted) | read+write (own tier) | **read+write Deny** |
 
 Information-flow rule: reads may go down-trust but never up; writes never go up. So
-a fork job cannot plant (or overwrite) a `trusted/` snapshot, and a trusted run
-cannot ingest `untrusted/` (fork-produced) content. This is *defence in depth* on
-top of the content-hash key + write-once upload + `HEAD == authorized merge_sha`
-checks, which independently prevent a poisoned snapshot from being consumed.
+a fork job cannot plant (or overwrite) a `REFs/` snapshot, and a trusted run cannot
+ingest a `PRs/` (fork-produced) snapshot. This is *defence in depth* on top of the
+content-hash key + write-once upload + `HEAD == authorized snapshot_sha` checks,
+which independently prevent a poisoned snapshot from being consumed.
 
 Notes / caveats:
 
@@ -215,7 +225,7 @@ Notes / caveats:
   convention of expressing trust by routing to dedicated pools.
 - The Deny resources use the bare bucket name and are namespaced to
   `praktika-artifacts-eu-north-1` by the deploy-time policy sweep (`cloud.py`).
-- The tiers are empty until a workflow sets `enable_merge_commit`, so the Denys are
+- The tiers are empty until `Settings.ENABLE_S3_REPO_SNAPSHOT` is set, so the Denys are
   inert for existing CI.
 - The orchestrator role is not restricted here: it relays the snapshot *key*, never
   downloads snapshot *content*, so no untrusted bytes flow into it.

@@ -23,7 +23,7 @@ from praktika_controller.common import (
     post_early_check,
     instance_tag,
     resolve_praktika_base_venv,
-    restore_merge_snapshot,
+    restore_repo_snapshot,
     TaskLogCapture,
     terminate_instance_for_replacement,
     terminate_process_group,
@@ -389,11 +389,11 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
     repo = task.get("repo", "")
     pr_number = task.get("pr_number")
     head_sha = task.get("head_sha", "")
-    # Merge-commit mode: set by the orchestrator once the Config Workflow has
-    # published the snapshot. Empty for head mode and for the Config Workflow's
+    # Repo-snapshot mode: set by the orchestrator once the Config Workflow has
+    # published the snapshot. Empty when disabled and for the Config Workflow's
     # own task (which clones the head and builds the snapshot).
-    merge_sha = task.get("merge_sha", "")
-    merge_snapshot_key = task.get("merge_snapshot_key", "")
+    snapshot_sha = task.get("snapshot_sha", "")
+    repo_snapshot_key = task.get("repo_snapshot_key", "")
     always_run = bool(task.get("always_run", False))
     cancel_s3_bucket = task.get("cancel_s3_bucket", "")
     cancel_s3_key = task.get("cancel_s3_key", "")
@@ -459,11 +459,11 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
 
         if cm_heartbeat is not None:
             cm_heartbeat.update(phase="cloning")
-        if merge_snapshot_key and merge_sha:
-            clone_dir, actual_sha = restore_merge_snapshot(
+        if repo_snapshot_key and snapshot_sha:
+            clone_dir, actual_sha = restore_repo_snapshot(
                 s3,
-                merge_snapshot_key,
-                merge_sha,
+                repo_snapshot_key,
+                snapshot_sha,
                 pr_number,
                 work_dir=WORK_DIR,
                 branch=task.get("head_ref", ""),

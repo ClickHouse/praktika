@@ -688,16 +688,15 @@ class WorkflowState:
         # GHA. Later completions overwrite earlier ones — the serialized
         # environment is already cumulative.
         self._environment = None
-        # Merge-commit fields, pinned ONCE when the Config Workflow completes.
+        # Repo-snapshot fields, pinned ONCE when the Config Workflow completes.
         # They must not be read from the mutable self._environment (overwritten by
         # every job's completion), or a later untrusted PR job could rewrite the
-        # merge target and point dependent jobs at an attacker-controlled snapshot
-        # (it controls both the content-hash key and HEAD==merge_sha). Frozen on
-        # the first non-empty observation — the Config Workflow is the DAG root, so
-        # it is always the first job to report them. See apply_workflow_config.
-        self._merge_sha = ""
-        self._base_sha = ""
-        self._merge_snapshot_key = ""
+        # snapshot target and point dependent jobs at an attacker-controlled
+        # snapshot (it controls both the content-hash key and HEAD==snapshot_sha).
+        # Frozen on the first non-empty observation — the Config Workflow is the
+        # DAG root, so it is always the first job to report them.
+        self._snapshot_sha = ""
+        self._repo_snapshot_key = ""
         self.cancelled = (
             False  # set by sweep_cancel() on cancel-request / cancel-before
         )
@@ -782,15 +781,14 @@ class WorkflowState:
         if not isinstance(workflow_config, dict):
             return
 
-        # Pin the merge-commit target once (see __init__). Freeze on the first
+        # Pin the repo-snapshot target once (see __init__). Freeze on the first
         # non-empty snapshot key — the Config Workflow reports it first — and never
         # accept changes from a later (untrusted) job's relayed WORKFLOW_CONFIG.
-        if not self._merge_snapshot_key:
-            msk = workflow_config.get("merge_snapshot_key") or ""
-            if msk:
-                self._merge_sha = workflow_config.get("merge_sha") or ""
-                self._base_sha = workflow_config.get("base_sha") or ""
-                self._merge_snapshot_key = msk
+        if not self._repo_snapshot_key:
+            key = workflow_config.get("repo_snapshot_key") or ""
+            if key:
+                self._snapshot_sha = workflow_config.get("snapshot_sha") or ""
+                self._repo_snapshot_key = key
 
         filtered = workflow_config.get("filtered_jobs") or {}
         cache_success = workflow_config.get("cache_success") or []
@@ -1093,12 +1091,11 @@ class WorkflowState:
             "finalized": bool(finalized),
             "updated_at": time.time(),
             "environment": self._environment,
-            # Persist the pinned merge target so a resumed orchestrator keeps the
-            # Config-Workflow-authorized value rather than re-deriving it from the
-            # (mutable) environment snapshot.
-            "merge_sha": self._merge_sha,
-            "base_sha": self._base_sha,
-            "merge_snapshot_key": self._merge_snapshot_key,
+            # Persist the pinned repo-snapshot target so a resumed orchestrator
+            # keeps the Config-Workflow-authorized value rather than re-deriving it
+            # from the (mutable) environment snapshot.
+            "snapshot_sha": self._snapshot_sha,
+            "repo_snapshot_key": self._repo_snapshot_key,
             "jobs": {
                 name: {
                     "status": js.status.value,
@@ -1152,9 +1149,8 @@ class WorkflowState:
         self._environment = snap.get("environment")
         # Restore the pinned merge target directly from the snapshot (do not
         # re-derive from the mutable environment on resume).
-        self._merge_sha = snap.get("merge_sha") or ""
-        self._base_sha = snap.get("base_sha") or ""
-        self._merge_snapshot_key = snap.get("merge_snapshot_key") or ""
+        self._snapshot_sha = snap.get("snapshot_sha") or ""
+        self._repo_snapshot_key = snap.get("repo_snapshot_key") or ""
         for name, rec in (snap.get("jobs") or {}).items():
             js = self.jobs.get(name)
             if js is None or not isinstance(rec, dict):
@@ -1628,16 +1624,14 @@ class WorkflowState:
         failure ``kick()`` fails the job with ``reason`` surfaced on the check —
         nothing else will ever drive it forward.
         """
-        # Merge-commit mode: the Config Workflow (first job) computes the merge and
-        # publishes a snapshot; these are pinned once when it completes (see
-        # apply_workflow_config) and read from immutable state here — NOT from the
-        # mutable self._environment — so a later untrusted job cannot redirect
-        # dependent jobs. Empty for the Config Workflow's own dispatch (nothing has
-        # pinned them yet), so it clones the head and builds the snapshot; every
-        # later job restores that exact tree instead of cloning + re-merging.
-        merge_sha = self._merge_sha
-        base_sha = self._base_sha
-        merge_snapshot_key = self._merge_snapshot_key
+        # Repo-snapshot mode: the Config Workflow (first job) builds the snapshot
+        # and these are pinned once when it completes (see apply_workflow_config),
+        # read from immutable state here — NOT from the mutable self._environment —
+        # so a later untrusted job cannot redirect dependent jobs. Empty for the
+        # Config Workflow's own dispatch (nothing pinned yet), so it clones the head
+        # and builds the snapshot; every later job restores that exact tree.
+        snapshot_sha = self._snapshot_sha
+        repo_snapshot_key = self._repo_snapshot_key
 
         task = {
             "type": "job_task",
@@ -1646,9 +1640,8 @@ class WorkflowState:
             "head_repo": self._event.get("head_repo", ""),
             "pr_number": self._event.get("pr_number"),
             "head_sha": self._event.get("head_sha", ""),
-            "merge_sha": merge_sha,
-            "base_sha": base_sha,
-            "merge_snapshot_key": merge_snapshot_key,
+            "snapshot_sha": snapshot_sha,
+            "repo_snapshot_key": repo_snapshot_key,
             # When set, the controller uploads its full per-job log next to
             # final.json and the job result links to it (Settings.PRAKTIKA_DEBUG or
             # the workflow's praktika_debug). Distinct from the runner's "debug"

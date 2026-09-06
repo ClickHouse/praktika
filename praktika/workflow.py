@@ -71,7 +71,6 @@ class Workflow:
         # workflow/job status via the GitHub Checks API.
         enable_commit_status_on_failure: bool = False
         enable_cidb: bool = False
-        enable_merge_commit: bool = False
         cron_schedules: List[str] = field(default_factory=list)
         inputs: List["Workflow.Config.InputConfig"] = field(default_factory=list)
         pre_hooks: List[Union[str, callable]] = field(default_factory=list)

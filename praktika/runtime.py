@@ -21,13 +21,14 @@ class RunConfig(MetaClasses.Serializable):
     sha: str
     submodule_cache_hash: str
     custom_data: Dict[str, Any]
-    # Merge-commit mode (Workflow.Config.enable_merge_commit). Empty in head mode.
-    # base_sha: pinned tip of the target branch used for the merge.
-    # merge_sha: the commit the whole run checks out (base_sha + head_sha, base first parent).
-    # merge_snapshot_key: content-hash S3 key of the minimal snapshot every job restores.
+    # S3 repo snapshot (Settings.ENABLE_S3_REPO_SNAPSHOT). Empty when disabled.
+    # base_sha: pinned target-branch tip used for the ephemeral PR merge (merge mode only).
+    # snapshot_sha: the commit the whole run restores to (the merge commit in PR
+    #   merge mode, otherwise the head).
+    # repo_snapshot_key: content-hash S3 key of the minimal snapshot every job restores.
     base_sha: str = ""
-    merge_sha: str = ""
-    merge_snapshot_key: str = ""
+    snapshot_sha: str = ""
+    repo_snapshot_key: str = ""
 
     @classmethod
     def from_dict(cls, obj):
@@ -45,8 +46,8 @@ class RunConfig(MetaClasses.Serializable):
         obj["cache_jobs"] = cache_jobs_deserialized
         obj.setdefault("submodule_cache_hash", "")
         obj.setdefault("base_sha", "")
-        obj.setdefault("merge_sha", "")
-        obj.setdefault("merge_snapshot_key", "")
+        obj.setdefault("snapshot_sha", "")
+        obj.setdefault("repo_snapshot_key", "")
         return RunConfig(**obj)
 
     @classmethod

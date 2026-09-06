@@ -149,24 +149,24 @@ def _runner_user_data(controller_update_cmd: str) -> str:
     )
 
 
-# OSS trust boundary for the merge-commit snapshot tiers. Two trust tiers live at
-# the top of the artifact bucket: praktika-artifacts-eu-north-1/untrusted/... is
-# written by fork / pull_request runs (which route to the pr-* pools via the PR
-# workflow's runs_on_label_prefix="pr-"), and .../trusted/... is written by push
-# runs (non-pr pools). The runner S3 grant is bucket-wide for convenience (fine on
-# a private project with no untrusted actor), so on this OSS project we carve the
-# tiers back out per pool with explicit Deny statements (Deny always overrides
-# Allow). The information-flow rule is: reads may go down-trust but never up, and
-# writes never go up.
+# OSS trust boundary for the repo-snapshot tiers. Snapshots live under
+# praktika-artifacts-eu-north-1/repo-snapshots/v1/PRs/... (written by fork /
+# pull_request runs, which route to the pr-* pools via the PR workflow's
+# runs_on_label_prefix="pr-") and .../repo-snapshots/v1/REFs/... (written by push
+# runs on non-pr pools). PRs/ is the untrusted tier, REFs/ the trusted one. The
+# runner S3 grant is bucket-wide for convenience (fine on a private project with
+# no untrusted actor), so on this OSS project we carve the tiers back out per pool
+# with explicit Deny statements (Deny always overrides Allow). Information-flow
+# rule: reads may go down-trust but never up, and writes never go up.
 #
-#   untrusted pool: may READ trusted (reuse), must NOT WRITE trusted (no poisoning)
-#   trusted pool:   must NOT READ or WRITE untrusted (no tainted input into trusted)
+#   untrusted (pr-*) pool: may READ REFs (reuse), must NOT WRITE REFs (no poisoning)
+#   trusted (non-pr) pool: must NOT READ or WRITE PRs (no tainted input into trusted)
 #
-# The tiers are empty until a workflow sets enable_merge_commit, so these denies
-# are inert for existing CI. Bare bucket names are namespaced to
+# The tiers are empty until ENABLE_S3_REPO_SNAPSHOT is set, so these denies are
+# inert for existing CI. Bare bucket names are namespaced to
 # praktika-artifacts-eu-north-1 by the deploy-time policy sweep.
 _UNTRUSTED_DENY_WRITE_TRUSTED_STATEMENT = {
-    "Sid": "DenyUntrustedWriteToTrusted",
+    "Sid": "DenyUntrustedWriteToTrustedSnapshots",
     "Effect": "Deny",
     "Action": [
         "s3:PutObject",
@@ -174,10 +174,10 @@ _UNTRUSTED_DENY_WRITE_TRUSTED_STATEMENT = {
         "s3:DeleteObject",
         "s3:AbortMultipartUpload",
     ],
-    "Resource": "arn:aws:s3:::artifacts-eu-north-1/trusted/*",
+    "Resource": "arn:aws:s3:::artifacts-eu-north-1/repo-snapshots/v1/REFs/*",
 }
 _TRUSTED_DENY_ACCESS_UNTRUSTED_STATEMENT = {
-    "Sid": "DenyTrustedAccessToUntrusted",
+    "Sid": "DenyTrustedAccessToUntrustedSnapshots",
     "Effect": "Deny",
     "Action": [
         "s3:GetObject",
@@ -188,7 +188,7 @@ _TRUSTED_DENY_ACCESS_UNTRUSTED_STATEMENT = {
         "s3:DeleteObject",
         "s3:AbortMultipartUpload",
     ],
-    "Resource": "arn:aws:s3:::artifacts-eu-north-1/untrusted/*",
+    "Resource": "arn:aws:s3:::artifacts-eu-north-1/repo-snapshots/v1/PRs/*",
 }
 
 
