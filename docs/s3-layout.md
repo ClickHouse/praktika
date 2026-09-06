@@ -73,7 +73,7 @@ restored by every downstream job instead of cloning. For `pull_request` with
 head into the target tip; otherwise (and for push) it is the plain head. The trust
 tier is `PRs` (untrusted) vs `REFs` (trusted); IAM scopes them so `pr-*` pools are
 denied *write* to `REFs/`, and trusted pools are denied *read+write* to `PRs/`.
-See `docs/native-merge-commit.md`.
+See `docs/repo-snapshot.md`.
 
 | Key | Purpose |
 |---|---|

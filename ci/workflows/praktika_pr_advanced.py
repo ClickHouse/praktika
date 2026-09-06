@@ -144,7 +144,7 @@ workflow = Workflow.Config(
     enable_exit_code_result=True,
     # Repo snapshot + ephemeral merge-commit are enabled project-wide via
     # Settings.ENABLE_S3_REPO_SNAPSHOT / ENABLE_PR_EPHEMERAL_MERGE_COMMIT
-    # (ci/settings/settings.py), not per workflow. See docs/native-merge-commit.md.
+    # (ci/settings/settings.py), not per workflow. See docs/repo-snapshot.md.
 )
 
 WORKFLOWS = [workflow]
