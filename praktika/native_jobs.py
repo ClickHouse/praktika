@@ -934,7 +934,11 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
     # the steps below (docker digests, changed-file filtering, cache lookup) see
     # the merged tree. On conflict this appends a FAIL result, which short-circuits
     # the remaining steps via the results[-1].is_ok() guards and fails early.
-    if getattr(Settings, "ENABLE_S3_REPO_SNAPSHOT", False) and results[-1].is_ok():
+    if (
+        getattr(Settings, "ENABLE_S3_REPO_SNAPSHOT", False)
+        and workflow.engine == Workflow.Engine.PRAKTIKA
+        and results[-1].is_ok()
+    ):
         results.append(_prepare_repo_snapshot(workflow, workflow_config))
 
     if results[-1].is_ok() and workflow.dockers:

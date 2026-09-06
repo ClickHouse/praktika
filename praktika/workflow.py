@@ -181,12 +181,20 @@ class Workflow:
             raise RuntimeError(message)
 
         def _enabled_workflow_config(self):
+            from .settings import Settings
+
             return (
                 self.enable_cache
                 or self.enable_report
                 or self.dockers
                 or self.enable_merge_ready_status
                 or self.pre_hooks
+                # The repo snapshot is built by the Config Workflow, so a native
+                # workflow needs one injected even if it enables nothing else.
+                or (
+                    self.engine == Workflow.Engine.PRAKTIKA
+                    and Settings.ENABLE_S3_REPO_SNAPSHOT
+                )
             )
 
         @dataclass
