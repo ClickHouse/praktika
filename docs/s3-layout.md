@@ -7,9 +7,11 @@ is the same bucket (`S3_REPORT_BUCKET == S3_ARTIFACT_BUCKET`).
 
 Below, variables are written as `<…>`; everything else is a fixed prefix. The
 bucket is whole-bucket public-read (`s3:GetObject` on `*`), and lifecycle rules
-expire the *ephemeral* prefixes (`PRs/`, `REFs/`, `runs/`, `ci_cache/`, the merge
-snapshot tiers) after `retention_days`, while root objects and `packages/` are
-kept forever (`praktika/infrastructure/storage.py`).
+expire the *ephemeral* prefixes (`RETENTION_PREFIXES`: `PRs/`, `REFs/`, `runs/`,
+`ci_cache/`, …) after `retention_days`, while root objects and `packages/` are kept
+forever. `repo-snapshots/` has its own **short** retention (a few days —
+`SHORT_RETENTION_PREFIXES`) since the archives are large and consumed within
+minutes of creation (`praktika/infrastructure/storage.py`).
 
 ## Root
 
