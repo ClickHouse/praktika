@@ -121,13 +121,6 @@ For deployment security considerations, see [SECURITY.md](./SECURITY.md).
 - **Dispatch and cron workflows** — support manually-triggered
   `workflow_dispatch` runs and scheduled `cron` / `schedule` pipelines on the
   standalone engine
-- **Ephemeral merge-commit PR runs** — run pull-request CI against an
-  ephemeral merge commit by default instead of the branch head, with an
-  explicit opt-in mode for testing the raw head commit when needed. PRs with
-  merge conflicts should not start CI runs until the conflicts are resolved.
-  For future AI-edit sessions, prefer keeping parent 2 of the merge commit
-  stable across automatic commits so Praktika can reuse CI cache state and
-  avoid rerunning jobs that already passed earlier in the same session.
 - **One workflow per orchestrator, parallelized** — when an event matches
   several workflows, dispatch one message (and one GitHub check / instance)
   per workflow instead of running them sequentially in a single orchestrator
