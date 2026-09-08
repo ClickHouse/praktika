@@ -182,7 +182,6 @@ _TRUSTED_DENY_ACCESS_UNTRUSTED_STATEMENT = {
     "Action": [
         "s3:GetObject",
         "s3:GetObjectTagging",
-        "s3:HeadObject",
         "s3:PutObject",
         "s3:PutObjectTagging",
         "s3:DeleteObject",
