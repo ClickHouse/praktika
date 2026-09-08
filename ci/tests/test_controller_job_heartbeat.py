@@ -111,9 +111,8 @@ def test_job_heartbeat_starts_before_runner_setup(monkeypatch, tmp_path):
     assert result["status"] == "ok"
     assert events == [
         "heartbeat.start",
-        "heartbeat.update:authenticating",
-        "gh-auth",
         "heartbeat.update:cloning",
+        "gh-auth",
         "clone",
         "heartbeat.update:resolving_runtime",
         "heartbeat.update:writing_task",

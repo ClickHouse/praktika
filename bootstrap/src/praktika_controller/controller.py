@@ -448,18 +448,12 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
     proc = None
     try:
         if cm_heartbeat is not None:
-            cm_heartbeat.update(phase="authenticating")
-        gh_token = get_github_token(REGION)
-        subprocess.run(
-            ["gh", "auth", "login", "--with-token"],
-            input=gh_token,
-            text=True,
-            check=True,
-        )
-
-        if cm_heartbeat is not None:
             cm_heartbeat.update(phase="cloning")
         if repo_snapshot_key and snapshot_sha:
+            # Snapshot restore is pure S3 — no GitHub interaction. Skip
+            # authentication so a GitHub token/login outage doesn't fail a job
+            # that a valid snapshot could satisfy. Jobs that need `gh` authenticate
+            # themselves via GHAuth (enable_gh_auth), independent of this.
             clone_dir, actual_sha = restore_repo_snapshot(
                 s3,
                 repo_snapshot_key,
@@ -470,6 +464,14 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
                 log=log,
             )
         else:
+            # Cloning the head needs an authenticated remote.
+            gh_token = get_github_token(REGION)
+            subprocess.run(
+                ["gh", "auth", "login", "--with-token"],
+                input=gh_token,
+                text=True,
+                check=True,
+            )
             clone_dir, actual_sha = clone_repo(
                 repo,
                 head_sha,
