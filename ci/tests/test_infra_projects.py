@@ -2038,17 +2038,22 @@ def test_projects_grant_bedrock_to_both_orchestrator_pools():
 def test_runner_pools_enforce_repo_snapshot_trust_boundary():
     # OSS trust boundary for repo-snapshot tiers. Information flow rule:
     # reads may go down-trust but never up, writes never go up.
-    #   untrusted (pr-*) pool: may READ REFs, must NOT WRITE REFs.
-    #   trusted (non-pr) pool: must NOT READ or WRITE PRs.
+    #   untrusted pool: may READ REFs, must NOT WRITE REFs.
+    #   trusted pool:   must NOT READ or WRITE PRs.
+    # Classification is by actual routing (which pools run pull_request workflows),
+    # NOT the pool name: arm-2xsmall-base runs a pull_request workflow despite the
+    # non-"pr-" name, so it is untrusted.
     cloud = _get_infra_config("praktika")
     untrusted_sid = "DenyUntrustedWriteToTrustedSnapshots"
     trusted_sid = "DenyTrustedAccessToUntrustedSnapshots"
     trusted_res = "arn:aws:s3:::praktika-artifacts-eu-north-1/repo-snapshots/v1/REFs/*"
     untrusted_res = "arn:aws:s3:::praktika-artifacts-eu-north-1/repo-snapshots/v1/PRs/*"
 
-    pr_pools = [p for p in cloud.runner_pools if p.name.startswith("pr-")]
-    trusted_pools = [p for p in cloud.runner_pools if not p.name.startswith("pr-")]
-    assert pr_pools and trusted_pools, "expected both pr-* and non-pr runner pools"
+    untrusted_names = {p.name for p in cloud.runner_pools if p.name.startswith("pr-")}
+    untrusted_names.add("arm-2xsmall-base")
+    pr_pools = [p for p in cloud.runner_pools if p.name in untrusted_names]
+    trusted_pools = [p for p in cloud.runner_pools if p.name not in untrusted_names]
+    assert pr_pools and trusted_pools, "expected both untrusted and trusted pools"
 
     def _sids(pool):
         return {s.get("Sid") for s in _runner_access_statements(pool)}

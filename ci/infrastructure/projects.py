@@ -258,6 +258,10 @@ _runner_pools = [
         name="arm-2xsmall-base",
         instance_type="t4g.small",
         image_builder="ci-arm64-image",
+        # Runs praktika_pr_simple, a pull_request workflow (untrusted), despite the
+        # non-"pr-" name — so it must be untrusted: allowed the PRs/ snapshot tier,
+        # denied writes to REFs/.
+        untrusted=True,
     ),
     _runner_pool(
         name="amd-2xsmall",
