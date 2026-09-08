@@ -243,14 +243,6 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
         return {"status": "skipped", "reason": f"unknown type: {wf_type}"}
     is_resume = wf_type == "rerun"
 
-    # Capture the controller's handling of this workflow (clone / stale-head guard
-    # / runtime resolve) so praktika_debug can attach it to the top-level result.
-    # Flushed into the clone dir before launching orchestrate; the orchestrate
-    # process (which knows the S3 report prefix) uploads and links it. The event
-    # doesn't carry the debug flag, so we always capture (cheap, local file) and
-    # let the orchestrate side decide whether to upload.
-    log_capture = TaskLogCapture(INSTANCE_ID).start()
-
     repo = event.get("repo", "")
     pr_number = event.get("pr_number")
     head_sha = event.get("head_sha", "")
@@ -272,6 +264,16 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
         early_check_id = post_early_check(
             repo, head_sha, gh_token, EARLY_CHECK_NAME, log=log
         )
+
+    # Capture the controller's handling of this workflow (clone / stale-head guard
+    # / runtime resolve) so praktika_debug can attach it to the top-level result.
+    # Flushed into the clone dir before launching orchestrate; the orchestrate
+    # process (which knows the S3 report prefix) uploads and links it. The event
+    # doesn't carry the debug flag, so we always capture (cheap, local file) and
+    # let the orchestrate side decide whether to upload. Started here — after auth,
+    # just before the try that owns its cleanup on every exit — so an auth failure
+    # can't leak the root-logger handler.
+    log_capture = TaskLogCapture(INSTANCE_ID).start()
 
     try:
         clone_dir, actual_sha = clone_repo(
