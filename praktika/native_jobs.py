@@ -476,9 +476,22 @@ def _prepare_repo_snapshot(workflow, workflow_config: RunConfig) -> Result:
                         info=info,
                     )
                 if rc_ != 0:
-                    print(
-                        f"WARNING: could not verify merge with live {base_branch} "
-                        f"HEAD (git merge-tree rc={rc_}); skipping live-conflict check"
+                    # Fail closed: this check is the only guard that the sticky
+                    # (older) pinned base does not hide a conflict with the current
+                    # tip. If it cannot run (unfetchable object, git < 2.38 without
+                    # --write-tree, etc.) we must not build and test — let alone
+                    # mark merge-ready — an unverified stale-base merge.
+                    info = (
+                        f"Could not verify PR head {head_sha[:12]} merges into the "
+                        f"current {base_branch} HEAD ({live_base_sha[:12]}): git "
+                        f"merge-tree exited {rc_}.\n{out_}\n{_err_}"
+                    )
+                    print(f"ERROR: {info}")
+                    return Result.create_from(
+                        name="Repo Snapshot",
+                        status=Result.Status.FAIL,
+                        stopwatch=stop_watch,
+                        info=info,
                     )
 
             # Deterministic identity/dates so the merge sha depends only on the two
