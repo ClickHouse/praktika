@@ -53,7 +53,7 @@ For deployment security considerations, see [SECURITY.md](./SECURITY.md).
 - Built-in CI cache with awareness of successful jobs and reusable artifacts
 - Starter hello-world setup with `praktika init`, which scaffolds
   `ci/workflows/` and `ci/infrastructure/projects.py` for a new project
-- Versioned runtimes via named base virtual environments, with `praktika_controller` selecting the workflow or job runtime and optionally overlaying Praktika from checked-out source
+- Versioned runtimes via named base virtual environments, with `praktika_controller` selecting the workflow or job runtime and optionally installing Praktika at run time from checked-out source or a URL, per pool (`ext["runtime_source"]`; see `docs/installing-praktika.md`)
 - HTML CI report page with per-workflow, per-job, and per-test drill-down
 - Consistent test Docker image versioning: images rebuild automatically when inputs change, and versions stay pinned to code state across branches
 - CI DB integration: job results, test results, timings, and related metadata are written automatically
@@ -108,7 +108,6 @@ For deployment security considerations, see [SECURITY.md](./SECURITY.md).
 ## High priority / blockers
 - **Native DockerHub proxy component** — stand up an in-VPC DockerHub pull-through cache for runner pools so image pulls stay local and do not depend on the legacy cross-VPC proxy
 - **Ephemeral merge-commit PR runs** — run pull-request CI against an ephemeral merge commit by default instead of the branch head, with an explicit opt-in mode for testing the raw head commit when needed
-- **In-flight Praktika install** — install Praktika at run time, ideally through `Workflow.Config`, so current-repo CI can test the version from `.` and other projects can opt into always using the latest Praktika version instead of a pinned or baked runner-image version
 
 ## Roadmap
 **Execution engine**
@@ -142,10 +141,11 @@ For deployment security considerations, see [SECURITY.md](./SECURITY.md).
   workflow encoding that in the lambda by hand
 - **Remove AWS CLI dependency from CI runtime** — Praktika runtime code should
   use boto3 APIs directly instead of shelling out to `aws`
-- **In-flight Praktika install** — install Praktika at run time, ideally
-  through `Workflow.Config`, so current-repo CI can test the version from `.`
-  and other projects can opt into always using the latest Praktika version
-  instead of a pinned or baked runner-image version
+- **Per-workflow Praktika runtime source** — extend runtime Praktika install
+  (today per runner/orchestrator pool via `ext["runtime_source"]`, see
+  `docs/installing-praktika.md`) to `Workflow.Config`, so a single workflow can
+  opt into testing the version from `.` or always tracking latest without a
+  dedicated pool
 
 **Infrastructure / deployment**
 - **Incremental deploys with component hashes** — compute a stable hash for

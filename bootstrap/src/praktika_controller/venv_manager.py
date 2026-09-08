@@ -61,23 +61,29 @@ def ensure_praktika_runtime(
 
     if base_venv:
         base_dir = _resolve_base_venv(base_venv, base_venv_root)
+
+        # An explicit source is a deliberate override (e.g. a runner pool pinning
+        # a specific praktika build via its `praktika_runtime_source` instance
+        # tag): always layer it on top of a COPY of the prebaked base venv, even
+        # when the base already ships praktika. The result is cached per base
+        # venv so repeated tasks on the same instance reuse it.
+        if source:
+            return _rebuild_runtime_from_base_venv(
+                source,
+                base_dir=base_dir,
+                base_name=base_venv,
+                cache_root=cache_root,
+                log=log,
+            )
+
         if _venv_has_praktika(base_dir):
             if log is not None:
                 log.info("Using Praktika from prebaked base venv %s", base_dir)
             return base_dir
 
-        if not source:
-            raise ValueError(
-                "PRAKTIKA_BASE_VENV is set but the base venv does not contain "
-                "praktika and no install source was provided"
-            )
-
-        return _rebuild_runtime_from_base_venv(
-            source,
-            base_dir=base_dir,
-            base_name=base_venv,
-            cache_root=cache_root,
-            log=log,
+        raise ValueError(
+            "PRAKTIKA_BASE_VENV is set but the base venv does not contain "
+            "praktika and no install source was provided"
         )
 
     if not source:

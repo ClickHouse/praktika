@@ -97,10 +97,38 @@ def _role_config(role: str) -> tuple[str, str]:
     raise AssertionError(f"Unhandled role: {role}")
 
 
+def _resolve_runtime_source(clone_dir: str, log):
+    """Optional per-pool Praktika runtime source, carried on the instance's
+    ``praktika_runtime_source`` tag (set from the pool's ``ext['runtime_source']``).
+
+    When set, the controller does NOT use the Praktika baked into the AMI; it
+    installs Praktika at runtime from this source (``pip install <source>`` on
+    top of a copy of the prebaked base venv), so the pool tracks whatever version
+    the source currently points at. The value is either:
+      * an ``http(s)://`` URL to a wheel/sdist, or
+      * a filesystem path — an absolute path on the instance, or a path relative
+        to the cloned repo (so a tag of ``.`` installs Praktika from the checked
+        out repo itself).
+    Returns ``None`` when no runtime source is set (the baked venv is used)."""
+    try:
+        source = instance_tag("praktika_runtime_source")
+    except Exception as e:
+        log.warning("Could not read praktika_runtime_source tag: %s", e)
+        return None
+    source = (source or "").strip()
+    if not source:
+        return None
+    if not source.startswith(("http://", "https://")) and not os.path.isabs(source):
+        source = os.path.join(clone_dir, source)
+    log.info("Installing Praktika at runtime from per-pool source %s", source)
+    return source
+
+
 def _resolve_runtime(clone_dir: str, log):
     base_venv = resolve_praktika_base_venv(clone_dir, log)
+    source = _resolve_runtime_source(clone_dir, log)
     venv_dir = ensure_praktika_runtime(
-        None,
+        source,
         base_venv=base_venv,
         log=log,
     )
