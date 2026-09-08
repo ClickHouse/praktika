@@ -141,11 +141,6 @@ For deployment security considerations, see [SECURITY.md](./SECURITY.md).
   workflow encoding that in the lambda by hand
 - **Remove AWS CLI dependency from CI runtime** — Praktika runtime code should
   use boto3 APIs directly instead of shelling out to `aws`
-- **Per-workflow Praktika runtime source** — extend runtime Praktika install
-  (today per runner/orchestrator pool via `ext["runtime_source"]`, see
-  `docs/installing-praktika.md`) to `Workflow.Config`, so a single workflow can
-  opt into testing the version from `.` or always tracking latest without a
-  dedicated pool
 
 **Infrastructure / deployment**
 - **Incremental deploys with component hashes** — compute a stable hash for
