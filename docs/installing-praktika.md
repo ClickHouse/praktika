@@ -54,23 +54,24 @@ by setting `ext["runtime_source"]`:
 ```python
 # ci/infrastructure/projects.py
 RunnerPool(name="...", ext={"runtime_source": "."})
-# or a URL:
-RunnerPool(name="...", ext={"runtime_source": "https://.../praktika-0.1.10-py3-none-any.whl"})
 ```
 
-This is surfaced as the `praktika_runtime_source` instance tag. At boot, for each
-task, the controller runs `pip install <source>` on top of a **copy** of the
-prebaked base venv (`ensure_praktika_runtime` in
+This is surfaced as the `praktika_runtime_source` instance tag. On **every task**,
+the controller reinstalls Praktika from `<source>` into an overlay of the prebaked
+base venv (`ensure_praktika_runtime` in
 `bootstrap/src/praktika_controller/venv_manager.py`) and runs Praktika from that
-overlay. The result is cached per base venv, so repeated tasks on the same
-instance reuse the overlay instead of reinstalling.
+overlay. The overlay (a copy of the base venv) is created once per instance; the
+install then runs each task with `--force-reinstall` (so a checkout change takes
+effect even when the version string is unchanged) and `--no-deps` (so the base
+venv's baked dependencies are reused rather than re-fetched — adding a *new*
+runtime dependency means rebaking the base venv). The base venv itself is never
+mutated, so base pools stay pinned.
 
-`<source>` is one of:
+`<source>` is a filesystem path:
 
-- an `http(s)://` URL to a wheel/sdist — installed as-is;
-- an absolute path on the instance;
 - a path **relative to the cloned repo** — resolved against the checkout, so
-  `.` installs Praktika from the repo you are testing.
+  `.` installs Praktika from the repo you are testing;
+- or an absolute path on the instance.
 
 Applies to both pool types: `RunnerPool.ext` for job runners,
 `OrchestratorPool.ext` for the orchestrator.
@@ -89,8 +90,8 @@ test**:
   which makes parallel Praktika development across branches practical.
 
 Unlike the baked pin, a runtime source is deliberately **not** pinned: the pool
-tracks whatever the source currently points at (the branch's `.`, or "latest" at
-a URL).
+tracks whatever the source (the branch's `.`) currently holds, reinstalled fresh
+each task.
 
 ### Limitation
 

@@ -71,11 +71,11 @@ class OrchestratorPool:
 
     `ext["runtime_source"]` (str) makes the orchestrator install Praktika at
     runtime instead of using the version baked into the AMI. It is surfaced as
-    the `praktika_runtime_source` instance tag; at boot the controller runs
-    `pip install <source>` on top of the prebaked base venv, so it tracks
-    whatever version the source currently points at. The value is an
-    `http(s)://` wheel/sdist URL, an absolute path on the instance, or a path
-    relative to the cloned repo. Off by default (AMI base venv is used as-is).
+    the `praktika_runtime_source` instance tag; on every task the controller
+    reinstalls `<source>` into an overlay of the prebaked base venv, so it always
+    runs the current checkout. The value is a filesystem path: an absolute path
+    on the instance, or a path relative to the cloned repo. Off by default (AMI
+    base venv is used as-is).
 
     Registered into CloudInfrastructure.Config automatically via its
     orchestrator_pool field.
@@ -327,9 +327,9 @@ class OrchestratorPool:
             runtime_tags["praktika_system_logs"] = "1"
         runtime_source = str(self.ext.get("runtime_source", "") or "").strip()
         if runtime_source:
-            # Install Praktika at runtime from this path/URL instead of using the
+            # Install Praktika at runtime from this path instead of using the
             # version baked into the AMI (see praktika_controller.venv_manager).
-            # The pool tracks whatever version the source currently points at.
+            # The pool always runs whatever the source currently points at.
             runtime_tags["praktika_runtime_source"] = runtime_source
         self.launch_template = LaunchTemplate.Config(
             name=self._launch_template_name(),

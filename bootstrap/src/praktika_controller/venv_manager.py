@@ -62,13 +62,12 @@ def ensure_praktika_runtime(
     if base_venv:
         base_dir = _resolve_base_venv(base_venv, base_venv_root)
 
-        # An explicit source is a deliberate override (e.g. a runner pool pinning
-        # a specific praktika build via its `praktika_runtime_source` instance
-        # tag): always layer it on top of a COPY of the prebaked base venv, even
-        # when the base already ships praktika. The result is cached per base
-        # venv so repeated tasks on the same instance reuse it.
+        # An explicit source is a deliberate override (a pool's
+        # `praktika_runtime_source` tag): install it into an overlay of the
+        # prebaked base venv on EVERY task, so the pool always runs the current
+        # checkout, even when the base venv already ships praktika.
         if source:
-            return _rebuild_runtime_from_base_venv(
+            return _install_runtime_over_base_venv(
                 source,
                 base_dir=base_dir,
                 base_name=base_venv,
@@ -113,8 +112,8 @@ def venv_env(
 
 
 def _normalize_source(source: str) -> str:
-    if source.startswith(("http://", "https://")):
-        return source
+    # Runtime sources are filesystem paths (a checkout, typically "."); resolve
+    # to an absolute path for a stable pip target.
     return str(Path(source).resolve())
 
 
@@ -193,7 +192,7 @@ def _venv_has_praktika(venv_dir: Path) -> bool:
     return result.returncode == 0
 
 
-def _rebuild_runtime_from_base_venv(
+def _install_runtime_over_base_venv(
     source: str,
     *,
     base_dir: Path,
@@ -201,48 +200,49 @@ def _rebuild_runtime_from_base_venv(
     cache_root: str | os.PathLike[str] | None,
     log=None,
 ) -> Path:
+    """Install ``source`` (a filesystem path, e.g. the checkout ``.``) into a
+    per-instance overlay of the prebaked base venv and return it.
+
+    The overlay is a copy of the base venv, created once. Praktika is
+    (re)installed from ``source`` on EVERY call with ``--force-reinstall`` so the
+    pool always runs the current checkout even when the version string is
+    unchanged, and ``--no-deps`` so the base venv's baked dependencies are kept
+    rather than re-fetched each task (add a new runtime dependency => rebake the
+    base venv). The base venv itself is never mutated, so base pools stay pinned.
+    """
     source = _normalize_source(source)
     cache_root = Path(cache_root or DEFAULT_VENV_ROOT)
     cache_root.mkdir(parents=True, exist_ok=True)
 
     py_tag = f"py{sys.version_info.major}.{sys.version_info.minor}"
-    base_tag = _slugify(base_name)
-    env_name = f"praktika-{base_tag}-{py_tag}"
+    env_name = f"praktika-{_slugify(base_name)}-{py_tag}"
     venv_dir = cache_root / env_name
     lock_path = cache_root / f"{env_name}.lock"
 
     with _file_lock(lock_path):
-        if _venv_has_praktika(venv_dir):
+        if not (venv_dir / "bin" / "python").exists():
             if log is not None:
-                log.info("Using Praktika from runtime venv %s", venv_dir)
-            return venv_dir
+                log.info("Creating Praktika runtime overlay %s from %s", venv_dir, base_dir)
+            _copy_base_venv(venv_dir, base_dir)
         if log is not None:
-            log.info(
-                "Building Praktika runtime venv %s from %s on top of %s",
-                venv_dir,
+            log.info("Installing Praktika from %s into %s", source, venv_dir)
+        subprocess.run(
+            _pip_install_cmd(
+                venv_dir / "bin" / "python",
+                "--force-reinstall",
+                "--no-deps",
                 source,
-                base_dir,
-            )
-        _build_runtime_from_base_venv(
-            venv_dir,
-            source,
-            base_dir,
+            ),
+            check=True,
         )
         return venv_dir
 
 
-def _build_runtime_from_base_venv(
-    venv_dir: Path,
-    source: str,
-    base_dir: Path,
-) -> None:
+def _copy_base_venv(venv_dir: Path, base_dir: Path) -> None:
     temp_parent = venv_dir.parent
     with tempfile.TemporaryDirectory(prefix=f"{venv_dir.name}.tmp.", dir=temp_parent) as temp_dir:
         temp_path = Path(temp_dir)
         shutil.copytree(base_dir, temp_path, symlinks=True, dirs_exist_ok=True)
-
-        temp_python = temp_path / "bin" / "python"
-        subprocess.run(_pip_install_cmd(temp_python, source), check=True)
 
         if venv_dir.exists():
             shutil.rmtree(venv_dir)
