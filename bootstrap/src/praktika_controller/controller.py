@@ -117,6 +117,12 @@ def _resolve_runtime_source(clone_dir: str, log):
     source = (source or "").strip()
     if not source:
         return None
+    if "://" in source:
+        # Only filesystem paths are supported; a URL would otherwise be joined
+        # onto clone_dir and fail confusingly at pip time. Fail loudly instead.
+        raise ValueError(
+            f"praktika_runtime_source must be a filesystem path, got {source!r}"
+        )
     if not os.path.isabs(source):
         source = os.path.join(clone_dir, source)
     log.info("Installing Praktika at runtime from per-pool source %s", source)

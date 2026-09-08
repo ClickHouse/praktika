@@ -348,10 +348,11 @@ _orchestrator_pool = Components.OrchestratorPool(
     image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
     ext={
         "iam_statements": [_ORCHESTRATOR_BEDROCK_IAM_STATEMENT],
-        "external_pr_autoapprove_paths": [
-            #"**/*"
-            "praktika/*"
-        ],
+        # No external_pr_autoapprove_paths: with runtime_source="." this
+        # orchestrator installs and runs the checkout's Praktika under its
+        # trusted IAM role, so autoapproving external-PR pushes (even scoped to
+        # `praktika/*`) would let an untrusted head supply the engine. External
+        # PRs go through manual approval instead.
         # Ship kernel/OOM/systemd-kill evidence to /praktika/praktika-system so
         # a silently killed controller (e.g. OOM) leaves a trace. See
         # docs/logging.md.
