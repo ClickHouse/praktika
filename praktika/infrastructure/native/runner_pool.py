@@ -443,7 +443,6 @@ class RunnerPool:
                     object_actions=[
                         "s3:GetObject",
                         "s3:GetObjectTagging",
-                        "s3:HeadObject",
                         "s3:PutObject",
                         "s3:PutObjectTagging",
                         "s3:AbortMultipartUpload",
@@ -463,7 +462,6 @@ class RunnerPool:
                     object_actions=[
                         "s3:GetObject",
                         "s3:GetObjectTagging",
-                        "s3:HeadObject",
                     ],
                     list_actions=[
                         "s3:ListBucket",

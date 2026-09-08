@@ -23,6 +23,8 @@ from praktika_controller.common import (
     post_early_check,
     instance_tag,
     resolve_praktika_base_venv,
+    restore_repo_snapshot,
+    TaskLogCapture,
     terminate_instance_for_replacement,
     terminate_process_group,
     try_scale_in_if_idle,
@@ -246,112 +248,136 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
     head_sha = event.get("head_sha", "")
     branch = event.get("head_ref", "")
 
-    gh_token = get_github_token(REGION)
-    subprocess.run(
-        ["gh", "auth", "login", "--with-token"],
-        input=gh_token,
-        text=True,
-        check=True,
-    )
-
-    # Open a check run *before* the clone so the PR shows CI immediately and an
-    # interrupted clone still leaves a signal. The orchestrator subprocess
-    # adopts this id and renames it to the matched workflow.
-    early_check_id = None
-    if head_sha and not is_resume:
-        early_check_id = post_early_check(
-            repo, head_sha, gh_token, EARLY_CHECK_NAME, log=log
-        )
-
+    # Capture the controller's FULL handling of this workflow (auth, clone,
+    # stale-head guard, runtime resolve) so praktika_debug can attach it to the
+    # top-level result. Flushed into the clone dir before launching orchestrate;
+    # the orchestrate process (which knows the S3 report prefix) uploads and links
+    # it. The event doesn't carry the debug flag, so we always capture (cheap,
+    # local file) and let the orchestrate side decide whether to upload. The outer
+    # try/finally guarantees the root-logger handler + temp file are cleaned up on
+    # every exit — including an auth failure before the clone.
+    log_capture = TaskLogCapture(INSTANCE_ID).start()
     try:
-        clone_dir, actual_sha = clone_repo(
-            repo,
-            head_sha,
-            pr_number,
-            gh_token,
-            work_dir=WORK_DIR,
-            branch=branch,
-            log=log,
+        gh_token = get_github_token(REGION)
+        subprocess.run(
+            ["gh", "auth", "login", "--with-token"],
+            input=gh_token,
+            text=True,
+            check=True,
         )
 
-        # Stale-head guard (TOCTOU): clone_repo fetches the live refs/pull/N/head,
-        # which can have advanced since the lambda verified the head. Running the
-        # requested workflow/checks against a different (possibly unapproved fork)
-        # commit is unsafe, so abort when the checked-out sha isn't the one the
-        # event asked for. Only for PR runs where we have a specific head_sha.
-        if pr_number and head_sha and actual_sha and actual_sha != head_sha:
-            log.warning(
-                "PR head advanced (checked out %s != requested %s); aborting to "
-                "avoid running unintended code",
-                actual_sha, head_sha,
+        # Open a check run *before* the clone so the PR shows CI immediately and an
+        # interrupted clone still leaves a signal. The orchestrator subprocess
+        # adopts this id and renames it to the matched workflow.
+        early_check_id = None
+        if head_sha and not is_resume:
+            early_check_id = post_early_check(
+                repo, head_sha, gh_token, EARLY_CHECK_NAME, log=log
             )
-            finalize_check(
-                repo, early_check_id, gh_token, "cancelled",
-                "Head advanced",
-                f"The PR head moved to {actual_sha[:12]} after this run was "
-                f"requested for {head_sha[:12]}; skipping to avoid running the "
-                f"wrong commit. A run for the new head will proceed.",
+
+        try:
+            clone_dir, actual_sha = clone_repo(
+                repo,
+                head_sha,
+                pr_number,
+                gh_token,
+                work_dir=WORK_DIR,
+                branch=branch,
                 log=log,
             )
-            return {"status": "skipped", "reason": "stale head", "sha": actual_sha}
 
-        base_venv, venv_dir = _resolve_runtime(clone_dir, log)
+            # Stale-head guard (TOCTOU): clone_repo fetches the live
+            # refs/pull/N/head, which can have advanced since the lambda verified
+            # the head. Running the requested workflow/checks against a different
+            # (possibly unapproved fork) commit is unsafe, so abort when the
+            # checked-out sha isn't the one the event asked for. Only for PR runs
+            # where we have a specific head_sha.
+            if pr_number and head_sha and actual_sha and actual_sha != head_sha:
+                log.warning(
+                    "PR head advanced (checked out %s != requested %s); aborting to "
+                    "avoid running unintended code",
+                    actual_sha, head_sha,
+                )
+                finalize_check(
+                    repo, early_check_id, gh_token, "cancelled",
+                    "Head advanced",
+                    f"The PR head moved to {actual_sha[:12]} after this run was "
+                    f"requested for {head_sha[:12]}; skipping to avoid running the "
+                    f"wrong commit. A run for the new head will proceed.",
+                    log=log,
+                )
+                return {"status": "skipped", "reason": "stale head", "sha": actual_sha}
 
-        event_file = os.path.join(clone_dir, "ci", "tmp", "event.json")
-        os.makedirs(os.path.dirname(event_file), exist_ok=True)
-        with open(event_file, "w", encoding="utf-8") as f:
-            json.dump(event, f, indent=2)
-    except BaseException as e:
-        # Failure before the orchestrator subprocess takes over the check
-        # (clone, runtime resolution, disk). Finalize the early check so the PR
-        # shows the failure rather than a check stuck in_progress. The poll loop
-        # still handles retry/replacement as before.
-        finalize_check(
-            repo,
-            early_check_id,
-            gh_token,
-            "failure",
-            "CI failed to start",
-            f"Orchestrator could not start the workflow before cloning: {e}",
-            log=log,
+            base_venv, venv_dir = _resolve_runtime(clone_dir, log)
+
+            event_file = os.path.join(clone_dir, "ci", "tmp", "event.json")
+            os.makedirs(os.path.dirname(event_file), exist_ok=True)
+            with open(event_file, "w", encoding="utf-8") as f:
+                json.dump(event, f, indent=2)
+
+            # Flush the captured controller log (everything up to here) into the
+            # clone's ci/tmp so the orchestrate process can upload it. Capture
+            # keeps running until the finally; only these pre-launch lines are
+            # uploaded.
+            log_capture.save_to(
+                os.path.join(clone_dir, "ci", "tmp", "praktika_controller.log")
+            )
+        except BaseException as e:
+            # Failure before the orchestrator subprocess takes over the check
+            # (clone, runtime resolution, disk). Finalize the early check so the PR
+            # shows the failure rather than a check stuck in_progress. The poll loop
+            # still handles retry/replacement as before.
+            finalize_check(
+                repo,
+                early_check_id,
+                gh_token,
+                "failure",
+                "CI failed to start",
+                f"Orchestrator could not start the workflow before cloning: {e}",
+                log=log,
+            )
+            raise
+
+        attempt = f"{receive_count}/{INFRA_FAILURE_MAX_RECEIVES}"
+        target = f"PR#{pr_number}" if pr_number else f"branch={branch}"
+        log.info(
+            "Running orchestrator for %s in %s (attempt %s)", target, venv_dir, attempt
         )
-        raise
-
-    attempt = f"{receive_count}/{INFRA_FAILURE_MAX_RECEIVES}"
-    target = f"PR#{pr_number}" if pr_number else f"branch={branch}"
-    log.info("Running orchestrator for %s in %s (attempt %s)", target, venv_dir, attempt)
-    result = subprocess.run(
-        praktika_command(venv_dir, "orchestrate", "workflow", event_file, "--ci"),
-        cwd=clone_dir,
-        env=_praktika_env(
-            venv_dir, queue_name, attempt=attempt, bootstrap_check_id=early_check_id
-        ),
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-
-    if result.returncode != 0 and result.stderr:
-        log.error(result.stderr.rstrip())
-
-    # A startup/infra failure (workflow never ran) is retryable on a fresh
-    # orchestrator: raise so the poll loop releases the message and replaces
-    # this instance.
-    if result.returncode == INFRA_EXIT_CODE:
-        raise InfraOrchestrationError(
-            f"orchestrator infra failure (rc={INFRA_EXIT_CODE}) on attempt {attempt}: "
-            f"{result.stderr.strip()[:300] if result.stderr else ''}"
+        result = subprocess.run(
+            praktika_command(venv_dir, "orchestrate", "workflow", event_file, "--ci"),
+            cwd=clone_dir,
+            env=_praktika_env(
+                venv_dir, queue_name, attempt=attempt, bootstrap_check_id=early_check_id
+            ),
+            stderr=subprocess.PIPE,
+            text=True,
         )
 
-    return {
-        "status": "ok" if result.returncode == 0 else "error",
-        "pr": pr_number,
-        "branch": branch,
-        "sha": actual_sha,
-        "base_venv": base_venv,
-        "venv": str(venv_dir),
-        "rc": result.returncode,
-        "stderr": result.stderr.strip()[:500] if result.stderr else "",
-    }
+        if result.returncode != 0 and result.stderr:
+            log.error(result.stderr.rstrip())
+
+        # A startup/infra failure (workflow never ran) is retryable on a fresh
+        # orchestrator: raise so the poll loop releases the message and replaces
+        # this instance.
+        if result.returncode == INFRA_EXIT_CODE:
+            raise InfraOrchestrationError(
+                f"orchestrator infra failure (rc={INFRA_EXIT_CODE}) on attempt "
+                f"{attempt}: {result.stderr.strip()[:300] if result.stderr else ''}"
+            )
+
+        return {
+            "status": "ok" if result.returncode == 0 else "error",
+            "pr": pr_number,
+            "branch": branch,
+            "sha": actual_sha,
+            "base_venv": base_venv,
+            "venv": str(venv_dir),
+            "rc": result.returncode,
+            "stderr": result.stderr.strip()[:500] if result.stderr else "",
+        }
+    finally:
+        log_capture.stop()
+        log_capture.cleanup()
 
 
 def handle_task(task, log, queue_name: str, receive_count: int = 1):
@@ -366,6 +392,11 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
     repo = task.get("repo", "")
     pr_number = task.get("pr_number")
     head_sha = task.get("head_sha", "")
+    # Repo-snapshot mode: set by the orchestrator once the Config Workflow has
+    # published the snapshot. Empty when disabled and for the Config Workflow's
+    # own task (which clones the head and builds the snapshot).
+    snapshot_sha = task.get("snapshot_sha", "")
+    repo_snapshot_key = task.get("repo_snapshot_key", "")
     always_run = bool(task.get("always_run", False))
     cancel_s3_bucket = task.get("cancel_s3_bucket", "")
     cancel_s3_key = task.get("cancel_s3_key", "")
@@ -411,29 +442,48 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
     if cm_heartbeat is not None:
         cm_heartbeat.start()
 
+    # When enabled, capture this task's full controller log and upload it next to
+    # final.json in the finally below; the job result links to it. Distinct from
+    # the runner's task["debug"] (which appends --debug to the job command).
+    praktika_debug = bool(task.get("praktika_debug"))
+    log_capture = TaskLogCapture(INSTANCE_ID).start() if praktika_debug else None
+
     proc = None
     try:
         if cm_heartbeat is not None:
-            cm_heartbeat.update(phase="authenticating")
-        gh_token = get_github_token(REGION)
-        subprocess.run(
-            ["gh", "auth", "login", "--with-token"],
-            input=gh_token,
-            text=True,
-            check=True,
-        )
-
-        if cm_heartbeat is not None:
             cm_heartbeat.update(phase="cloning")
-        clone_dir, actual_sha = clone_repo(
-            repo,
-            head_sha,
-            pr_number,
-            gh_token,
-            work_dir=WORK_DIR,
-            clean_existing=False,
-            log=log,
-        )
+        if repo_snapshot_key and snapshot_sha:
+            # Snapshot restore is pure S3 — no GitHub interaction. Skip
+            # authentication so a GitHub token/login outage doesn't fail a job
+            # that a valid snapshot could satisfy. Jobs that need `gh` authenticate
+            # themselves via GHAuth (enable_gh_auth), independent of this.
+            clone_dir, actual_sha = restore_repo_snapshot(
+                s3,
+                repo_snapshot_key,
+                snapshot_sha,
+                pr_number,
+                work_dir=WORK_DIR,
+                branch=task.get("head_ref", ""),
+                log=log,
+            )
+        else:
+            # Cloning the head needs an authenticated remote.
+            gh_token = get_github_token(REGION)
+            subprocess.run(
+                ["gh", "auth", "login", "--with-token"],
+                input=gh_token,
+                text=True,
+                check=True,
+            )
+            clone_dir, actual_sha = clone_repo(
+                repo,
+                head_sha,
+                pr_number,
+                gh_token,
+                work_dir=WORK_DIR,
+                clean_existing=False,
+                log=log,
+            )
 
         if cm_heartbeat is not None:
             cm_heartbeat.update(phase="resolving_runtime")
@@ -482,6 +532,35 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
             terminate_process_group(proc, log, grace_s=1)
         if cm_heartbeat is not None:
             cm_heartbeat.stop()
+        if log_capture is not None:
+            log_capture.stop()
+            fb = task.get("final_state_s3_bucket", "")
+            fk = task.get("final_state_s3_key", "")
+            if fb and fk:
+                controller_key = fk.rsplit("/", 1)[0] + "/praktika_controller.log"
+                try:
+                    import gzip
+
+                    with open(log_capture.path, "rb") as f:
+                        body = gzip.compress(f.read())
+                    # text/plain + inline so it opens in a browser rather than
+                    # downloading; gzip (with ContentEncoding) so the browser
+                    # transparently decompresses. Uploaded via put_object because
+                    # upload_file can't set ContentEncoding.
+                    s3.put_object(
+                        Bucket=fb,
+                        Key=controller_key,
+                        Body=body,
+                        ContentType="text/plain; charset=utf-8",
+                        ContentEncoding="gzip",
+                        ContentDisposition="inline",
+                    )
+                    log.info(
+                        "Uploaded controller job log to s3://%s/%s", fb, controller_key
+                    )
+                except Exception as e:
+                    log.warning("Failed to upload controller job log: %s", e)
+            log_capture.cleanup()
 
 
 # How long to wait for the ASG to tear the box down before forcing a local
@@ -525,7 +604,9 @@ def poll():
 
     role, queue_name = _resolve_role_and_queue()
     log_name, _ = _role_config(role)
-    log = configure_logging(log_name, INSTANCE_ID)
+    log = configure_logging(
+        log_name, INSTANCE_ID, os.path.join(WORK_DIR, "praktika-controller.log")
+    )
     log.info("Resolved controller role=%s queue=%s", role, queue_name)
 
     sqs = boto3.client("sqs", region_name=REGION)

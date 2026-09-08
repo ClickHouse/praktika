@@ -30,7 +30,7 @@ workflow = Workflow.Config(
                 "python3 -c \"import importlib.metadata as m; "
                 f"praktika=m.version('praktika'); "
                 "print('praktika=', praktika); "
-                f"assert praktika == '{_HEAD_PRAKTIKA_VERSION}', praktika\"; "
+                f"assert praktika == '{_HEAD_PRAKTIKA_VERSION}', praktika\""
             ),
         ),
         Job.Config(
@@ -142,6 +142,9 @@ workflow = Workflow.Config(
     enable_cidb=True,
     enable_gh_summary_comment=True,
     enable_exit_code_result=True,
+    # Repo snapshot + ephemeral merge-commit are enabled project-wide via
+    # Settings.ENABLE_S3_REPO_SNAPSHOT / ENABLE_PR_EPHEMERAL_MERGE_COMMIT
+    # (ci/settings/settings.py), not per workflow. See docs/repo-snapshot.md.
 )
 
 WORKFLOWS = [workflow]

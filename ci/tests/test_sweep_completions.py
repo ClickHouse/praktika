@@ -123,6 +123,8 @@ def _make_state(
     state.local_mode = False
     state.cancelled = False
     state._environment = None
+    state._snapshot_sha = ""
+    state._repo_snapshot_key = ""
     state.workflow = types.SimpleNamespace(name="CI")
     state._gh_token = None
     state._repo = None

@@ -10,6 +10,20 @@ class RunnerLabels:
 
 CI_CONFIG_RUNS_ON = [RunnerLabels.SMALL_ARM]
 
+# Attach each job's full controller log (clone/restore/dispatch/teardown) to the
+# job result for debugging. See Settings.PRAKTIKA_DEBUG.
+PRAKTIKA_DEBUG = True
+
+# Snapshot the repo to S3 once (Config Workflow) so downstream jobs restore instead
+# of cloning; for PRs, snapshot the ephemeral merge of head into the target tip.
+ENABLE_S3_REPO_SNAPSHOT = True
+ENABLE_PR_EPHEMERAL_MERGE_COMMIT = True
+
+# Sticky merge base: within this many hours of a PR's previous run, reuse the same
+# pinned target-branch commit for the merge (keeps the digest cache warm across
+# rapid iterations). 0 disables. Tune to taste — see Settings.STICKY_MERGE_BASE_HOURS.
+STICKY_MERGE_BASE_HOURS = 6
+
 AWS_REGION = "eu-north-1"
 AWS_PROFILE = "Box"
 

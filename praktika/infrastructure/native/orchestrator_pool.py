@@ -261,7 +261,6 @@ class OrchestratorPool:
                             "Effect": "Allow",
                             "Action": [
                                 "s3:GetObject",
-                                "s3:HeadObject",
                                 "s3:ListBucket",
                                 "s3:GetBucketLocation",
                                 "s3:PutObject",
