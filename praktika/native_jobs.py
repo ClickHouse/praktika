@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import sys
 import time
 import traceback
@@ -311,6 +312,10 @@ def _prepare_submodule_cache(workflow, workflow_config: RunConfig) -> Result:
 # _prepare_repo_snapshot.
 _REPO_SNAPSHOT_TAG = "_praktika_repo_snapshot"
 
+# A git commit id (sha1 = 40 hex, sha256 = 64 hex). Used to validate the untrusted,
+# cross-PR-writable sticky-base pin before it is interpolated into any git command.
+_COMMIT_SHA_RE = re.compile(r"[0-9a-fA-F]{40,64}")
+
 
 def _sha256_file(path) -> str:
     h = hashlib.sha256()
@@ -329,9 +334,12 @@ def _resolve_sticky_base(pr_number, base_branch, live_base_sha, sticky_hours) ->
 
     Pin record (per PR, so a fork can only affect its own runs):
     ``{S3_ARTIFACT_BUCKET}/pr/<pr>/merge-base-pin.json`` =
-    ``{base_sha, pinned_ts, base_branch}``. A pinned base is reused only if it is
-    still an ancestor of the live tip (an older tip on the same branch), guarding
-    against a stale/forged pin.
+    ``{base_sha, pinned_ts, base_branch}``. The pin is untrusted (cross-PR
+    writable), so base_sha is accepted only if it passes two gates: (1) it matches
+    a plain commit id — it is interpolated into shell git commands, so this guards
+    against injection and must come first; and (2) it is an ancestor of the live
+    target tip, i.e. an actual commit on the target branch (a hex sha that is not,
+    e.g. a fork commit, is rejected). Either failure falls back to the live tip.
     """
     pin_s3 = f"{Settings.S3_ARTIFACT_BUCKET}/pr/{pr_number}/merge-base-pin.json"
     local = f"{Settings.TEMP_DIR}/merge-base-pin.json"
@@ -350,6 +358,11 @@ def _resolve_sticky_base(pr_number, base_branch, live_base_sha, sticky_hours) ->
             age_h = (now - p_ts) / 3600
             if not p_base or p_branch != base_branch:
                 reason = "reset to live tip (no usable pin)"
+            elif not _COMMIT_SHA_RE.fullmatch(p_base):
+                # The pin is untrusted, cross-PR-writable input and p_base is
+                # interpolated into shell git commands below. Never accept anything
+                # but a plain commit id — reject and fall back to the live tip.
+                reason = "reset to live tip (pinned base_sha is not a commit id)"
             elif age_h > sticky_hours:
                 reason = f"reset to live tip (previous run {age_h:.1f}h ago > {sticky_hours}h)"
             else:
