@@ -97,10 +97,43 @@ def _role_config(role: str) -> tuple[str, str]:
     raise AssertionError(f"Unhandled role: {role}")
 
 
+def _resolve_runtime_source(clone_dir: str, log):
+    """Optional per-pool Praktika runtime source, carried on the instance's
+    ``praktika_runtime_source`` tag (set from the pool's ``ext['runtime_source']``).
+
+    When set, the controller does NOT use the Praktika baked into the AMI; it
+    installs Praktika from this source on every task, so the pool always runs the
+    current checkout. The value is a filesystem path: an absolute path on the
+    instance, or a path relative to the cloned repo (so a tag of ``.`` installs
+    Praktika from the checked-out repo itself). Returns ``None`` when no runtime
+    source tag is set (the baked venv is used).
+
+    A failure to *read* the tag (transient IMDS/metadata error) is NOT treated as
+    "unset": it propagates, so a pool configured to test the checkout fails the
+    task (and the infra retry re-runs it) instead of silently passing on the
+    baked Praktika. A genuinely absent tag returns "" from ``instance_tag`` (404)
+    and is handled as unset below."""
+    source = instance_tag("praktika_runtime_source")
+    source = (source or "").strip()
+    if not source:
+        return None
+    if "://" in source:
+        # Only filesystem paths are supported; a URL would otherwise be joined
+        # onto clone_dir and fail confusingly at pip time. Fail loudly instead.
+        raise ValueError(
+            f"praktika_runtime_source must be a filesystem path, got {source!r}"
+        )
+    if not os.path.isabs(source):
+        source = os.path.join(clone_dir, source)
+    log.info("Installing Praktika at runtime from per-pool source %s", source)
+    return source
+
+
 def _resolve_runtime(clone_dir: str, log):
     base_venv = resolve_praktika_base_venv(clone_dir, log)
+    source = _resolve_runtime_source(clone_dir, log)
     venv_dir = ensure_praktika_runtime(
-        None,
+        source,
         base_venv=base_venv,
         log=log,
     )

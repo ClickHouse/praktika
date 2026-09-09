@@ -12,16 +12,6 @@ _PRAKTIKA_BASE_VERSION = "0.1.9"
 _PRAKTIKA_BASE_WHL = (
     f"{_PRAKTIKA_PACKAGE_BASE_URL}/praktika-{_PRAKTIKA_BASE_VERSION}-py3-none-any.whl"
 )
-# The latest praktika wheel is published to a fixed, version-less S3 location so
-# that runner/orchestrator user-data and image recipes never need editing on a
-# version bump. The "0.0.0" is a placeholder: pip requires a PEP 440-valid
-# version in the wheel *filename*, but installs the real version from the
-# wheel's dist-info metadata. MainCI publish scripts also mirror the same wheel
-# to the major.minor compat version for external consumers that want a BC branch
-# alias.
-_PRAKTIKA_LATEST_WHL_NAME = "praktika-0.0.0-py3-none-any.whl"
-_PRAKTIKA_WHL = f"{_PRAKTIKA_PACKAGE_BASE_URL}/latest/{_PRAKTIKA_LATEST_WHL_NAME}"
-
 _PRAKTIKA_CONTROLLER_BASE_VERSION = "0.1.3"
 _PRAKTIKA_CONTROLLER_BASE_WHL = (
     f"{_PRAKTIKA_PACKAGE_BASE_URL}/"
@@ -139,10 +129,9 @@ def _runner_user_data(controller_update_cmd: str) -> str:
             "# Add any host customization you need above this line.",
             "/usr/local/bin/praktika-configure-cloudwatch-agent",
             "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/praktika/amazon-cloudwatch-agent.json -s",
-            (
-                f"/opt/praktika/base-venvs/{_RUNTIME_BASE_VENV}/bin/python "
-                f"-m pip install --force-reinstall {_PRAKTIKA_WHL}"
-            ),
+            # Praktika itself is installed at run time from the pool's
+            # `ext["runtime_source"]` (the run's checkout, `.`), not baked into
+            # the base venv here. See docs/installing-praktika.md.
             "systemctl enable --now praktika-controller",
             "",
         ]
@@ -199,6 +188,7 @@ def _runner_pool(
     user_data: str = "",
     ext=None,
     untrusted: bool = False,
+    runtime_source: str = ".",
 ):
     ext = dict(ext) if ext is not None else {}
     # Append (don't replace) so pools that already carry ext statements (e.g. the
@@ -209,6 +199,14 @@ def _runner_pool(
         else _TRUSTED_DENY_ACCESS_UNTRUSTED_STATEMENT
     )
     ext["iam_statements"] = list(ext.get("iam_statements", [])) + [trust_deny]
+    # Praktika is developed in this repo, so by default these pools install
+    # Praktika at run time from each run's own checkout (`runtime_source="."`)
+    # instead of the AMI-baked version — a PR's Praktika changes are tested by
+    # that PR's own CI, and diverged branches each run their own Praktika. The
+    # `-base` pool opts out (runtime_source="") to stay pinned to the AMI as a
+    # stable reference. See docs/installing-praktika.md.
+    if runtime_source:
+        ext["runtime_source"] = runtime_source
     return Components.RunnerPool(
         name=name,
         instance_type=instance_type,
@@ -261,6 +259,9 @@ _runner_pools = [
         # non-"pr-" name — so it must be untrusted: allowed the PRs/ snapshot tier,
         # denied writes to REFs/.
         untrusted=True,
+        # Stays pinned to the AMI-baked Praktika (no runtime install) as a stable
+        # reference, unlike the other pools which run the checkout's Praktika.
+        runtime_source="",
     ),
     _runner_pool(
         name="amd-2xsmall",
@@ -347,14 +348,20 @@ _orchestrator_pool = Components.OrchestratorPool(
     image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
     ext={
         "iam_statements": [_ORCHESTRATOR_BEDROCK_IAM_STATEMENT],
-        "external_pr_autoapprove_paths": [
-            #"**/*"
-            "praktika/*"
-        ],
+        # No external_pr_autoapprove_paths: with runtime_source="." this
+        # orchestrator installs and runs the checkout's Praktika under its
+        # trusted IAM role, so autoapproving external-PR pushes (even scoped to
+        # `praktika/*`) would let an untrusted head supply the engine. External
+        # PRs go through manual approval instead.
         # Ship kernel/OOM/systemd-kill evidence to /praktika/praktika-system so
         # a silently killed controller (e.g. OOM) leaves a trace. See
         # docs/logging.md.
         "system_logs": True,
+        # Run the orchestrator on the checkout's Praktika (not the AMI-baked
+        # version), so PR/branch changes to the engine are exercised in
+        # orchestration too. The `-base` orchestrator stays pinned. See
+        # docs/installing-praktika.md.
+        "runtime_source": ".",
     },
     user_data="\n".join(
         [
@@ -366,10 +373,8 @@ _orchestrator_pool = Components.OrchestratorPool(
             "# Add any host customization you need above this line.",
             "/usr/local/bin/praktika-configure-cloudwatch-agent",
             "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/praktika/amazon-cloudwatch-agent.json -s",
-            (
-                f"/opt/praktika/base-venvs/{_RUNTIME_BASE_VENV}/bin/python "
-                f"-m pip install --force-reinstall {_PRAKTIKA_WHL}"
-            ),
+            # Praktika itself is installed at run time from ext["runtime_source"]
+            # ("."), not baked into the base venv here.
             "systemctl enable --now praktika-controller",
             "",
         ]

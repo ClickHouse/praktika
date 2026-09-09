@@ -69,6 +69,14 @@ class OrchestratorPool:
     evidence to the `/{slug}/praktika-system` CloudWatch log group. Off by
     default; see docs/logging.md.
 
+    `ext["runtime_source"]` (str) makes the orchestrator install Praktika at
+    runtime instead of using the version baked into the AMI. It is surfaced as
+    the `praktika_runtime_source` instance tag; on every task the controller
+    reinstalls `<source>` into an overlay of the prebaked base venv, so it always
+    runs the current checkout. The value is a filesystem path: an absolute path
+    on the instance, or a path relative to the cloned repo. Off by default (AMI
+    base venv is used as-is).
+
     Registered into CloudInfrastructure.Config automatically via its
     orchestrator_pool field.
 
@@ -317,6 +325,12 @@ class OrchestratorPool:
             # Activates the baked praktika-system-logs streamer at boot so
             # kernel/OOM/systemd-kill evidence is shipped to CloudWatch.
             runtime_tags["praktika_system_logs"] = "1"
+        runtime_source = str(self.ext.get("runtime_source", "") or "").strip()
+        if runtime_source:
+            # Install Praktika at runtime from this path instead of using the
+            # version baked into the AMI (see praktika_controller.venv_manager).
+            # The pool always runs whatever the source currently points at.
+            runtime_tags["praktika_runtime_source"] = runtime_source
         self.launch_template = LaunchTemplate.Config(
             name=self._launch_template_name(),
             image_id=self.ami_id,
