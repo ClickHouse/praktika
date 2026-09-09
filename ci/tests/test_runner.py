@@ -37,6 +37,17 @@ def test_runner_commit_status_posting_is_only_for_non_praktika_engines():
     assert _should_post_commit_status(SimpleNamespace(engine="custom-engine"))
 
 
+def test_workflow_start_time_uses_current_time(monkeypatch):
+    from praktika.native_jobs import _resolve_workflow_start_time
+    from praktika.utils import Utils
+
+    monkeypatch.setattr(Utils, "timestamp", staticmethod(lambda: 123))
+
+    env = SimpleNamespace(WORKFLOW_START_TIME=0.0, RUN_ID="i-123-456")
+
+    assert _resolve_workflow_start_time(env) == 123
+
+
 def test_job_python_env_prefers_runtime_paths_before_repo_paths(monkeypatch, tmp_path):
     from praktika.runner import _job_python_env
 

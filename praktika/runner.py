@@ -239,8 +239,7 @@ class Runner:
             INSTANCE_TYPE="",
             INSTANCE_LIFE_CYCLE="",
             LOCAL_RUN=True,
-            # A local run has no workflow run behind it, so it starts here.
-            WORKFLOW_START_TIME=Utils.timestamp_to_gh_str(Utils.timestamp()),
+            WORKFLOW_START_TIME=Utils.timestamp(),
             PR_BODY="",
             PR_TITLE="",
             USER_LOGIN="",

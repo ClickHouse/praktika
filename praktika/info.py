@@ -47,7 +47,7 @@ class Info:
 
     @property
     def workflow_start_time(self):
-        """When the event created this workflow run, as GitHub's `created_at`.
+        """When this workflow run started, as a Unix timestamp.
 
         The same value in every job of the run, and a rerun keeps it, unlike
         the per-job start time.

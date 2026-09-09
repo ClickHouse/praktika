@@ -739,6 +739,13 @@ def _filter_unaffected_jobs(jobs, workflow_config, changed_files, affected_docke
             )
 
 
+def _resolve_workflow_start_time(env):
+    if env.WORKFLOW_START_TIME:
+        return env.WORKFLOW_START_TIME
+
+    return Utils.timestamp()
+
+
 def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
     stop_watch = Utils.Stopwatch()
     # debug info
@@ -838,11 +845,11 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
             info=message,
         )
 
-    if env.RUN_ID:
+    workflow_start_time = _resolve_workflow_start_time(env)
+    if workflow_start_time != env.WORKFLOW_START_TIME:
         # Resolved here, in the first job of the run, so that every job
-        # inherits one value with this environment. A rerun runs this job
-        # again and reads back the same `created_at`.
-        env.WORKFLOW_START_TIME = GH.get_workflow_run_created_at()
+        # inherits one value with this environment.
+        env.WORKFLOW_START_TIME = workflow_start_time
         print(f"NOTE: Workflow run started at [{env.WORKFLOW_START_TIME}]")
         env.dump()
 
