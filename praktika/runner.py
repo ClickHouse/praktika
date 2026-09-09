@@ -239,6 +239,8 @@ class Runner:
             INSTANCE_TYPE="",
             INSTANCE_LIFE_CYCLE="",
             LOCAL_RUN=True,
+            # A local run has no workflow run behind it, so it starts here.
+            WORKFLOW_START_TIME=Utils.timestamp_to_gh_str(Utils.timestamp()),
             PR_BODY="",
             PR_TITLE="",
             USER_LOGIN="",
@@ -252,12 +254,21 @@ class Runner:
         ).dump()
 
         if pr and pr > 0:
-            changed_files = GH.get_changed_files()
-            if changed_files is not None:
+            changed_file_statuses = GH.get_changed_file_statuses()
+            if changed_file_statuses is not None:
+                info = Info()
+                changed_files = GH.changed_files_from_statuses(changed_file_statuses)
+                added_files = GH.added_files_from_statuses(changed_file_statuses)
+                print(
+                    f"Storing {len(changed_file_statuses)} changed file statuses in JOB_KV_DATA"
+                )
+                info.store_kv_data("changed_file_statuses", changed_file_statuses)
                 print(f"Storing {len(changed_files)} changed files in JOB_KV_DATA")
-                Info().store_kv_data("changed_files", changed_files)
+                info.store_kv_data("changed_files", changed_files)
+                print(f"Storing {len(added_files)} added files in JOB_KV_DATA")
+                info.store_kv_data("added_files", added_files)
             else:
-                print("WARNING: Failed to fetch changed files for PR")
+                print("WARNING: Failed to fetch changed file metadata for PR")
 
         Result.create_from(name=job.name, status=Result.Status.PENDING).dump()
 

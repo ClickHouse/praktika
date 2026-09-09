@@ -46,6 +46,15 @@ class Info:
         return self.env.EVENT_TIME
 
     @property
+    def workflow_start_time(self):
+        """When the event created this workflow run, as GitHub's `created_at`.
+
+        The same value in every job of the run, and a rerun keeps it, unlike
+        the per-job start time.
+        """
+        return self.env.WORKFLOW_START_TIME
+
+    @property
     def event_action(self):
         return self.env.EVENT_ACTION
 
@@ -285,6 +294,12 @@ class Info:
 
     def get_changed_files(self):
         return self.get_kv_data().get("changed_files", None)
+
+    def get_changed_file_statuses(self):
+        return self.get_kv_data().get("changed_file_statuses", None)
+
+    def get_added_files(self):
+        return self.get_kv_data().get("added_files", None)
 
     def store_traceback(self):
         self.env.TRACEBACKS.append(traceback.format_exc())

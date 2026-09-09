@@ -31,6 +31,18 @@ def _elide(text, limit=_GH_DIAGNOSTIC_FIELD_LIMIT):
 
 
 class GH:
+    # This run's object, cached for the lifetime of the process (see
+    # get_workflow_run), so reading a second field costs no second request.
+    _workflow_run: Optional[dict] = None
+    _changed_file_statuses_cache: Dict[str, Dict[str, str]] = {}
+
+    class FileStatus:
+        ADDED = "added"
+        COPIED = "copied"
+        MODIFIED = "modified"
+        REMOVED = "removed"
+        RENAMED = "renamed"
+        RENAMED_FROM = "renamed_from"
 
     @dataclasses.dataclass
     class GHIssue:
@@ -77,7 +89,13 @@ class GH:
         context: str
 
     @classmethod
-    def get_changed_files(cls, strict=False) -> List[str]:
+    def get_changed_file_statuses(cls, strict=False) -> Optional[Dict[str, str]]:
+        """Changed path -> status, fetched once from GitHub file metadata.
+
+        Current file paths keep GitHub's own status values. For renames, the old
+        path is also included as ``renamed_from`` so callers that only consume
+        ``changed_files`` still see both sides of the rename.
+        """
         info = Info()
         res = None
 
@@ -95,14 +113,6 @@ class GH:
 
         assert repo_name
         print(repo_name)
-
-        # Include both sides of renames: .filename is the destination path and
-        # .previous_filename (REST API only, absent for non-renames) is the
-        # source path. Without the source path a rename out of a watched
-        # directory is invisible to consumers such as job filtering and the
-        # read-only docs guard. Rename sources do not exist in the checkout at
-        # HEAD, same as deleted files, which were always included.
-        jq_both_sides = ".filename, (.previous_filename // empty)"
 
         # In a merge-queue run PR_NUMBER is 0, but the queue entry is built for
         # exactly one PR (parsed from the merge group head ref). Use that PR's
@@ -126,15 +136,14 @@ class GH:
                 )
 
         if pr_number > 0:
-            command = (
-                f"gh api repos/{repo_name}/pulls/{pr_number}/files "
-                f"--paginate --jq '.[] | {jq_both_sides}'"
-            )
+            command = f"gh api repos/{repo_name}/pulls/{pr_number}/files --paginate"
+            cache_key = f"pr:{repo_name}:{pr_number}"
         else:
-            command = (
-                f"gh api repos/{repo_name}/commits/{sha} "
-                f"--jq '.files[] | {jq_both_sides}'"
-            )
+            command = f"gh api repos/{repo_name}/commits/{sha}"
+            cache_key = f"commit:{repo_name}:{sha}"
+
+        if cache_key in cls._changed_file_statuses_cache:
+            return dict(cls._changed_file_statuses_cache[cache_key])
 
         # The GitHub API call is an idempotent read that occasionally fails with
         # a transient error (rate limiting, a 5xx, or a GraphQL "Something went
@@ -148,18 +157,20 @@ class GH:
         last_err = ""
         last_out = ""
         for attempt in range(attempts):
-            exit_code, changed_files_str, err = Shell.get_res_stdout_stderr(command)
+            exit_code, out, err = Shell.get_res_stdout_stderr(command)
             if exit_code == 0:
-                res = (
-                    list(dict.fromkeys(changed_files_str.split("\n")))
-                    if changed_files_str
-                    else []
-                )
-                break
+                try:
+                    res = cls._parse_changed_file_statuses(
+                        out, is_pull_request=pr_number > 0
+                    )
+                    cls._changed_file_statuses_cache[cache_key] = dict(res)
+                    break
+                except (KeyError, TypeError, json.JSONDecodeError) as ex:
+                    err = f"Failed to parse changed file metadata: {ex}"
 
-            last_exit_code, last_err, last_out = exit_code, err, changed_files_str
+            last_exit_code, last_err, last_out = exit_code, err, out
             print(
-                f"Failed to get changed files, attempt [{attempt + 1}/{attempts}], "
+                f"Failed to get changed file metadata, attempt [{attempt + 1}/{attempts}], "
                 f"exit code [{exit_code}], stderr [{err}]"
             )
             if attempt + 1 < attempts:
@@ -171,7 +182,7 @@ class GH:
             # as a confusing "NoneType is not iterable" in a downstream consumer
             # that read the (never stored) changed files from the KV data.
             message = (
-                f"Failed to retrieve the list of changed files after {attempts} attempts.\n"
+                f"Failed to retrieve changed file metadata after {attempts} attempts.\n"
                 f"  command:   {command}\n"
                 f"  exit code: {last_exit_code}\n"
                 f"  stderr:    {last_err}\n"
@@ -182,6 +193,62 @@ class GH:
                 raise RuntimeError(message)
 
         return res
+
+    @classmethod
+    def get_changed_files(cls, strict=False) -> Optional[List[str]]:
+        statuses = cls.get_changed_file_statuses(strict=strict)
+        return cls.changed_files_from_statuses(statuses)
+
+    @classmethod
+    def get_added_files(cls, strict=False) -> Optional[List[str]]:
+        info = Info()
+        if info.pr_number <= 0 and not info.is_merge_queue_event:
+            return []
+
+        statuses = cls.get_changed_file_statuses(strict=strict)
+        return cls.added_files_from_statuses(statuses)
+
+    @staticmethod
+    def changed_files_from_statuses(
+        statuses: Optional[Dict[str, str]]
+    ) -> Optional[List[str]]:
+        if statuses is None:
+            return None
+        return list(statuses)
+
+    @classmethod
+    def added_files_from_statuses(
+        cls, statuses: Optional[Dict[str, str]]
+    ) -> Optional[List[str]]:
+        if statuses is None:
+            return None
+        added_statuses = (
+            cls.FileStatus.ADDED,
+            cls.FileStatus.COPIED,
+            cls.FileStatus.RENAMED,
+        )
+        return [
+            path
+            for path, status in statuses.items()
+            if status in added_statuses
+        ]
+
+    @classmethod
+    def _parse_changed_file_statuses(cls, output, is_pull_request) -> Dict[str, str]:
+        if is_pull_request:
+            files = cls._json_loads_paginated(output)
+        else:
+            files = json.loads(output).get("files", [])
+
+        statuses = {}
+        for file_obj in files:
+            filename = file_obj["filename"]
+            status = file_obj["status"]
+            statuses[filename] = status
+            previous_filename = file_obj.get("previous_filename")
+            if status == cls.FileStatus.RENAMED and previous_filename:
+                statuses[previous_filename] = cls.FileStatus.RENAMED_FROM
+        return statuses
 
     @staticmethod
     def _repo_name_from_git_remote_url(repo_url: str) -> str:
@@ -572,6 +639,30 @@ class GH:
         return ""
 
     @classmethod
+    def _json_loads_paginated(cls, output):
+        """Parse the output of a ``gh api --paginate`` call into a single list.
+
+        ``gh api --paginate`` prints one JSON document per page, so on a
+        resource with more than one page the output is a concatenation of
+        several documents and ``json.loads`` fails with ``Extra data``. Decode
+        the documents one after another and concatenate them, which also
+        handles the single-page case unchanged.
+        """
+        decoder = json.JSONDecoder()
+        result = []
+        position = 0
+        while position < len(output):
+            if output[position].isspace():
+                position += 1
+                continue
+            page, position = decoder.raw_decode(output, position)
+            if isinstance(page, list):
+                result.extend(page)
+            else:
+                result.append(page)
+        return result
+
+    @classmethod
     def _gh_graphql_json(cls, query, variables, verbose=False):
         """Run a GraphQL query via ``gh api graphql`` and return parsed JSON."""
         parts = [f"gh api graphql -f query={shlex.quote(query)}"]
@@ -936,7 +1027,7 @@ class GH:
         output = cls.get_output_with_retries(cmd_list, verbose=verbose)
         if output:
             try:
-                for comment in json.loads(output):
+                for comment in cls._json_loads_paginated(output):
                     if TAG_START in comment["body"] and TAG_END in comment["body"]:
                         comment_id = comment["id"]
                         if verbose:
@@ -1007,7 +1098,7 @@ class GH:
             )
             return False
         try:
-            comments = json.loads(output)
+            comments = cls._json_loads_paginated(output)
         except json.JSONDecodeError as e:
             print(
                 f"WARNING: failed to parse gh api response as JSON ({e}); "
@@ -1329,7 +1420,7 @@ class GH:
             print("ERROR: Failed to fetch commit statuses")
             return None
         try:
-            statuses_list = json.loads(output)
+            statuses_list = cls._json_loads_paginated(output)
         except json.JSONDecodeError as ex:
             print(f"ERROR: Failed to parse commit statuses: {ex}")
             return None
@@ -1597,6 +1688,42 @@ class GH:
         cls.print_log_in_group(
             "GITHUB_EVENT", Shell.get_output("cat $GITHUB_EVENT_PATH")
         )
+
+    @classmethod
+    def get_workflow_run(cls, refresh=False) -> dict:
+        """This workflow run's object, fetched once per process.
+
+        Holds what the runner environment and the event payload do not: the
+        run's own timestamps, its attempt number and its check suite. Pass
+        `refresh=True` for the fields that move while the run goes on
+        (`status`, `conclusion`, `updated_at`, `run_started_at`); the cached
+        copy is a snapshot taken at the first call.
+        """
+        run = cls._workflow_run
+        if run is None or refresh:
+            env = _Environment.get()
+            run = json.loads(
+                cls.get_output_with_retries(
+                    f"gh api repos/{env.REPOSITORY}/actions/runs/{env.RUN_ID}",
+                    verbose=True,
+                    strict=True,
+                )
+            )
+            cls._workflow_run = run
+        return run
+
+    @classmethod
+    def get_workflow_run_created_at(cls):
+        """`created_at` of this workflow run: when its event created the run.
+
+        A rerun starts a new attempt and moves `run_started_at`, leaving
+        `created_at` at the first start, so this is the run's own timestamp
+        rather than the latest attempt's. It comes from the API because
+        nothing else has it: the runner environment carries only `RUN_ID`,
+        `RUN_NUMBER` and `RUN_ATTEMPT`, and the `schedule` and
+        `workflow_dispatch` payloads hold no timestamp at all.
+        """
+        return cls.get_workflow_run()["created_at"]
 
     @dataclasses.dataclass
     class ResultSummaryForGH:
