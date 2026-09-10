@@ -234,8 +234,15 @@ def test_final_state_renders_check_from_result_payload():
     state.sweep_completions()
 
     assert state.jobs["A"].runner_instance_id == "i-runner"
-    # Raw Result retained verbatim for AI observation.
-    assert state.jobs["A"].result == result
+    # Result retained for AI observation, enriched with the orchestrator's
+    # authoritative re-run count in ext (0 here — first attempt).
+    assert state.jobs["A"].result["ext"]["rerun_count"] == 0
+    without_rerun = {
+        **state.jobs["A"].result,
+        "ext": {k: v for k, v in state.jobs["A"].result["ext"].items() if k != "rerun_count"},
+    }
+    expected = {**result, "ext": result.get("ext") or {}}
+    assert without_rerun == expected
     assert len(check.completed) == 1
     completed = check.completed[0]
     assert completed["conclusion"] == "success"

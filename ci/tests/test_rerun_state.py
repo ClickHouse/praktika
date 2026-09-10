@@ -89,7 +89,7 @@ def test_apply_rerun_resets_job_and_failed_downstream():
         s3,
         {"A": JobStatus.FAILURE, "B": JobStatus.CANCELLED, "C": JobStatus.CANCELLED},
     )
-    reset = state.apply_rerun(["A"])
+    reset, _failed = state.apply_rerun(["A"])
     assert reset == {"A", "B", "C"}
     assert all(state.jobs[n].status == JobStatus.PENDING for n in ("A", "B", "C"))
     # Reset bumps the per-job re-run counter (surfaced in the check output).
@@ -106,7 +106,7 @@ def test_apply_rerun_skips_job_already_rerunning():
     # again — otherwise a lingering rerun-request would runaway rerun_count.
     s3 = _FakeS3()
     state = _make_state(s3, {"A": JobStatus.PENDING, "B": JobStatus.SUCCESS, "C": JobStatus.SUCCESS})
-    reset = state.apply_rerun(["A"])
+    reset, _failed = state.apply_rerun(["A"])
     assert reset == set()
     assert state.jobs["A"].rerun_count == 0
 
@@ -118,7 +118,7 @@ def test_apply_rerun_hard_caps_reruns(monkeypatch):
     s3 = _FakeS3()
     state = _make_state(s3, {"A": JobStatus.FAILURE, "B": JobStatus.SUCCESS, "C": JobStatus.SUCCESS})
     state.jobs["A"].rerun_count = 5
-    reset = state.apply_rerun(["A"])
+    reset, _failed = state.apply_rerun(["A"])
     assert reset == set()
     assert state.jobs["A"].status == JobStatus.FAILURE
     assert state.jobs["A"].rerun_count == 5
@@ -131,7 +131,7 @@ def test_apply_rerun_leaves_successful_downstream_alone():
         s3,
         {"A": JobStatus.FAILURE, "B": JobStatus.SUCCESS, "C": JobStatus.SUCCESS},
     )
-    reset = state.apply_rerun(["A"])
+    reset, _failed = state.apply_rerun(["A"])
     assert reset == {"A"}
     assert state.jobs["A"].status == JobStatus.PENDING
     assert state.jobs["B"].status == JobStatus.SUCCESS
@@ -147,7 +147,7 @@ def test_apply_rerun_resets_successful_always_run_downstream():
         {"A": JobStatus.FAILURE, "B": JobStatus.CANCELLED, "C": JobStatus.SUCCESS},
         always_run=("C",),
     )
-    reset = state.apply_rerun(["A"])
+    reset, _failed = state.apply_rerun(["A"])
     assert reset == {"A", "B", "C"}
     assert state.jobs["C"].status == JobStatus.PENDING
 
@@ -251,10 +251,70 @@ def test_reset_job_not_reset_when_final_delete_fails():
     s3 = _DenyDeleteS3("final.json")
     s3.put_object("test-bucket", "runs/run42/A/final.json", b"{}")
     state = _make_state(s3, {"A": JobStatus.FAILURE, "B": JobStatus.SUCCESS, "C": JobStatus.SUCCESS})
-    reset = state.apply_rerun(["A"])
+    reset, _failed = state.apply_rerun(["A"])
     assert reset == set()
     assert state.jobs["A"].status == JobStatus.FAILURE
     assert state.jobs["A"].rerun_count == 0
+
+
+def test_sweep_rerun_retains_request_when_reset_fails():
+    # A request whose job could not be reset (stale final.json delete failed)
+    # must be RETAINED for the next sweep, not silently consumed.
+    s3 = _DenyDeleteS3("final.json")
+    s3.put_object("test-bucket", "runs/run42/A/final.json", b"{}")
+    s3.put_object(
+        "test-bucket", "runs/run42/rerun-request/d1.json", json.dumps({"jobs": ["A"]}).encode()
+    )
+    state = _make_state(s3, {"A": JobStatus.FAILURE, "B": JobStatus.SUCCESS, "C": JobStatus.SUCCESS})
+    assert state.sweep_rerun() is False  # nothing reset
+    assert state.jobs["A"].status == JobStatus.FAILURE
+    # request kept so the re-run is retried, not lost
+    assert ("test-bucket", "runs/run42/rerun-request/d1.json") in s3.store
+
+
+def test_sweep_rerun_consumes_good_request_retains_failed():
+    # With two independent requests, the one whose job reset is consumed; the one
+    # whose job could not be reset is retained.
+    s3 = _DenyDeleteS3("A/final.json")  # only A's final.json delete is denied
+    s3.put_object("test-bucket", "runs/run42/A/final.json", b"{}")
+    s3.put_object("test-bucket", "runs/run42/B/final.json", b"{}")
+    s3.put_object(
+        "test-bucket", "runs/run42/rerun-request/dA.json", json.dumps({"jobs": ["A"]}).encode()
+    )
+    s3.put_object(
+        "test-bucket", "runs/run42/rerun-request/dB.json", json.dumps({"jobs": ["B"]}).encode()
+    )
+    state = _make_state(s3, {"A": JobStatus.FAILURE, "B": JobStatus.FAILURE, "C": JobStatus.SUCCESS})
+    assert state.sweep_rerun() is True  # B reset
+    assert state.jobs["B"].status == JobStatus.PENDING
+    assert state.jobs["A"].status == JobStatus.FAILURE
+    assert ("test-bucket", "runs/run42/rerun-request/dA.json") in s3.store  # retained
+    assert ("test-bucket", "runs/run42/rerun-request/dB.json") not in s3.store  # consumed
+
+
+def test_seed_from_snapshot_reloads_terminal_job_results():
+    # Resume must restore each terminal job's serialized result from final.json,
+    # so publish_report's usage aggregate stays whole (not clobbered down to the
+    # re-run subset) across the resume.
+    s3 = _FakeS3()
+    src = _make_state(s3, {"A": JobStatus.SUCCESS, "B": JobStatus.FAILURE, "C": JobStatus.PENDING})
+    s3.put_object(
+        "test-bucket", "runs/run42/A/final.json",
+        json.dumps({"result": {"name": "A", "status": "OK", "ext": {}}}).encode(),
+    )
+    s3.put_object(
+        "test-bucket", "runs/run42/B/final.json",
+        json.dumps({"result": {"name": "B", "status": "FAIL", "ext": {}}}).encode(),
+    )
+    src.save_snapshot(finalized=True)
+    snap = json.loads(s3.store[("test-bucket", "runs/run42/state.json")])
+
+    fresh = _make_state(s3, {"A": JobStatus.PENDING, "B": JobStatus.PENDING, "C": JobStatus.PENDING})
+    fresh.seed_from_snapshot(snap)
+    assert fresh.jobs["A"].result == {"name": "A", "status": "OK", "ext": {}}
+    assert fresh.jobs["B"].result == {"name": "B", "status": "FAIL", "ext": {}}
+    # A non-terminal job has no final.json to reload — stays None.
+    assert fresh.jobs["C"].result is None
 
 
 def test_sweep_rerun_keeps_unreadable_request():
@@ -378,7 +438,7 @@ def test_reset_posts_pending_check_at_reset_time(monkeypatch):
         s3, {"A": JobStatus.FAILURE, "B": JobStatus.CANCELLED, "C": JobStatus.CANCELLED}
     )
     state._gh_token = "tok"  # enable can_post_checks (repo + head_sha already set)
-    reset = state.apply_rerun(["A"])
+    reset, _failed = state.apply_rerun(["A"])
     assert reset == {"A", "B", "C"}
     assert len(posted) == 3  # a pending check for each reset job, at reset time
 
