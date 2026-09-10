@@ -892,6 +892,14 @@ class WorkflowState:
         ``sweep_cancel`` (and the runner-side kill-flag watchdog) would cancel
         the freshly reset job immediately, making a failed job from a cancelled
         workflow impossible to re-run. Also resets the in-memory flag.
+
+        Fails closed: an unexpected S3 error leaves a stale marker behind, which
+        the resumed run's first ``sweep_cancel`` would read as a live cancel and
+        silently re-kill the reset job. So we **raise** (like the following
+        ``save_snapshot(required=True)`` in the resume bootstrap) rather than
+        dispatch a run that is doomed to self-cancel — SQS then redelivers the
+        resume onto a fresh orchestrator. A missing marker is the success case
+        (``delete_object`` is idempotent) and is ignored.
         """
         self.cancelled = False
         if self._s3 is None or self.local_mode:
@@ -900,7 +908,10 @@ class WorkflowState:
             try:
                 self._s3.delete_object(Bucket=self._cancel_s3_bucket, Key=key)
             except Exception as e:
-                print(f"  [warn] could not clear cancel marker {key}: {e}")
+                if _is_missing_s3_key_error(e):
+                    continue
+                print(f"  [error] could not clear cancel marker {key}: {e}")
+                raise
 
     def _resume_lock_s3_key(self):
         return f"{self._runs_s3_prefix}/resume.lock"
@@ -1416,6 +1427,12 @@ class WorkflowState:
                 Bucket=self._cancel_s3_bucket, Prefix=self._rerun_request_prefix
             )
         except Exception:
+            # A list failure here is not read as fatal: sweep_rerun runs every
+            # loop iteration (so an in-loop blip retries next pass), and even a
+            # request stranded by a failure on the final finalize-handshake
+            # sweep self-heals — it stays under runs/<run_id>/rerun-request/ and
+            # the next re-run click spawns a resume whose own sweep_rerun
+            # consumes it (consume-once). Worst case: the user clicks again.
             return False
         contents = resp.get("Contents", []) or []
         if not contents:

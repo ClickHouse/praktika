@@ -637,8 +637,14 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
             state.cleanup()
             # Persist the terminal snapshot with finalized=True — the lambda
             # reads this flag to route a re-run to a fresh orchestrator (resume)
-            # instead of a live one.
-            state.save_snapshot(finalized=True)
+            # instead of a live one. required=True: this is the sole durable
+            # "no live orchestrator" signal, so if it can't land after retries
+            # we must NOT exit as if finalized (that would route every later
+            # re-run to a dead orchestrator). Raising here escapes to run() →
+            # INFRA_EXIT_CODE → the controller re-drives on a fresh instance
+            # (which re-reads the terminal snapshot and finalizes once S3 is
+            # back). Ordinary mid-loop writes stay best-effort.
+            state.save_snapshot(finalized=True, required=True)
             # praktika_debug: attach the orchestrator instance's controller +
             # orchestrate logs to the top-level result (best-effort).
             state.attach_debug_logs()
