@@ -585,6 +585,15 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
                     local_mode=local_mode,
                 )
                 state.print_plan()
+                # Native path: the orchestrator owns the workflow report. Create
+                # the initial summary (all jobs PENDING) here, once, at fresh-run
+                # start — the Config job's push_pending_ci_report no-ops under
+                # ORCHESTRATOR_OWNS_REPORT, and a resume (_orchestrate_resume)
+                # deliberately does NOT recreate it. Inside the retry block and
+                # before any job is dispatched: a transient failure is retried,
+                # and a hard failure is an infra fault the controller re-runs on a
+                # fresh instance (nothing dispatched yet).
+                state.create_initial_report()
                 break
             except Exception as e:
                 # Discard any partial startup state before retrying.

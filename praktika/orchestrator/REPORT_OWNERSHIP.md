@@ -65,13 +65,21 @@ them back for the **CIDB usage insert** (`runner.py`). CIDB stays on the runner,
 so `post_run`'s `update_workflow_results` must stay too — you can't gate it off
 without first splitting usage aggregation out (a larger change).
 
-So instead of gating the writers, we **neutralise the one destructive
-operation** — `push_pending_ci_report`'s `version=0` reset:
+So instead of gating the writers, we **move the one destructive operation** —
+the `version=0` create/reset — out of the Config job and onto the orchestrator:
 
-- `hook_html.push_pending_ci_report` → on the native path (`ORCHESTRATOR_OWNS_REPORT`),
-  **create the summary once; never reset an existing one** (`_report_summary_exists`
-  guard). A duplicate/late Config from a restart no longer wipes finished rows.
-  GitHub Actions keeps the `version=0` reset (no orchestrator to rebuild rows).
+- `hook_html.push_pending_ci_report` → on the native path (`ORCHESTRATOR_OWNS_REPORT`)
+  it is a **no-op**. The orchestrator, not the Config job, creates the summary.
+  GitHub Actions keeps the `version=0` create here (no orchestrator to do it).
+- `state.create_initial_report` (called once by `_orchestrate_single` at
+  fresh-run start, inside the startup-retry block) is the **sole** `version=0`
+  writer on the native path. A resume (`_orchestrate_resume`) never calls it, so
+  a re-run keeps the finished run's rows. Because the single owner does the
+  create at its own run boundary, there is **no create-once guard and no run_id
+  in the report**: a fresh run resets with a new `start_time`, a resume doesn't
+  touch it — which also closes the same-sha report-reuse hazard (a new
+  orchestrator at the same PR/sha no longer inherits the previous run's stale
+  `start_time`/`duration`).
 - `hook_html.configure` / `pre_run` / `post_run` → **unchanged** (rows + usage +
   the per-job `result_<job>.json` keep flowing; CIDB untouched).
 - `native_jobs._finish_workflow` → **unchanged**: with no destructive reset and
@@ -154,8 +162,11 @@ run) no longer shows `NOT_FINALIZED`.
 - `praktika/orchestrator/state.py` — `publish_report()` + `_ensure_report_env()`.
 - `praktika/orchestrator/__init__.py` — call `publish_report()` each `_drive_dag`
   loop.
-- `praktika/hook_html.py` — `push_pending_ci_report` is create-once (no
-  destructive reset) on the native path; `_report_summary_exists` guard.
+- `praktika/hook_html.py` — `push_pending_ci_report` no-ops on the native path;
+  the shared skeleton builder (`_build_pending_summary` + `_write_summary_to_s3`)
+  is driven by `create_initial_report` (orchestrator) and the GHA Config path.
+- `praktika/orchestrator/state.py` — `create_initial_report()` is the sole
+  native-path `version=0` writer (called from `_orchestrate_single`).
 
 Deferred (see above): splitting usage aggregation out of `update_workflow_results`
 so `post_run`/`configure`/Finish row-writes can be retired on the native path.

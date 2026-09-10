@@ -941,6 +941,20 @@ class WorkflowState:
             from .._environment import _Environment
 
             ev = self._event if isinstance(self._event, dict) else {}
+            # The report header carries the head commit subject. The event does
+            # not include it, so fall back to the clone the controller runs the
+            # orchestrator from (best-effort; blank if git isn't reachable).
+            commit_message = ev.get("commit_message", "") or ""
+            if not commit_message:
+                try:
+                    from ..utils import Shell
+
+                    commit_message = (
+                        Shell.get_output("git log -1 --pretty=%s HEAD") or ""
+                    )
+                except Exception:
+                    commit_message = ""
+            change_url = ev.get("change_url", "") or ""
             _Environment(
                 WORKFLOW_NAME=self.workflow.name,
                 JOB_NAME="",
@@ -952,11 +966,13 @@ class WorkflowState:
                 EVENT_TIME="",
                 JOB_OUTPUT_STREAM="",
                 EVENT_FILE_PATH="",
-                CHANGE_URL=ev.get("change_url", "") or "",
+                CHANGE_URL=change_url,
                 COMMIT_URL="",
+                COMMIT_MESSAGE=commit_message,
                 BASE_BRANCH=ev.get("base_ref", "") or "",
                 RUN_ID=str(self._run_id or ""),
-                RUN_URL="",
+                # Mirrors job_runner: the report's run_url is the change_url.
+                RUN_URL=change_url,
                 INSTANCE_TYPE="",
                 INSTANCE_ID="",
                 INSTANCE_LIFE_CYCLE="",
@@ -970,6 +986,35 @@ class WorkflowState:
         except Exception as e:
             print(f"  [warn] orchestrator report env setup failed: {e}")
         return self._report_env_ok
+
+    def create_initial_report(self):
+        """Create the initial workflow report summary (all jobs PENDING) once, at
+        fresh-run start. On the native path the Config job stands down
+        (push_pending_ci_report no-ops under ORCHESTRATOR_OWNS_REPORT), so the
+        orchestrator is the summary's sole creator: a fresh run version=0-resets
+        the per-(PR, sha) summary with a new start_time; a resume never calls this
+        and keeps the existing summary with its finished rows. This single
+        ownership is what removes the need for a Config-side create-once guard
+        and closes the same-sha report-reuse hazard.
+
+        NOT best-effort, unlike publish_report: this is the one-time bootstrap the
+        whole run's report depends on, so it RAISES on failure. The caller runs it
+        inside the startup-retry block (before any job is dispatched), so a
+        transient failure is retried and a hard failure is an infra fault the
+        controller safely re-runs on a fresh instance. The early returns below are
+        legitimate no-ops (local run / GitHub Actions / report disabled), not
+        failures."""
+        if self._s3 is None or self.local_mode:
+            return
+        if not getattr(self.workflow, "enable_report", False):
+            return
+        if not self._ensure_report_env():
+            raise RuntimeError(
+                "could not set up orchestrator report env for initial summary"
+            )
+        from ..hook_html import HtmlRunnerHooks
+
+        HtmlRunnerHooks.create_initial_report(self.workflow)
 
     def publish_report(self):
         """Re-assert completed jobs' rows into the workflow report summary and
