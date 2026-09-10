@@ -238,13 +238,19 @@ class GH:
             files = json.loads(output).get("files", [])
 
         statuses = {}
+        rename_sources = []
         for file_obj in files:
             filename = file_obj["filename"]
             status = file_obj["status"]
             statuses[filename] = status
             previous_filename = file_obj.get("previous_filename")
             if status == cls.FileStatus.RENAMED and previous_filename:
-                statuses[previous_filename] = cls.FileStatus.RENAMED_FROM
+                rename_sources.append(previous_filename)
+        # Apply rename sources only where no current path claims them, so a
+        # file that is both a rename source and a real current path (e.g. `a`
+        # renamed to `b` while a new `a` is added) keeps its actual status.
+        for previous_filename in rename_sources:
+            statuses.setdefault(previous_filename, cls.FileStatus.RENAMED_FROM)
         return statuses
 
     @staticmethod
