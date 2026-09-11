@@ -95,7 +95,7 @@ class _FakeState:
     def sweep_rerun(self):
         return False
 
-    def save_snapshot(self, finalized=False):
+    def save_snapshot(self, finalized=False, required=False):
         pass
 
     def attach_debug_logs(self):

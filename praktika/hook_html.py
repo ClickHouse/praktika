@@ -182,7 +182,12 @@ class HtmlRunnerHooks:
 
     @classmethod
     def configure(cls, _workflow):
-        # generate pending Results for all jobs in the workflow
+        # Generate initial Results for all jobs in the workflow
+        # Native path: Orchestrator is the single report writer
+        if _Environment.get().ORCHESTRATOR_OWNS_REPORT:
+            print("Skip configure SKIPPED-row write — orchestrator owns the report")
+            return
+        # GH Actions path:
         if _workflow.enable_cache:
             workflow_config = RunConfig.from_fs(_workflow.name)
             skipped_jobs = workflow_config.cache_success

@@ -74,6 +74,7 @@ def _make_state(s3, statuses, always_run=()):
         js.attempt = 1
         js.stale_flagged = False
         js.filter_reason = None
+        js.skip_details_url = None
         js.rerun_count = 0
         js._workflow_state = state
         state.jobs[name] = js
@@ -415,6 +416,55 @@ def test_publish_report_aggregates_usage_idempotently(monkeypatch):
     state.publish_report()
     assert captured["storage_usage"].downloaded == 8
     assert captured["compute_usage"].runners_usage["arm-small"] == 30
+
+
+def test_publish_report_authors_skipped_rows(monkeypatch):
+    """The orchestrator — not the Config job's hook_html.configure — authors the
+    cached/filtered SKIPPED rows on the native path (BACKLOG "sole summary
+    writer"). A cache hit links to its reused report; a filtered job carries its
+    reason. Skipped rows carry no usage (the job never ran)."""
+    import dataclasses as dc
+
+    import praktika.result as result_mod
+    from praktika.result import Result
+
+    captured = {}
+    monkeypatch.setattr(
+        result_mod._ResultS3,
+        "update_workflow_results",
+        staticmethod(lambda **kw: captured.update(kw)),
+    )
+
+    s3 = _FakeS3()
+    state = _make_state(
+        s3, {"A": JobStatus.SUCCESS, "B": JobStatus.SKIPPED, "C": JobStatus.SKIPPED}
+    )
+    state.workflow = types.SimpleNamespace(name="PR", enable_report=True)
+    state._report_env_ok = True  # short-circuit orchestrator report-env setup
+
+    a = Result.create_new("A", Result.Status.OK)
+    a.duration = 10
+    state.jobs["A"].result = dc.asdict(a)
+    state.jobs["A"].job.runs_on = ["arm-small"]
+
+    # B: cache hit — carries a reused-report link. C: filtered — no link.
+    state.jobs["B"].filter_reason = "reused from cache"
+    state.jobs["B"].skip_details_url = "https://reports/B"
+    state.jobs["C"].filter_reason = "not affected by this diff"
+    state.jobs["C"].skip_details_url = None
+
+    state.publish_report()
+
+    rows = {r.name: r for r in captured["new_sub_results"]}
+    assert set(rows) == {"A", "B", "C"}
+    assert rows["B"].status == Result.Status.SKIPPED
+    assert rows["B"].links == ["https://reports/B"]
+    assert rows["B"].info == "reused from cache"
+    assert rows["C"].status == Result.Status.SKIPPED
+    assert not rows["C"].links
+    assert rows["C"].info == "not affected by this diff"
+    # Only the job that actually ran (A) contributes compute usage.
+    assert captured["compute_usage"].runners_usage["arm-small"] == 10
 
 
 def test_reset_posts_pending_check_at_reset_time(monkeypatch):

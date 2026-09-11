@@ -48,6 +48,7 @@ def _make_state(*job_specs):
         js.started_at = None
         js.finished_at = None
         js.filter_reason = None
+        js.skip_details_url = None
         js._workflow_state = state
         state.jobs[name] = js
         state._deps[name] = set(deps)

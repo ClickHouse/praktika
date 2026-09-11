@@ -366,6 +366,10 @@ class JobState:
         self.started_at = None
         self.finished_at = None
         self.filter_reason = None  # set by .skip() when Config Workflow skips it
+        # Cached-job report link for a SKIPPED (cache-hit) row, so publish_report
+        # can author the same report row the runner's hook_html.configure used to
+        # (retired on the native path). None for filtered/non-cache skips.
+        self.skip_details_url = None
         # S3-heartbeat liveness. ``last_heartbeat_ts`` stays None until the
         # orchestrator's sweep first sees a heartbeat file in S3; once seen,
         # the job transitions to RUNNING, the check flips to in_progress, and
@@ -602,6 +606,7 @@ class JobState:
             return False
         self.status = JobStatus.SKIPPED
         self.filter_reason = reason
+        self.skip_details_url = details_url
         if post_check:
             self._create_completed_check(
                 "skipped", output=output, details_url=details_url
@@ -1056,7 +1061,12 @@ class WorkflowState:
             for name, js in self.jobs.items()
             if isinstance(js.result, dict)
         ]
-        if not terminal:
+        skipped = [
+            (name, js)
+            for name, js in self.jobs.items()
+            if js.status == JobStatus.SKIPPED and not isinstance(js.result, dict)
+        ]
+        if not terminal and not skipped:
             return
         if not self._ensure_report_env():
             return
@@ -1096,12 +1106,27 @@ class WorkflowState:
 
             rows = [Result.from_dict(pub) for _, _, pub in published]
 
+            skipped_rows = [
+                Result.create_new(
+                    name,
+                    Result.Status.SKIPPED,
+                    [js.skip_details_url] if js.skip_details_url else None,
+                    js.filter_reason or "",
+                )
+                for name, js in skipped
+            ]
+
             _ResultS3.update_workflow_results(
                 workflow_name=self.workflow.name,
-                new_sub_results=rows,
-                storage_usage=storage,
-                compute_usage=compute,
-                pipeline_utilization=pipeline if has_pipeline else None,
+                new_sub_results=rows + skipped_rows,
+                # Only SET usage when a job actually finished this run; passing
+                # zeroed aggregates with replace_usage would wipe existing totals
+                # (skipped jobs can be published before any real job completes).
+                storage_usage=storage if terminal else None,
+                compute_usage=compute if terminal else None,
+                pipeline_utilization=(
+                    pipeline if (terminal and has_pipeline) else None
+                ),
                 replace_usage=True,
             )
         except Exception as e:
@@ -1185,6 +1210,7 @@ class WorkflowState:
                     "rc": js.rc,
                     "non_blocking": js.non_blocking,
                     "filter_reason": js.filter_reason,
+                    "skip_details_url": js.skip_details_url,
                     "rerun_count": js.rerun_count,
                 }
                 for name, js in self.jobs.items()
@@ -1275,6 +1301,7 @@ class WorkflowState:
             js.rc = rec.get("rc")
             js.non_blocking = bool(rec.get("non_blocking"))
             js.filter_reason = rec.get("filter_reason")
+            js.skip_details_url = rec.get("skip_details_url")
             js.rerun_count = rec.get("rerun_count", 0) or 0
             if js.status in _TERMINAL:
                 # Raw result from final.json; rerun_count (restored onto

@@ -147,6 +147,7 @@ def _make_state(
         js.started_at = now - 5
         js.finished_at = None
         js.filter_reason = None
+        js.skip_details_url = None
         js.last_heartbeat_ts = None
         js.attempt = 1
         js.stale_flagged = False

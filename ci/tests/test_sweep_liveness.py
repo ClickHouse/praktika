@@ -81,6 +81,7 @@ def _make_queued_state(job_names, started_at_offsets, fake_s3, run_id="run42"):
         js.started_at = now - started_at_offsets[name]
         js.finished_at = None
         js.filter_reason = None
+        js.skip_details_url = None
         js.last_heartbeat_ts = None
         js.last_heartbeat_phase = None
         js.runner_instance_id = None

@@ -57,10 +57,13 @@ Creation ownership already moved to the orchestrator (Config's
 does the sole `version=0` create). But the *row/message* writers on the runner
 side did not, so versioning is still load-bearing.
 
-**Status.** Open — version CAS is required because runners still write the
-summary. `REPORT_OWNERSHIP.md` notes this: `post_run`'s `update_workflow_results`
-can't be gated off "without first splitting usage aggregation out (a larger
-change)."
+**Status.** Open — version CAS is still required because `pre_run`/`post_run`
+still write the summary. Item 3 below (`configure`) is **done**: the orchestrator
+now authors the cached/filtered SKIPPED rows (`apply_workflow_config` stashes the
+cache link, `publish_report` writes the rows), and `configure` no-ops on the
+native path — one fewer concurrent writer (see REPORT_OWNERSHIP.md increment 4).
+`post_run`'s `update_workflow_results` still can't be gated off "without first
+splitting usage aggregation out (a larger change)."
 
 **Direction to consider.** Stand the runner-side summary writers down on the
 native path so the orchestrator is the *only* writer, then drop the CAS:
@@ -70,8 +73,8 @@ native path so the orchestrator is the *only* writer, then drop the CAS:
    **DROPPED-dependee rows** (computed on a blocking job failure).
 2. `pre_run` — move its stale-report-message clear into the orchestrator's reset
    path.
-3. `configure` — the orchestrator authors the cached/SKIPPED rows (partially
-   deferred already).
+3. `configure` — **done.** The orchestrator authors the cached/filtered SKIPPED
+   rows (`apply_workflow_config` + `publish_report`); `configure` no-ops on native.
 4. Runners keep writing only their own `result_<job>.json`; nothing but the
    orchestrator mutates the summary object.
 
