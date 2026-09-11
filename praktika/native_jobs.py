@@ -333,7 +333,7 @@ def _resolve_sticky_base(pr_number, base_branch, live_base_sha, sticky_hours) ->
     falls back to the live tip.
 
     Pin record (per PR, so a fork can only affect its own runs):
-    ``{S3_ARTIFACT_BUCKET}/pr/<pr>/merge-base-pin.json`` =
+    ``{S3_ARTIFACT_BUCKET}/PRs/<pr>/merge-base-pin.json`` =
     ``{base_sha, pinned_ts, base_branch}``. The pin is untrusted (cross-PR
     writable), so base_sha is accepted only if it passes two gates: (1) it matches
     a plain commit id — it is interpolated into shell git commands, so this guards
@@ -341,7 +341,7 @@ def _resolve_sticky_base(pr_number, base_branch, live_base_sha, sticky_hours) ->
     target tip, i.e. an actual commit on the target branch (a hex sha that is not,
     e.g. a fork commit, is rejected). Either failure falls back to the live tip.
     """
-    pin_s3 = f"{Settings.S3_ARTIFACT_BUCKET}/pr/{pr_number}/merge-base-pin.json"
+    pin_s3 = f"{Settings.S3_ARTIFACT_BUCKET}/PRs/{pr_number}/merge-base-pin.json"
     local = f"{Settings.TEMP_DIR}/merge-base-pin.json"
     now = time.time()
     base_sha = live_base_sha

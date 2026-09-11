@@ -755,10 +755,11 @@ def _orchestrate_resume(event, gh_token=None, ci=True):
     # run prefix, and a stale cancel-request/kill-flag from a cancelled original
     # run would otherwise cancel the reset job on the first sweep.
     state.clear_stale_cancel()
-    # Apply the requested re-run set (from the message) plus any live requests
-    # that piled up in S3 (consume-once), then persist the reset state.
+    # Apply the requested re-run set from the SQS message, then persist the
+    # reset state before draining consume-once S3 rerun-request keys. If this
+    # mandatory write fails, SQS redelivery carries only rerun_jobs from the
+    # message; any S3-only clicks must still be present for the next resume.
     reset, failed = state.apply_rerun(rerun_jobs)
-    state.sweep_rerun()
     if failed:
         # No S3 request to retain here (these came in the event message), so a
         # failed reset is dropped for this attempt — surface it. A redelivery or
@@ -770,6 +771,9 @@ def _orchestrate_resume(event, gh_token=None, ci=True):
     # would skip its task via the finalized guard. Fail as INFRA (retry on a
     # fresh orchestrator) rather than dispatch jobs that will be skipped.
     state.save_snapshot(required=True)
+    # Now that resume boot is durable, it is safe to consume any extra clicks
+    # that piled up under rerun-request/ while the finished-run resume spawned.
+    state.sweep_rerun()
     # Boot done: the finalized=false snapshot above is now the "live orchestrator
     # exists" signal, so release the boot-lease. Deleted only AFTER that write, so
     # there is never a window where the lock is gone yet finalized is still true
