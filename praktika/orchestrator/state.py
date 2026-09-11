@@ -970,7 +970,15 @@ class WorkflowState:
                     )
                 except Exception:
                     commit_message = ""
-            change_url = ev.get("change_url", "") or ""
+            # rendered by html report page
+            repo = self._repo or ""
+            pr_number = int(self._pr_number or 0)
+            sha = self._head_sha or ""
+            base_url = f"https://github.com/{repo}" if repo else ""
+            change_url = (
+                f"{base_url}/pull/{pr_number}" if (base_url and pr_number > 0) else ""
+            )
+            commit_url = f"{base_url}/commit/{sha}" if (base_url and sha) else ""
             _Environment(
                 WORKFLOW_NAME=self.workflow.name,
                 JOB_NAME="",
@@ -983,7 +991,7 @@ class WorkflowState:
                 JOB_OUTPUT_STREAM="",
                 EVENT_FILE_PATH="",
                 CHANGE_URL=change_url,
-                COMMIT_URL="",
+                COMMIT_URL=commit_url,
                 COMMIT_MESSAGE=commit_message,
                 BASE_BRANCH=ev.get("base_ref", "") or "",
                 RUN_ID=str(self._run_id or ""),
