@@ -366,6 +366,10 @@ class JobState:
         self.started_at = None
         self.finished_at = None
         self.filter_reason = None  # set by .skip() when Config Workflow skips it
+        # Cached-job report link for a SKIPPED (cache-hit) row, so publish_report
+        # can author the same report row the runner's hook_html.configure used to
+        # (retired on the native path). None for filtered/non-cache skips.
+        self.skip_details_url = None
         # S3-heartbeat liveness. ``last_heartbeat_ts`` stays None until the
         # orchestrator's sweep first sees a heartbeat file in S3; once seen,
         # the job transitions to RUNNING, the check flips to in_progress, and
@@ -394,6 +398,28 @@ class JobState:
     @property
     def name(self):
         return self.job.name
+
+    def published_result(self):
+        """The job's Result as a fresh dict for the workflow report, with the
+        orchestrator-owned ``rerun_count`` projected into ``ext``.
+
+        ``rerun_count`` lives canonically on the JobState (persisted in the run
+        snapshot). Projecting it here — the single point report rows are built —
+        keeps it consistent across both the live completion path and a resume,
+        instead of mutating and persisting a copy of the runner's raw result.
+        Returns None when no result is set.
+        """
+        if not isinstance(self.result, dict):
+            return None
+        from copy import deepcopy
+
+        pub = deepcopy(self.result)
+        ext = pub.get("ext")
+        if not isinstance(ext, dict):
+            ext = {}
+            pub["ext"] = ext
+        ext["rerun_count"] = self.rerun_count
+        return pub
 
     def _update_check(self, transition):
         """Run a check-run API call; never let it take down the orchestrator."""
@@ -580,6 +606,7 @@ class JobState:
             return False
         self.status = JobStatus.SKIPPED
         self.filter_reason = reason
+        self.skip_details_url = details_url
         if post_check:
             self._create_completed_check(
                 "skipped", output=output, details_url=details_url
@@ -870,6 +897,14 @@ class WorkflowState:
         ``sweep_cancel`` (and the runner-side kill-flag watchdog) would cancel
         the freshly reset job immediately, making a failed job from a cancelled
         workflow impossible to re-run. Also resets the in-memory flag.
+
+        Fails closed: an unexpected S3 error leaves a stale marker behind, which
+        the resumed run's first ``sweep_cancel`` would read as a live cancel and
+        silently re-kill the reset job. So we **raise** (like the following
+        ``save_snapshot(required=True)`` in the resume bootstrap) rather than
+        dispatch a run that is doomed to self-cancel — SQS then redelivers the
+        resume onto a fresh orchestrator. A missing marker is the success case
+        (``delete_object`` is idempotent) and is ignored.
         """
         self.cancelled = False
         if self._s3 is None or self.local_mode:
@@ -878,7 +913,10 @@ class WorkflowState:
             try:
                 self._s3.delete_object(Bucket=self._cancel_s3_bucket, Key=key)
             except Exception as e:
-                print(f"  [warn] could not clear cancel marker {key}: {e}")
+                if _is_missing_s3_key_error(e):
+                    continue
+                print(f"  [error] could not clear cancel marker {key}: {e}")
+                raise
 
     def _resume_lock_s3_key(self):
         return f"{self._runs_s3_prefix}/resume.lock"
@@ -919,6 +957,28 @@ class WorkflowState:
             from .._environment import _Environment
 
             ev = self._event if isinstance(self._event, dict) else {}
+            # The report header carries the head commit subject. The event does
+            # not include it, so fall back to the clone the controller runs the
+            # orchestrator from (best-effort; blank if git isn't reachable).
+            commit_message = ev.get("commit_message", "") or ""
+            if not commit_message:
+                try:
+                    from ..utils import Shell
+
+                    commit_message = (
+                        Shell.get_output("git log -1 --pretty=%s HEAD") or ""
+                    )
+                except Exception:
+                    commit_message = ""
+            # rendered by html report page
+            repo = self._repo or ""
+            pr_number = int(self._pr_number or 0)
+            sha = self._head_sha or ""
+            base_url = f"https://github.com/{repo}" if repo else ""
+            change_url = (
+                f"{base_url}/pull/{pr_number}" if (base_url and pr_number > 0) else ""
+            )
+            commit_url = f"{base_url}/commit/{sha}" if (base_url and sha) else ""
             _Environment(
                 WORKFLOW_NAME=self.workflow.name,
                 JOB_NAME="",
@@ -930,11 +990,13 @@ class WorkflowState:
                 EVENT_TIME="",
                 JOB_OUTPUT_STREAM="",
                 EVENT_FILE_PATH="",
-                CHANGE_URL=ev.get("change_url", "") or "",
-                COMMIT_URL="",
+                CHANGE_URL=change_url,
+                COMMIT_URL=commit_url,
+                COMMIT_MESSAGE=commit_message,
                 BASE_BRANCH=ev.get("base_ref", "") or "",
                 RUN_ID=str(self._run_id or ""),
-                RUN_URL="",
+                # Mirrors job_runner: the report's run_url is the change_url.
+                RUN_URL=change_url,
                 INSTANCE_TYPE="",
                 INSTANCE_ID="",
                 INSTANCE_LIFE_CYCLE="",
@@ -948,6 +1010,35 @@ class WorkflowState:
         except Exception as e:
             print(f"  [warn] orchestrator report env setup failed: {e}")
         return self._report_env_ok
+
+    def create_initial_report(self):
+        """Create the initial workflow report summary (all jobs PENDING) once, at
+        fresh-run start. On the native path the Config job stands down
+        (push_pending_ci_report no-ops under ORCHESTRATOR_OWNS_REPORT), so the
+        orchestrator is the summary's sole creator: a fresh run version=0-resets
+        the per-(PR, sha) summary with a new start_time; a resume never calls this
+        and keeps the existing summary with its finished rows. This single
+        ownership is what removes the need for a Config-side create-once guard
+        and closes the same-sha report-reuse hazard.
+
+        NOT best-effort, unlike publish_report: this is the one-time bootstrap the
+        whole run's report depends on, so it RAISES on failure. The caller runs it
+        inside the startup-retry block (before any job is dispatched), so a
+        transient failure is retried and a hard failure is an infra fault the
+        controller safely re-runs on a fresh instance. The early returns below are
+        legitimate no-ops (local run / GitHub Actions / report disabled), not
+        failures."""
+        if self._s3 is None or self.local_mode:
+            return
+        if not getattr(self.workflow, "enable_report", False):
+            return
+        if not self._ensure_report_env():
+            raise RuntimeError(
+                "could not set up orchestrator report env for initial summary"
+            )
+        from ..hook_html import HtmlRunnerHooks
+
+        HtmlRunnerHooks.create_initial_report(self.workflow)
 
     def publish_report(self):
         """Re-assert completed jobs' rows into the workflow report summary and
@@ -978,35 +1069,42 @@ class WorkflowState:
             for name, js in self.jobs.items()
             if isinstance(js.result, dict)
         ]
-        if not terminal:
+        skipped = [
+            (name, js)
+            for name, js in self.jobs.items()
+            if js.status == JobStatus.SKIPPED and not isinstance(js.result, dict)
+        ]
+        if not terminal and not skipped:
             return
         if not self._ensure_report_env():
             return
         try:
-            from copy import deepcopy
-
             from ..host_metrics import HostMetricsCollector
             from ..result import Result, _ResultS3
             from ..usage import ComputeUsage, PipelineUtilization, StorageUsage
 
-            rows = [Result.from_dict(deepcopy(js.result)) for _, js in terminal]
+            # Each job's published view is a fresh dict with rerun_count projected
+            # into ext (see JobState.published_result).
+            published = [(name, js, js.published_result()) for name, js in terminal]
 
             # Recompute the FULL usage aggregate from every finished job's Result
             # (idempotent — see docstring). storage_usage + metrics ride in each
             # job's result.ext; compute is derived from its runner + duration.
+            # Read these before building rows below: Result.from_dict consumes
+            # (mutates) the dict it is handed.
             storage = StorageUsage()
             compute = ComputeUsage()
             pipeline = PipelineUtilization()
             has_pipeline = False
-            for name, js in terminal:
-                ext = js.result.get("ext") or {}
+            for name, js, pub in published:
+                ext = pub.get("ext") or {}
                 su = ext.get("storage_usage")
                 if isinstance(su, dict):
                     storage.merge_with(StorageUsage.from_dict(su))
                 runner_str = "_".join(js.job.runs_on) if js.job.runs_on else ""
                 compute.merge_with(
                     ComputeUsage().set_usage(
-                        runner_str, js.result.get("duration") or 0, name
+                        runner_str, pub.get("duration") or 0, name
                     )
                 )
                 metrics = ext.get("metrics")
@@ -1014,12 +1112,29 @@ class WorkflowState:
                     pipeline.merge_with(PipelineUtilization.from_job_metrics(metrics))
                     has_pipeline = True
 
+            rows = [Result.from_dict(pub) for _, _, pub in published]
+
+            skipped_rows = [
+                Result.create_new(
+                    name,
+                    Result.Status.SKIPPED,
+                    [js.skip_details_url] if js.skip_details_url else None,
+                    js.filter_reason or "",
+                )
+                for name, js in skipped
+            ]
+
             _ResultS3.update_workflow_results(
                 workflow_name=self.workflow.name,
-                new_sub_results=rows,
-                storage_usage=storage,
-                compute_usage=compute,
-                pipeline_utilization=pipeline if has_pipeline else None,
+                new_sub_results=rows + skipped_rows,
+                # Only SET usage when a job actually finished this run; passing
+                # zeroed aggregates with replace_usage would wipe existing totals
+                # (skipped jobs can be published before any real job completes).
+                storage_usage=storage if terminal else None,
+                compute_usage=compute if terminal else None,
+                pipeline_utilization=(
+                    pipeline if (terminal and has_pipeline) else None
+                ),
                 replace_usage=True,
             )
         except Exception as e:
@@ -1103,6 +1218,7 @@ class WorkflowState:
                     "rc": js.rc,
                     "non_blocking": js.non_blocking,
                     "filter_reason": js.filter_reason,
+                    "skip_details_url": js.skip_details_url,
                     "rerun_count": js.rerun_count,
                 }
                 for name, js in self.jobs.items()
@@ -1137,12 +1253,43 @@ class WorkflowState:
             raise RuntimeError(msg)
         print(f"  [warn] {msg}")
 
+    def _load_job_result_from_s3(self, name):
+        """Read a finished job's serialized Result back from its ``final.json``.
+
+        The snapshot deliberately stores only each job's status/ids (not the
+        full Result — it is rewritten every loop and results can be large), so a
+        resumed orchestrator has no ``js.result`` for jobs that finished in the
+        prior generation. ``publish_report`` recomputes the workflow usage
+        aggregate from ``js.result`` of *every* terminal job and SETs it
+        (``replace_usage=True``); without this, the first re-run completion would
+        overwrite the workflow totals with only the re-run subset. The re-run
+        reuses the same run prefix, so terminal jobs' ``final.json`` are still
+        present. Best-effort — a missing/unreadable one just leaves that job's
+        usage out (no worse than before). Returns the result dict or None.
+        """
+        if self._s3 is None or self.local_mode:
+            return None
+        try:
+            obj = self._s3.get_object(
+                Bucket=self._cancel_s3_bucket, Key=self._final_state_s3_key(name)
+            )
+            payload = json.loads(obj["Body"].read())
+        except Exception:
+            return None
+        result_dict = payload.get("result")
+        return result_dict if isinstance(result_dict, dict) else None
+
     def seed_from_snapshot(self, snap):
         """Rehydrate job statuses / check handles / environment from a snapshot.
 
         Used by the resume path so a fresh orchestrator picks up a finished
         run's terminal state instead of starting every job from PENDING. Jobs
         absent from the snapshot stay PENDING.
+
+        Terminal jobs also get their serialized ``result`` reloaded from
+        ``final.json`` so ``publish_report`` can re-assert their rows and keep
+        the workflow usage aggregate whole across the resume (see
+        ``_load_job_result_from_s3``).
         """
         if not isinstance(snap, dict):
             return
@@ -1162,7 +1309,13 @@ class WorkflowState:
             js.rc = rec.get("rc")
             js.non_blocking = bool(rec.get("non_blocking"))
             js.filter_reason = rec.get("filter_reason")
+            js.skip_details_url = rec.get("skip_details_url")
             js.rerun_count = rec.get("rerun_count", 0) or 0
+            if js.status in _TERMINAL:
+                # Raw result from final.json; rerun_count (restored onto
+                # js.rerun_count above) is projected into ext at report time by
+                # JobState.published_result, so there is nothing to stamp here.
+                js.result = self._load_job_result_from_s3(name)
             check_id = rec.get("check_id")
             if check_id and self.can_post_checks:
                 check_name = f"{self.workflow.name} / {name}"
@@ -1172,7 +1325,13 @@ class WorkflowState:
 
     def apply_rerun(self, job_names):
         """Reset the named jobs (and their FAILED/CANCELLED downstream) to
-        PENDING so the loop re-drives them. Returns the set actually reset.
+        PENDING so the loop re-drives them. Returns ``(reset_ok, failed)``:
+        the set actually reset, and the subset we *tried* to reset but could
+        not (``_reset_job`` returned False, e.g. a stale ``final.json`` could
+        not be cleared). ``failed`` lets ``sweep_rerun`` retain the request so
+        it is retried instead of silently consumed. Jobs that are legitimately
+        skipped (already mid-run, or over the re-run cap) are in neither set —
+        consuming their request is correct.
 
         Only failed/cancelled dependents are reset — a re-run is for a failed
         job, whose downstream were cascade-cancelled/failed; dependents that
@@ -1218,7 +1377,10 @@ class WorkflowState:
                     to_reset.add(dep)
                     frontier.append(dep)
         reset_ok = {name for name in to_reset if self._reset_job(name)}
-        return reset_ok
+        # Whatever we meant to reset but couldn't (only reason: _reset_job
+        # returned False) must be retried, not consumed.
+        failed = to_reset - reset_ok
+        return reset_ok, failed
 
     def _reset_job(self, name):
         """Reset a finished job to PENDING for re-run. Returns True on success.
@@ -1300,12 +1462,20 @@ class WorkflowState:
                 Bucket=self._cancel_s3_bucket, Prefix=self._rerun_request_prefix
             )
         except Exception:
+            # A list failure here is not read as fatal: sweep_rerun runs every
+            # loop iteration (so an in-loop blip retries next pass), and even a
+            # request stranded by a failure on the final finalize-handshake
+            # sweep self-heals — it stays under runs/<run_id>/rerun-request/ and
+            # the next re-run click spawns a resume whose own sweep_rerun
+            # consumes it (consume-once). Worst case: the user clicks again.
             return False
         contents = resp.get("Contents", []) or []
         if not contents:
             return False
         jobs = set()
-        read_keys = []
+        # (key, [jobs]) per request so a request whose jobs couldn't be reset is
+        # retained (retried next sweep) rather than consumed with its peers.
+        key_jobs = []
         for obj in contents:
             key = obj["Key"]
             try:
@@ -1317,12 +1487,19 @@ class WorkflowState:
                 # next sweep, else its jobs are lost without ever being applied.
                 print(f"  [warn] could not read rerun-request {key}: {e}")
                 continue
-            read_keys.append(key)
-            for j in (json.loads(body).get("jobs") or []):
-                jobs.add(j)
-        reset = self.apply_rerun(list(jobs)) if jobs else set()
-        # Consume only the requests we successfully read (and thus applied).
-        for key in read_keys:
+            req_jobs = list(json.loads(body).get("jobs") or [])
+            key_jobs.append((key, req_jobs))
+            jobs.update(req_jobs)
+        reset, failed = self.apply_rerun(list(jobs)) if jobs else (set(), set())
+        # Consume each request we read, EXCEPT one whose jobs we tried but failed
+        # to reset (_reset_job returned False) — retain it so the next sweep
+        # retries. A job legitimately skipped (already mid-run / over the re-run
+        # cap) is not in `failed`, so its request is still consumed.
+        for key, req_jobs in key_jobs:
+            retain = [j for j in req_jobs if j in failed]
+            if retain:
+                print(f"  [rerun] retaining {key}: could not reset {sorted(set(retain))}")
+                continue
             try:
                 self._s3.delete_object(Bucket=self._cancel_s3_bucket, Key=key)
             except Exception:
@@ -1440,6 +1617,10 @@ class WorkflowState:
             non_blocking = False
             result_dict = payload.get("result")
             if isinstance(result_dict, dict):
+                # Stash the runner's raw Result. The orchestrator-authoritative
+                # rerun_count is projected into ext at report time by
+                # JobState.published_result (single point, survives resume) — not
+                # stamped here.
                 js.result = result_dict
                 try:
                     from copy import deepcopy
@@ -1673,6 +1854,11 @@ class WorkflowState:
             "final_state_s3_key": self._final_state_s3_key(job_state.name),
             "check_run_id": job_state.check.id if job_state.check else None,
             "rerun_count": job_state.rerun_count,
+            # The orchestrator run_id (S3 run prefix). Lets the Config job's
+            # report-summary create-once guard tell a duplicate Config attempt
+            # *within this run* (reuse the summary) from a fresh run reusing the
+            # same PR/sha report key (must refresh the stale summary).
+            "run_id": self._run_id,
             "environment": self._environment,
         }
 

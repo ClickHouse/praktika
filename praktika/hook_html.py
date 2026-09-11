@@ -112,36 +112,19 @@ class GitCommit:
 
 class HtmlRunnerHooks:
     @classmethod
-    def _report_summary_exists(cls, workflow_name):
-        try:
-            _ResultS3.copy_result_from_s3_with_version(
-                Result.file_name_static(workflow_name)
-            )
-            return True
-        except Exception:
-            return False
+    def _build_pending_summary(cls, _workflow, config_job_running):
+        """Build the initial workflow report summary: every job PENDING, the
+        summary RUNNING with a fresh start_time and the standard header ext keys.
+        Returns ``(summary_result, report_url)``.
 
-    @classmethod
-    def push_pending_ci_report(cls, _workflow):
-        # generate pending Results for all jobs in the workflow
+        ``config_job_running`` reads the Config job's live Result from fs — true
+        when this runs *inside* the Config job (GitHub Actions). The orchestrator
+        creates the summary before the Config job runs and passes False, so the
+        Config job is seeded PENDING like every other job."""
         env = _Environment.get()
-        # Native path: the orchestrator re-asserts each finished job's row into
-        # this summary, so there is no single "exclusive access" moment. A
-        # duplicate/late Config (e.g. from a restart) must NOT destructively reset
-        # a summary that already holds finished jobs' rows — that wipe left
-        # succeeded jobs PENDING and got them wrongly marked NOT_FINALIZED (see
-        # REPORT_OWNERSHIP.md). Create the summary once; never reset an existing
-        # one. (GitHub Actions keeps the
-        # version=0 reset — there is no orchestrator there to rebuild rows.)
-        if env.ORCHESTRATOR_OWNS_REPORT and cls._report_summary_exists(_workflow.name):
-            print(
-                "CI report summary already exists - not resetting "
-                "(orchestrator owns the per-job rows)"
-            )
-            return
         results = []
         for job in _workflow.jobs:
-            if job.name == Settings.CI_CONFIG_JOB_NAME:
+            if config_job_running and job.name == Settings.CI_CONFIG_JOB_NAME:
                 # fetch running status with start_time for current job
                 result = Result.from_fs(job.name)
             else:
@@ -156,18 +139,55 @@ class HtmlRunnerHooks:
         ).add_ext_key_value("commit_message", env.COMMIT_MESSAGE).add_ext_key_value("repo_name", env.REPOSITORY).add_ext_key_value("pr_number", env.PR_NUMBER).add_ext_key_value(
             "run_url", env.RUN_URL
         ).add_ext_key_value("change_url", env.CHANGE_URL).add_ext_key_value("workflow_name", env.WORKFLOW_NAME).add_ext_key_value("base_branch", env.BASE_BRANCH)
+        return summary_result, report_url_current_sha
 
+    @classmethod
+    def _write_summary_to_s3(cls, summary_result, report_url_current_sha):
         summary_result.dump()
-        # Use version 0 for initial workflow report creation (destructive reset)
-        # This is safe here as it runs once at workflow start before any concurrent updates
+        # version=0 is a destructive create/reset; only a single exclusive writer
+        # may issue it. GitHub Actions: the Config job, once at workflow start.
+        # Native: the orchestrator, once at fresh-run start (see
+        # WorkflowState.create_initial_report / orchestrator/REPORT_OWNERSHIP.md).
         assert _ResultS3.copy_result_to_s3_with_version(summary_result, version=0)
         print(f"CI Status page url [{report_url_current_sha}]")
-
         GitCommit.update_s3_data()
 
     @classmethod
+    def push_pending_ci_report(cls, _workflow):
+        # Native path: the orchestrator OWNS the workflow report end to end — it
+        # creates the initial summary (WorkflowState.create_initial_report) and
+        # re-asserts every finished job's row each loop. The Config job must not
+        # touch the summary, or its version=0 write would race/wipe the
+        # orchestrator's rows. GitHub Actions has no orchestrator, so there the
+        # Config job stays the sole creator. See orchestrator/REPORT_OWNERSHIP.md.
+        env = _Environment.get()
+        if env.ORCHESTRATOR_OWNS_REPORT:
+            print("Skip pending CI report push — orchestrator owns the report")
+            return
+        summary_result, url = cls._build_pending_summary(
+            _workflow, config_job_running=True
+        )
+        cls._write_summary_to_s3(summary_result, url)
+
+    @classmethod
+    def create_initial_report(cls, _workflow):
+        """Orchestrator-owned creation of the initial report summary (native
+        path). Mirrors push_pending_ci_report but seeds the Config job PENDING
+        (it has not run yet); called once by the orchestrator at fresh-run start,
+        after which publish_report re-asserts each job row every loop."""
+        summary_result, url = cls._build_pending_summary(
+            _workflow, config_job_running=False
+        )
+        cls._write_summary_to_s3(summary_result, url)
+
+    @classmethod
     def configure(cls, _workflow):
-        # generate pending Results for all jobs in the workflow
+        # Generate initial Results for all jobs in the workflow
+        # Native path: Orchestrator is the single report writer
+        if _Environment.get().ORCHESTRATOR_OWNS_REPORT:
+            print("Skip configure SKIPPED-row write — orchestrator owns the report")
+            return
+        # GH Actions path:
         if _workflow.enable_cache:
             workflow_config = RunConfig.from_fs(_workflow.name)
             skipped_jobs = workflow_config.cache_success

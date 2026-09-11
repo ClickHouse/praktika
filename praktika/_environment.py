@@ -36,6 +36,10 @@ class _Environment(MetaClasses.Serializable):
     FORK_NAME: str
     COMMIT_MESSAGE: str = ""
     EVENT_ACTION: str = ""
+    # Unix timestamp resolved once by the config job (see
+    # native_jobs._config_workflow) and inherited by every other job with this
+    # environment, so all of them agree on when the run started.
+    WORKFLOW_START_TIME: float = 0.0
     # merged PR for "push" or "merge_group" workflow
     LINKED_PR_NUMBER: int = 0
     LOCAL_RUN: bool = False
@@ -85,6 +89,10 @@ class _Environment(MetaClasses.Serializable):
         JOB_OUTPUT_STREAM = os.getenv("GITHUB_OUTPUT", "")
         RUN_ID = os.getenv("GITHUB_RUN_ID", "0")
         RUN_URL = f"https://github.com/{REPOSITORY}/actions/runs/{RUN_ID}"
+        try:
+            RERUN_COUNT = max(int(os.getenv("GITHUB_RUN_ATTEMPT") or "1") - 1, 0)
+        except ValueError:
+            RERUN_COUNT = 0
         BASE_BRANCH = os.getenv("GITHUB_BASE_REF", "")
         USER_LOGIN = ""
         COMMIT_AUTHORS = []
@@ -259,6 +267,7 @@ class _Environment(MetaClasses.Serializable):
             },
             WORKFLOW_JOB_DATA=WORKFLOW_JOB_DATA,
             WORKFLOW_CONFIG=None,
+            RERUN_COUNT=RERUN_COUNT,
         )
 
     @classmethod

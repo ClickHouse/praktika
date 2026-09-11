@@ -333,7 +333,7 @@ def _resolve_sticky_base(pr_number, base_branch, live_base_sha, sticky_hours) ->
     falls back to the live tip.
 
     Pin record (per PR, so a fork can only affect its own runs):
-    ``{S3_ARTIFACT_BUCKET}/pr/<pr>/merge-base-pin.json`` =
+    ``{S3_ARTIFACT_BUCKET}/PRs/<pr>/merge-base-pin.json`` =
     ``{base_sha, pinned_ts, base_branch}``. The pin is untrusted (cross-PR
     writable), so base_sha is accepted only if it passes two gates: (1) it matches
     a plain commit id — it is interpolated into shell git commands, so this guards
@@ -341,7 +341,7 @@ def _resolve_sticky_base(pr_number, base_branch, live_base_sha, sticky_hours) ->
     target tip, i.e. an actual commit on the target branch (a hex sha that is not,
     e.g. a fork commit, is rejected). Either failure falls back to the live tip.
     """
-    pin_s3 = f"{Settings.S3_ARTIFACT_BUCKET}/pr/{pr_number}/merge-base-pin.json"
+    pin_s3 = f"{Settings.S3_ARTIFACT_BUCKET}/PRs/{pr_number}/merge-base-pin.json"
     local = f"{Settings.TEMP_DIR}/merge-base-pin.json"
     now = time.time()
     base_sha = live_base_sha
@@ -739,6 +739,13 @@ def _filter_unaffected_jobs(jobs, workflow_config, changed_files, affected_docke
             )
 
 
+def _resolve_workflow_start_time(env):
+    if env.WORKFLOW_START_TIME:
+        return env.WORKFLOW_START_TIME
+
+    return Utils.timestamp()
+
+
 def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
     stop_watch = Utils.Stopwatch()
     # debug info
@@ -837,6 +844,14 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
             stopwatch=stop_watch,
             info=message,
         )
+
+    workflow_start_time = _resolve_workflow_start_time(env)
+    if workflow_start_time != env.WORKFLOW_START_TIME:
+        # Resolved here, in the first job of the run, so that every job
+        # inherits one value with this environment.
+        env.WORKFLOW_START_TIME = workflow_start_time
+        print(f"NOTE: Workflow run started at [{env.WORKFLOW_START_TIME}]")
+        env.dump()
 
     # refresh PR data
     if env.PR_NUMBER > 0:
@@ -1332,11 +1347,13 @@ def _finish_workflow(workflow, job_name):
             normalized_name = Utils.normalize_string(result.name)
             gh_job = workflow_job_data.get(normalized_name, {})
             gh_job_result = (gh_job.get("result") or "").lower()
-            if gh_job_result in ("cancelled", "canceled"):
+            # `abandoned` is GitHub's undocumented verdict for a job it queued and never assigned a runner.
+            if gh_job_result in ("cancelled", "canceled", "abandoned"):
                 print(
                     f"NOTE: not finished job [{result.name}] in the workflow but GitHub status is [{gh_job_result}] - set status to dropped"
                 )
                 result.status = Result.Status.DROPPED
+                result.add_note(f"{ResultInfo.JOB_DID_NOT_FINISH} [{gh_job_result}]")
                 workflow_result.dump()
                 workflow_result.ext["is_cancelled"] = True
                 update_final_report = True
@@ -1352,7 +1369,8 @@ def _finish_workflow(workflow, job_name):
                 continue
             else:
                 print(
-                    f"ERROR: not finished job [{result.name}] in the workflow - set status to error"
+                    f"ERROR: not finished job [{result.name}] in the workflow, "
+                    f"GitHub verdict [{gh_job_result or 'none'}] - set status to error"
                 )
                 result.status = Result.Status.ERROR
                 result.add_error(ResultInfo.NOT_FINALIZED)
