@@ -34,6 +34,21 @@ from praktika.settings import Settings
 # exact run_id + job to re-run. Kept in sync with the lambda's copy.
 JOB_CHECK_EXTERNAL_ID_KIND = "praktika_job_check"
 
+# Custom per-job check-run action button. Clicking it re-runs this job (+ its
+# failed downstream) on a FRESH ephemeral merge against the current base tip —
+# but only for a FINISHED run; while the run is in progress it falls back to the
+# existing snapshot (see the lambda's _handle_partial_rerun). GitHub caps the
+# label at 20 chars and the description at 40. Identifier kept in sync with the
+# lambda's copy.
+RERUN_FRESH_BASE_ACTION = "rerun_fresh_base"
+_RERUN_FRESH_BASE_ACTIONS = [
+    {
+        "label": "Rerun w/ fresh base",
+        "description": "Re-run on a fresh merge with base",
+        "identifier": RERUN_FRESH_BASE_ACTION,
+    }
+]
+
 
 def _job_check_external_id(run_id, job_name):
     return json.dumps(
@@ -277,6 +292,8 @@ class JobCheckRun:
             "head_sha": head_sha,
             "status": "completed",
             "conclusion": conclusion,
+            # Offer the per-job "fresh base" re-run on the completed check.
+            "actions": list(_RERUN_FRESH_BASE_ACTIONS),
         }
         if output is not None:
             body["output"] = output
@@ -312,7 +329,12 @@ class JobCheckRun:
         )
 
     def complete(self, conclusion, output=None, details_url=None):
-        body = {"status": "completed", "conclusion": conclusion}
+        body = {
+            "status": "completed",
+            "conclusion": conclusion,
+            # Offer the per-job "fresh base" re-run on the completed check.
+            "actions": list(_RERUN_FRESH_BASE_ACTIONS),
+        }
         if output is not None:
             body["output"] = output
         if details_url is not None:
@@ -815,6 +837,35 @@ class WorkflowState:
     def can_post_checks(self):
         """True iff we have everything needed to open a GitHub check run."""
         return bool(self._gh_token and self._repo and self._head_sha)
+
+    def seed_repo_snapshot(self, snapshot_sha, repo_snapshot_key):
+        """Pin the controller-established repo snapshot into run state.
+
+        The controller establishes the run's single commit (the ephemeral PR
+        merge, or the plain head), publishes its snapshot, and passes the pinned
+        identity to the orchestrator BEFORE praktika is reinstalled from the
+        checkout. Seeding it here — before any job is dispatched — makes the
+        Config Workflow AND every downstream job restore this exact tree (see
+        ``_dispatch``), and freezes the pin so a later untrusted job's relayed
+        WORKFLOW_CONFIG cannot redirect it (see ``apply_workflow_config``).
+
+        Idempotent and first-write-wins, mirroring the freeze in
+        ``apply_workflow_config``.
+        """
+        if not self._repo_snapshot_key and snapshot_sha and repo_snapshot_key:
+            self._snapshot_sha = snapshot_sha
+            self._repo_snapshot_key = repo_snapshot_key
+
+    def override_repo_snapshot(self, snapshot_sha, repo_snapshot_key):
+        """Force-replace the pinned snapshot (unlike the first-write-wins
+        seed_repo_snapshot). Used only on a fresh-base resume: the controller
+        re-merged the PR head against the CURRENT base tip and published a new
+        snapshot, so re-dispatched jobs must restore that fresh tree instead of
+        the one recorded in the run's state.json. Trusted input (controller env),
+        applied after seed_from_snapshot."""
+        if snapshot_sha and repo_snapshot_key:
+            self._snapshot_sha = snapshot_sha
+            self._repo_snapshot_key = repo_snapshot_key
 
     def apply_workflow_config(self, workflow_config):
         """Apply Config Workflow decisions from the runner environment.
@@ -1865,12 +1916,15 @@ class WorkflowState:
         failure ``kick()`` fails the job with ``reason`` surfaced on the check —
         nothing else will ever drive it forward.
         """
-        # Repo-snapshot mode: the Config Workflow (first job) builds the snapshot
-        # and these are pinned once when it completes (see apply_workflow_config),
-        # read from immutable state here — NOT from the mutable self._environment —
-        # so a later untrusted job cannot redirect dependent jobs. Empty for the
-        # Config Workflow's own dispatch (nothing pinned yet), so it clones the head
-        # and builds the snapshot; every later job restores that exact tree.
+        # Repo-snapshot mode: the controller establishes the run's single commit
+        # (the ephemeral PR merge or the plain head) and publishes its snapshot
+        # before praktika is reinstalled; the orchestrator pins it once via
+        # seed_repo_snapshot before the first dispatch (see _orchestrate_single).
+        # Read from immutable state here — NOT from the mutable self._environment —
+        # so a later untrusted job cannot redirect dependent jobs. Non-empty for
+        # EVERY job including the Config Workflow, so all of them (Config included)
+        # restore this exact tree; the Config job then only verifies it. Empty only
+        # when repo snapshots are disabled, where jobs clone the head as before.
         snapshot_sha = self._snapshot_sha
         repo_snapshot_key = self._repo_snapshot_key
 
@@ -1893,6 +1947,11 @@ class WorkflowState:
             ),
             "head_ref": self._event.get("head_ref", ""),
             "base_ref": self._event.get("base_ref", ""),
+            # PR branch-head commit subject + author(s), captured by the controller
+            # before the ephemeral merge. Carried so a job restoring the history-free
+            # merge snapshot still reports the branch head, not the merge commit.
+            "commit_message": self._event.get("commit_message", ""),
+            "commit_authors": self._event.get("commit_authors", []),
             "sender": self._event.get("sender", ""),
             "title": self._event.get("title", ""),
             "labels": self._event.get("labels", []),

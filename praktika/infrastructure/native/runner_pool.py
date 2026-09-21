@@ -298,7 +298,7 @@ class RunnerPool:
     `ext["system_logs"]` (truthy) tags instances so the baked
     praktika-system-logs streamer runs at boot, shipping kernel/OOM/systemd-kill
     evidence to the `/{slug}/praktika-system` CloudWatch log group. Off by
-    default; see docs/logging.md.
+    default; see praktika/docs/logging.md.
 
     `ext["runtime_source"]` (str) makes this pool install Praktika at runtime
     instead of using the version baked into the AMI. It is surfaced as the

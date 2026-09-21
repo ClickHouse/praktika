@@ -584,6 +584,15 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
                     run_id=run_id,
                     local_mode=local_mode,
                 )
+                # The controller established the run's single commit (ephemeral PR
+                # merge or plain head), published its snapshot, and passed the
+                # pinned identity via env before praktika was reinstalled. Seed it
+                # BEFORE the first dispatch so the Config Workflow and every
+                # downstream job restore this exact tree and the DAG matches.
+                state.seed_repo_snapshot(
+                    os.environ.get("PRAKTIKA_SNAPSHOT_SHA", "").strip(),
+                    os.environ.get("PRAKTIKA_REPO_SNAPSHOT_KEY", "").strip(),
+                )
                 state.print_plan()
                 # Native path: the orchestrator owns the workflow report. Create
                 # the initial summary (all jobs PENDING) here, once, at fresh-run
@@ -751,6 +760,16 @@ def _orchestrate_resume(event, gh_token=None, ci=True):
         local_mode=not ci,
     )
     state.seed_from_snapshot(snap)
+    # Fresh-base resume: the controller re-merged this PR's head against the
+    # CURRENT base tip and published a new snapshot, handing its identity via env.
+    # Override the snapshot loaded from state.json so re-dispatched jobs restore the
+    # fresh tree. Only when the controller actually re-merged (fresh_base on the
+    # event + the new snapshot present in env); a plain resume reuses state.json.
+    if event.get("fresh_base"):
+        state.override_repo_snapshot(
+            os.environ.get("PRAKTIKA_SNAPSHOT_SHA", "").strip(),
+            os.environ.get("PRAKTIKA_REPO_SNAPSHOT_KEY", "").strip(),
+        )
     # Clear the previous generation's cancel markers first — a resume reuses the
     # run prefix, and a stale cancel-request/kill-flag from a cancelled original
     # run would otherwise cancel the reset job on the first sweep.

@@ -174,6 +174,51 @@ class TestRunner(unittest.TestCase):
             f"Expected job.log under <workflow>/<job>/, got: {result.links}",
         )
 
+    def test_build_ci_environment_prefers_task_commit_over_head(self):
+        """In repo-snapshot merge mode HEAD is the synthetic merge commit, so the
+        controller carries the real PR branch-head subject/authors on the task.
+        _build_ci_environment must prefer them over ``git log HEAD``."""
+        from praktika.orchestrator.job_runner import _build_ci_environment
+
+        task = {
+            "workflow_name": "DummyRunnerTest",
+            "job_name": "dummy",
+            "pr_number": 1,
+            "event_type": "pull_request",
+            "head_repo": "test-org/test-repo",
+            "base_ref": "main",
+            "head_ref": "test-branch",
+            "head_sha": "0" * 40,
+            "repo": "test-org/test-repo",
+            "commit_message": "real PR head subject",
+            "commit_authors": ["dev@example.com"],
+        }
+        env = _build_ci_environment(task, job_name="dummy", local_run=True)
+        self.assertEqual(env.COMMIT_MESSAGE, "real PR head subject")
+        self.assertEqual(env.COMMIT_AUTHORS, ["dev@example.com"])
+        self.assertEqual(env.JOB_KV_DATA.get("commit_authors"), ["dev@example.com"])
+
+    def test_build_ci_environment_falls_back_to_head_without_task_commit(self):
+        """Snapshots/merge disabled: no commit_message on the task -> use the
+        actual git HEAD subject of the checked-out tree (unchanged behavior)."""
+        from praktika.orchestrator.job_runner import _build_ci_environment
+
+        task = {
+            "workflow_name": "DummyRunnerTest",
+            "job_name": "dummy",
+            "pr_number": 1,
+            "event_type": "pull_request",
+            "head_repo": "test-org/test-repo",
+            "base_ref": "main",
+            "head_ref": "test-branch",
+            "head_sha": "0" * 40,
+            "repo": "test-org/test-repo",
+        }
+        env = _build_ci_environment(task, job_name="dummy", local_run=True)
+        # This repo has a real HEAD, so the subject is non-empty and is NOT the
+        # sentinel we use in the override test.
+        self.assertNotEqual(env.COMMIT_MESSAGE, "real PR head subject")
+
     def test_runner_crash_is_recorded_in_job_result(self):
         """A crash inside Runner.run (e.g. _post_run) must land an ERROR
         Result with the traceback, so the orchestrator's check-run / report

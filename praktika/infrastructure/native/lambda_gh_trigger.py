@@ -24,6 +24,11 @@ APPROVAL_STATE_PREFIX = "external-pr-approvals"
 # per-job check so a `check_run.rerequested` webhook can target a single job.
 # Kept in sync with praktika.orchestrator.state.JOB_CHECK_EXTERNAL_ID_KIND.
 JOB_CHECK_EXTERNAL_ID_KIND = "praktika_job_check"
+
+# Custom per-job check-run action button that re-runs the job on a FRESH ephemeral
+# merge with the current base tip (finished runs only). Kept in sync with
+# praktika.orchestrator.state.RERUN_FRESH_BASE_ACTION.
+RERUN_FRESH_BASE_ACTION = "rerun_fresh_base"
 _PERMISSION_LEVELS = {
     "none": 0,
     "read": 1,
@@ -959,7 +964,9 @@ def _handle_rerun(check_obj, payload, delivery_id, sender, event_ts, source):
     _handle_full_rerun(check_obj, payload, delivery_id, sender, event_ts, source)
 
 
-def _handle_partial_rerun(run_id, job, check_obj, payload, delivery_id, sender, event_ts):
+def _handle_partial_rerun(
+    run_id, job, check_obj, payload, delivery_id, sender, event_ts, fresh_base=False
+):
     """Re-run a single failed job (+ its failed downstream) on an existing run.
 
     Every re-run first records the job under ``runs/<run_id>/rerun-request/`` —
@@ -971,6 +978,11 @@ def _handle_partial_rerun(run_id, job, check_obj, payload, delivery_id, sender, 
       - finished (finalized) → claim the per-run ``resume.lock`` and, if we win
         it, enqueue one ``rerun`` message; a fresh orchestrator reloads the
         snapshot, batch-drains all pending requests, and re-drives.
+
+    ``fresh_base`` (from the per-job "Rerun w/ fresh base" action) is honored only
+    on the finished-run resume path — the controller re-merges the head against the
+    current base tip there. On a running run it is ignored (the live orchestrator
+    keeps the existing snapshot).
     """
     repo = payload.get("repository", {}).get("full_name", "")
     if ALLOWED_SENDERS and sender not in ALLOWED_SENDERS:
@@ -1024,8 +1036,12 @@ def _handle_partial_rerun(run_id, job, check_obj, payload, delivery_id, sender, 
 
     if not (snap and snap.get("finalized")):
         # Running (or snapshot not written yet): the live orchestrator's sweep
-        # picks up the request we just wrote. Nothing else to do.
-        print(f"RERUN (partial, live): run={run_id} job={job!r}")
+        # picks up the request we just wrote. Nothing else to do. Note: fresh_base
+        # is intentionally IGNORED here — an in-progress run keeps its existing
+        # snapshot; re-merging against a moved base only happens on a finished-run
+        # resume (below), where a fresh orchestrator boots.
+        note = " (fresh_base ignored: run in progress)" if fresh_base else ""
+        print(f"RERUN (partial, live): run={run_id} job={job!r}{note}")
         return
 
     # Finished: spawn a resume — but only one. resume.lock is a per-run boot lease
@@ -1053,6 +1069,18 @@ def _handle_partial_rerun(run_id, job, check_obj, payload, delivery_id, sender, 
         "pr_number": snap.get("pr_number"),
         "sender": sender,
         "event_ts": event_ts,
+        # Re-drive the SAME merged tree the original run pinned: carry the
+        # published snapshot so the controller restores it (no re-merge) and the
+        # resumed orchestrator's runtime + DAG match the original ephemeral merge
+        # rather than the current head. A "re-run all" (full rerun) instead mints a
+        # fresh run that re-merges against the current base — see _handle_full_rerun.
+        "snapshot_sha": snap.get("snapshot_sha", ""),
+        "repo_snapshot_key": snap.get("repo_snapshot_key", ""),
+        "base_sha": snap.get("base_sha", ""),
+        # Fresh-base rerun (per-job "Rerun w/ fresh base" button): the controller
+        # re-merges the head against the CURRENT base tip and publishes a new
+        # snapshot instead of restoring the one above. Finished-run only.
+        "fresh_base": bool(fresh_base),
         **meta,
     }
     try:
@@ -1224,6 +1252,21 @@ def lambda_handler(event, context):
                     print(f"MANUAL CANCEL: PR#{pr_number} run_id={run_id} sha={head_sha[:12]}")
                 else:
                     print("SKIP: cancel action missing check_run id")
+            elif identifier == RERUN_FRESH_BASE_ACTION:
+                # Per-job "Rerun w/ fresh base" button: re-run this job (+ failed
+                # downstream) on a NEW ephemeral merge with the current base tip.
+                # Routes through the same partial-rerun path (same auth + stale-head
+                # guards); fresh_base is honored only when the run is finished (the
+                # resume path), otherwise the live orchestrator reuses the snapshot.
+                check_obj = payload.get("check_run", {})
+                parsed = _parse_job_check_external_id(check_obj.get("external_id", ""))
+                if parsed:
+                    _handle_partial_rerun(
+                        parsed[0], parsed[1], check_obj, payload,
+                        delivery_id, sender, event_ts, fresh_base=True,
+                    )
+                else:
+                    print("SKIP: fresh-base rerun action on a check without a job id")
             else:
                 _handle_gate_action(payload, delivery_id, sender, identifier)
         elif action == "rerequested":

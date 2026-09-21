@@ -606,6 +606,72 @@ def test_partial_rerun_finished_enqueues_resume(monkeypatch):
     assert wf["run_id"] == "run42"
     assert wf["rerun_jobs"] == ["Style check"]
     assert wf["head_sha"] == "b" * 40
+    # A native re-run keeps the original base (reuse the published snapshot).
+    assert wf.get("fresh_base") is False
+
+
+def _fresh_base_rerun_event(delivery, run_id="run42", job="Style check", head_sha="b" * 40):
+    external_id = json.dumps(
+        {"kind": "praktika_job_check", "run_id": run_id, "job": job}, sort_keys=True
+    )
+    return {
+        "headers": {"X-GitHub-Event": "check_run", "X-GitHub-Delivery": delivery},
+        "body": json.dumps(
+            {
+                "action": "requested_action",
+                "requested_action": {"identifier": "rerun_fresh_base"},
+                "sender": {"login": "maxknv"},
+                "check_run": {
+                    "head_sha": head_sha,
+                    "external_id": external_id,
+                    "pull_requests": [{"number": 17}],
+                },
+                "repository": {"full_name": "owner/repo"},
+            }
+        ),
+    }
+
+
+def test_fresh_base_rerun_finished_enqueues_resume_with_flag(monkeypatch):
+    # The per-job "Rerun w/ fresh base" action on a FINISHED run enqueues a resume
+    # carrying fresh_base=True so the controller re-merges against the current base.
+    mod = _reload_lambda(monkeypatch)
+    requests = []
+    enqueued = []
+
+    snap = {"finalized": True, "repo": "owner/repo", "head_sha": "b" * 40, "pr_number": 17}
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr_number: ("b" * 40, _rerun_meta(external=False)))
+    monkeypatch.setattr(mod, "_load_run_snapshot", lambda run_id: snap)
+    monkeypatch.setattr(mod, "_write_rerun_request", lambda run_id, jobs, delivery_id: requests.append((run_id, jobs)))
+    monkeypatch.setattr(mod, "_claim_resume_lock", lambda run_id, event_ts: True)
+    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append(workflow))
+
+    mod.lambda_handler(_fresh_base_rerun_event("dfb1"), None)
+
+    assert requests == [("run42", ["Style check"])]
+    assert len(enqueued) == 1
+    assert enqueued[0]["type"] == "rerun"
+    assert enqueued[0]["fresh_base"] is True
+
+
+def test_fresh_base_rerun_running_ignores_flag(monkeypatch):
+    # In-progress run: the fresh-base action drops a normal live rerun-request and
+    # does NOT enqueue a resume (fresh_base only applies to a finished-run resume).
+    mod = _reload_lambda(monkeypatch)
+    requests = []
+    enqueued = []
+
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr_number: ("b" * 40, _rerun_meta(external=False)))
+    monkeypatch.setattr(mod, "_load_run_snapshot", lambda run_id: {"finalized": False})
+    monkeypatch.setattr(mod, "_write_rerun_request", lambda run_id, jobs, delivery_id: requests.append((run_id, jobs)))
+    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append(workflow))
+
+    mod.lambda_handler(_fresh_base_rerun_event("dfb2"), None)
+
+    assert requests == [("run42", ["Style check"])]
+    assert enqueued == []
 
 
 def test_partial_rerun_finished_lock_lost_queues_without_spawn(monkeypatch):

@@ -154,6 +154,13 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
         e for e in (Shell.get_output("git log -1 --pretty=%ae HEAD") or "").splitlines()
         if "@" in e
     ]
+    # Prefer the PR branch-head commit captured by the controller before the
+    # ephemeral merge. When repo snapshots are on, HEAD here is the history-free
+    # merge commit, so the git values above describe the synthetic "Merge …" commit
+    # (author praktika@localhost) rather than the branch head; the task carries the
+    # real head values. Empty when snapshots/merge are disabled -> keep git HEAD.
+    commit_message = task.get("commit_message") or commit_message
+    commit_authors = task.get("commit_authors") or commit_authors
 
     # For push and merge-queue events there is no PR_NUMBER, but workflow hooks
     # may need the number of the PR this ref corresponds to. Mirror
@@ -216,6 +223,11 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
         # of the workflow report summary — job-side report writers stand down (see
         # orchestrator/REPORT_OWNERSHIP.md). False for local runs.
         "ORCHESTRATOR_OWNS_REPORT": not bool(local_run),
+        # Repo-snapshot mode: the run's single commit + the snapshot S3 key the
+        # controller published, threaded from the task so a job can verify it runs
+        # the pinned tree. Empty when snapshots are disabled (jobs clone the head).
+        "SNAPSHOT_SHA": task.get("snapshot_sha", ""),
+        "REPO_SNAPSHOT_KEY": task.get("repo_snapshot_key", ""),
     }
 
     carried = task.get("environment")
@@ -267,6 +279,8 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
             LOCAL_RUN=bool(local_run),
             RERUN_COUNT=int(task.get("rerun_count") or 0),
             ORCHESTRATOR_OWNS_REPORT=not bool(local_run),
+            SNAPSHOT_SHA=task.get("snapshot_sha", ""),
+            REPO_SNAPSHOT_KEY=task.get("repo_snapshot_key", ""),
         )
     env.dump()
     return env

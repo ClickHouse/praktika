@@ -152,7 +152,8 @@ raised. `configure` now **no-ops on the native path**; instead:
   rows. SKIPPED rows carry **no usage** (the job never ran) so they are built
   separately and kept out of the usage aggregation.
 
-One fewer runner-side summary writer. See BACKLOG.md "sole summary writer".
+One fewer runner-side summary writer. See
+`../docs/proposals/orchestrator-backlog.md` "sole summary writer".
 
 ### Deferred (follow-up, not correctness)
 
@@ -160,7 +161,7 @@ One fewer runner-side summary writer. See BACKLOG.md "sole summary writer".
   `configure` done (increment 4), these two are the last runner writers of the
   summary. Retiring them needs the orchestrator to own per-job report messages,
   DROPPED-dependee rows, and the top-level ext — after which the version CAS can
-  be dropped (see BACKLOG.md). Larger change, no correctness benefit over the
+  be dropped (see `../docs/proposals/orchestrator-backlog.md`). Larger change, no correctness benefit over the
   current state.
 - **Finish Workflow's own usage.** The orchestrator counts a job's usage only
   after its `final.json` lands; Finish Workflow reads the summary for the CIDB

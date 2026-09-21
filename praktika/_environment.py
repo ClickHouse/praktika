@@ -65,6 +65,12 @@ class _Environment(MetaClasses.Serializable):
     # orchestrator/REPORT_OWNERSHIP.md. False for local runs and GitHub Actions,
     # which keep the per-job writers.
     ORCHESTRATOR_OWNS_REPORT: bool = False
+    # Repo-snapshot mode: the run's single commit and the S3 key of the snapshot
+    # the controller published for it (the ephemeral PR merge, or the plain head).
+    # Set from the job_task so a job can verify it is running the pinned tree
+    # (see native_jobs._prepare_repo_snapshot). Empty when snapshots are disabled.
+    SNAPSHOT_SHA: str = ""
+    REPO_SNAPSHOT_KEY: str = ""
     name = "environment"
 
     @classmethod

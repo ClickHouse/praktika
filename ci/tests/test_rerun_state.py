@@ -420,8 +420,8 @@ def test_publish_report_aggregates_usage_idempotently(monkeypatch):
 
 def test_publish_report_authors_skipped_rows(monkeypatch):
     """The orchestrator — not the Config job's hook_html.configure — authors the
-    cached/filtered SKIPPED rows on the native path (BACKLOG "sole summary
-    writer"). A cache hit links to its reused report; a filtered job carries its
+    cached/filtered SKIPPED rows on the native path (orchestrator-backlog
+    "sole summary writer"). A cache hit links to its reused report; a filtered job carries its
     reason. Skipped rows carry no usage (the job never ran)."""
     import dataclasses as dc
 
@@ -518,3 +518,55 @@ def test_snapshot_target_pinned_from_config_workflow_and_frozen_against_later_jo
     # Frozen: the attacker's values are ignored.
     assert state._snapshot_sha == "m1"
     assert state._repo_snapshot_key.endswith("HASH1.tar.zst")
+
+
+def test_seed_repo_snapshot_from_controller_wins_over_config_job():
+    # The controller establishes the run's single commit and seeds it BEFORE any
+    # job is dispatched. That pin must win: a later job's WORKFLOW_CONFIG (even the
+    # Config Workflow re-reporting, or an untrusted job) cannot redirect it.
+    s3 = _FakeS3()
+    state = _make_state(s3, {"A": JobStatus.PENDING})
+
+    state.seed_repo_snapshot("ctrl-merge", "repo-snapshots/v1/PRs/CTRL.tar.zst")
+    assert state._snapshot_sha == "ctrl-merge"
+    assert state._repo_snapshot_key.endswith("CTRL.tar.zst")
+
+    # Config Workflow (or any later job) reports a different key -> ignored.
+    state.apply_workflow_config(
+        {
+            "snapshot_sha": "other",
+            "repo_snapshot_key": "repo-snapshots/v1/PRs/OTHER.tar.zst",
+        }
+    )
+    assert state._snapshot_sha == "ctrl-merge"
+    assert state._repo_snapshot_key.endswith("CTRL.tar.zst")
+
+
+def test_seed_repo_snapshot_is_noop_when_empty():
+    # No controller snapshot (feature disabled): seeding empties leaves the pin
+    # unset so the Config Workflow's own report can still establish it (fallback).
+    s3 = _FakeS3()
+    state = _make_state(s3, {"A": JobStatus.PENDING})
+    state.seed_repo_snapshot("", "")
+    assert state._snapshot_sha == ""
+    assert state._repo_snapshot_key == ""
+    state.apply_workflow_config(
+        {"snapshot_sha": "m1", "repo_snapshot_key": "repo-snapshots/v1/PRs/H.tar.zst"}
+    )
+    assert state._snapshot_sha == "m1"
+
+
+def test_override_repo_snapshot_replaces_pinned_value():
+    # Fresh-base resume: the controller re-merged against the current base and
+    # published a new snapshot, which must REPLACE the one loaded from state.json.
+    s3 = _FakeS3()
+    state = _make_state(s3, {"A": JobStatus.PENDING})
+    state.seed_repo_snapshot("orig", "repo-snapshots/v1/PRs/ORIG.tar.zst")
+
+    state.override_repo_snapshot("fresh", "repo-snapshots/v1/PRs/FRESH.tar.zst")
+    assert state._snapshot_sha == "fresh"
+    assert state._repo_snapshot_key.endswith("FRESH.tar.zst")
+
+    # Empty override is a no-op (a plain resume passes nothing to override).
+    state.override_repo_snapshot("", "")
+    assert state._snapshot_sha == "fresh"
