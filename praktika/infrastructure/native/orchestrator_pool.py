@@ -57,6 +57,11 @@ class OrchestratorPool:
     `ext["allowed_push_branches"]` controls which GitHub push branch refs the
     webhook Lambda accepts for this pool. The default is the project's
     configured default branch, `[Settings.MAIN_BRANCH]`.
+    `ext["allowed_pr_base_branches"]` controls which PR target (base) branches the
+    webhook Lambda accepts; entries are exact names or regex patterns, matching
+    the orchestrator's workflow `base_branches`. The default is the project's
+    configured default branch, `[Settings.MAIN_BRANCH]`; set `[]` to reject all
+    PRs.
     `ext["allowed_users"]` optionally restricts pull_request webhook events to
     a fixed set of GitHub logins.
     `ext["allowed_repositories"]` optionally restricts the webhook Lambda to a
@@ -177,6 +182,19 @@ class OrchestratorPool:
             for branch in allowed_push_branches
         ), "ext['allowed_push_branches'] must contain only non-empty strings"
         allowed_push_branches = [branch.strip() for branch in allowed_push_branches]
+        allowed_pr_base_branches = self.ext.get(
+            "allowed_pr_base_branches", [Settings.MAIN_BRANCH]
+        )
+        assert isinstance(
+            allowed_pr_base_branches, list
+        ), "ext['allowed_pr_base_branches'] must be a list of branch names or patterns"
+        assert all(
+            isinstance(branch, str) and branch.strip()
+            for branch in allowed_pr_base_branches
+        ), "ext['allowed_pr_base_branches'] must contain only non-empty strings"
+        allowed_pr_base_branches = [
+            branch.strip() for branch in allowed_pr_base_branches
+        ]
         allowed_repositories = self.ext.get("allowed_repositories", [])
         assert isinstance(
             allowed_repositories, list
@@ -358,6 +376,9 @@ class OrchestratorPool:
         self.lambda_config.environments["SQS_QUEUE_NAME"] = queue_name
         self.lambda_config.environments["ALLOWED_PUSH_BRANCHES"] = ",".join(
             allowed_push_branches
+        )
+        self.lambda_config.environments["ALLOWED_PR_BASE_BRANCHES"] = ",".join(
+            allowed_pr_base_branches
         )
         self.lambda_config.environments["ALLOWED_REPOSITORIES_JSON"] = json.dumps(
             allowed_repositories,

@@ -51,6 +51,15 @@ from .utils import Utils
 # whole call is the simplest reliable recovery. Mirrors the CH review job.
 MAX_ATTEMPTS = 3
 
+# Per-turn output-token budget for the review. The provider default (4000) is
+# tuned for the orchestrator's short advisory turns; a code review is different:
+# a reasoning model at "high" effort spends several thousand tokens on hidden
+# reasoning before it writes anything, so on a large PR a 4000-token turn is cut
+# off mid-reasoning (stop_reason='max_tokens') and produces no review text. This
+# budget must comfortably exceed reasoning + the written review; it is a cap, not
+# a spend, so unused headroom costs nothing.
+_MAX_OUTPUT_TOKENS = 16000
+
 # Read-only investigation tools offered to the model (reused from the anthropic
 # provider). fetch_log is intentionally NOT offered — a review reasons over the
 # diff and source, not CI logs.
@@ -290,11 +299,20 @@ def _build_user_content(info, diff, threads, project_prompt):
     return content
 
 
+class _NonRetryableReviewError(RuntimeError):
+    """A review failure that re-running the identical call cannot fix (a
+    deterministic outcome of the current configuration, not a transient API
+    error). Raised to break out of the retry loop immediately with a clear,
+    actionable message."""
+
+
 def _run_model(provider, system, user_content):
     """Call the provider with retries; return the parsed review dict.
 
     An attempt succeeds only if the call returns text that parses into a dict.
-    Raises RuntimeError after MAX_ATTEMPTS so the job fails loudly.
+    A transient failure is retried up to MAX_ATTEMPTS; a non-retryable outcome
+    (see ``_NonRetryableReviewError``) fails immediately. Either way a
+    RuntimeError is raised on failure so the job fails loudly.
     """
     last_error = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -304,10 +322,22 @@ def _run_model(provider, system, user_content):
                 user_content=user_content,
                 tools=_REVIEW_TOOLS,
                 tool_executor=_tool_executor,
+                max_tokens=_MAX_OUTPUT_TOKENS,
                 response_schema=_REVIEW_SCHEMA,
             )
             if turn.error:
                 last_error = turn.error
+                # A non-retryable error is a deterministic outcome of the current
+                # configuration (e.g. reasoning effort too high for the token
+                # budget), so re-running the identical call is pointless. Fail now
+                # with the provider's actionable message instead of burning the
+                # remaining attempts on the same result.
+                if not turn.retryable:
+                    print(f"ERROR: review not retrying: {last_error}")
+                    raise _NonRetryableReviewError(
+                        f"AI review failed, not retrying (deterministic given the "
+                        f"current configuration): {last_error}"
+                    )
             else:
                 review = _parse_review(turn.reasoning)
                 if review:
@@ -316,7 +346,11 @@ def _run_model(provider, system, user_content):
                 # Surface the raw reply (truncated) so a parse failure is
                 # diagnosable from the job log instead of opaque.
                 print(f"  raw model reply: {(turn.reasoning or '')[:800]!r}")
-        except Exception as e:  # noqa: BLE001 — any failure here is retryable
+        except _NonRetryableReviewError:
+            # Deterministic outcome flagged above; propagate immediately so the
+            # job fails with the clear message and no further attempts.
+            raise
+        except Exception as e:  # noqa: BLE001 — any other failure here is retryable
             last_error = f"{type(e).__name__}: {e}"
             traceback.print_exc()
         print(f"WARNING: review attempt {attempt}/{MAX_ATTEMPTS} failed: {last_error}")

@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from .native.pool_autoscaler import PoolAutoscaler
     from .native.runner_pool import RunnerPool
     from .native.s3_proxy import S3Proxy
+    from .native.docker_proxy import DockerProxy
     from .secret_parameter import SecretParameter
     from .sqs_queue import SQSQueue
 
@@ -74,6 +75,14 @@ class CloudInfrastructure:
         orchestrator_pools: List["OrchestratorPool"] = field(default_factory=list)
         cidb_cluster: Optional["CIDBCluster"] = None
         s3_proxy: Optional["S3Proxy"] = None
+        docker_proxy: Optional["DockerProxy"] = None
+        # Secrets/parameters that JOBS read at runtime on the runners (a list of
+        # praktika Secret.Config, i.e. objects exposing `.name` and `.type`).
+        # These drive the RunnerRoleAccess verification: `--verify` simulates,
+        # per runner pool, whether the pool's IAM role can actually read each
+        # one — catching the common decoupling where a job consumes a secret the
+        # runner role was never granted (see infrastructure/verify.py).
+        runtime_secrets: List[Any] = field(default_factory=list)
         ext: Dict[str, Any] = field(default_factory=dict)
         _settings: Optional[_Settings] = None
         _pre_namespace_names: Dict[str, List[str]] = field(
@@ -108,6 +117,7 @@ class CloudInfrastructure:
                     "orchestrator_pools": self.orchestrator_pools,
                     "cidb_cluster": self.cidb_cluster,
                     "s3_proxy": self.s3_proxy,
+                    "docker_proxy": self.docker_proxy,
                 }
             )
             for key, value in cloned.items():
@@ -259,6 +269,11 @@ class CloudInfrastructure:
                 # autoscaling_group shape as a pool, so it takes the same VPC and
                 # default security group defaults.
                 _apply_pool_defaults(self.s3_proxy)
+
+            if self.docker_proxy:
+                # DockerProxy has the same pool-like shape as S3Proxy, so it
+                # takes the same VPC and default security group defaults.
+                _apply_pool_defaults(self.docker_proxy)
 
             if self.cidb_cluster:
                 cluster = self.cidb_cluster
@@ -888,6 +903,63 @@ class CloudInfrastructure:
                 # hostname and bucket names.
                 proxy._refresh()
 
+            if self.docker_proxy:
+                dproxy = self.docker_proxy
+                if dproxy.vpc_name:
+                    old_vpc = dproxy.vpc_name
+                    dproxy.vpc_name = self._prefixed(dproxy.vpc_name)
+                    self._record_rename(replacements, old_vpc, dproxy.vpc_name)
+                dproxy.security_group_names = [
+                    self._prefixed(name) for name in dproxy.security_group_names
+                ]
+                old_role_name = dproxy.ec2_role.name
+                dproxy.ec2_role.name = self._prefixed(dproxy.ec2_role.name)
+                self._record_rename(replacements, old_role_name, dproxy.ec2_role.name)
+                old_profile_name = dproxy.instance_profile.name
+                dproxy.instance_profile.name = self._prefixed(dproxy.instance_profile.name)
+                self._record_rename(
+                    replacements, old_profile_name, dproxy.instance_profile.name
+                )
+                dproxy.instance_profile.role_name = dproxy.ec2_role.name
+                old_lt = dproxy.launch_template.name
+                dproxy.launch_template.name = self._prefixed(dproxy.launch_template.name)
+                self._record_rename(replacements, old_lt, dproxy.launch_template.name)
+                if getattr(dproxy.launch_template, "vpc_name", ""):
+                    old_lt_vpc = dproxy.launch_template.vpc_name
+                    dproxy.launch_template.vpc_name = self._prefixed(
+                        dproxy.launch_template.vpc_name
+                    )
+                    self._record_rename(
+                        replacements, old_lt_vpc, dproxy.launch_template.vpc_name
+                    )
+                dproxy.launch_template.iam_instance_profile_name = (
+                    dproxy.instance_profile.name
+                )
+                dproxy.launch_template.security_group_names = [
+                    self._prefixed(name)
+                    for name in dproxy.launch_template.security_group_names
+                ]
+                old_asg = dproxy.autoscaling_group.name
+                dproxy.autoscaling_group.name = self._prefixed(dproxy.autoscaling_group.name)
+                self._record_rename(replacements, old_asg, dproxy.autoscaling_group.name)
+                if getattr(dproxy.autoscaling_group, "vpc_name", ""):
+                    old_asg_vpc = dproxy.autoscaling_group.vpc_name
+                    dproxy.autoscaling_group.vpc_name = self._prefixed(
+                        dproxy.autoscaling_group.vpc_name
+                    )
+                    self._record_rename(
+                        replacements, old_asg_vpc, dproxy.autoscaling_group.vpc_name
+                    )
+                dproxy.autoscaling_group.launch_template_name = (
+                    dproxy.launch_template.name
+                )
+                dproxy.name = self._prefixed(dproxy.name)
+                # dns_zone/dns_record/s3_bucket/dockerhub_pat_ssm are external
+                # identities (an existing Route53 zone, S3 bucket, SSM param), so
+                # they are intentionally left un-namespaced. Re-derive IAM +
+                # user_data from the final config.
+                dproxy._refresh()
+
             for config in self.iam_roles:
                 config.inline_policies = self._replace_recursive(config.inline_policies, replacements)
             for config in self.lambda_functions:
@@ -952,6 +1024,114 @@ class CloudInfrastructure:
                 for instance in cluster.instances:
                     instance.user_data = self._replace_recursive(getattr(instance, "user_data", ""), replacements)
 
+        def _runtime_secret_policy_resources(self):
+            """Turn `runtime_secrets` into IAM policy resource ARNs, split by
+            store. Account/region are wildcarded (`*:*`) to match the runner
+            statements built by RunnerPool. GitHub secrets/vars are skipped —
+            they reach jobs as env vars, not via the instance role. Returns
+            (ssm_parameter_arns, secretsmanager_arns), each de-duplicated.
+            """
+            from praktika.secret import Secret
+
+            ssm_arns: List[str] = []
+            secret_arns: List[str] = []
+            for secret in self.runtime_secrets or []:
+                names = secret.name if isinstance(secret.name, list) else [secret.name]
+                for raw_name in names:
+                    name = (raw_name or "").strip()
+                    if not name:
+                        continue
+                    if secret.type == Secret.Type.AWS_SSM_PARAMETER:
+                        ssm_arns.append(
+                            f"arn:aws:ssm:*:*:parameter/{name.lstrip('/')}"
+                        )
+                    elif secret.type == Secret.Type.AWS_SSM_SECRET:
+                        # A trailing ".key" selects a JSON field of the same
+                        # underlying Secrets Manager secret; the grant is on the
+                        # root, and the "*" matches the random ARN suffix AWS
+                        # appends to every secret.
+                        root = name.split(".", 1)[0]
+                        secret_arns.append(
+                            f"arn:aws:secretsmanager:*:*:secret:{root}*"
+                        )
+                    # GH_SECRET / GH_VAR: env-delivered, no instance-role grant.
+
+            def _dedup(items):
+                seen = set()
+                out = []
+                for item in items:
+                    if item in seen:
+                        continue
+                    seen.add(item)
+                    out.append(item)
+                return out
+
+            return _dedup(ssm_arns), _dedup(secret_arns)
+
+        def _grant_runtime_secrets_to_runner_roles(self):
+            """Append runtime-secret read grants to every praktika-generated
+            runner role (RunnerPool and DedicatedRunnerPool). Idempotent: the
+            grants go into dedicated statements (RuntimeSecrets*) whose resource
+            lists are merged, so re-running never duplicates entries. Roles
+            supplied by the project (no praktika "RunnerAccess" inline policy)
+            are left untouched.
+            """
+            ssm_arns, secret_arns = self._runtime_secret_policy_resources()
+            if not ssm_arns and not secret_arns:
+                return
+
+            pools = list(self.runner_pools) + list(self.dedicated_runner_pools)
+            for pool in pools:
+                role = getattr(pool, "ec2_role", None)
+                inline = getattr(role, "inline_policies", None) if role else None
+                if not inline or "RunnerAccess" not in inline:
+                    # External / non-praktika role — do not mutate it.
+                    continue
+                statements = inline["RunnerAccess"].setdefault("Statement", [])
+                self._merge_grant_statement(
+                    statements,
+                    sid="RuntimeSecretsSSMRead",
+                    actions=["ssm:GetParameter", "ssm:GetParameters"],
+                    resources=ssm_arns,
+                )
+                self._merge_grant_statement(
+                    statements,
+                    sid="RuntimeSecretsManagerRead",
+                    actions=[
+                        "secretsmanager:DescribeSecret",
+                        "secretsmanager:GetSecretValue",
+                    ],
+                    resources=secret_arns,
+                )
+
+        @staticmethod
+        def _merge_grant_statement(statements, sid, actions, resources):
+            """Add or extend an Allow statement identified by `sid` in-place,
+            keeping its Resource list de-duplicated and order-stable."""
+            if not resources:
+                return
+            existing = next((s for s in statements if s.get("Sid") == sid), None)
+            if existing is None:
+                statements.append(
+                    {
+                        "Sid": sid,
+                        "Effect": "Allow",
+                        "Action": list(actions),
+                        "Resource": list(resources),
+                    }
+                )
+                return
+            current = existing.get("Resource", [])
+            if isinstance(current, str):
+                current = [current]
+            merged = list(current)
+            seen = set(current)
+            for resource in resources:
+                if resource not in seen:
+                    seen.add(resource)
+                    merged.append(resource)
+            existing["Resource"] = merged
+
         def __post_init__(self):
             if self.orchestrator_pool:
                 if not self.orchestrator_pools:
@@ -980,6 +1160,13 @@ class CloudInfrastructure:
             # namespacing so their names and cross-references land in the same
             # project namespace as the rest of the config.
             self._apply_project_namespace()
+            # Auto-grant runner IAM roles read access to every runtime secret
+            # jobs consume (config.runtime_secrets). Declaring a secret once
+            # then keeps the IAM grant and the RunnerRoleAccess verification in
+            # lockstep — no separate per-pool allowed_* bookkeeping to drift.
+            # External runtime-secret ARNs are not namespaced, so this is safe
+            # after _apply_project_namespace.
+            self._grant_runtime_secrets_to_runner_roles()
             self.orchestrator_pool = (
                 self.orchestrator_pools[0] if self.orchestrator_pools else None
             )
@@ -1118,6 +1305,14 @@ class CloudInfrastructure:
                 self.launch_templates.append(self.s3_proxy.launch_template)
                 self.autoscaling_groups.append(self.s3_proxy.autoscaling_group)
 
+            if self.docker_proxy:
+                # Same registration shape as s3_proxy: the single instance is
+                # managed by the ASG (min=max=desired=1).
+                _add_role(self.docker_proxy.ec2_role)
+                _add_profile(self.docker_proxy.instance_profile)
+                self.launch_templates.append(self.docker_proxy.launch_template)
+                self.autoscaling_groups.append(self.docker_proxy.autoscaling_group)
+
         def _verify_account(self):
             from botocore.exceptions import (
                 BotoCoreError,
@@ -1227,6 +1422,21 @@ class CloudInfrastructure:
             print(
                 "WARNING: Rerun is required after the missing launch template exists."
             )
+
+        def verify(self, only: Optional[List[str]] = None) -> bool:
+            """Run read-only health checks against the deployed infrastructure.
+
+            Unlike `deploy`/`destroy`, this makes no changes: it probes live
+            components and reports whether each is functional. Returns True when
+            every selected check passes, False otherwise.
+
+            `only` filters which check types run, reusing the same component
+            names as `deploy --only` (e.g. `--only GitHubTokenMinter`). The
+            checks themselves live in `verify.py`.
+            """
+            from .verify import verify_infrastructure
+
+            return verify_infrastructure(self, only=only)
 
         def deploy(
             self,
@@ -1375,6 +1585,36 @@ class CloudInfrastructure:
                 print(f"Deploying CIDB Cluster (size={self.cidb_cluster.size})")
                 print("=" * 60)
                 self.cidb_cluster.deploy()
+
+            # DockerProxy needs its private hosted zone + SG ingress (its
+            # deploy()) in addition to the role/profile/LT/ASG. Under a full
+            # deploy the generic IAM/LT/ASG passes cover those, so here we only
+            # run deploy() (zone + SG), ordered before the ASG launches the
+            # instance. Under a filtered `--only DockerProxy` run those generic
+            # passes are skipped, so we also deploy the component's own
+            # role/profile/LT/ASG here to make `--only DockerProxy` a complete
+            # deploy. All deploys are idempotent.
+            if (
+                _wants("DockerProxy", "docker-proxy", "dockerproxy", "dockerhub-proxy")
+                and self.docker_proxy
+            ):
+                dp = self.docker_proxy
+                region = self._settings.AWS_REGION
+                print("\n" + "=" * 60)
+                print("Deploying DockerProxy")
+                print("=" * 60)
+                if only_set:
+                    dp.ec2_role.region = region
+                    dp.ec2_role.deploy()
+                    dp.instance_profile.region = region
+                    dp.instance_profile.deploy()
+                dp.region = region
+                dp.deploy()  # private hosted zone + SG ingress
+                if only_set:
+                    dp.launch_template.region = region
+                    dp.launch_template.deploy()
+                    dp.autoscaling_group.region = region
+                    dp.autoscaling_group.deploy()
 
             # Deploy S3 buckets
             if _wants("Storage", "Storages", "S3", "Bucket", "Buckets"):

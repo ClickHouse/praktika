@@ -197,6 +197,21 @@ class Validator:
                 f"Invalid engine [{workflow.engine}], must be one of {_VALID_ENGINES}",
                 workflow.name,
             )
+            # GH Secrets / GH Vars are injected into the job environment only by
+            # the GitHub Actions engine; on the Praktika engine they are never
+            # populated and get_value() would fail at runtime with a confusing
+            # "env var is unset" error. Hard fail early instead.
+            if workflow.engine != Workflow.Engine.GH_ACTIONS:
+                for secret in workflow.secrets:
+                    cls.evaluate_check(
+                        not (secret.is_gh_secret() or secret.is_gh_var()),
+                        f"Secret [{secret.name}] of type [{secret.type}] "
+                        f"(GH_SECRET/GH_VAR) is only supported with the "
+                        f"'{Workflow.Engine.GH_ACTIONS}' engine, but workflow "
+                        f"engine is [{workflow.engine}]. Use an AWS SSM "
+                        f"parameter/secret instead.",
+                        workflow.name,
+                    )
             # NOTE: disabled — like job.enable_commit_status, the workflow-level
             # enable_commit_status_on_failure is harmless on the Praktika engine
             # (the Checks API is used regardless), so don't fail validation when
@@ -241,6 +256,21 @@ class Validator:
                         f"label (excluding 'self-hosted'), got [{job.runs_on}] for [{job.name}]",
                         workflow.name,
                     )
+                    # Same reasoning as the workflow-level GH secret check above:
+                    # GH Secrets / GH Vars are only injected by the GitHub Actions
+                    # engine. A per-job GH secret on any other engine is never
+                    # populated, so fail early instead of at runtime.
+                    for secret in job.secrets or []:
+                        cls.evaluate_check(
+                            not (secret.is_gh_secret() or secret.is_gh_var()),
+                            f"Job secret [{secret.name}] of type [{secret.type}] "
+                            f"(GH_SECRET/GH_VAR) is only supported with the "
+                            f"'{Workflow.Engine.GH_ACTIONS}' engine, but workflow "
+                            f"engine is [{workflow.engine}]. Use an AWS SSM "
+                            f"parameter/secret instead.",
+                            workflow.name,
+                            job.name,
+                        )
                 # NOTE: disabled — `enable_commit_status` is harmless on the
                 # Praktika engine (it just uses the Checks API regardless), so
                 # don't fail validation when a job carries the flag.
@@ -405,13 +435,6 @@ class Validator:
                     f"(Settings.SECRET_DOCKER_REGISTRY) is not registered in the "
                     f"workflow's secrets. Add it to the project SECRETS so the "
                     f"workflow can resolve it. Workflow [{workflow.name}]"
-                )
-
-            if workflow.enable_open_issues_check:
-                cls.evaluate_check(
-                    workflow.enable_merge_ready_status,
-                    ".enable_open_issues_check workflow setting is applicable with .enable_merge_ready_status=True",
-                    workflow_name=workflow.name,
                 )
 
             if (

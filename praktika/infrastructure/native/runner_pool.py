@@ -110,6 +110,17 @@ def _secrets_manager_resource(name_or_arn: str) -> str:
     return f"arn:aws:secretsmanager:*:*:secret:{value}*"
 
 
+def _dedup_preserve_order(items):
+    seen = set()
+    result = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
+
+
 def _unique(values: List[str]) -> List[str]:
     result = []
     for value in values:
@@ -268,7 +279,16 @@ class RunnerPool:
     `allowed_s3_prefixes` (read+write); `allowed_s3_prefixes_readonly` grants
     read-only S3 access (GetObject/ListBucket, no writes). Bare names are
     project namespaced by CloudInfrastructure.Config; full ARNs are preserved
-    as-is. Each resource type also has an explicit `allow_all_*` escape hatch.
+    as-is.
+
+    Each resource type also has an `allow_all_*` flag. Despite the name, it
+    does NOT grant the whole account: it grants everything under the project
+    namespace (the "{slug}-"/"{slug}/" name prefix). The `allowed_*` lists are
+    ADDITIVE on top of `allow_all_*` — they are how you reach resources that
+    are NOT praktika-managed / live outside the project namespace (e.g. a
+    shared, pre-existing SSM parameter or secret): pass its full ARN there.
+    So `allow_all_ssm_parameters=True` + `allowed_ssm_parameters=["<full-arn>"]`
+    means "all of this project's parameters, plus that one external parameter".
 
     SSM debugging is opt-in through `allow_ssm_debug`. When enabled, the
     runner instance role gets only the instance-side SSM Agent permissions
@@ -328,12 +348,18 @@ class RunnerPool:
     user_data: str = ""
     ec2_role: IAMRole.Config | None = None
     instance_profile: IAMInstanceProfile.Config | None = None
+    # Additive extra grants on top of the corresponding `allow_all_*` flag.
+    # Use these to reach non-praktika-managed resources that live outside the
+    # project namespace (pass their full ARNs; bare names get namespaced).
     allowed_ssm_parameters: List[str] = field(default_factory=list)
     allowed_secrets: List[str] = field(default_factory=list)
     allowed_s3_prefixes: List[str] = field(default_factory=list)
     # Read-only S3 prefixes: GetObject/ListBucket only, no writes. Same
     # bare-name/ARN handling as `allowed_s3_prefixes`.
     allowed_s3_prefixes_readonly: List[str] = field(default_factory=list)
+    # `allow_all_*` grants everything in the PROJECT NAMESPACE (the
+    # "{slug}-"/"{slug}/" prefix), not the whole account. For resources
+    # outside the namespace, add them to the `allowed_*` lists above.
     allow_all_ssm_parameters: bool = False
     allow_all_secrets: bool = False
     allow_all_s3_prefixes: bool = False
@@ -381,33 +407,35 @@ class RunnerPool:
         launch_template_name = f"{self.name}-lt"
 
         if self.ec2_role is None:
-            # allow_all_* grants access to every resource in the project's
-            # namespace (the "{slug}-"/"{slug}/" name prefix), not the whole
-            # account. To reach resources outside the namespace, list their
-            # exact ARNs in the allowed_* fields instead.
-            allowed_ssm_parameter_resources = (
-                iam_scope.ssm_parameter_arns()
-                if self.allow_all_ssm_parameters
-                else [
-                    _ssm_parameter_resource(name)
-                    for name in self.allowed_ssm_parameters
-                    if name and name.strip()
-                ]
-            )
-            allowed_secret_resources = (
-                iam_scope.secret_arns()
-                if self.allow_all_secrets
-                else [
-                    _secrets_manager_resource(name)
-                    for name in self.allowed_secrets
-                    if name and name.strip()
-                ]
-            )
-            s3_readwrite_prefixes = (
-                iam_scope.project_bucket_arns()
-                if self.allow_all_s3_prefixes
-                else list(self.allowed_s3_prefixes)
-            )
+            # allow_all_* grants every resource in the project's namespace (the
+            # "{slug}-"/"{slug}/" name prefix), not the whole account. The
+            # allowed_* lists are ADDITIVE on top of that: they are how you
+            # reach resources outside the namespace (e.g. a shared, pre-existing
+            # parameter/secret) — list their exact ARNs there. So allow_all_* +
+            # allowed_* == the namespace plus those explicit extras.
+            allowed_ssm_parameter_resources = [
+                _ssm_parameter_resource(name)
+                for name in self.allowed_ssm_parameters
+                if name and name.strip()
+            ]
+            if self.allow_all_ssm_parameters:
+                allowed_ssm_parameter_resources = _dedup_preserve_order(
+                    iam_scope.ssm_parameter_arns() + allowed_ssm_parameter_resources
+                )
+            allowed_secret_resources = [
+                _secrets_manager_resource(name)
+                for name in self.allowed_secrets
+                if name and name.strip()
+            ]
+            if self.allow_all_secrets:
+                allowed_secret_resources = _dedup_preserve_order(
+                    iam_scope.secret_arns() + allowed_secret_resources
+                )
+            s3_readwrite_prefixes = list(self.allowed_s3_prefixes)
+            if self.allow_all_s3_prefixes:
+                s3_readwrite_prefixes = _dedup_preserve_order(
+                    iam_scope.project_bucket_arns() + s3_readwrite_prefixes
+                )
             s3_readonly_prefixes = list(self.allowed_s3_prefixes_readonly)
             runner_statements = [
                 {

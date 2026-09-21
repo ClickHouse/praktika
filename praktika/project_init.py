@@ -480,7 +480,7 @@ def _settings_template(answers: InitAnswers) -> str:
 
         GH_AUTH_LAMBDA_NAME = f"{{PROJECT_SLUG}}-gh-token"
         GH_AUTH_LAMBDA_REGION = AWS_REGION
-        PRAKTIKA_BASE_VENV = "praktika-runtime-{current_praktika_version()}"
+        PRAKTIKA_BASE_VENV = "praktika-runtime-0.0.1"
 
         """
     )
@@ -563,10 +563,14 @@ def _main_ci_workflow_template(answers: InitAnswers) -> str:
 def _infrastructure_template(answers: InitAnswers) -> str:
     optional_ai_package = ""
     optional_ai_permissions = ""
-    # The orchestrator's push-webhook Lambda only triggers Main CI for branches
-    # listed here, so scaffold the project's default branch explicitly instead of
-    # relying on the library default (which would silently be "main").
-    ext_entries = [f'"allowed_push_branches": [{answers.main_branch!r}]']
+    # The orchestrator's webhook Lambda only triggers Main CI for push branches
+    # and PR base (target) branches listed here, so scaffold the project's default
+    # branch explicitly instead of relying on the library default (which would
+    # silently be "main").
+    ext_entries = [
+        f'"allowed_push_branches": [{answers.main_branch!r}]',
+        f'"allowed_pr_base_branches": [{answers.main_branch!r}]',
+    ]
     if answers.enable_ai_capabilities:
         optional_ai_package = '                "anthropic[bedrock]",\n'
         optional_ai_permissions = """\
@@ -579,22 +583,24 @@ def _infrastructure_template(answers: InitAnswers) -> str:
 """
         ext_entries.append('"iam_statements": [_ORCHESTRATOR_BEDROCK_IAM_STATEMENT]')
     orchestrator_ext = "\n                    ext={" + ", ".join(ext_entries) + "},"
-    optional_slug_import = ", PROJECT_SLUG" if answers.enable_s3_proxy else ""
     optional_s3_proxy = ""
     if answers.enable_s3_proxy:
         optional_s3_proxy = "\n" + textwrap.indent(
             textwrap.dedent(
                 '''\
                 s3_proxy=Components.S3Proxy(
-                    # Report URL: https://{PROJECT_SLUG}-ci-reports.<tailnet>.ts.net/<bucket>/<key>
-                    hostname=f"{PROJECT_SLUG}-ci-reports",
+                    # Report URL: https://{Settings.PROJECT_SLUG}-ci-reports.<tailnet>.ts.net/<bucket>/<key>
+                    hostname=f"{Settings.PROJECT_SLUG}-ci-reports",
+                    # Single-instance ASG (min=max=desired=1); a dead node is replaced.
+                    instance_type="t4g.micro",
                     # Tailscale ACL tag applied to the proxy node and its auth key.
                     tailscale_tag="tag:ci-s3-proxy",
                     # SSM parameters holding a Tailscale OAuth client (create out of
-                    # band). The node mints an ephemeral, tagged auth key from these
-                    # at boot; no Tailscale or S3 credentials live on the instance.
-                    tailscale_oauth_client_id_ssm="/praktika/tailscale/oauth-client-id",
-                    tailscale_oauth_client_secret_ssm="/praktika/tailscale/oauth-client-secret",
+                    # band, namespaced per project). The node mints an ephemeral,
+                    # tagged auth key from these at boot; no Tailscale or S3
+                    # credentials live on the instance.
+                    tailscale_oauth_client_id_ssm=f"/{Settings.PROJECT_SLUG}/tailscale/oauth-client-id",
+                    tailscale_oauth_client_secret_ssm=f"/{Settings.PROJECT_SLUG}/tailscale/oauth-client-secret",
                     # proxied_buckets defaults to every project Storage bucket.
                 ),'''
             ),
@@ -602,17 +608,43 @@ def _infrastructure_template(answers: InitAnswers) -> str:
         )
     return textwrap.dedent(
         f"""\
-        from ci.settings.settings import PROJECT_NAME, PRAKTIKA_BASE_VENV{optional_slug_import}
-        from praktika.infrastructure import Components, ImageBuilder, Storage, VPC
-        from praktika.infrastructure.cloud import CloudInfrastructure
+        from praktika.infrastructure import (
+            CloudInfrastructure,
+            Components,
+            ImageBuilder,
+            Storage,
+            VPC,
+        )
+        from praktika.settings import Settings
+
+
+        # S3 prefixes the runner instance roles are scoped to. Both the artifact
+        # and the report bucket are granted (they are often the same bucket, in
+        # which case the duplicate collapses away).
+        _PROJECT_S3_PREFIXES = list(
+            dict.fromkeys(
+                [
+                    f"{{Settings.S3_ARTIFACT_BUCKET}}/*",
+                    f"{{Settings.S3_REPORT_BUCKET}}/*",
+                ]
+            )
+        )
 
 
         # until published in pip
-        _PRAKTIKA_CONTROLLER_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/praktika_controller-0.1.9-py3-none-any.whl"
+        _PRAKTIKA_PACKAGE_BASE_URL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages"
         # Floating compat alias: the latest backwards-compatible patch in the
         # {compat_version(current_praktika_version())} branch, so the project picks up BC bug fixes
         # without re-pinning on every Praktika release.
-        _PRAKTIKA_WHL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages/{compat_version(current_praktika_version())}/praktika-0.0.0-py3-none-any.whl"
+        _PRAKTIKA_COMPAT_VERSION = "{compat_version(current_praktika_version())}"
+        _PRAKTIKA_WHL = (
+            f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/{{_PRAKTIKA_COMPAT_VERSION}}/"
+            "praktika-0.0.0-py3-none-any.whl"
+        )
+        _PRAKTIKA_CONTROLLER_WHL = (
+            f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/{{_PRAKTIKA_COMPAT_VERSION}}/"
+            "praktika_controller-0.0.0-py3-none-any.whl"
+        )
 
 
         def _image_builders():
@@ -622,13 +654,13 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                 # (boto3/PyJWT/cryptography/requests) automatically; pytest is
                 # an optional extra the runner needs, so list it explicitly.
                 ImageBuilder.PrebuiltVenv(
-                    name=PRAKTIKA_BASE_VENV,
+                    name=Settings.PRAKTIKA_BASE_VENV,
                     packages=[
                         "pytest>=7.0.0",
                         "pytest-reportlog>=0.4.0",
 {optional_ai_package}                        f"praktika[infrastructure] @ {{_PRAKTIKA_WHL}}",
                     ],
-                    description="Praktika runtime venv (infrastructure extra + pytest)",
+                    description="CI runtime venv",
                 ),
             ]
             custom_image_tests = [
@@ -670,7 +702,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                 "pull_requests": "write",
                 "statuses": "write",
             }},
-            repositories=[PROJECT_NAME],
+            repositories=[Settings.PROJECT_NAME],
         )
         _IMAGE_BUILDERS = _image_builders()
         _IMAGE_BUILDERS_BY_NAME = {{builder.name: builder for builder in _IMAGE_BUILDERS}}
@@ -678,7 +710,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
 
         PROJECTS = [
             CloudInfrastructure.Config(
-                name=PROJECT_NAME,
+                name=Settings.PROJECT_NAME,
                 min_praktika_version="{current_praktika_version()}",
                 vpcs=[
                     VPC.Config(
@@ -717,7 +749,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                         image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
                         allowed_ssm_parameters=[],
                         allowed_secrets=[],
-                        allowed_s3_prefixes=["{answers.artifact_storage_name}"],
+                        allowed_s3_prefixes=_PROJECT_S3_PREFIXES,
                         allow_all_ssm_parameters={not answers.is_oss},
                         allow_all_secrets={not answers.is_oss},
                         allow_all_s3_prefixes={not answers.is_oss},
@@ -733,7 +765,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                         image_builder=_IMAGE_BUILDERS_BY_NAME["ci-x86_64-image"],
                         allowed_ssm_parameters=[],
                         allowed_secrets=[],
-                        allowed_s3_prefixes=["{answers.artifact_storage_name}"],
+                        allowed_s3_prefixes=_PROJECT_S3_PREFIXES,
                         allow_all_ssm_parameters={not answers.is_oss},
                         allow_all_secrets={not answers.is_oss},
                         allow_all_s3_prefixes={not answers.is_oss},
@@ -749,7 +781,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                         image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
                         allowed_ssm_parameters=[],
                         allowed_secrets=[],
-                        allowed_s3_prefixes=["{answers.artifact_storage_name}"],
+                        allowed_s3_prefixes=_PROJECT_S3_PREFIXES,
                         allow_all_ssm_parameters={not answers.is_oss},
                         allow_all_secrets={not answers.is_oss},
                         allow_all_s3_prefixes={not answers.is_oss},
@@ -765,7 +797,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                         image_builder=_IMAGE_BUILDERS_BY_NAME["ci-x86_64-image"],
                         allowed_ssm_parameters=[],
                         allowed_secrets=[],
-                        allowed_s3_prefixes=["{answers.artifact_storage_name}"],
+                        allowed_s3_prefixes=_PROJECT_S3_PREFIXES,
                         allow_all_ssm_parameters={not answers.is_oss},
                         allow_all_secrets={not answers.is_oss},
                         allow_all_s3_prefixes={not answers.is_oss},

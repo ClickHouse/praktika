@@ -366,6 +366,10 @@ class JobState:
         self.started_at = None
         self.finished_at = None
         self.filter_reason = None  # set by .skip() when Config Workflow skips it
+        # set by .cancel() — why the job never ran (upstream failed / upstream
+        # cancelled / run cancelled). publish_report turns it into a DROPPED
+        # report row so Finish Workflow doesn't mark it ERROR/NOT_FINALIZED.
+        self.cancel_reason = None
         # Cached-job report link for a SKIPPED (cache-hit) row, so publish_report
         # can author the same report row the runner's hook_html.configure used to
         # (retired on the native path). None for filtered/non-cache skips.
@@ -539,27 +543,50 @@ class JobState:
         if not ok:
             # Dispatch failed (e.g. SQS error) — fail the job with a clear
             # message; nothing else will ever drive it forward. The most common
-            # cause is a runner pool that has no queue yet (not deployed), which
-            # surfaces as a QueueDoesNotExist error from get_queue_url.
+            # cause is a runner pool that has no queue yet (not configured or
+            # not deployed), which surfaces as a QueueDoesNotExist error from
+            # get_queue_url.
             not_deployed = (
                 "QueueDoesNotExist" in reason or "NonExistentQueue" in reason
             )
-            hint = (
-                f" Runner pool `{runs_on}` has no SQS queue — it is likely not "
-                f"deployed. Deploy it (`praktika infrastructure --deploy`) and "
-                f"re-run."
-                if not_deployed
-                else ""
-            )
-            summary = (
-                f"Failed to dispatch job to runner pool `{runs_on}` "
-                f"(queue `{target}`).{hint}"
-            )
-            if reason:
-                summary += f"\n\nError: {reason}"
+            if not_deployed:
+                summary = (
+                    f"Runner pool `{runs_on}` (queue `{target}`) is not "
+                    f"configured or not deployed."
+                )
+            else:
+                summary = (
+                    f"Failed to dispatch job to runner pool `{runs_on}` "
+                    f"(queue `{target}`)."
+                )
+                if reason:
+                    summary += f"\n\nError: {reason}"
+            # Stash a synthesized ERROR Result so the orchestrator republishes a
+            # proper report row carrying this specific reason. Without it the job
+            # has no Result and Finish Workflow stamps the generic NOT_FINALIZED
+            # ("script error or CI runner issue"), hiding the real cause.
+            self._set_dispatch_failure_result(summary)
             self.finish(
                 success=False,
                 output={"title": "Dispatch failed", "summary": summary},
+            )
+
+    def _set_dispatch_failure_result(self, summary):
+        """Build an ERROR Result dict for a job whose dispatch never reached a
+        runner, and stash it on ``self.result`` so ``_republish_report`` emits it
+        as the job's report row (with the specific dispatch-failure reason)
+        instead of the generic ``NOT_FINALIZED``."""
+        try:
+            from ..result import Result
+
+            res = Result.create_new(self.name, Result.Status.ERROR, info=summary)
+            res.start_time = self.started_at
+            res.duration = 0
+            self.result = Result.to_dict(res)
+        except Exception as e:
+            print(
+                f"  [warn] could not synthesize dispatch-failure Result for "
+                f"{self.name!r}: {type(e).__name__}: {e}"
             )
 
     def finish(self, success=True, output=None, details_url=None, non_blocking=False):
@@ -656,6 +683,7 @@ class JobState:
             return
         was_in_flight = self.status in (JobStatus.QUEUED, JobStatus.RUNNING)
         self.status = JobStatus.CANCELLED
+        self.cancel_reason = reason
         if was_in_flight:
             self.finished_at = time.time()
             # Pass an explicit output so the terminal check reflects the
@@ -1074,13 +1102,22 @@ class WorkflowState:
             for name, js in self.jobs.items()
             if js.status == JobStatus.SKIPPED and not isinstance(js.result, dict)
         ]
-        if not terminal and not skipped:
+        # Jobs cascade-cancelled because an upstream dep failed (or the whole run
+        # was cancelled) never reach a runner and produce no Result. Publish a
+        # DROPPED row for each so Finish Workflow sees a completed outcome instead
+        # of marking them ERROR / NOT_FINALIZED ("failed to produce Result").
+        cancelled = [
+            (name, js)
+            for name, js in self.jobs.items()
+            if js.status == JobStatus.CANCELLED and not isinstance(js.result, dict)
+        ]
+        if not terminal and not skipped and not cancelled:
             return
         if not self._ensure_report_env():
             return
         try:
             from ..host_metrics import HostMetricsCollector
-            from ..result import Result, _ResultS3
+            from ..result import Result, ResultInfo, _ResultS3
             from ..usage import ComputeUsage, PipelineUtilization, StorageUsage
 
             # Each job's published view is a fresh dict with rerun_count projected
@@ -1124,9 +1161,25 @@ class WorkflowState:
                 for name, js in skipped
             ]
 
+            def _cancel_info(reason):
+                # "upstream failed" / "upstream cancelled" both mean the job was
+                # dropped because a prior stage did not succeed.
+                if reason and reason.startswith("upstream"):
+                    return ResultInfo.DROPPED_DUE_TO_PREVIOUS_FAILURE
+                return reason or ResultInfo.DROPPED_DUE_TO_PREVIOUS_FAILURE
+
+            cancelled_rows = [
+                Result.create_new(
+                    name,
+                    Result.Status.DROPPED,
+                    info=_cancel_info(js.cancel_reason),
+                )
+                for name, js in cancelled
+            ]
+
             _ResultS3.update_workflow_results(
                 workflow_name=self.workflow.name,
-                new_sub_results=rows + skipped_rows,
+                new_sub_results=rows + skipped_rows + cancelled_rows,
                 # Only SET usage when a job actually finished this run; passing
                 # zeroed aggregates with replace_usage would wipe existing totals
                 # (skipped jobs can be published before any real job completes).
@@ -1136,6 +1189,11 @@ class WorkflowState:
                     pipeline if (terminal and has_pipeline) else None
                 ),
                 replace_usage=True,
+                # Finish Workflow used to stamp this when it dropped unfinished
+                # jobs; on a cancelled run it no longer runs (get_ready skips it),
+                # so the orchestrator marks the report cancelled so the Slack feed
+                # and report render it as cancelled rather than merely finished.
+                top_ext={"is_cancelled": True} if self.cancelled else None,
             )
         except Exception as e:
             print(f"  [warn] could not re-publish workflow report: {e}")
@@ -1218,6 +1276,7 @@ class WorkflowState:
                     "rc": js.rc,
                     "non_blocking": js.non_blocking,
                     "filter_reason": js.filter_reason,
+                    "cancel_reason": js.cancel_reason,
                     "skip_details_url": js.skip_details_url,
                     "rerun_count": js.rerun_count,
                 }
@@ -1309,6 +1368,7 @@ class WorkflowState:
             js.rc = rec.get("rc")
             js.non_blocking = bool(rec.get("non_blocking"))
             js.filter_reason = rec.get("filter_reason")
+            js.cancel_reason = rec.get("cancel_reason")
             js.skip_details_url = rec.get("skip_details_url")
             js.rerun_count = rec.get("rerun_count", 0) or 0
             if js.status in _TERMINAL:
@@ -1946,7 +2006,15 @@ class WorkflowState:
         today) promote to READY once every dep reaches *any* terminal
         state, regardless of success/failure/skip/cancel. That's how the
         post-run jobs (CIDB writeback, merge-ready check, Slack notify)
-        fire even when the run was cancelled or the DAG failed.
+        fire even when the DAG failed.
+
+        The one exception is a *cancelled* run: there is nothing to finalize
+        on a runner. The orchestrator already owns the report summary and
+        completes the top-level check as ``cancelled`` (see
+        REPORT_OWNERSHIP.md), and running post_hooks / CIDB / merge-ready for
+        a cancelled run is unwanted. Dispatching Finish Workflow would only
+        put it on a runner to be killed by the cancel watchdog (or time out
+        on the heartbeat), so it is SKIPPED here instead.
         """
         ready = []
         for name, js in self.jobs.items():
@@ -1955,8 +2023,11 @@ class WorkflowState:
             deps = [self.jobs[d] for d in self._deps.get(name, ())]
             if js.job.always_run:
                 if all(d.status in _TERMINAL for d in deps):
-                    js.status = JobStatus.READY
-                    ready.append(js)
+                    if self.cancelled:
+                        js.skip(reason="run cancelled")
+                    else:
+                        js.status = JobStatus.READY
+                        ready.append(js)
                 continue
             # A dep that FAILED but is non_blocking
             # (do_not_block_pipeline_on_failure) counts as success-equivalent
@@ -1983,8 +2054,10 @@ class WorkflowState:
     def cancel_unfinished_jobs(self):
         """When a cancel signal arrives mid-run, mark every PENDING or
         in-flight job that isn't flagged ``always_run`` as
-        CANCELLED. Leaves unconditional post-run jobs (Finish Workflow)
-        alone so they still fire after their deps settle.
+        CANCELLED. ``always_run`` post-run jobs (Finish Workflow) are left
+        alone here, but on a cancelled run ``get_ready`` SKIPs them rather
+        than dispatching — there is nothing to finalize on a runner (see
+        ``get_ready``).
 
         In-flight jobs that are cancelled here had their task already
         dispatched to a runner. The cancel flag written to S3 signals those

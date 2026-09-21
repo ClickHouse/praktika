@@ -78,10 +78,19 @@ def cloudwatch_log_group_arns() -> List[str]:
 
 
 def project_bucket_arns() -> List[str]:
-    bucket = (getattr(Settings, "S3_ARTIFACT_BUCKET", "") or "").strip()
-    if not bucket:
+    artifact_bucket = (getattr(Settings, "S3_ARTIFACT_BUCKET", "") or "").strip()
+    if not artifact_bucket:
         raise ValueError(
             "Settings.S3_ARTIFACT_BUCKET is required to scope S3 IAM policies "
             "to this project's bucket. Set it in ci/settings/settings.py."
         )
-    return [f"arn:aws:s3:::{bucket}", f"arn:aws:s3:::{bucket}/*"]
+    report_bucket = (getattr(Settings, "S3_REPORT_BUCKET", "") or "").strip()
+    arns: List[str] = []
+    for bucket in (artifact_bucket, report_bucket):
+        name = bucket.split("/")[0]
+        if not name:
+            continue
+        bucket_arn = f"arn:aws:s3:::{name}"
+        arns.append(bucket_arn)
+        arns.append(f"{bucket_arn}/*")
+    return list(dict.fromkeys(arns))

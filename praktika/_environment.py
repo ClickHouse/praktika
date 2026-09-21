@@ -89,10 +89,6 @@ class _Environment(MetaClasses.Serializable):
         JOB_OUTPUT_STREAM = os.getenv("GITHUB_OUTPUT", "")
         RUN_ID = os.getenv("GITHUB_RUN_ID", "0")
         RUN_URL = f"https://github.com/{REPOSITORY}/actions/runs/{RUN_ID}"
-        try:
-            RERUN_COUNT = max(int(os.getenv("GITHUB_RUN_ATTEMPT") or "1") - 1, 0)
-        except ValueError:
-            RERUN_COUNT = 0
         BASE_BRANCH = os.getenv("GITHUB_BASE_REF", "")
         USER_LOGIN = ""
         COMMIT_AUTHORS = []
@@ -112,6 +108,8 @@ class _Environment(MetaClasses.Serializable):
             with open(EVENT_FILE_PATH, "r", encoding="utf-8") as f:
                 github_event = json.load(f)
             EVENT_ACTION = github_event.get("action", "")
+            # The triggering actor, present on every event; the pull_request branch overrides it with the PR author.
+            USER_LOGIN = github_event.get("sender", {}).get("login", "")
             if "pull_request" in github_event:
                 FORK_NAME = github_event["pull_request"]["head"]["repo"]["full_name"]
                 EVENT_TYPE = Workflow.Event.PULL_REQUEST
@@ -267,7 +265,6 @@ class _Environment(MetaClasses.Serializable):
             },
             WORKFLOW_JOB_DATA=WORKFLOW_JOB_DATA,
             WORKFLOW_CONFIG=None,
-            RERUN_COUNT=RERUN_COUNT,
         )
 
     @classmethod

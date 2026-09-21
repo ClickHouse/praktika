@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -39,6 +40,19 @@ ALLOWED_SENDERS = set()
 
 def _parse_allowed_push_branches():
     value = os.environ.get("ALLOWED_PUSH_BRANCHES")
+    if value is None:
+        return {"main"}
+    return {branch.strip() for branch in value.split(",") if branch.strip()}
+
+
+def _parse_allowed_pr_base_branches():
+    """PR target-branch allow-list. Entries are exact names or regex patterns
+    (matched with re.fullmatch), mirroring the orchestrator's workflow
+    base_branches matching so both layers agree on which PRs are in scope.
+
+    An unset env var defaults to {"main"}; an explicitly empty value means no PR
+    is accepted (symmetric with ALLOWED_PUSH_BRANCHES)."""
+    value = os.environ.get("ALLOWED_PR_BASE_BRANCHES")
     if value is None:
         return {"main"}
     return {branch.strip() for branch in value.split(",") if branch.strip()}
@@ -92,6 +106,7 @@ def _parse_allowed_users():
 
 
 ALLOWED_PUSH_BRANCHES = _parse_allowed_push_branches()
+ALLOWED_PR_BASE_BRANCHES = _parse_allowed_pr_base_branches()
 EXTERNAL_PR_AUTOAPPROVE_PATHS = _parse_autoapprove_paths()
 ALLOWED_REPOSITORIES = _parse_allowed_repositories()
 ALLOWED_USERS = _parse_allowed_users()
@@ -298,6 +313,18 @@ def _is_external_pr(pr, repo_full_name: str) -> bool:
 
 def _is_allowed_repository(repo_full_name: str) -> bool:
     return not ALLOWED_REPOSITORIES or repo_full_name in ALLOWED_REPOSITORIES
+
+
+def _is_allowed_pr_base_branch(base_ref: str) -> bool:
+    """A PR's target (base) branch matches the allow-list — exact or regex.
+
+    Mirrors the orchestrator's base_branches matching (praktika.orchestrator._branch_matches)
+    so a PR the lambda enqueues is one a workflow can actually pick up. An empty
+    allow-list matches nothing, so no PR is enqueued."""
+    for pattern in ALLOWED_PR_BASE_BRANCHES:
+        if pattern == base_ref or re.fullmatch(pattern, base_ref):
+            return True
+    return False
 
 
 def _pr_metadata(pr, repo):
@@ -1264,6 +1291,14 @@ def lambda_handler(event, context):
     workflow = _build_workflow(action, payload, event_ts)
     if not workflow:
         print(f"SKIP: action {action} does not trigger a workflow")
+        return _pr_response(False)
+
+    base_ref = workflow.get("base_ref", "")
+    if not _is_allowed_pr_base_branch(base_ref):
+        print(
+            f"SKIP: PR#{workflow['pr_number']} base branch {base_ref!r} "
+            f"not on the allow-list"
+        )
         return _pr_response(False)
 
     # Refetch the live PR by number — the same authoritative source the rerun

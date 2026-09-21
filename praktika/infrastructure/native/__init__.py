@@ -11,6 +11,7 @@ from .orchestrator_pool import OrchestratorPool
 from .pool_autoscaler import PoolAutoscaler
 from .runner_pool import RunnerPool
 from .s3_proxy import S3Proxy
+from .docker_proxy import DockerProxy
 from .user_data import cidb_user_data
 
 
@@ -22,6 +23,7 @@ class Components:
     PoolAutoscaler = PoolAutoscaler
     RunnerPool = RunnerPool
     S3Proxy = S3Proxy
+    DockerProxy = DockerProxy
     report_page_config = report_page_config
     lambda_gh_trigger_config = lambda_gh_trigger_config
     cidb_user_data = staticmethod(cidb_user_data)

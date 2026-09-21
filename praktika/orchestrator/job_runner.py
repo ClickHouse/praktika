@@ -318,6 +318,17 @@ def run_job(task, gh_token=None, local=False):
         return 1
     job = jobs[0]
 
+    # _build_ci_environment dumped environment.json before the job was resolved,
+    # so it carries no per-job Job.Config. Set it now (the local_orchestrator_run
+    # path in Runner.run skips _setup_env, which is where the GHA path sets
+    # env.JOB_CONFIG = job) so job code can read Info().job_config — e.g.
+    # stateful_prep_step_timeout, which hard-fails when the job timeout is missing.
+    from .._environment import _Environment
+
+    env = _Environment.get()
+    env.JOB_CONFIG = job
+    env.dump()
+
     print(f"Running job [{job.name}] in workflow [{workflow.name}]")
 
     # Forward optional fields so the orchestrator can parameterize jobs

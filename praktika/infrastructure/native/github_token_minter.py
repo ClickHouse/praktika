@@ -80,6 +80,13 @@ class GitHubTokenMinter:
             python_dependencies=[
                 "PyJWT[crypto]>=2.10.0",
             ],
+            # Keep one container warm and its in-container token cache fresh
+            # (CACHE_TTL is 10 min in lambda_github_token.py). Callers invoke
+            # this lambda synchronously on their own cold path, so a cold
+            # container here (~4s to fetch the secret, mint the JWT and call
+            # GitHub) lands directly on the caller's critical path. A periodic
+            # ping keeps the token minting off that path (cache hit ~2ms).
+            schedule_expression="rate(5 minutes)",
             timeout_ms=10 * 1000,
             memory_size_mb=128,
         )

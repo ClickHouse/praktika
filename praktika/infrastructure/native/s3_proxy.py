@@ -71,6 +71,11 @@ class S3Proxy:
     # Tailscale node hostname; defaults to `name`. Must be unique on the
     # tailnet, so project scaffolding sets it to "{slug}-ci-reports".
     hostname: str = ""
+    # Tailnet DNS suffix (e.g. "tail983ac.ts.net"), fixed per Tailscale org.
+    # Combined with `hostname` it yields the stable report FQDN
+    # `{hostname}.{tailnet}`. Optional for deploy (the node discovers its own
+    # FQDN at boot), but required by `--verify` to smoke-test the served URL.
+    tailnet: str = ""
     tailscale_tag: str = "tag:ci-s3-proxy"
     tailscale_oauth_client_id_ssm: str = "/praktika/tailscale/oauth-client-id"
     tailscale_oauth_client_secret_ssm: str = "/praktika/tailscale/oauth-client-secret"
@@ -191,3 +196,10 @@ class S3Proxy:
             return
         self.proxied_buckets = cleaned
         self._refresh()
+
+    def report_fqdn(self) -> str:
+        """The stable tailnet FQDN reports are served at, or "" if `tailnet`
+        is not configured. Reports live at ``https://{report_fqdn}/{bucket}/{key}``."""
+        if not self.hostname or not self.tailnet:
+            return ""
+        return f"{self.hostname}.{self.tailnet.strip().lstrip('.')}"

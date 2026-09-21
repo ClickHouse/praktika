@@ -205,6 +205,12 @@ def create_parser():
         default=False,
     )
     _infra_parser.add_argument(
+        "--verify",
+        help="Health-check deployed infrastructure without changing it (e.g. confirm the GitHub token minter Lambda mints a token). Use --only to select checks",
+        action="store_true",
+        default=False,
+    )
+    _infra_parser.add_argument(
         "--project",
         help="Infrastructure project name from ci/infrastructure/projects.py PROJECTS",
         type=str,
@@ -351,9 +357,10 @@ def main(argv=None):
                 and not args.destroy_runtime
                 and not args.destroy_all
                 and not args.restart_instances
+                and not args.verify
             ):
                 Utils.raise_with_error(
-                    "infrastructure command requires --deploy, --destroy-runtime, --destroy-all, or --restart-instances"
+                    "infrastructure command requires --deploy, --destroy-runtime, --destroy-all, --restart-instances, or --verify"
                 )
             if args.destroy_runtime and args.destroy_all:
                 Utils.raise_with_error(
@@ -394,6 +401,13 @@ def main(argv=None):
                 from .mangle import _get_infra_config
 
                 _get_infra_config(project).restart_instances()
+
+            if args.verify:
+                from .mangle import _get_infra_config
+
+                ok = _get_infra_config(project).verify(only=args.only)
+                if not ok:
+                    sys.exit(1)
         finally:
             UserPrompt.AUTO_CONFIRM = previous_auto_confirm
     elif args.command == "orchestrate":
