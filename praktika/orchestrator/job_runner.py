@@ -228,6 +228,11 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
         # the pinned tree. Empty when snapshots are disabled (jobs clone the head).
         "SNAPSHOT_SHA": task.get("snapshot_sha", ""),
         "REPO_SNAPSHOT_KEY": task.get("repo_snapshot_key", ""),
+        # This job's own GitHub check-run id, so the job Result's "Run" link
+        # (Info.get_job_url) points at the job's check rather than the workflow's.
+        # Per-runner: it identifies THIS job, never inherited from an upstream
+        # job's env dump (which would carry the Config job's check id).
+        "WORKFLOW_JOB_DATA": {"check_run_id": task.get("check_run_id")},
     }
 
     carried = task.get("environment")
@@ -254,6 +259,7 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
             COMMIT_URL=commit_url,
             RUN_ID=run_id,
             RUN_URL=change_url,
+            WORKFLOW_JOB_DATA={"check_run_id": task.get("check_run_id")},
             INSTANCE_TYPE=instance_type,
             INSTANCE_ID=instance_id,
             INSTANCE_LIFE_CYCLE=instance_life_cycle,

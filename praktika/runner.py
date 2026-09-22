@@ -325,9 +325,7 @@ class Runner:
             start_time=Utils.timestamp(),
         )
         if env.WORKFLOW_JOB_DATA:
-            result.add_ext_key_value(
-                "run_url", f"{env.RUN_URL}/job/{env.WORKFLOW_JOB_DATA['check_run_id']}"
-            )
+            result.add_ext_key_value("run_url", Info().get_job_url())
         result.dump()
 
         if not local_job_run:

@@ -138,7 +138,7 @@ class HtmlRunnerHooks:
             "commit_sha", env.SHA
         ).add_ext_key_value("commit_message", env.COMMIT_MESSAGE).add_ext_key_value("repo_name", env.REPOSITORY).add_ext_key_value("pr_number", env.PR_NUMBER).add_ext_key_value(
             "run_url", env.RUN_URL
-        ).add_ext_key_value("change_url", env.CHANGE_URL).add_ext_key_value("workflow_name", env.WORKFLOW_NAME).add_ext_key_value("base_branch", env.BASE_BRANCH)
+        ).add_ext_key_value("change_url", env.CHANGE_URL).add_ext_key_value("commit_url", env.COMMIT_URL).add_ext_key_value("workflow_name", env.WORKFLOW_NAME).add_ext_key_value("base_branch", env.BASE_BRANCH)
         return summary_result, report_url_current_sha
 
     @classmethod
@@ -241,10 +241,7 @@ class HtmlRunnerHooks:
         result = Result.from_fs(_job.name)
         env = _Environment.get()
         if env.WORKFLOW_JOB_DATA:
-            result.add_ext_key_value(
-                "run_url",
-                f"{env.RUN_URL}/job/{env.WORKFLOW_JOB_DATA['check_run_id']}",
-            )
+            result.add_ext_key_value("run_url", Info().get_job_url())
         _ResultS3.upload_result_files_to_s3(result).dump()
         storage_usage = None
         if StorageUsage.exist():
