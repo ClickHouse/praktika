@@ -2,17 +2,17 @@
 <html lang="en">
 <head>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-    <title>Coverage for praktika/infrastructure/native/iam_scope.py: 87.10%</title>
+    <title>Coverage for praktika/infrastructure/native/iam_scope.py: 86.36%</title>
     <link rel="icon" sizes="32x32" href="favicon_32_cb_c827f16f.png">
     <link rel="stylesheet" href="style_cb_4667309f.css" type="text/css">
-    <script src="coverage_html_cb_dd2e7eb5.js" defer></script>
+    <script src="coverage_html_cb_15cffcd0.js" defer></script>
 </head>
 <body class="pyfile">
 <header>
     <div class="content">
         <h1>
             <span class="text">Coverage for </span><b>praktika<span class="sep">/</span>infrastructure<span class="sep">/</span>native<span class="sep">/</span>iam_scope.py</b>:
-            <span class="pc_cov">87.10%</span>
+            <span class="pc_cov">86.36%</span>
         </h1>
         <aside id="help_panel_wrapper">
             <input id="help_panel_state" type="checkbox">
@@ -55,19 +55,19 @@
             </div>
         </aside>
         <h2>
-            <span class="text">27 statements &nbsp;</span>
-            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">25<span class="text"> run</span></button>
-            <button type="button" class="mis show_mis button_toggle_mis" value="mis" data-shortcut="m" title="Toggle lines missing">2<span class="text"> missing</span></button>
+            <span class="text">36 statements &nbsp;</span>
+            <button type="button" class="run button_toggle_run" value="run" data-shortcut="r" title="Toggle lines run">33<span class="text"> run</span></button>
+            <button type="button" class="mis show_mis button_toggle_mis" value="mis" data-shortcut="m" title="Toggle lines missing">3<span class="text"> missing</span></button>
             <button type="button" class="exc show_exc button_toggle_exc" value="exc" data-shortcut="x" title="Toggle lines excluded">0<span class="text"> excluded</span></button>
-            <button type="button" class="par run show_par button_toggle_par" value="par" data-shortcut="p" title="Toggle lines partially run">2<span class="text"> partial</span></button>
+            <button type="button" class="par run show_par button_toggle_par" value="par" data-shortcut="p" title="Toggle lines partially run">3<span class="text"> partial</span></button>
         </h2>
         <p class="text">
             <a id="prevFileLink" class="nav" href="z_bab6a016e3943c0e_github_token_minter_py.html">&#xab; prev</a> &nbsp; &nbsp;
             <a id="indexLink" class="nav" href="index.html">&Hat; index</a> &nbsp; &nbsp;
             <a id="nextFileLink" class="nav" href="z_bab6a016e3943c0e_image_builder_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
-            <a class="nav" href="https://coverage.readthedocs.io/en/7.16.0">coverage.py v7.16.0</a>,
-            created at 2026-09-09 14:03 +0000
+            <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
+            created at 2026-09-22 17:00 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -162,13 +162,22 @@
     <p class="pln"><span class="n"><a id="t78" href="#t78">78</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t79" href="#t79">79</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t80" href="#t80">80</a></span><span class="t"><span class="key">def</span> <span class="nam">project_bucket_arns</span><span class="op">(</span><span class="op">)</span> <span class="op">-&gt;</span> <span class="nam">List</span><span class="op">[</span><span class="nam">str</span><span class="op">]</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t81" href="#t81">81</a></span><span class="t">    <span class="nam">bucket</span> <span class="op">=</span> <span class="op">(</span><span class="nam">getattr</span><span class="op">(</span><span class="nam">Settings</span><span class="op">,</span> <span class="str">&quot;S3_ARTIFACT_BUCKET&quot;</span><span class="op">,</span> <span class="str">&quot;&quot;</span><span class="op">)</span> <span class="key">or</span> <span class="str">&quot;&quot;</span><span class="op">)</span><span class="op">.</span><span class="nam">strip</span><span class="op">(</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="par run show_par"><span class="n"><a id="t82" href="#t82">82</a></span><span class="t">    <span class="key">if</span> <span class="key">not</span> <span class="nam">bucket</span><span class="op">:</span>&nbsp;</span><span class="r"><span class="annotate short">82&#x202F;&#x219B;&#x202F;83</span><span class="annotate long">line 82 didn't jump to line 83 because the condition on line 82 was never true</span></span></p>
+    <p class="run"><span class="n"><a id="t81" href="#t81">81</a></span><span class="t">    <span class="nam">artifact_bucket</span> <span class="op">=</span> <span class="op">(</span><span class="nam">getattr</span><span class="op">(</span><span class="nam">Settings</span><span class="op">,</span> <span class="str">&quot;S3_ARTIFACT_BUCKET&quot;</span><span class="op">,</span> <span class="str">&quot;&quot;</span><span class="op">)</span> <span class="key">or</span> <span class="str">&quot;&quot;</span><span class="op">)</span><span class="op">.</span><span class="nam">strip</span><span class="op">(</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="par run show_par"><span class="n"><a id="t82" href="#t82">82</a></span><span class="t">    <span class="key">if</span> <span class="key">not</span> <span class="nam">artifact_bucket</span><span class="op">:</span>&nbsp;</span><span class="r"><span class="annotate short">82&#x202F;&#x219B;&#x202F;83</span><span class="annotate long">line 82 didn't jump to line 83 because the condition on line 82 was never true</span></span></p>
     <p class="mis show_mis"><span class="n"><a id="t83" href="#t83">83</a></span><span class="t">        <span class="key">raise</span> <span class="nam">ValueError</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
     <p class="mis mis2 show_mis"><span class="n"><a id="t84" href="#t84">84</a></span><span class="t">            <span class="str">&quot;Settings.S3_ARTIFACT_BUCKET is required to scope S3 IAM policies &quot;</span>&nbsp;</span><span class="r"></span></p>
     <p class="mis mis2 show_mis"><span class="n"><a id="t85" href="#t85">85</a></span><span class="t">            <span class="str">&quot;to this project&#x27;s bucket. Set it in ci/settings/settings.py.&quot;</span>&nbsp;</span><span class="r"></span></p>
     <p class="mis mis2 show_mis"><span class="n"><a id="t86" href="#t86">86</a></span><span class="t">        <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
-    <p class="run"><span class="n"><a id="t87" href="#t87">87</a></span><span class="t">    <span class="key">return</span> <span class="op">[</span><span class="fst">f&quot;</span><span class="fst">arn:aws:s3:::</span><span class="op">{</span><span class="nam">bucket</span><span class="op">}</span><span class="fst">&quot;</span><span class="op">,</span> <span class="fst">f&quot;</span><span class="fst">arn:aws:s3:::</span><span class="op">{</span><span class="nam">bucket</span><span class="op">}</span><span class="fst">/*</span><span class="fst">&quot;</span><span class="op">]</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t87" href="#t87">87</a></span><span class="t">    <span class="nam">report_bucket</span> <span class="op">=</span> <span class="op">(</span><span class="nam">getattr</span><span class="op">(</span><span class="nam">Settings</span><span class="op">,</span> <span class="str">&quot;S3_REPORT_BUCKET&quot;</span><span class="op">,</span> <span class="str">&quot;&quot;</span><span class="op">)</span> <span class="key">or</span> <span class="str">&quot;&quot;</span><span class="op">)</span><span class="op">.</span><span class="nam">strip</span><span class="op">(</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t88" href="#t88">88</a></span><span class="t">    <span class="nam">arns</span><span class="op">:</span> <span class="nam">List</span><span class="op">[</span><span class="nam">str</span><span class="op">]</span> <span class="op">=</span> <span class="op">[</span><span class="op">]</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t89" href="#t89">89</a></span><span class="t">    <span class="key">for</span> <span class="nam">bucket</span> <span class="key">in</span> <span class="op">(</span><span class="nam">artifact_bucket</span><span class="op">,</span> <span class="nam">report_bucket</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t90" href="#t90">90</a></span><span class="t">        <span class="nam">name</span> <span class="op">=</span> <span class="nam">bucket</span><span class="op">.</span><span class="nam">split</span><span class="op">(</span><span class="str">&quot;/&quot;</span><span class="op">)</span><span class="op">[</span><span class="num">0</span><span class="op">]</span>&nbsp;</span><span class="r"></span></p>
+    <p class="par run show_par"><span class="n"><a id="t91" href="#t91">91</a></span><span class="t">        <span class="key">if</span> <span class="key">not</span> <span class="nam">name</span><span class="op">:</span>&nbsp;</span><span class="r"><span class="annotate short">91&#x202F;&#x219B;&#x202F;92</span><span class="annotate long">line 91 didn't jump to line 92 because the condition on line 91 was never true</span></span></p>
+    <p class="mis show_mis"><span class="n"><a id="t92" href="#t92">92</a></span><span class="t">            <span class="key">continue</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t93" href="#t93">93</a></span><span class="t">        <span class="nam">bucket_arn</span> <span class="op">=</span> <span class="fst">f&quot;</span><span class="fst">arn:aws:s3:::</span><span class="op">{</span><span class="nam">name</span><span class="op">}</span><span class="fst">&quot;</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t94" href="#t94">94</a></span><span class="t">        <span class="nam">arns</span><span class="op">.</span><span class="nam">append</span><span class="op">(</span><span class="nam">bucket_arn</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t95" href="#t95">95</a></span><span class="t">        <span class="nam">arns</span><span class="op">.</span><span class="nam">append</span><span class="op">(</span><span class="fst">f&quot;</span><span class="op">{</span><span class="nam">bucket_arn</span><span class="op">}</span><span class="fst">/*</span><span class="fst">&quot;</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="run"><span class="n"><a id="t96" href="#t96">96</a></span><span class="t">    <span class="key">return</span> <span class="nam">list</span><span class="op">(</span><span class="nam">dict</span><span class="op">.</span><span class="nam">fromkeys</span><span class="op">(</span><span class="nam">arns</span><span class="op">)</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
 </main>
 <footer>
     <div class="content">
@@ -177,8 +186,8 @@
             <a class="nav" href="index.html">&Hat; index</a> &nbsp; &nbsp;
             <a class="nav" href="z_bab6a016e3943c0e_image_builder_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
-            <a class="nav" href="https://coverage.readthedocs.io/en/7.16.0">coverage.py v7.16.0</a>,
-            created at 2026-09-09 14:03 +0000
+            <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
+            created at 2026-09-22 17:00 +0000
         </p>
     </div>
 </footer>
