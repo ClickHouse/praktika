@@ -57,6 +57,7 @@ def _make_state(s3, statuses, always_run=()):
     state._snapshot_sha = ""
     state._repo_snapshot_key = ""
     state._gh_token = None  # can_post_checks False -> no check API calls
+    state.cancelled = False
     state.jobs = {}
     for name, status in statuses.items():
         js = JobState.__new__(JobState)
@@ -76,6 +77,7 @@ def _make_state(s3, statuses, always_run=()):
         js.filter_reason = None
         js.skip_details_url = None
         js.rerun_count = 0
+        js.cancel_reason = None
         js._workflow_state = state
         state.jobs[name] = js
     state._deps = {"A": (), "B": ("A",), "C": ("B",)}

@@ -200,10 +200,10 @@ def test_dispatch_failure_to_undeployed_pool_gives_clear_message(monkeypatch):
     assert fake_check.completed, "check must be completed, not left QUEUED"
     last = fake_check.completed[-1]
     assert last["conclusion"] == "failure"
+    assert last["output"]["title"] == "Dispatch failed"
     summary = last["output"]["summary"]
-    assert "Failed to dispatch" in summary
+    assert "not configured or not deployed" in summary
     assert "arm-2xsmall-bedrock" in summary
-    assert "not deployed" in summary
     assert "QUEUED: job dispatched" not in summary
 
 

@@ -251,7 +251,11 @@ def test_blank_write_up_aborts_before_structuring(capsys):
         response_schema=_SCHEMA,
     )
     assert turn.reasoning == ""
-    assert turn.error == "model produced no review text after investigation"
+    assert turn.error == (
+        "model spent its entire tool-call budget investigating and "
+        "produced no review text. Retrying with the same settings will "
+        "not help; simplify the prompt or raise the tool-round budget."
+    )
     # No structuring call was made (the queue was not drained past the write-up).
     assert not p._client._responses  # all consumed; no extra phase-2 pop
     assert len(p._client.requests) == _MAX_TOOL_ROUNDS + 2  # cap rounds + write-up

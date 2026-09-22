@@ -964,6 +964,11 @@ def _handle_rerun(check_obj, payload, delivery_id, sender, event_ts, source):
     _handle_full_rerun(check_obj, payload, delivery_id, sender, event_ts, source)
 
 
+def _rerun_base_label(fresh_base):
+    """Human-readable base mode for rerun log lines."""
+    return "fresh base" if fresh_base else "original base"
+
+
 def _handle_partial_rerun(
     run_id, job, check_obj, payload, delivery_id, sender, event_ts, fresh_base=False
 ):
@@ -1040,8 +1045,10 @@ def _handle_partial_rerun(
         # is intentionally IGNORED here — an in-progress run keeps its existing
         # snapshot; re-merging against a moved base only happens on a finished-run
         # resume (below), where a fresh orchestrator boots.
-        note = " (fresh_base ignored: run in progress)" if fresh_base else ""
-        print(f"RERUN (partial, live): run={run_id} job={job!r}{note}")
+        note = " — fresh base ignored (run in progress)" if fresh_base else ""
+        print(
+            f"RERUN (partial, live, original base): run={run_id} job={job!r}{note}"
+        )
         return
 
     # Finished: spawn a resume — but only one. resume.lock is a per-run boot lease
@@ -1051,8 +1058,9 @@ def _handle_partial_rerun(
     # already in S3.
     if not _claim_resume_lock(run_id, event_ts):
         print(
-            f"RERUN (partial, resume): run={run_id} job={job!r} — "
-            f"resume already in flight; request queued"
+            f"RERUN (partial, resume, {_rerun_base_label(fresh_base)}): "
+            f"run={run_id} job={job!r} — resume already in flight; request queued "
+            f"(base taken from the in-flight resume, not this click)"
         )
         return
 
@@ -1091,7 +1099,10 @@ def _handle_partial_rerun(
         # wrongly concluding a resume is already in flight. Then propagate.
         _release_resume_lock(run_id)
         raise
-    print(f"RERUN (partial, resume, spawned): run={run_id} job={job!r}")
+    print(
+        f"RERUN (partial, resume, spawned, {_rerun_base_label(fresh_base)}): "
+        f"run={run_id} job={job!r}"
+    )
 
 
 def _handle_full_rerun(check_obj, payload, delivery_id, sender, event_ts, source):

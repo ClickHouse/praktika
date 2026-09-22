@@ -71,6 +71,9 @@ class _FakeState:
     def __init__(self, *a, **k):
         pass
 
+    def seed_repo_snapshot(self, *a, **k):
+        pass
+
     def print_plan(self):
         pass
 

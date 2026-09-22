@@ -187,6 +187,13 @@ class _FakeEC2:
             return {"Tags": [{"ResourceId": "vpc-runtime"}]}
         return {"Tags": []}
 
+    def describe_vpc_endpoints(self, Filters):
+        return {"VpcEndpoints": [{"VpcEndpointId": "vpce-runtime"}]}
+
+    def delete_vpc_endpoints(self, VpcEndpointIds):
+        for eid in VpcEndpointIds:
+            self.calls.append(f"vpce:{eid}")
+
     def describe_subnets(self, Filters):
         return {"Subnets": [{"SubnetId": "subnet-runtime"}]}
 
