@@ -17,6 +17,22 @@ python3 -m praktika infrastructure --deploy --only AutoScalingGroup
 # Roll EC2 instances on every ASG (replace with the latest launch template version)
 python3 -m praktika infrastructure --restart-instances
 
+# Health-check deployed infrastructure (read-only; changes nothing).
+# Probes live components and exits non-zero if any check fails. Checks:
+#   - each GitHub token minter Lambda mints a usable installation token;
+#   - every secret/parameter the config references exists in AWS (SSM
+#     Parameter Store / Secrets Manager);
+#   - the S3 report proxy's Tailscale OAuth client can mint an auth key with the
+#     configured tailscale_tag (catches a wrong/unauthorized tag pre-deploy);
+#   - the S3 report proxy serves a real object from a private bucket (fetched
+#     through the proxy and byte-compared against S3; requires the tailnet).
+python3 -m praktika infrastructure --verify
+
+# Run only selected checks (same component names as --deploy --only)
+python3 -m praktika infrastructure --verify --only GitHubTokenMinter
+python3 -m praktika infrastructure --verify --only Secrets
+python3 -m praktika infrastructure --verify --only S3Proxy
+
 # Destroy project-prefixed execution-plane resources while keeping S3, VPC,
 # CIDB, Dedicated Hosts, EC2 instances, and the GitHub webhook wiring intact.
 # Destroy commands require --project to match a name in ci/infrastructure/projects.py.

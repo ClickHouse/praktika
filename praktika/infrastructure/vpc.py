@@ -122,6 +122,13 @@ class VPC:
         cidr: str = "10.0.0.0/16"
         region: str = ""
         subnets: List["VPC.Subnet"] = field(default_factory=list)
+        # Gateway VPC endpoints to create (e.g. ["s3"] or ["s3", "dynamodb"]).
+        # A short name is expanded to com.amazonaws.{region}.{name}; a value
+        # containing "." is used as-is. Gateway endpoints keep in-region service
+        # traffic on the AWS backbone and stamp aws:SourceVpc / aws:sourceVpce on
+        # the request, which VPC-scoped bucket policies require (e.g. the private
+        # build/report buckets that only allow specific VPCs/endpoints).
+        gateway_endpoint_services: List[str] = field(default_factory=list)
         ext: Dict[str, Any] = field(default_factory=dict)
 
         def _tag(self, name: str):
@@ -201,6 +208,51 @@ class VPC:
                 subnet_ids.append(subnet_id)
             self.ext["subnet_ids"] = subnet_ids
 
+            # Gateway VPC endpoints (e.g. S3). Associated with the route table so
+            # in-region service traffic routes through the endpoint and carries
+            # the VPC context (aws:SourceVpc / aws:sourceVpce). Idempotent: an
+            # existing endpoint is reused and the route table added if missing.
+            endpoint_ids: Dict[str, str] = {}
+            for svc in self.gateway_endpoint_services:
+                service_name = (
+                    svc if "." in svc else f"com.amazonaws.{self.region}.{svc}"
+                )
+                ep_name = f"{self.name}-{service_name.rsplit('.', 1)[-1]}-gw"
+                existing = ec2.describe_vpc_endpoints(
+                    Filters=[
+                        {"Name": "vpc-id", "Values": [vpc_id]},
+                        {"Name": "service-name", "Values": [service_name]},
+                        {"Name": "vpc-endpoint-type", "Values": ["Gateway"]},
+                    ]
+                )["VpcEndpoints"]
+                if existing:
+                    ep = existing[0]
+                    ep_id = ep["VpcEndpointId"]
+                    print(f"Gateway endpoint '{ep_name}' already exists: {ep_id}")
+                    if rt_id not in ep.get("RouteTableIds", []):
+                        ec2.modify_vpc_endpoint(
+                            VpcEndpointId=ep_id, AddRouteTableIds=[rt_id]
+                        )
+                        print(f"Associated route table {rt_id} with {ep_id}")
+                else:
+                    ep_id = ec2.create_vpc_endpoint(
+                        VpcId=vpc_id,
+                        VpcEndpointType="Gateway",
+                        ServiceName=service_name,
+                        RouteTableIds=[rt_id],
+                        TagSpecifications=[
+                            {
+                                "ResourceType": "vpc-endpoint",
+                                "Tags": self._tag(ep_name),
+                            }
+                        ],
+                    )["VpcEndpoint"]["VpcEndpointId"]
+                    print(
+                        f"Created gateway endpoint '{ep_name}' ({service_name}): {ep_id}"
+                    )
+                endpoint_ids[svc] = ep_id
+            self.ext["gateway_endpoint_ids"] = endpoint_ids
+
             # Default security group — allows all outbound, blocks all inbound
             sg_name = f"{self.name}-sg"
             existing_sgs = ec2.describe_security_groups(Filters=[
@@ -231,6 +283,16 @@ class VPC:
             if not vpc_id:
                 print(f"VPC '{self.name}' does not exist, skipping")
                 return
+
+            # Delete VPC endpoints first — they hold route-table associations
+            # and block route-table/VPC deletion.
+            endpoints = ec2.describe_vpc_endpoints(
+                Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
+            )["VpcEndpoints"]
+            endpoint_ids = [e["VpcEndpointId"] for e in endpoints]
+            if endpoint_ids:
+                ec2.delete_vpc_endpoints(VpcEndpointIds=endpoint_ids)
+                print(f"Deleted VPC endpoints {endpoint_ids}")
 
             # Delete subnets
             subnets = ec2.describe_subnets(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])["Subnets"]

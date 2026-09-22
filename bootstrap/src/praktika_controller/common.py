@@ -20,6 +20,12 @@ FIRST_BOOT_RESERVED_CAPACITY_LOG_INTERVAL_S = 60 * 60
 WORKDIR_CLEANUP_ATTEMPTS = 3
 WORKDIR_CLEANUP_RETRY_DELAY_S = 2
 
+# Fixed subdirectory of the per-pool work_dir into which the repo is cloned or
+# a snapshot restored. The work_dir is already scoped per event (its parent
+# carries the PR/push identity), so a stable name here keeps the checkout path
+# identical across events on the same pool.
+REPO_SUBDIR = "repo"
+
 
 class LogRateLimiter:
     def __init__(
@@ -559,6 +565,33 @@ def git(args, cwd=None) -> str:
     return result.stdout
 
 
+def head_commit_info(clone_dir, log=None) -> dict:
+    """The checked-out HEAD commit's subject line + author email(s).
+
+    Captured from the head clone BEFORE the ephemeral merge rewrites HEAD to the
+    merge commit. The merged snapshot every job restores is history-free, so the
+    head commit object is unreachable downstream — carrying this on the run keeps
+    the report header, CIDB, and Slack notifications anchored to the PR branch
+    head instead of the synthetic "Merge … into …" commit. Best-effort: any field
+    that can't be read comes back empty."""
+    info = {"message": "", "authors": []}
+    try:
+        info["message"] = git(["log", "-1", "--pretty=%s", "HEAD"], cwd=clone_dir).strip()
+    except Exception as e:  # noqa: BLE001
+        if log is not None:
+            log.warning("Could not read head commit subject: %s", e)
+    try:
+        info["authors"] = [
+            e
+            for e in git(["log", "-1", "--pretty=%ae", "HEAD"], cwd=clone_dir).splitlines()
+            if "@" in e
+        ]
+    except Exception as e:  # noqa: BLE001
+        if log is not None:
+            log.warning("Could not read head commit authors: %s", e)
+    return info
+
+
 _GITHUB_API_BASE = "https://api.github.com"
 
 
@@ -656,11 +689,7 @@ def clone_repo(
 ):
     """Clone repo into a per-event work dir."""
     work_dir = str(work_dir)
-    if pr_number:
-        clone_dir = os.path.join(work_dir, f"pr-{pr_number}")
-    else:
-        slug = (branch or head_sha[:12] or "push").replace("/", "_")
-        clone_dir = os.path.join(work_dir, f"push-{slug}")
+    clone_dir = os.path.join(work_dir, REPO_SUBDIR)
     if os.path.exists(clone_dir) and clean_existing:
         shutil.rmtree(clone_dir)
     elif os.path.exists(clone_dir) and any(Path(clone_dir).iterdir()):
@@ -725,11 +754,7 @@ def restore_repo_snapshot(
     import shlex
 
     work_dir = str(work_dir)
-    if pr_number:
-        clone_dir = os.path.join(work_dir, f"pr-{pr_number}")
-    else:
-        slug = (branch or snapshot_sha[:12] or "push").replace("/", "_")
-        clone_dir = os.path.join(work_dir, f"push-{slug}")
+    clone_dir = os.path.join(work_dir, REPO_SUBDIR)
     if os.path.exists(clone_dir):
         shutil.rmtree(clone_dir)
     os.makedirs(clone_dir, exist_ok=True)

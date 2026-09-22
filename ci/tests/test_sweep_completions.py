@@ -147,6 +147,7 @@ def _make_state(
         js.started_at = now - 5
         js.finished_at = None
         js.filter_reason = None
+        js.skip_details_url = None
         js.last_heartbeat_ts = None
         js.attempt = 1
         js.stale_flagged = False
@@ -234,8 +235,13 @@ def test_final_state_renders_check_from_result_payload():
     state.sweep_completions()
 
     assert state.jobs["A"].runner_instance_id == "i-runner"
-    # Raw Result retained verbatim for AI observation.
-    assert state.jobs["A"].result == result
+    # Raw Result retained verbatim for AI observation — sweep_completions no
+    # longer mutates it. The orchestrator's authoritative re-run count is
+    # projected into ext only by published_result (used to build report rows),
+    # 0 here (first attempt).
+    expected = {**result, "ext": result.get("ext") or {}}
+    assert state.jobs["A"].result == expected
+    assert state.jobs["A"].published_result()["ext"]["rerun_count"] == 0
     assert len(check.completed) == 1
     completed = check.completed[0]
     assert completed["conclusion"] == "success"

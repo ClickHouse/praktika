@@ -73,7 +73,7 @@ restored by every downstream job instead of cloning. For `pull_request` with
 head into the target tip; otherwise (and for push) it is the plain head. The trust
 tier is `PRs` (untrusted) vs `REFs` (trusted); IAM scopes them so `pr-*` pools are
 denied *write* to `REFs/`, and trusted pools are denied *read+write* to `PRs/`.
-See `docs/repo-snapshot.md`.
+See `praktika/docs/repo-git-management.md`.
 
 | Key | Purpose |
 |---|---|
@@ -83,12 +83,12 @@ See `docs/repo-snapshot.md`.
 `<sha256>` is the content hash of the archive (tamper-evident: consumers re-hash
 the download and reject a mismatch).
 
-## Per-PR signals (`pr/<pr>/`)
+## Per-PR signals
 
 | Key | Purpose |
 |---|---|
 | `pr/<pr>/cancel-before-<scope>` | Cancel-on-new-push markers (`<scope>` = `base` / `default`), gated by event timestamp. |
-| `pr/<pr>/merge-base-pin.json` | Sticky merge base: `{base_sha, pinned_ts, base_branch}` — the pinned target-branch commit reused within `Settings.STICKY_MERGE_BASE_HOURS` of the PR's previous run. |
+| `PRs/<pr>/merge-base-pin.json` | Sticky merge base: `{base_sha, pinned_ts, base_branch}` — the pinned target-branch commit reused within `Settings.STICKY_MERGE_BASE_HOURS` of the PR's previous run. Stored under `PRs/` so PR runner pools can read/write it with their existing artifact-bucket grant. |
 
 ## AI orchestrator & external-PR gate
 

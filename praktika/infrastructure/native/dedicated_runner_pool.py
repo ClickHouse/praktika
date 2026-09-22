@@ -13,6 +13,7 @@ from .runner_pool import (
     _EC2_MESSAGES_STATEMENT,
     _SSM_MANAGED_INSTANCE_CORE_STATEMENT,
     _SSM_MESSAGES_STATEMENT,
+    _dedup_preserve_order,
     _s3_statements,
     _secrets_manager_resource,
     _ssm_parameter_resource,
@@ -44,9 +45,15 @@ class DedicatedRunnerPool:
     Like RunnerPool, runtime SSM Parameter Store, Secrets Manager, and S3
     access are opt-in through `allowed_ssm_parameters`, `allowed_secrets`,
     `allowed_s3_prefixes` (read+write), and `allowed_s3_prefixes_readonly`
-    (read-only); each has an `allow_all_*` escape hatch. SSM debugging is
-    opt-in through `allow_ssm_debug`. Bare names are project namespaced by
-    CloudInfrastructure.Config; full ARNs are preserved as-is.
+    (read-only). Bare names are project namespaced by
+    CloudInfrastructure.Config; full ARNs are preserved as-is. SSM debugging is
+    opt-in through `allow_ssm_debug`.
+
+    Each resource type also has an `allow_all_*` flag. Despite the name, it
+    grants everything under the project namespace (the "{slug}-"/"{slug}/"
+    name prefix), not the whole account. The `allowed_*` lists are ADDITIVE on
+    top of `allow_all_*` — they are how you reach non-praktika-managed
+    resources outside the project namespace (pass their full ARNs).
 
     All child components — the SQSQueue, DedicatedHost pool, one EC2Instance
     group per availability zone, and (unless `iam_instance_profile_name`
@@ -108,10 +115,15 @@ class DedicatedRunnerPool:
     iam_instance_profile_name: str = ""
     ec2_role: IAMRole.Config | None = None
     instance_profile: IAMInstanceProfile.Config | None = None
+    # Additive extra grants on top of the corresponding `allow_all_*` flag;
+    # use these for non-praktika-managed resources outside the project
+    # namespace (pass their full ARNs; bare names get namespaced).
     allowed_ssm_parameters: List[str] = field(default_factory=list)
     allowed_secrets: List[str] = field(default_factory=list)
     allowed_s3_prefixes: List[str] = field(default_factory=list)
     allowed_s3_prefixes_readonly: List[str] = field(default_factory=list)
+    # `allow_all_*` grants everything in the PROJECT NAMESPACE (the
+    # "{slug}-"/"{slug}/" prefix), not the whole account.
     allow_all_ssm_parameters: bool = False
     allow_all_secrets: bool = False
     allow_all_s3_prefixes: bool = False
@@ -142,33 +154,34 @@ class DedicatedRunnerPool:
         )
 
     def _build_runner_iam(self, queue_name: str):
-        # allow_all_* grants access to every resource in the project's
-        # namespace (the "{slug}-"/"{slug}/" name prefix), not the whole
-        # account. To reach resources outside the namespace, list their exact
-        # ARNs in the allowed_* fields instead.
-        allowed_ssm_parameter_resources = (
-            iam_scope.ssm_parameter_arns()
-            if self.allow_all_ssm_parameters
-            else [
-                _ssm_parameter_resource(name)
-                for name in self.allowed_ssm_parameters
-                if name and name.strip()
-            ]
-        )
-        allowed_secret_resources = (
-            iam_scope.secret_arns()
-            if self.allow_all_secrets
-            else [
-                _secrets_manager_resource(name)
-                for name in self.allowed_secrets
-                if name and name.strip()
-            ]
-        )
-        s3_readwrite_prefixes = (
-            iam_scope.project_bucket_arns()
-            if self.allow_all_s3_prefixes
-            else list(self.allowed_s3_prefixes)
-        )
+        # allow_all_* grants every resource in the project's namespace (the
+        # "{slug}-"/"{slug}/" name prefix), not the whole account. The
+        # allowed_* lists are ADDITIVE on top of that: they are how you reach
+        # resources outside the namespace (e.g. a shared, pre-existing
+        # parameter/secret) — list their exact ARNs there.
+        allowed_ssm_parameter_resources = [
+            _ssm_parameter_resource(name)
+            for name in self.allowed_ssm_parameters
+            if name and name.strip()
+        ]
+        if self.allow_all_ssm_parameters:
+            allowed_ssm_parameter_resources = _dedup_preserve_order(
+                iam_scope.ssm_parameter_arns() + allowed_ssm_parameter_resources
+            )
+        allowed_secret_resources = [
+            _secrets_manager_resource(name)
+            for name in self.allowed_secrets
+            if name and name.strip()
+        ]
+        if self.allow_all_secrets:
+            allowed_secret_resources = _dedup_preserve_order(
+                iam_scope.secret_arns() + allowed_secret_resources
+            )
+        s3_readwrite_prefixes = list(self.allowed_s3_prefixes)
+        if self.allow_all_s3_prefixes:
+            s3_readwrite_prefixes = _dedup_preserve_order(
+                iam_scope.project_bucket_arns() + s3_readwrite_prefixes
+            )
         s3_readonly_prefixes = list(self.allowed_s3_prefixes_readonly)
         # Unlike RunnerPool there is no AutoScalingSelfTerminate statement:
         # capacity is fixed, instances are never self-terminated via an ASG.

@@ -296,10 +296,31 @@ class BedrockOpenAIProvider(AIProvider):
                 f"final blocks={last['blocks']} final text_len={last['text_len']} "
                 f"interim_chunks={len(interim)}"
             )
+            # This outcome is deterministic given the current model, reasoning
+            # effort and maxTokens, so it is NOT retryable: an identical re-run
+            # produces the same empty write-up. Explain the likely cause and the
+            # concrete remedy so the log is actionable, not just "no text".
+            if last["stop_reason"] == "max_tokens":
+                error = (
+                    f"model was cut off at the {max_tokens}-token per-turn budget "
+                    f"(stop_reason='max_tokens') while still emitting "
+                    f"{last['blocks']} and produced no review text. Reasoning effort "
+                    f"'{self.reasoning_effort}' spends the whole output budget on "
+                    f"reasoning before any answer. Lower --reasoning-effort (e.g. "
+                    f"'high') or raise the provider's per-turn maxTokens. Retrying "
+                    f"with the same settings will not help."
+                )
+            else:
+                error = (
+                    "model spent its entire tool-call budget investigating and "
+                    "produced no review text. Retrying with the same settings will "
+                    "not help; simplify the prompt or raise the tool-round budget."
+                )
             return Turn(
                 reasoning="",
                 usage=usage,
-                error="model produced no review text after investigation",
+                error=error,
+                retryable=False,
             )
 
         # ---- Phase 2: structure the findings via a forced tool call -------

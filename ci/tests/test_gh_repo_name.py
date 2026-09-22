@@ -25,6 +25,73 @@ def test_repo_name_from_git_remote_url():
     )
 
 
+def test_changed_file_statuses_include_rename_source_and_added_like_files():
+    output = (
+        '[{"filename":"src/a.cpp","status":"modified"},'
+        '{"filename":"src/new.cpp","status":"added"}]'
+        '[{"filename":"src/copied.cpp","status":"copied"},'
+        '{"filename":"src/renamed.cpp","status":"renamed",'
+        '"previous_filename":"src/old.cpp"}]'
+    )
+
+    statuses = GH._parse_changed_file_statuses(output, is_pull_request=True)
+
+    assert statuses == {
+        "src/a.cpp": GH.FileStatus.MODIFIED,
+        "src/new.cpp": GH.FileStatus.ADDED,
+        "src/copied.cpp": GH.FileStatus.COPIED,
+        "src/renamed.cpp": GH.FileStatus.RENAMED,
+        "src/old.cpp": GH.FileStatus.RENAMED_FROM,
+    }
+    assert GH.changed_files_from_statuses(statuses) == [
+        "src/a.cpp",
+        "src/new.cpp",
+        "src/copied.cpp",
+        "src/renamed.cpp",
+        "src/old.cpp",
+    ]
+    assert GH.added_files_from_statuses(statuses) == [
+        "src/new.cpp",
+        "src/copied.cpp",
+        "src/renamed.cpp",
+    ]
+
+
+def test_changed_and_added_files_share_cached_github_response(monkeypatch):
+    info = type(
+        "Info",
+        (),
+        {
+            "is_local_run": False,
+            "repo_name": "ClickHouse/praktika",
+            "sha": "abc123",
+            "pr_number": 42,
+            "is_merge_queue_event": False,
+            "linked_pr_number": 0,
+        },
+    )()
+    calls = []
+
+    def fake_info():
+        return info
+
+    def fake_get_res_stdout_stderr(command):
+        calls.append(command)
+        return 0, '[{"filename":"new.py","status":"added"}]', ""
+
+    import praktika.gh as gh_module
+
+    monkeypatch.setattr(gh_module, "Info", fake_info)
+    monkeypatch.setattr(GH, "_changed_file_statuses_cache", {})
+    monkeypatch.setattr(
+        Shell, "get_res_stdout_stderr", staticmethod(fake_get_res_stdout_stderr)
+    )
+
+    assert GH.get_changed_files() == ["new.py"]
+    assert GH.get_added_files() == ["new.py"]
+    assert calls == ["gh api repos/ClickHouse/praktika/pulls/42/files --paginate"]
+
+
 def test_gh_pages_url_normalizes_destination():
     assert (
         GH.gh_pages_url(repo="ClickHouse/praktika", destination_dir="/coverage/pr-1/")

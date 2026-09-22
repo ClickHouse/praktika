@@ -17,7 +17,7 @@ from abc import ABC, abstractmethod
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from shlex import quote
 from threading import Event, Thread
@@ -626,8 +626,19 @@ class Utils:
         return datetime.now().timestamp()
 
     @staticmethod
-    def timestamp_to_str(timestamp):
-        return datetime.utcfromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+    def to_datetime(value, input_format="unix"):
+        if input_format == "unix":
+            return datetime.fromtimestamp(value, timezone.utc)
+        if input_format == "iso":
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        raise ValueError(f"Unsupported datetime input format [{input_format}]")
+
+    @staticmethod
+    def timestamp_to_str(timestamp, input_format="unix"):
+        dt = Utils.to_datetime(timestamp, input_format=input_format)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
 
     @staticmethod
     def get_failed_tests_number(description: str) -> Optional[int]:

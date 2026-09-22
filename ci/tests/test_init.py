@@ -38,6 +38,23 @@ def _decode_embedded_file(command: str) -> str:
     return base64.b64decode(payload).decode("utf-8")
 
 
+def _apply_scaffold_settings(tmp_path, monkeypatch):
+    """Apply the scaffold's generated settings onto the Settings singleton.
+
+    The infra template reads project values (name, S3 buckets, base venv) from
+    Settings.* at load time rather than embedding literals, so _get_infra_config
+    needs the scaffold's settings applied — mirroring praktika's real settings
+    loader. Monkeypatch restores the host repo's values afterward.
+    """
+    from praktika.settings import _USER_DEFINED_SETTINGS
+
+    ns: dict = {}
+    exec((tmp_path / "ci/settings/settings.py").read_text(encoding="utf8"), ns)
+    for name in _USER_DEFINED_SETTINGS:
+        if name in ns:
+            monkeypatch.setattr(Settings, name, ns[name])
+
+
 def test_init_parser_supports_command():
     parser = create_parser()
     args = parser.parse_args(["init"])
@@ -272,6 +289,7 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
         "CLOUD_INFRASTRUCTURE_CONFIG_PATH",
         str(tmp_path / "ci/infrastructure/projects.py"),
     )
+    _apply_scaffold_settings(tmp_path, monkeypatch)
     monkeypatch.setattr(Settings, "ENABLED_WORKFLOWS", None)
     monkeypatch.setattr(Settings, "DISABLED_WORKFLOWS", None)
 
@@ -336,7 +354,7 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
         "amd-medium": 100,
     }
     assert {tuple(pool.allowed_s3_prefixes) for pool in cloud.runner_pools} == {
-        (f"{project_slug}-artifacts-us-east-1",)
+        (f"{project_slug}-artifacts-us-east-1/*",)
     }
     assert {tuple(pool.allowed_ssm_parameters) for pool in cloud.runner_pools} == {()}
     assert {tuple(pool.allowed_secrets) for pool in cloud.runner_pools} == {()}
@@ -399,7 +417,7 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
         )
         assert (
             builder.prebuilt_venvs[0].name
-            == f"praktika-runtime-{current_praktika_version()}"
+            == "praktika-runtime-0.0.1"
         )
         packages = builder.prebuilt_venvs[0].packages
         assert "pytest>=7.0.0" in packages
@@ -464,6 +482,7 @@ def _load_cloud_config_from_scaffold(tmp_path, monkeypatch):
         "CLOUD_INFRASTRUCTURE_CONFIG_PATH",
         str(tmp_path / "ci/infrastructure/projects.py"),
     )
+    _apply_scaffold_settings(tmp_path, monkeypatch)
     try:
         return _get_infra_config()
     finally:
@@ -585,11 +604,12 @@ def test_run_init_interactive_supports_oss_storage_and_ubuntu_images(
     assert '"Action": ["bedrock:InvokeModel"]' in infra_text
     assert (
         'ext={"allowed_push_branches": [\'main\'], '
+        '"allowed_pr_base_branches": [\'main\'], '
         '"iam_statements": [_ORCHESTRATOR_BEDROCK_IAM_STATEMENT]}'
     ) in infra_text
     assert "allowed_ssm_parameters=[]" in infra_text
     assert "allowed_secrets=[]" in infra_text
-    assert 'allowed_s3_prefixes=["artifacts-eu-north-1"]' in infra_text
+    assert "allowed_s3_prefixes=_PROJECT_S3_PREFIXES" in infra_text
     assert "allow_all_ssm_parameters=False" in infra_text
     assert infra_text.count("allow_all_ssm_parameters=False") == 4
     assert "allow_all_secrets=False" in infra_text
@@ -615,6 +635,7 @@ def test_run_init_interactive_supports_oss_storage_and_ubuntu_images(
         "CLOUD_INFRASTRUCTURE_CONFIG_PATH",
         str(tmp_path / "ci/infrastructure/projects.py"),
     )
+    _apply_scaffold_settings(tmp_path, monkeypatch)
 
     try:
         cloud = _get_infra_config()
@@ -662,12 +683,12 @@ def test_run_init_interactive_supports_oss_storage_and_ubuntu_images(
         (
             f"{project_slug}-ci-arm64-image-"
             f"praktika-runtime-"
-            f"{current_praktika_version().replace('.', '-')}-venv"
+            f"0-0-1-venv"
         ),
         (
             f"{project_slug}-ci-x86_64-image-"
             f"praktika-runtime-"
-            f"{current_praktika_version().replace('.', '-')}-venv"
+            f"0-0-1-venv"
         ),
     }.issubset(captured_component_names)
 

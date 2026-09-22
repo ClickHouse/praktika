@@ -1,4 +1,5 @@
 from .autoscaling_group import AutoScalingGroup
+from .cloud import CloudInfrastructure
 from .dedicated_host import DedicatedHost
 from .ec2_instance import EC2Instance
 from .iam_instance_profile import IAMInstanceProfile
@@ -15,6 +16,7 @@ from .vpc import VPC
 
 __all__ = [
     "AutoScalingGroup",
+    "CloudInfrastructure",
     "DedicatedHost",
     "EC2Instance",
     "IAMInstanceProfile",

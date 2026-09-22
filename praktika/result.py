@@ -962,6 +962,11 @@ class Result(MetaClasses.Serializable):
         print(f"> Start execution for [{name}]")
         res = True  # Track success/failure status
         info_lines = []
+        # Caught-exception header + traceback, kept apart from the command output
+        # so truncation can always preserve it: the traceback is the actual cause
+        # of the failure and must not be buried under (or dropped in favor of) the
+        # captured stdout.
+        exception_lines = []
         MAX_LINES_IN_INFO = 300
         with ContextManager.cd(workdir):
             for command_ in command:
@@ -977,10 +982,18 @@ class Result(MetaClasses.Serializable):
                             result = command_(*command_args, **command_kwargs)
                     except Exception as e:
                         result = False
-                        info_lines.extend(
+                        tb = traceback.format_exc()
+                        # Print the exception to real stdout (i.e. the job log):
+                        # it is caught outside the Tee, so it is not in the
+                        # captured buffer, and it would otherwise be visible only
+                        # in the (truncated) Result.info.
+                        print(
+                            f"Command [{command_}] failed with exception [{e}]:\n{tb}"
+                        )
+                        exception_lines.extend(
                             [
                                 f"Command [{command_}] failed with exception [{e}]:",
-                                *traceback.format_exc().splitlines(),
+                                *tb.splitlines(),
                             ]
                         )
                     res = result if isinstance(result, bool) else not bool(result)
@@ -1013,7 +1026,23 @@ class Result(MetaClasses.Serializable):
 
         # Apply truncation if info_lines exceeds MAX_LINES_IN_INFO
         truncated = False
-        if len(info_lines) > MAX_LINES_IN_INFO:
+        if exception_lines:
+            # A caught exception's traceback is the actual cause of the failure,
+            # so keep it at the head unconditionally and fill the remaining budget
+            # with the tail of the captured output (the most recent lines before
+            # the failure). The traceback itself is not truncated: it is short
+            # relative to the captured stdout it would otherwise be buried under.
+            budget = max(0, MAX_LINES_IN_INFO - len(exception_lines))
+            if len(info_lines) > budget:
+                truncated_count = len(info_lines) - budget
+                kept_output = [f"~~~~~ truncated {truncated_count} lines ~~~~~"]
+                if budget > 0:
+                    kept_output += info_lines[-budget:]
+                truncated = True
+            else:
+                kept_output = info_lines
+            info_lines = exception_lines + kept_output
+        elif len(info_lines) > MAX_LINES_IN_INFO:
             # For clang-tidy and similar builds, find the first error/warning
             # and show context around it instead of just the last lines
             first_error_idx = None
@@ -1058,16 +1087,24 @@ class Result(MetaClasses.Serializable):
     def do_not_block_pipeline_on_failure(self):
         return self.ext.get("do_not_block_pipeline_on_failure", False)
 
+    def do_not_cache(self):
+        return self.ext.get("do_not_cache", False)
+
     def complete_job(
         self,
         with_job_summary_in_info=True,
         do_not_block_pipeline_on_failure=False,
         disable_attached_files_sorting=False,
+        do_not_cache=False,
     ):
         if with_job_summary_in_info:
             self._add_job_summary_to_info()
         if do_not_block_pipeline_on_failure and not self.is_ok():
             self.ext["do_not_block_pipeline_on_failure"] = True
+        # A job sets this flag when its verdict depends on run-time state no digest input
+        # captures, so a later commit with the same digest must not reuse its success record.
+        if do_not_cache:
+            self.ext["do_not_cache"] = True
         if not disable_attached_files_sorting:
             try:
                 # Normalize to string and sort by filename case-insensitively
@@ -1283,6 +1320,7 @@ class ResultInfo:
     OPEN_ISSUES_CHECK_ERROR = "Failed to check open issues"
 
     NOT_FINALIZED = "Job failed to produce Result due to a script error or CI runner issue"
+    JOB_DID_NOT_FINISH = "Job did not finish, GitHub reported"
 
     S3_ERROR = "S3 call failure"
 
@@ -1464,6 +1502,7 @@ class _ResultS3:
         clear_report_sources=None,
         replace_usage=False,
         top_links=None,
+        top_ext=None,
     ):
         # ``replace_usage=True`` SETS the usage aggregates instead of merging
         # (accumulating) them. The native orchestrator recomputes the full
@@ -1471,7 +1510,7 @@ class _ResultS3:
         # it every loop, so it must overwrite — not add — or the totals would
         # multiply. The per-job runner path keeps replace_usage=False (each job
         # contributes its slice once). See orchestrator/REPORT_OWNERSHIP.md.
-        assert new_sub_results or top_links
+        assert new_sub_results or top_links or top_ext
 
         attempt = 1
         prev_status = ""
@@ -1482,6 +1521,17 @@ class _ResultS3:
             version = cls.copy_result_from_s3_with_version(Result.file_name_static(workflow_name))
             workflow_result = Result.from_fs(workflow_name)
             prev_status = workflow_result.status
+            # Snapshot the report as read so we can (a) skip the version-bumping
+            # upload when applying our update is a no-op, and (b) log exactly which
+            # rows changed. The orchestrator's publish_report re-asserts every loop
+            # (a few seconds apart for the whole run), so without this an idle run
+            # accumulates hundreds of identical report versions.
+            before_full = json.dumps(Result.to_dict(workflow_result), sort_keys=True)
+            before_rows = {
+                r.name: json.dumps(Result.to_dict(r), sort_keys=True)
+                for r in (workflow_result.results or [])
+            }
+            before_status = {r.name: r.status for r in (workflow_result.results or [])}
             if new_sub_results:
                 if isinstance(new_sub_results, Result):
                     new_sub_results = [new_sub_results]
@@ -1525,7 +1575,51 @@ class _ResultS3:
                     if _lnk and _lnk not in workflow_result.links:
                         workflow_result.links.append(_lnk)
 
+            if top_ext:
+                workflow_result.ext.update(top_ext)
+
             new_status = workflow_result.status
+
+            # Applying our update changed nothing that is already in S3 — skip the
+            # upload so we don't burn a report version on identical content. This
+            # is the common case for the orchestrator's per-loop re-assert once the
+            # DAG is steady. A destructive Config reset (rows wiped to PENDING)
+            # still differs from our terminal rows, so the repair upload happens.
+            after_full = json.dumps(Result.to_dict(workflow_result), sort_keys=True)
+            if after_full == before_full:
+                print("Workflow report unchanged - skip upload")
+                return None
+
+            # Log which rows drove this upload (status transition where it applies)
+            # so the log stream shows *what* changed, not just a version bump.
+            after_rows = {
+                r.name: json.dumps(Result.to_dict(r), sort_keys=True)
+                for r in (workflow_result.results or [])
+            }
+            after_status = {r.name: r.status for r in (workflow_result.results or [])}
+            changed = []
+            for name, blob in after_rows.items():
+                if before_rows.get(name) == blob:
+                    continue
+                old = before_status.get(name)
+                new = after_status.get(name)
+                if name not in before_rows:
+                    changed.append(f"{name} [new:{new}]")
+                elif old != new:
+                    changed.append(f"{name} [{old}->{new}]")
+                else:
+                    changed.append(f"{name} [{new}]")
+            removed = [n for n in before_rows if n not in after_rows]
+            if not changed and not removed:
+                # Only ext/links/usage differed (no per-row change).
+                changed = ["<workflow metadata>"]
+            change_desc = ", ".join(changed[:20])
+            if len(changed) > 20:
+                change_desc += f", (+{len(changed) - 20} more)"
+            if removed:
+                change_desc += f"; removed: {', '.join(removed[:20])}"
+            print(f"Workflow report changed ({len(changed)}): {change_desc}")
+
             if cls.copy_result_to_s3_with_version(
                 workflow_result,
                 version=version + 1,

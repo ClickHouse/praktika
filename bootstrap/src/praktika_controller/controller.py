@@ -19,6 +19,7 @@ from praktika_controller.common import (
     configure_logging,
     finalize_check,
     get_github_token,
+    head_commit_info,
     imds_token,
     post_early_check,
     instance_tag,
@@ -28,6 +29,11 @@ from praktika_controller.common import (
     terminate_instance_for_replacement,
     terminate_process_group,
     try_scale_in_if_idle,
+)
+from praktika_controller.merge import (
+    MergeConflict,
+    prepare_repo_snapshot,
+    read_repo_settings,
 )
 from praktika_controller.venv_manager import (
     ensure_praktika_runtime,
@@ -145,6 +151,7 @@ def _praktika_env(
     queue_name: str,
     attempt: str = "",
     bootstrap_check_id=None,
+    snapshot=None,
 ) -> dict[str, str]:
     env = venv_env(venv_dir)
     # Stream the orchestrator/runner subprocess stdout live to CloudWatch. Python
@@ -163,6 +170,20 @@ def _praktika_env(
         # The orchestrator adopts this pre-clone check run instead of opening
         # a fresh one.
         env["PRAKTIKA_BOOTSTRAP_CHECK_RUN_ID"] = str(bootstrap_check_id)
+    if snapshot:
+        # The controller establishes the run's single commit (the ephemeral PR
+        # merge, or the plain head) and publishes its snapshot BEFORE praktika is
+        # reinstalled from the checkout. Hand the pinned identity to the
+        # orchestrator so it seeds run state before dispatching any job — the
+        # Config job and every downstream job then restore this exact tree, and
+        # the DAG matches execution. See merge.prepare_repo_snapshot.
+        base_sha, snapshot_sha, repo_snapshot_key = snapshot
+        if snapshot_sha:
+            env["PRAKTIKA_SNAPSHOT_SHA"] = snapshot_sha
+        if repo_snapshot_key:
+            env["PRAKTIKA_REPO_SNAPSHOT_KEY"] = repo_snapshot_key
+        if base_sha:
+            env["PRAKTIKA_BASE_SHA"] = base_sha
     return env
 
 
@@ -308,38 +329,163 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
                 repo, head_sha, gh_token, EARLY_CHECK_NAME, log=log
             )
 
-        try:
-            clone_dir, actual_sha = clone_repo(
-                repo,
-                head_sha,
+        # The run's single commit (base_sha, snapshot_sha, repo_snapshot_key),
+        # pinned by the controller before praktika is reinstalled from the
+        # checkout. Established below: computed for a fresh PR run (the ephemeral
+        # merge) or inherited from run state on a resume. Handed to the
+        # orchestrator so it seeds run state before dispatching any job.
+        snapshot = None
+        resume_snapshot_key = event.get("repo_snapshot_key", "") if is_resume else ""
+        resume_snapshot_sha = event.get("snapshot_sha", "") if is_resume else ""
+        # Fresh-base resume (per-job "Rerun w/ fresh base" button): re-run the
+        # selected job(s) on a NEW ephemeral merge with the CURRENT base tip.
+        # Only honored for a finished run — this resume path — the live path never
+        # sets it (an in-progress run keeps its existing snapshot).
+        fresh_base = bool(event.get("fresh_base")) if is_resume else False
+
+        def _restore_original():
+            """Restore the run's ORIGINAL published snapshot (reuse mode)."""
+            import boto3
+
+            s3 = boto3.client("s3", region_name=REGION)
+            cd, sha = restore_repo_snapshot(
+                s3,
+                resume_snapshot_key,
+                resume_snapshot_sha,
                 pr_number,
-                gh_token,
                 work_dir=WORK_DIR,
                 branch=branch,
                 log=log,
             )
+            return cd, sha, (
+                event.get("base_sha", ""),
+                resume_snapshot_sha,
+                resume_snapshot_key,
+            )
 
-            # Stale-head guard (TOCTOU): clone_repo fetches the live
-            # refs/pull/N/head, which can have advanced since the lambda verified
-            # the head. Running the requested workflow/checks against a different
-            # (possibly unapproved fork) commit is unsafe, so abort when the
-            # checked-out sha isn't the one the event asked for. Only for PR runs
-            # where we have a specific head_sha.
-            if pr_number and head_sha and actual_sha and actual_sha != head_sha:
-                log.warning(
-                    "PR head advanced (checked out %s != requested %s); aborting to "
-                    "avoid running unintended code",
-                    actual_sha, head_sha,
+        try:
+            if is_resume and fresh_base:
+                # Re-clone the head and re-run the ephemeral merge against the
+                # CURRENT base tip, publishing a NEW snapshot the resumed
+                # orchestrator pins (override_repo_snapshot). If the moved base no
+                # longer merges cleanly, fall back to the original snapshot so the
+                # re-run still proceeds on the base the run was built against.
+                clone_dir, actual_sha = clone_repo(
+                    repo, head_sha, pr_number, gh_token,
+                    work_dir=WORK_DIR, branch=branch, log=log,
                 )
-                finalize_check(
-                    repo, early_check_id, gh_token, "cancelled",
-                    "Head advanced",
-                    f"The PR head moved to {actual_sha[:12]} after this run was "
-                    f"requested for {head_sha[:12]}; skipping to avoid running the "
-                    f"wrong commit. A run for the new head will proceed.",
+                head_commit = head_commit_info(clone_dir, log)
+                event["commit_message"] = head_commit["message"]
+                event["commit_authors"] = head_commit["authors"]
+                try:
+                    settings = read_repo_settings(clone_dir, log)
+                    if settings.get("ENABLE_S3_REPO_SNAPSHOT"):
+                        import boto3
+
+                        s3 = boto3.client("s3", region_name=REGION)
+                        snapshot = prepare_repo_snapshot(
+                            clone_dir, event, settings, s3, log
+                        )
+                    # If snapshots are disabled, fresh_base is a no-op: proceed on
+                    # the head clone (snapshot stays None), same as a plain resume.
+                except MergeConflict as mc:
+                    # The PR head no longer merges into the moved base. Do NOT fall
+                    # back to the old snapshot — there is no point re-running against
+                    # a base the PR can't merge into. Fail the run's top-level check
+                    # (run_id is its check-run id) and stop.
+                    log.warning("Fresh-base resume merge conflict: %s", mc)
+                    files = f"\n{mc.files}" if mc.files else ""
+                    finalize_check(
+                        repo, event.get("run_id"), gh_token, "failure",
+                        "Merge conflict",
+                        f"{mc}{files}",
+                        log=log,
+                    )
+                    return {
+                        "status": "skipped",
+                        "reason": "merge conflict",
+                        "pr": pr_number,
+                    }
+            elif resume_snapshot_key and resume_snapshot_sha:
+                # A finished-run resume re-drives the SAME merged tree the original
+                # run pinned. Restore it (pure S3, HEAD verified) instead of cloning
+                # head, so the reinstalled praktika runtime and the reloaded DAG
+                # both match the original merge rather than the current head.
+                clone_dir, actual_sha, snapshot = _restore_original()
+            else:
+                clone_dir, actual_sha = clone_repo(
+                    repo,
+                    head_sha,
+                    pr_number,
+                    gh_token,
+                    work_dir=WORK_DIR,
+                    branch=branch,
                     log=log,
                 )
-                return {"status": "skipped", "reason": "stale head", "sha": actual_sha}
+
+                # Stale-head guard (TOCTOU): clone_repo fetches the live
+                # refs/pull/N/head, which can have advanced since the lambda verified
+                # the head. Running the requested workflow/checks against a different
+                # (possibly unapproved fork) commit is unsafe, so abort when the
+                # checked-out sha isn't the one the event asked for. Only for PR runs
+                # where we have a specific head_sha.
+                if pr_number and head_sha and actual_sha and actual_sha != head_sha:
+                    log.warning(
+                        "PR head advanced (checked out %s != requested %s); aborting to "
+                        "avoid running unintended code",
+                        actual_sha, head_sha,
+                    )
+                    finalize_check(
+                        repo, early_check_id, gh_token, "cancelled",
+                        "Head advanced",
+                        f"The PR head moved to {actual_sha[:12]} after this run was "
+                        f"requested for {head_sha[:12]}; skipping to avoid running the "
+                        f"wrong commit. A run for the new head will proceed.",
+                        log=log,
+                    )
+                    return {"status": "skipped", "reason": "stale head", "sha": actual_sha}
+
+                # Capture the PR head's commit subject + author NOW, while HEAD is
+                # the branch head — before the ephemeral merge below rewrites HEAD to
+                # the synthetic merge commit. The merged snapshot every job restores
+                # is history-free, so the head commit is unreachable downstream; carry
+                # these on the event so the report header and every job env show the
+                # branch head, not "Merge … into …". Overrides any stale value.
+                head_commit = head_commit_info(clone_dir, log)
+                event["commit_message"] = head_commit["message"]
+                event["commit_authors"] = head_commit["authors"]
+
+                # Establish the run's single commit before praktika is reinstalled
+                # from the checkout: compute the ephemeral PR merge (or plain head)
+                # in place and publish its snapshot. The merge mutates clone_dir, so
+                # _resolve_runtime below installs praktika from the MERGED tree, and
+                # the orchestrator's DAG (built from the same tree) matches execution.
+                try:
+                    settings = read_repo_settings(clone_dir, log)
+                    if settings.get("ENABLE_S3_REPO_SNAPSHOT"):
+                        import boto3
+
+                        s3 = boto3.client("s3", region_name=REGION)
+                        snapshot = prepare_repo_snapshot(
+                            clone_dir, event, settings, s3, log
+                        )
+                except MergeConflict as mc:
+                    # A conflict is a deterministic red result, not an infra fault:
+                    # finalize the pre-clone check as failed (report ownership stays
+                    # here, before the orchestrator exists) and stop — no retry.
+                    log.warning("Ephemeral merge conflict: %s", mc)
+                    files = f"\n{mc.files}" if mc.files else ""
+                    finalize_check(
+                        repo, early_check_id, gh_token, "failure",
+                        "Merge conflict",
+                        f"{mc}{files}",
+                        log=log,
+                    )
+                    return {
+                        "status": "skipped",
+                        "reason": "merge conflict",
+                        "pr": pr_number,
+                    }
 
             base_venv, venv_dir = _resolve_runtime(clone_dir, log)
 
@@ -380,7 +526,11 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
             praktika_command(venv_dir, "orchestrate", "workflow", event_file, "--ci"),
             cwd=clone_dir,
             env=_praktika_env(
-                venv_dir, queue_name, attempt=attempt, bootstrap_check_id=early_check_id
+                venv_dir,
+                queue_name,
+                attempt=attempt,
+                bootstrap_check_id=early_check_id,
+                snapshot=snapshot,
             ),
             stderr=subprocess.PIPE,
             text=True,

@@ -36,6 +36,10 @@ class _Environment(MetaClasses.Serializable):
     FORK_NAME: str
     COMMIT_MESSAGE: str = ""
     EVENT_ACTION: str = ""
+    # Unix timestamp resolved once by the config job (see
+    # native_jobs._config_workflow) and inherited by every other job with this
+    # environment, so all of them agree on when the run started.
+    WORKFLOW_START_TIME: float = 0.0
     # merged PR for "push" or "merge_group" workflow
     LINKED_PR_NUMBER: int = 0
     LOCAL_RUN: bool = False
@@ -61,6 +65,12 @@ class _Environment(MetaClasses.Serializable):
     # orchestrator/REPORT_OWNERSHIP.md. False for local runs and GitHub Actions,
     # which keep the per-job writers.
     ORCHESTRATOR_OWNS_REPORT: bool = False
+    # Repo-snapshot mode: the run's single commit and the S3 key of the snapshot
+    # the controller published for it (the ephemeral PR merge, or the plain head).
+    # Set from the job_task so a job can verify it is running the pinned tree
+    # (see native_jobs._prepare_repo_snapshot). Empty when snapshots are disabled.
+    SNAPSHOT_SHA: str = ""
+    REPO_SNAPSHOT_KEY: str = ""
     name = "environment"
 
     @classmethod
@@ -104,6 +114,8 @@ class _Environment(MetaClasses.Serializable):
             with open(EVENT_FILE_PATH, "r", encoding="utf-8") as f:
                 github_event = json.load(f)
             EVENT_ACTION = github_event.get("action", "")
+            # The triggering actor, present on every event; the pull_request branch overrides it with the PR author.
+            USER_LOGIN = github_event.get("sender", {}).get("login", "")
             if "pull_request" in github_event:
                 FORK_NAME = github_event["pull_request"]["head"]["repo"]["full_name"]
                 EVENT_TYPE = Workflow.Event.PULL_REQUEST

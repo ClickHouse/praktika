@@ -57,6 +57,7 @@ def _make_state(s3, statuses, always_run=()):
     state._snapshot_sha = ""
     state._repo_snapshot_key = ""
     state._gh_token = None  # can_post_checks False -> no check API calls
+    state.cancelled = False
     state.jobs = {}
     for name, status in statuses.items():
         js = JobState.__new__(JobState)
@@ -74,7 +75,9 @@ def _make_state(s3, statuses, always_run=()):
         js.attempt = 1
         js.stale_flagged = False
         js.filter_reason = None
+        js.skip_details_url = None
         js.rerun_count = 0
+        js.cancel_reason = None
         js._workflow_state = state
         state.jobs[name] = js
     state._deps = {"A": (), "B": ("A",), "C": ("B",)}
@@ -89,7 +92,7 @@ def test_apply_rerun_resets_job_and_failed_downstream():
         s3,
         {"A": JobStatus.FAILURE, "B": JobStatus.CANCELLED, "C": JobStatus.CANCELLED},
     )
-    reset = state.apply_rerun(["A"])
+    reset, _failed = state.apply_rerun(["A"])
     assert reset == {"A", "B", "C"}
     assert all(state.jobs[n].status == JobStatus.PENDING for n in ("A", "B", "C"))
     # Reset bumps the per-job re-run counter (surfaced in the check output).
@@ -106,7 +109,7 @@ def test_apply_rerun_skips_job_already_rerunning():
     # again — otherwise a lingering rerun-request would runaway rerun_count.
     s3 = _FakeS3()
     state = _make_state(s3, {"A": JobStatus.PENDING, "B": JobStatus.SUCCESS, "C": JobStatus.SUCCESS})
-    reset = state.apply_rerun(["A"])
+    reset, _failed = state.apply_rerun(["A"])
     assert reset == set()
     assert state.jobs["A"].rerun_count == 0
 
@@ -118,7 +121,7 @@ def test_apply_rerun_hard_caps_reruns(monkeypatch):
     s3 = _FakeS3()
     state = _make_state(s3, {"A": JobStatus.FAILURE, "B": JobStatus.SUCCESS, "C": JobStatus.SUCCESS})
     state.jobs["A"].rerun_count = 5
-    reset = state.apply_rerun(["A"])
+    reset, _failed = state.apply_rerun(["A"])
     assert reset == set()
     assert state.jobs["A"].status == JobStatus.FAILURE
     assert state.jobs["A"].rerun_count == 5
@@ -131,7 +134,7 @@ def test_apply_rerun_leaves_successful_downstream_alone():
         s3,
         {"A": JobStatus.FAILURE, "B": JobStatus.SUCCESS, "C": JobStatus.SUCCESS},
     )
-    reset = state.apply_rerun(["A"])
+    reset, _failed = state.apply_rerun(["A"])
     assert reset == {"A"}
     assert state.jobs["A"].status == JobStatus.PENDING
     assert state.jobs["B"].status == JobStatus.SUCCESS
@@ -147,7 +150,7 @@ def test_apply_rerun_resets_successful_always_run_downstream():
         {"A": JobStatus.FAILURE, "B": JobStatus.CANCELLED, "C": JobStatus.SUCCESS},
         always_run=("C",),
     )
-    reset = state.apply_rerun(["A"])
+    reset, _failed = state.apply_rerun(["A"])
     assert reset == {"A", "B", "C"}
     assert state.jobs["C"].status == JobStatus.PENDING
 
@@ -251,10 +254,70 @@ def test_reset_job_not_reset_when_final_delete_fails():
     s3 = _DenyDeleteS3("final.json")
     s3.put_object("test-bucket", "runs/run42/A/final.json", b"{}")
     state = _make_state(s3, {"A": JobStatus.FAILURE, "B": JobStatus.SUCCESS, "C": JobStatus.SUCCESS})
-    reset = state.apply_rerun(["A"])
+    reset, _failed = state.apply_rerun(["A"])
     assert reset == set()
     assert state.jobs["A"].status == JobStatus.FAILURE
     assert state.jobs["A"].rerun_count == 0
+
+
+def test_sweep_rerun_retains_request_when_reset_fails():
+    # A request whose job could not be reset (stale final.json delete failed)
+    # must be RETAINED for the next sweep, not silently consumed.
+    s3 = _DenyDeleteS3("final.json")
+    s3.put_object("test-bucket", "runs/run42/A/final.json", b"{}")
+    s3.put_object(
+        "test-bucket", "runs/run42/rerun-request/d1.json", json.dumps({"jobs": ["A"]}).encode()
+    )
+    state = _make_state(s3, {"A": JobStatus.FAILURE, "B": JobStatus.SUCCESS, "C": JobStatus.SUCCESS})
+    assert state.sweep_rerun() is False  # nothing reset
+    assert state.jobs["A"].status == JobStatus.FAILURE
+    # request kept so the re-run is retried, not lost
+    assert ("test-bucket", "runs/run42/rerun-request/d1.json") in s3.store
+
+
+def test_sweep_rerun_consumes_good_request_retains_failed():
+    # With two independent requests, the one whose job reset is consumed; the one
+    # whose job could not be reset is retained.
+    s3 = _DenyDeleteS3("A/final.json")  # only A's final.json delete is denied
+    s3.put_object("test-bucket", "runs/run42/A/final.json", b"{}")
+    s3.put_object("test-bucket", "runs/run42/B/final.json", b"{}")
+    s3.put_object(
+        "test-bucket", "runs/run42/rerun-request/dA.json", json.dumps({"jobs": ["A"]}).encode()
+    )
+    s3.put_object(
+        "test-bucket", "runs/run42/rerun-request/dB.json", json.dumps({"jobs": ["B"]}).encode()
+    )
+    state = _make_state(s3, {"A": JobStatus.FAILURE, "B": JobStatus.FAILURE, "C": JobStatus.SUCCESS})
+    assert state.sweep_rerun() is True  # B reset
+    assert state.jobs["B"].status == JobStatus.PENDING
+    assert state.jobs["A"].status == JobStatus.FAILURE
+    assert ("test-bucket", "runs/run42/rerun-request/dA.json") in s3.store  # retained
+    assert ("test-bucket", "runs/run42/rerun-request/dB.json") not in s3.store  # consumed
+
+
+def test_seed_from_snapshot_reloads_terminal_job_results():
+    # Resume must restore each terminal job's serialized result from final.json,
+    # so publish_report's usage aggregate stays whole (not clobbered down to the
+    # re-run subset) across the resume.
+    s3 = _FakeS3()
+    src = _make_state(s3, {"A": JobStatus.SUCCESS, "B": JobStatus.FAILURE, "C": JobStatus.PENDING})
+    s3.put_object(
+        "test-bucket", "runs/run42/A/final.json",
+        json.dumps({"result": {"name": "A", "status": "OK", "ext": {}}}).encode(),
+    )
+    s3.put_object(
+        "test-bucket", "runs/run42/B/final.json",
+        json.dumps({"result": {"name": "B", "status": "FAIL", "ext": {}}}).encode(),
+    )
+    src.save_snapshot(finalized=True)
+    snap = json.loads(s3.store[("test-bucket", "runs/run42/state.json")])
+
+    fresh = _make_state(s3, {"A": JobStatus.PENDING, "B": JobStatus.PENDING, "C": JobStatus.PENDING})
+    fresh.seed_from_snapshot(snap)
+    assert fresh.jobs["A"].result == {"name": "A", "status": "OK", "ext": {}}
+    assert fresh.jobs["B"].result == {"name": "B", "status": "FAIL", "ext": {}}
+    # A non-terminal job has no final.json to reload — stays None.
+    assert fresh.jobs["C"].result is None
 
 
 def test_sweep_rerun_keeps_unreadable_request():
@@ -357,6 +420,55 @@ def test_publish_report_aggregates_usage_idempotently(monkeypatch):
     assert captured["compute_usage"].runners_usage["arm-small"] == 30
 
 
+def test_publish_report_authors_skipped_rows(monkeypatch):
+    """The orchestrator — not the Config job's hook_html.configure — authors the
+    cached/filtered SKIPPED rows on the native path (orchestrator-backlog
+    "sole summary writer"). A cache hit links to its reused report; a filtered job carries its
+    reason. Skipped rows carry no usage (the job never ran)."""
+    import dataclasses as dc
+
+    import praktika.result as result_mod
+    from praktika.result import Result
+
+    captured = {}
+    monkeypatch.setattr(
+        result_mod._ResultS3,
+        "update_workflow_results",
+        staticmethod(lambda **kw: captured.update(kw)),
+    )
+
+    s3 = _FakeS3()
+    state = _make_state(
+        s3, {"A": JobStatus.SUCCESS, "B": JobStatus.SKIPPED, "C": JobStatus.SKIPPED}
+    )
+    state.workflow = types.SimpleNamespace(name="PR", enable_report=True)
+    state._report_env_ok = True  # short-circuit orchestrator report-env setup
+
+    a = Result.create_new("A", Result.Status.OK)
+    a.duration = 10
+    state.jobs["A"].result = dc.asdict(a)
+    state.jobs["A"].job.runs_on = ["arm-small"]
+
+    # B: cache hit — carries a reused-report link. C: filtered — no link.
+    state.jobs["B"].filter_reason = "reused from cache"
+    state.jobs["B"].skip_details_url = "https://reports/B"
+    state.jobs["C"].filter_reason = "not affected by this diff"
+    state.jobs["C"].skip_details_url = None
+
+    state.publish_report()
+
+    rows = {r.name: r for r in captured["new_sub_results"]}
+    assert set(rows) == {"A", "B", "C"}
+    assert rows["B"].status == Result.Status.SKIPPED
+    assert rows["B"].links == ["https://reports/B"]
+    assert rows["B"].info == "reused from cache"
+    assert rows["C"].status == Result.Status.SKIPPED
+    assert not rows["C"].links
+    assert rows["C"].info == "not affected by this diff"
+    # Only the job that actually ran (A) contributes compute usage.
+    assert captured["compute_usage"].runners_usage["arm-small"] == 10
+
+
 def test_reset_posts_pending_check_at_reset_time(monkeypatch):
     """On re-run every reset job (target + downstream) gets a fresh QUEUED check
     immediately, so a downstream check doesn't linger stale until it re-runs."""
@@ -378,7 +490,7 @@ def test_reset_posts_pending_check_at_reset_time(monkeypatch):
         s3, {"A": JobStatus.FAILURE, "B": JobStatus.CANCELLED, "C": JobStatus.CANCELLED}
     )
     state._gh_token = "tok"  # enable can_post_checks (repo + head_sha already set)
-    reset = state.apply_rerun(["A"])
+    reset, _failed = state.apply_rerun(["A"])
     assert reset == {"A", "B", "C"}
     assert len(posted) == 3  # a pending check for each reset job, at reset time
 
@@ -408,3 +520,55 @@ def test_snapshot_target_pinned_from_config_workflow_and_frozen_against_later_jo
     # Frozen: the attacker's values are ignored.
     assert state._snapshot_sha == "m1"
     assert state._repo_snapshot_key.endswith("HASH1.tar.zst")
+
+
+def test_seed_repo_snapshot_from_controller_wins_over_config_job():
+    # The controller establishes the run's single commit and seeds it BEFORE any
+    # job is dispatched. That pin must win: a later job's WORKFLOW_CONFIG (even the
+    # Config Workflow re-reporting, or an untrusted job) cannot redirect it.
+    s3 = _FakeS3()
+    state = _make_state(s3, {"A": JobStatus.PENDING})
+
+    state.seed_repo_snapshot("ctrl-merge", "repo-snapshots/v1/PRs/CTRL.tar.zst")
+    assert state._snapshot_sha == "ctrl-merge"
+    assert state._repo_snapshot_key.endswith("CTRL.tar.zst")
+
+    # Config Workflow (or any later job) reports a different key -> ignored.
+    state.apply_workflow_config(
+        {
+            "snapshot_sha": "other",
+            "repo_snapshot_key": "repo-snapshots/v1/PRs/OTHER.tar.zst",
+        }
+    )
+    assert state._snapshot_sha == "ctrl-merge"
+    assert state._repo_snapshot_key.endswith("CTRL.tar.zst")
+
+
+def test_seed_repo_snapshot_is_noop_when_empty():
+    # No controller snapshot (feature disabled): seeding empties leaves the pin
+    # unset so the Config Workflow's own report can still establish it (fallback).
+    s3 = _FakeS3()
+    state = _make_state(s3, {"A": JobStatus.PENDING})
+    state.seed_repo_snapshot("", "")
+    assert state._snapshot_sha == ""
+    assert state._repo_snapshot_key == ""
+    state.apply_workflow_config(
+        {"snapshot_sha": "m1", "repo_snapshot_key": "repo-snapshots/v1/PRs/H.tar.zst"}
+    )
+    assert state._snapshot_sha == "m1"
+
+
+def test_override_repo_snapshot_replaces_pinned_value():
+    # Fresh-base resume: the controller re-merged against the current base and
+    # published a new snapshot, which must REPLACE the one loaded from state.json.
+    s3 = _FakeS3()
+    state = _make_state(s3, {"A": JobStatus.PENDING})
+    state.seed_repo_snapshot("orig", "repo-snapshots/v1/PRs/ORIG.tar.zst")
+
+    state.override_repo_snapshot("fresh", "repo-snapshots/v1/PRs/FRESH.tar.zst")
+    assert state._snapshot_sha == "fresh"
+    assert state._repo_snapshot_key.endswith("FRESH.tar.zst")
+
+    # Empty override is a no-op (a plain resume passes nothing to override).
+    state.override_repo_snapshot("", "")
+    assert state._snapshot_sha == "fresh"

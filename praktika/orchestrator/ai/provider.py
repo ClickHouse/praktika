@@ -105,6 +105,11 @@ class Turn:
     usage: Usage = field(default_factory=Usage)
     raw: Optional[dict] = None  # provider-native response, for debugging
     error: Optional[str] = None
+    # Whether re-running the identical call could plausibly succeed. A transient
+    # API/network failure is retryable; a deterministic outcome of the current
+    # configuration (e.g. the model exhausting its output-token budget before it
+    # writes anything) is not — retrying it only wastes time and model spend.
+    retryable: bool = True
 
     def to_dict(self):
         return {
@@ -112,6 +117,7 @@ class Turn:
             "decision": self.decision,
             "usage": self.usage.to_dict(),
             "error": self.error,
+            "retryable": self.retryable,
         }
 
 

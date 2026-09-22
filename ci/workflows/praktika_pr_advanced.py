@@ -8,7 +8,7 @@ from praktika import Artifact, Docker, Job, Secret, Workflow
 from ci.settings.settings import RunnerLabels
 from praktika.settings import Settings
 
-_HEAD_PRAKTIKA_VERSION = "0.1.10"
+_HEAD_PRAKTIKA_VERSION = "0.1.11"
 
 artifact = Artifact.Config(name="greet", type=Artifact.Type.S3, path="./artifact.txt")
 
@@ -144,7 +144,7 @@ workflow = Workflow.Config(
     enable_exit_code_result=True,
     # Repo snapshot + ephemeral merge-commit are enabled project-wide via
     # Settings.ENABLE_S3_REPO_SNAPSHOT / ENABLE_PR_EPHEMERAL_MERGE_COMMIT
-    # (ci/settings/settings.py), not per workflow. See docs/repo-snapshot.md.
+    # (ci/settings/settings.py), not per workflow. See praktika/docs/repo-git-management.md.
 )
 
 WORKFLOWS = [workflow]

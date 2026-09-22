@@ -584,7 +584,25 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
                     run_id=run_id,
                     local_mode=local_mode,
                 )
+                # The controller established the run's single commit (ephemeral PR
+                # merge or plain head), published its snapshot, and passed the
+                # pinned identity via env before praktika was reinstalled. Seed it
+                # BEFORE the first dispatch so the Config Workflow and every
+                # downstream job restore this exact tree and the DAG matches.
+                state.seed_repo_snapshot(
+                    os.environ.get("PRAKTIKA_SNAPSHOT_SHA", "").strip(),
+                    os.environ.get("PRAKTIKA_REPO_SNAPSHOT_KEY", "").strip(),
+                )
                 state.print_plan()
+                # Native path: the orchestrator owns the workflow report. Create
+                # the initial summary (all jobs PENDING) here, once, at fresh-run
+                # start — the Config job's push_pending_ci_report no-ops under
+                # ORCHESTRATOR_OWNS_REPORT, and a resume (_orchestrate_resume)
+                # deliberately does NOT recreate it. Inside the retry block and
+                # before any job is dispatched: a transient failure is retried,
+                # and a hard failure is an infra fault the controller re-runs on a
+                # fresh instance (nothing dispatched yet).
+                state.create_initial_report()
                 break
             except Exception as e:
                 # Discard any partial startup state before retrying.
@@ -628,8 +646,14 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
             state.cleanup()
             # Persist the terminal snapshot with finalized=True — the lambda
             # reads this flag to route a re-run to a fresh orchestrator (resume)
-            # instead of a live one.
-            state.save_snapshot(finalized=True)
+            # instead of a live one. required=True: this is the sole durable
+            # "no live orchestrator" signal, so if it can't land after retries
+            # we must NOT exit as if finalized (that would route every later
+            # re-run to a dead orchestrator). Raising here escapes to run() →
+            # INFRA_EXIT_CODE → the controller re-drives on a fresh instance
+            # (which re-reads the terminal snapshot and finalizes once S3 is
+            # back). Ordinary mid-loop writes stay best-effort.
+            state.save_snapshot(finalized=True, required=True)
             # praktika_debug: attach the orchestrator instance's controller +
             # orchestrate logs to the top-level result (best-effort).
             state.attach_debug_logs()
@@ -736,14 +760,29 @@ def _orchestrate_resume(event, gh_token=None, ci=True):
         local_mode=not ci,
     )
     state.seed_from_snapshot(snap)
+    # Fresh-base resume: the controller re-merged this PR's head against the
+    # CURRENT base tip and published a new snapshot, handing its identity via env.
+    # Override the snapshot loaded from state.json so re-dispatched jobs restore the
+    # fresh tree. Only when the controller actually re-merged (fresh_base on the
+    # event + the new snapshot present in env); a plain resume reuses state.json.
+    if event.get("fresh_base"):
+        state.override_repo_snapshot(
+            os.environ.get("PRAKTIKA_SNAPSHOT_SHA", "").strip(),
+            os.environ.get("PRAKTIKA_REPO_SNAPSHOT_KEY", "").strip(),
+        )
     # Clear the previous generation's cancel markers first — a resume reuses the
     # run prefix, and a stale cancel-request/kill-flag from a cancelled original
     # run would otherwise cancel the reset job on the first sweep.
     state.clear_stale_cancel()
     # Apply the requested re-run set (from the message) plus any live requests
     # that piled up in S3 (consume-once), then persist the reset state.
-    reset = state.apply_rerun(rerun_jobs)
+    reset, failed = state.apply_rerun(rerun_jobs)
     state.sweep_rerun()
+    if failed:
+        # No S3 request to retain here (these came in the event message), so a
+        # failed reset is dropped for this attempt — surface it. A redelivery or
+        # another click re-drives them.
+        print(f"Resume: run {run_id} could not reset {sorted(failed)}")
     print(f"Resume: run {run_id} re-running {sorted(reset)}")
     # This finalized=false write MUST land before we dispatch: it clears the
     # run's stale finalized=true snapshot, without which every reset job's runner

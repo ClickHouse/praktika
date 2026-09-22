@@ -340,16 +340,11 @@ def _image_test_component(
         )
     for venv in prebuilt_venvs:
         path = venv.path or f"/opt/praktika/base-venvs/{venv.name}"
-        commands.extend(
-            [
-                f"test -x {path}/bin/python",
-                f"{path}/bin/python -m pip show praktika",
-                # Only assert Praktika's own runtime deps (from the
-                # `infrastructure` extra). pytest and other packages are
-                # optional, project-chosen extras — not guaranteed in the venv.
-                f'{path}/bin/python -c "import boto3, jwt, cryptography, requests"',
-            ]
-        )
+        # Only assert the venv's interpreter exists. Its packages are
+        # project-chosen: Praktika itself may be installed at runtime
+        # (runtime_source) rather than baked in, so don't assume any
+        # particular distribution is present in the venv.
+        commands.append(f"test -x {path}/bin/python")
     return {
         "name": name,
         "platform": "Linux",

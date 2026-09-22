@@ -58,6 +58,9 @@ CIDB_ADMIN_PASSWORD_SECRET_NAME = "cidb-admin-password"
 S3_PROXY_ROLE_NAME = "s3-proxy-role"
 S3_PROXY_INSTANCE_PROFILE_NAME = "s3-proxy-profile"
 
+DOCKER_PROXY_ROLE_NAME = "dockerhub-proxy-role"
+DOCKER_PROXY_INSTANCE_PROFILE_NAME = "dockerhub-proxy-profile"
+
 lambda_gh_trigger_config = Lambda.Config(
     name="gh-trigger",
     path=f"{os.path.dirname(__file__)}/lambda_gh_trigger.py",
@@ -72,7 +75,13 @@ lambda_gh_trigger_config = Lambda.Config(
     environments={
         "S3_BUCKET": Settings.S3_ARTIFACT_BUCKET or "",
     },
-    timeout_ms=10 * 1000,
+    # The handler makes a chain of synchronous network calls (a `gh-token`
+    # sub-lambda invoke, GitHub REST round-trips, SQS/S3). Warm invocations
+    # finish in <=2.5s, but when a container has no cached token AND the
+    # low-QPS `gh-token` lambda is cold (~4s), the chain can cross a 10s
+    # budget and the handler is SIGKILL'd mid-call (losing all buffered logs).
+    # 25s leaves headroom below the HTTP API Gateway 30s integration cap.
+    timeout_ms=25 * 1000,
     memory_size_mb=128,
     api_gateway=True,
 )

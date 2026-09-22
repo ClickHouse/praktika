@@ -6,6 +6,7 @@ from typing import Dict, Iterable, List, Optional
 
 @dataclasses.dataclass
 class _Settings:
+    PROJECT_NAME: str = ""
     PROJECT_SLUG: str = ""
 
     ######################################
@@ -217,6 +218,7 @@ class _Settings:
 
 
 _USER_DEFINED_SETTINGS = [
+    "PROJECT_NAME",
     "PROJECT_SLUG",
     "PRAKTIKA_DEBUG",
     "ENABLE_S3_REPO_SNAPSHOT",

@@ -46,6 +46,15 @@ class Info:
         return self.env.EVENT_TIME
 
     @property
+    def workflow_start_time(self):
+        """When this workflow run started, as a Unix timestamp.
+
+        The same value in every job of the run, and a rerun keeps it, unlike
+        the per-job start time.
+        """
+        return self.env.WORKFLOW_START_TIME
+
+    @property
     def event_action(self):
         return self.env.EVENT_ACTION
 
@@ -180,7 +189,18 @@ class Info:
     def get_job_url(self):
         if not self.env.WORKFLOW_JOB_DATA:
             return ""
-        return f"{self.env.RUN_URL}/job/{self.env.WORKFLOW_JOB_DATA['check_run_id']}"
+        check_run_id = self.env.WORKFLOW_JOB_DATA.get("check_run_id")
+        # GitHub Actions: RUN_URL is the actions run page, whose per-job view is
+        # <run>/job/<id>. Native path: RUN_URL is just the change/PR URL, so
+        # <run>/job/<id> would be a dead link — build the check-run URL instead.
+        if "/actions/runs/" in (self.env.RUN_URL or ""):
+            return f"{self.env.RUN_URL}/job/{check_run_id}"
+        return self.get_check_run_url_static(
+            repo=self.env.REPOSITORY,
+            check_run_id=check_run_id,
+            pr_number=self.env.PR_NUMBER,
+            sha=self.env.SHA,
+        )
 
     def get_job_report_url(self, latest=False):
         url = self.get_report_url(latest=latest)
@@ -238,6 +258,27 @@ class Info:
         return res
 
     @staticmethod
+    def get_check_run_url_static(repo, check_run_id, pr_number=0, sha=""):
+        """GitHub UI URL for a check run, e.g.
+        ``https://github.com/ClickHouse/praktika/pull/147/checks?check_run_id=106575590543``.
+
+        A check run is anchored to a PR when there is one (the tabbed
+        Checks view under the PR), otherwise to its head commit. Returns ""
+        when repo or id is missing so callers can skip the link cleanly.
+        """
+        if not repo or not check_run_id:
+            return ""
+        if pr_number:
+            anchor = f"pull/{int(pr_number)}"
+        elif sha:
+            anchor = f"commit/{sha}"
+        else:
+            # No PR and no sha to anchor to; GitHub's bare check-run URL
+            # redirects to the right place on its own.
+            return f"https://github.com/{repo}/runs/{check_run_id}"
+        return f"https://github.com/{repo}/{anchor}/checks?check_run_id={check_run_id}"
+
+    @staticmethod
     def get_workflow_input_value(input_name) -> Optional[str]:
         from .settings import _Settings
 
@@ -285,6 +326,12 @@ class Info:
 
     def get_changed_files(self):
         return self.get_kv_data().get("changed_files", None)
+
+    def get_changed_file_statuses(self):
+        return self.get_kv_data().get("changed_file_statuses", None)
+
+    def get_added_files(self):
+        return self.get_kv_data().get("added_files", None)
 
     def store_traceback(self):
         self.env.TRACEBACKS.append(traceback.format_exc())

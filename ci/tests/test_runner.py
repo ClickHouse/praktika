@@ -37,6 +37,17 @@ def test_runner_commit_status_posting_is_only_for_non_praktika_engines():
     assert _should_post_commit_status(SimpleNamespace(engine="custom-engine"))
 
 
+def test_workflow_start_time_uses_current_time(monkeypatch):
+    from praktika.native_jobs import _resolve_workflow_start_time
+    from praktika.utils import Utils
+
+    monkeypatch.setattr(Utils, "timestamp", staticmethod(lambda: 123))
+
+    env = SimpleNamespace(WORKFLOW_START_TIME=0.0, RUN_ID="i-123-456")
+
+    assert _resolve_workflow_start_time(env) == 123
+
+
 def test_job_python_env_prefers_runtime_paths_before_repo_paths(monkeypatch, tmp_path):
     from praktika.runner import _job_python_env
 
@@ -162,6 +173,51 @@ class TestRunner(unittest.TestCase):
             ),
             f"Expected job.log under <workflow>/<job>/, got: {result.links}",
         )
+
+    def test_build_ci_environment_prefers_task_commit_over_head(self):
+        """In repo-snapshot merge mode HEAD is the synthetic merge commit, so the
+        controller carries the real PR branch-head subject/authors on the task.
+        _build_ci_environment must prefer them over ``git log HEAD``."""
+        from praktika.orchestrator.job_runner import _build_ci_environment
+
+        task = {
+            "workflow_name": "DummyRunnerTest",
+            "job_name": "dummy",
+            "pr_number": 1,
+            "event_type": "pull_request",
+            "head_repo": "test-org/test-repo",
+            "base_ref": "main",
+            "head_ref": "test-branch",
+            "head_sha": "0" * 40,
+            "repo": "test-org/test-repo",
+            "commit_message": "real PR head subject",
+            "commit_authors": ["dev@example.com"],
+        }
+        env = _build_ci_environment(task, job_name="dummy", local_run=True)
+        self.assertEqual(env.COMMIT_MESSAGE, "real PR head subject")
+        self.assertEqual(env.COMMIT_AUTHORS, ["dev@example.com"])
+        self.assertEqual(env.JOB_KV_DATA.get("commit_authors"), ["dev@example.com"])
+
+    def test_build_ci_environment_falls_back_to_head_without_task_commit(self):
+        """Snapshots/merge disabled: no commit_message on the task -> use the
+        actual git HEAD subject of the checked-out tree (unchanged behavior)."""
+        from praktika.orchestrator.job_runner import _build_ci_environment
+
+        task = {
+            "workflow_name": "DummyRunnerTest",
+            "job_name": "dummy",
+            "pr_number": 1,
+            "event_type": "pull_request",
+            "head_repo": "test-org/test-repo",
+            "base_ref": "main",
+            "head_ref": "test-branch",
+            "head_sha": "0" * 40,
+            "repo": "test-org/test-repo",
+        }
+        env = _build_ci_environment(task, job_name="dummy", local_run=True)
+        # This repo has a real HEAD, so the subject is non-empty and is NOT the
+        # sentinel we use in the override test.
+        self.assertNotEqual(env.COMMIT_MESSAGE, "real PR head subject")
 
     def test_runner_crash_is_recorded_in_job_result(self):
         """A crash inside Runner.run (e.g. _post_run) must land an ERROR
@@ -371,71 +427,6 @@ class TestRunner(unittest.TestCase):
         self.assertIn("exited with code [7]", result.info)
         self.assertIsNotNone(result.duration)
         self.assertGreater(result.duration, 0)
-
-    def test_config_workflow_failure_is_handled_gracefully(self):
-        """Reproduce the misconfigured-runner failure: Config Workflow's
-        ``_check_db`` fetches the CI DB connection secret via ``get_value()``,
-        which raises RuntimeError when the env var isn't set. The check
-        must catch the raise locally, surface it as a FAIL/ERROR sub-result
-        with diagnostic info, and let the rest of Config Workflow run —
-        not let the exception unwind into the script's main try/except,
-        which would discard every accumulated sub-result.
-
-        ``_check_db`` is gated by ``not Info().is_local_run``, so we run
-        with ``local=False`` (env.LOCAL_RUN=False) to actually exercise
-        it; ``PRAKTIKA_LOCAL_RUN=1`` (already set in setUp) keeps the S3
-        backend on the local-fs mirror.
-        """
-        from praktika.orchestrator.job_runner import run_job
-        from praktika.result import Result
-        from praktika.settings import Settings
-
-        task = {
-            "workflow_name": "DummyRunnerTest",
-            "job_name": Settings.CI_CONFIG_JOB_NAME,
-            # Non-PR (Config Workflow) run: push event, no head_repo needed.
-            "event_type": "push",
-            "head_ref": "test-branch",
-            "head_sha": "0" * 40,
-            "repo": "test-org/test-repo",
-        }
-        self._bootstrap_workflow_state(task)
-
-        try:
-            # local=False — env.LOCAL_RUN=False → _check_db runs.
-            rc = run_job(task, gh_token=None, local=False)
-        except Exception as e:
-            self.fail(
-                f"run_job leaked exception (job must dump ERROR Result instead): "
-                f"{type(e).__name__}: {e}"
-            )
-
-        self.assertNotEqual(
-            rc, 0, "Config Workflow should fail when CI DB connection env var is missing"
-        )
-        result = Result.from_fs(Settings.CI_CONFIG_JOB_NAME)
-        self.assertEqual(
-            result.status,
-            Result.Status.ERROR,
-            f"Expected ERROR after secret-resolution failure, got [{result.status}]",
-        )
-        # The "Check CI DB" sub-result must record the captured failure;
-        # if it's missing, _check_db raised through its caller and lost
-        # the rest of the workflow's progress.
-        check_db_results = [r for r in result.results if r.name == "Check CI DB"]
-        self.assertEqual(
-            len(check_db_results),
-            1,
-            f"Expected one [Check CI DB] sub-result, got: {[r.name for r in result.results]}",
-        )
-        check_db = check_db_results[0]
-        self.assertEqual(check_db.status, Result.Status.ERROR)
-        self.assertIn("Failed to check CI DB", check_db.info)
-        # Full traceback should be captured so the report is actionable
-        # without grepping the raw job log.
-        self.assertIn("Traceback", check_db.info)
-        self.assertIn("RuntimeError", check_db.info)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -131,7 +131,7 @@ def _runner_user_data(controller_update_cmd: str) -> str:
             "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/etc/praktika/amazon-cloudwatch-agent.json -s",
             # Praktika itself is installed at run time from the pool's
             # `ext["runtime_source"]` (the run's checkout, `.`), not baked into
-            # the base venv here. See docs/installing-praktika.md.
+            # the base venv here. See praktika/docs/installing-praktika.md.
             "systemctl enable --now praktika-controller",
             "",
         ]
@@ -204,7 +204,7 @@ def _runner_pool(
     # instead of the AMI-baked version — a PR's Praktika changes are tested by
     # that PR's own CI, and diverged branches each run their own Praktika. The
     # `-base` pool opts out (runtime_source="") to stay pinned to the AMI as a
-    # stable reference. See docs/installing-praktika.md.
+    # stable reference. See praktika/docs/installing-praktika.md.
     if runtime_source:
         ext["runtime_source"] = runtime_source
     return Components.RunnerPool(
@@ -355,12 +355,12 @@ _orchestrator_pool = Components.OrchestratorPool(
         # PRs go through manual approval instead.
         # Ship kernel/OOM/systemd-kill evidence to /praktika/praktika-system so
         # a silently killed controller (e.g. OOM) leaves a trace. See
-        # docs/logging.md.
+        # praktika/docs/logging.md.
         "system_logs": True,
         # Run the orchestrator on the checkout's Praktika (not the AMI-baked
         # version), so PR/branch changes to the engine are exercised in
         # orchestration too. The `-base` orchestrator stays pinned. See
-        # docs/installing-praktika.md.
+        # praktika/docs/installing-praktika.md.
         "runtime_source": ".",
     },
     user_data="\n".join(
@@ -391,7 +391,7 @@ _orchestrator_pool_base = Components.OrchestratorPool(
     image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
     ext={
         "iam_statements": [_ORCHESTRATOR_BEDROCK_IAM_STATEMENT],
-        # See docs/logging.md; captures OOM/kill traces for the controller.
+        # See praktika/docs/logging.md; captures OOM/kill traces for the controller.
         "system_logs": True,
     },
 )

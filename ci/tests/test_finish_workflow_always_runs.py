@@ -29,6 +29,7 @@ def _make_state(*job_specs):
     state.jobs = {}
     state._deps = {}
     state._s3 = None
+    state.cancelled = False
     for spec in job_specs:
         name, status = spec[0], spec[1]
         deps = spec[2] if len(spec) > 2 else []
@@ -48,6 +49,8 @@ def _make_state(*job_specs):
         js.started_at = None
         js.finished_at = None
         js.filter_reason = None
+        js.skip_details_url = None
+        js.cancel_reason = None
         js._workflow_state = state
         state.jobs[name] = js
         state._deps[name] = set(deps)
