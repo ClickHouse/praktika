@@ -420,6 +420,11 @@ class JobState:
         # apart from the first attempt; persisted in the run snapshot so it
         # survives a finished-run resume.
         self.rerun_count = 0
+        # Wall-clock start (Unix ts) of the current re-run attempt, stamped by
+        # apply_rerun and threaded into the job env (RUN_ATTEMPT_STARTED_AT) so
+        # test selection pins its CIDB cutoff to the re-run; 0 on first attempt.
+        # Persisted in the run snapshot so it survives an orchestrator restart.
+        self.run_attempt_started_at = 0.0
 
     @property
     def name(self):
@@ -427,13 +432,14 @@ class JobState:
 
     def published_result(self):
         """The job's Result as a fresh dict for the workflow report, with the
-        orchestrator-owned ``rerun_count`` projected into ``ext``.
+        orchestrator-owned attempt number projected into ``ext`` as
+        ``run_attempt`` (1-based; 1 = first attempt).
 
-        ``rerun_count`` lives canonically on the JobState (persisted in the run
-        snapshot). Projecting it here — the single point report rows are built —
-        keeps it consistent across both the live completion path and a resume,
-        instead of mutating and persisting a copy of the runner's raw result.
-        Returns None when no result is set.
+        The re-run count lives canonically on the JobState (persisted in the run
+        snapshot). Projecting ``run_attempt`` here — the single point report rows
+        are built — keeps it consistent across both the live completion path and
+        a resume, instead of mutating and persisting a copy of the runner's raw
+        result. Returns None when no result is set.
         """
         if not isinstance(self.result, dict):
             return None
@@ -444,7 +450,7 @@ class JobState:
         if not isinstance(ext, dict):
             ext = {}
             pub["ext"] = ext
-        ext["rerun_count"] = self.rerun_count
+        ext["run_attempt"] = self.rerun_count + 1
         return pub
 
     def _update_check(self, transition):
@@ -1058,6 +1064,21 @@ class WorkflowState:
                 f"{base_url}/pull/{pr_number}" if (base_url and pr_number > 0) else ""
             )
             commit_url = f"{base_url}/commit/{sha}" if (base_url and sha) else ""
+            # The workflow report's "Run" link points at this run's own GitHub
+            # check run (self._run_id is its check-run id when checks are posted),
+            # falling back to the change URL when there is no check to link to.
+            from ..info import Info
+
+            run_url = (
+                Info.get_check_run_url_static(
+                    repo=repo,
+                    check_run_id=self._run_id,
+                    pr_number=pr_number,
+                    sha=sha,
+                )
+                if (self.can_post_checks and self._run_id)
+                else ""
+            ) or change_url
             _Environment(
                 WORKFLOW_NAME=self.workflow.name,
                 JOB_NAME="",
@@ -1074,8 +1095,7 @@ class WorkflowState:
                 COMMIT_MESSAGE=commit_message,
                 BASE_BRANCH=ev.get("base_ref", "") or "",
                 RUN_ID=str(self._run_id or ""),
-                # Mirrors job_runner: the report's run_url is the change_url.
-                RUN_URL=change_url,
+                RUN_URL=run_url,
                 INSTANCE_TYPE="",
                 INSTANCE_ID="",
                 INSTANCE_LIFE_CYCLE="",
@@ -1168,12 +1188,31 @@ class WorkflowState:
             return
         try:
             from ..host_metrics import HostMetricsCollector
+            from ..info import Info
             from ..result import Result, ResultInfo, _ResultS3
             from ..usage import ComputeUsage, PipelineUtilization, StorageUsage
 
             # Each job's published view is a fresh dict with rerun_count projected
             # into ext (see JobState.published_result).
             published = [(name, js, js.published_result()) for name, js in terminal]
+
+            # Point each job row's "Run" link at that job's own GitHub check run
+            # (the tabbed Checks view under the PR/commit) rather than the runner's
+            # default, which on the native path resolves to the PR itself. Only the
+            # orchestrator knows each job's check-run id, so it is stamped here.
+            for _name, _js, _pub in published:
+                if _js.check is None or not _js.check.id:
+                    continue
+                _ext = _pub.get("ext")
+                if not isinstance(_ext, dict):
+                    _ext = {}
+                    _pub["ext"] = _ext
+                _ext["run_url"] = Info.get_check_run_url_static(
+                    repo=self._repo,
+                    check_run_id=_js.check.id,
+                    pr_number=int(self._pr_number or 0),
+                    sha=self._head_sha or "",
+                )
 
             # Recompute the FULL usage aggregate from every finished job's Result
             # (idempotent — see docstring). storage_usage + metrics ride in each
@@ -1228,6 +1267,27 @@ class WorkflowState:
                 for name, js in cancelled
             ]
 
+            top_ext = {}
+            # Point the top-level "Run" link at this workflow's own GitHub check
+            # run. self._run_id IS the top-level check-run id whenever checks are
+            # posted (set from CheckRun.start in _orchestrate_single); without a
+            # check it is a synthetic uuid, so gate on can_post_checks.
+            if self.can_post_checks and self._run_id:
+                top_run_url = Info.get_check_run_url_static(
+                    repo=self._repo,
+                    check_run_id=self._run_id,
+                    pr_number=int(self._pr_number or 0),
+                    sha=self._head_sha or "",
+                )
+                if top_run_url:
+                    top_ext["run_url"] = top_run_url
+            # Finish Workflow used to stamp this when it dropped unfinished
+            # jobs; on a cancelled run it no longer runs (get_ready skips it),
+            # so the orchestrator marks the report cancelled so the Slack feed
+            # and report render it as cancelled rather than merely finished.
+            if self.cancelled:
+                top_ext["is_cancelled"] = True
+
             _ResultS3.update_workflow_results(
                 workflow_name=self.workflow.name,
                 new_sub_results=rows + skipped_rows + cancelled_rows,
@@ -1240,11 +1300,7 @@ class WorkflowState:
                     pipeline if (terminal and has_pipeline) else None
                 ),
                 replace_usage=True,
-                # Finish Workflow used to stamp this when it dropped unfinished
-                # jobs; on a cancelled run it no longer runs (get_ready skips it),
-                # so the orchestrator marks the report cancelled so the Slack feed
-                # and report render it as cancelled rather than merely finished.
-                top_ext={"is_cancelled": True} if self.cancelled else None,
+                top_ext=top_ext or None,
             )
         except Exception as e:
             print(f"  [warn] could not re-publish workflow report: {e}")
@@ -1330,6 +1386,7 @@ class WorkflowState:
                     "cancel_reason": js.cancel_reason,
                     "skip_details_url": js.skip_details_url,
                     "rerun_count": js.rerun_count,
+                    "run_attempt_started_at": js.run_attempt_started_at,
                 }
                 for name, js in self.jobs.items()
             },
@@ -1422,6 +1479,7 @@ class WorkflowState:
             js.cancel_reason = rec.get("cancel_reason")
             js.skip_details_url = rec.get("skip_details_url")
             js.rerun_count = rec.get("rerun_count", 0) or 0
+            js.run_attempt_started_at = rec.get("run_attempt_started_at", 0.0) or 0.0
             if js.status in _TERMINAL:
                 # Raw result from final.json; rerun_count (restored onto
                 # js.rerun_count above) is projected into ext at report time by
@@ -1487,13 +1545,19 @@ class WorkflowState:
                 ):
                     to_reset.add(dep)
                     frontier.append(dep)
-        reset_ok = {name for name in to_reset if self._reset_job(name)}
+        # One timestamp for the whole re-run batch so all jobs reset together
+        # agree on the test-selection cutoff (mirrors GitHub Actions, where every
+        # job in a re-run shares the attempt's run_started_at).
+        attempt_started_at = time.time()
+        reset_ok = {
+            name for name in to_reset if self._reset_job(name, attempt_started_at)
+        }
         # Whatever we meant to reset but couldn't (only reason: _reset_job
         # returned False) must be retried, not consumed.
         failed = to_reset - reset_ok
         return reset_ok, failed
 
-    def _reset_job(self, name):
+    def _reset_job(self, name, attempt_started_at):
         """Reset a finished job to PENDING for re-run. Returns True on success.
 
         Returns False (and leaves the job untouched) if the stale ``final.json``
@@ -1531,6 +1595,7 @@ class WorkflowState:
         js.stale_flagged = False
         js.filter_reason = None
         js.rerun_count += 1
+        js.run_attempt_started_at = attempt_started_at
         # Post a NEW check run for the re-run instead of reusing the old one.
         # GitHub does NOT allow un-completing a check: PATCHing a completed check
         # back to queued/in_progress is silently ignored (status stays
@@ -1973,6 +2038,7 @@ class WorkflowState:
             "final_state_s3_key": self._final_state_s3_key(job_state.name),
             "check_run_id": job_state.check.id if job_state.check else None,
             "rerun_count": job_state.rerun_count,
+            "run_attempt_started_at": job_state.run_attempt_started_at,
             # The orchestrator run_id (S3 run prefix). Lets the Config job's
             # report-summary create-once guard tell a duplicate Config attempt
             # *within this run* (reuse the summary) from a fresh run reusing the

@@ -325,9 +325,7 @@ class Runner:
             start_time=Utils.timestamp(),
         )
         if env.WORKFLOW_JOB_DATA:
-            result.add_ext_key_value(
-                "run_url", f"{env.RUN_URL}/job/{env.WORKFLOW_JOB_DATA['check_run_id']}"
-            )
+            result.add_ext_key_value("run_url", Info().get_job_url())
         result.dump()
 
         if not local_job_run:
@@ -1148,16 +1146,16 @@ class Runner:
                 # has up-to-date storage/compute/pipeline-utilization data. All
                 # three are written as a single workflow-level summary row into
                 # the `attributes` JSON column.
-                # Highest per-job re-run count in the pipeline (0 = no job was
+                # Highest per-job attempt in the pipeline (1-based; 1 = no job was
                 # re-run). Marks a usage row whose storage/compute totals reflect
                 # re-run attempts rather than a single clean pass — the
-                # orchestrator stamps each job's re-run count into its result ext.
-                max_rerun_count = max(
+                # orchestrator stamps each job's attempt into its result ext.
+                max_run_attempt = max(
                     (
-                        int((r.ext or {}).get("rerun_count") or 0)
+                        int((r.ext or {}).get("run_attempt") or 1)
                         for r in workflow_result.results
                     ),
-                    default=0,
+                    default=1,
                 )
                 ci_db.insert_workflow_usage(
                     pipeline_utilization=PipelineUtilization.from_dict(
@@ -1173,7 +1171,7 @@ class Runner:
                     start_time=workflow_result.start_time,
                     duration_s=workflow_result.update_duration().duration,
                     workflow_status=workflow_result.status,
-                    rerun_count=max_rerun_count,
+                    run_attempt=max_run_attempt,
                 )
 
         if workflow.enable_gh_summary_comment and (

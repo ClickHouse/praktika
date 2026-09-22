@@ -999,10 +999,10 @@
 
         // PR on the left
         const prLabel = document.createElement("div");
-        if (PR > 0 && runtimeCache.prLink) {
+        if (PR > 0 && summaryExt().change_url) {
             const prLink = document.createElement("a");
             prLink.textContent = `PR ${PR}`;
-            prLink.href = runtimeCache.prLink;
+            prLink.href = summaryExt().change_url;
             prLink.target = "_blank";
             prLink.style.fontWeight = "bold";
             prLink.className = "external-link";
@@ -2259,19 +2259,17 @@
         commits: null,
         json0: null,
         json1: null,
-        prLink: null,
-        commitLink: null,
-        runLink: null,
         sha: null,
         downstreamResults: null,
         downstreamSha: null,
         downstreamError: null
     };
 
-    function storeLink(link) {
-        if (link.includes('/pull/')) runtimeCache.prLink = link;
-        else if (link.includes('/commit/')) runtimeCache.commitLink = link;
-        else if (link.includes('/actions/runs/')) runtimeCache.runLink = link;
+    // The workflow summary (json0) carries every external link under a fixed,
+    // unique ext key — change_url (PR), commit_url, run_url (the run's check),
+    // so the report reads them by key instead of pattern-matching URL shapes.
+    function summaryExt() {
+        return runtimeCache.json0?.ext || {};
     }
 
     function getTargetResults(nameParams) {
@@ -2363,9 +2361,17 @@
             footer.appendChild(a);
         }
         const result = getTargetResults(nameParams);
-        if (runtimeCache.prLink) createLinkElement(runtimeCache.prLink, 'PR', footerRight);
-        if (runtimeCache.commitLink) createLinkElement(runtimeCache.commitLink, 'Commit', footerRight);
-        const runLink = result?.ext?.run_url || runtimeCache.runLink;
+        const ext = summaryExt();
+        // PR / Commit come from the summary's fixed keys.
+        if (ext.pr_number && ext.change_url) createLinkElement(ext.change_url, 'PR', footerRight);
+        if (ext.commit_url) createLinkElement(ext.commit_url, 'Commit', footerRight);
+        // Run link: the top level (nameParams === [workflow]) shows the workflow
+        // check; ANY nested level shows the enclosing job's check. run_url only
+        // lives on the job-level result (index 1), not on deeper sub-results, so
+        // anchor on the job level rather than the currently-viewed depth — else a
+        // deep sub-result would fall back to the workflow check.
+        const jobResult = nameParams.length > 1 ? getTargetResults(nameParams.slice(0, 2)) : null;
+        const runLink = jobResult?.ext?.run_url || ext.run_url;
         if (runLink) createLinkElement(runLink, 'Run', footerRight);
         if (result) {
             let i = 1;
@@ -2636,10 +2642,6 @@
         if (updated) {
             runtimeCache.json0 = data;
             hasNewData = true;
-            if (data && data.ext) {
-                if (data.ext.change_url) storeLink(data.ext.change_url);
-                if (data.ext.run_url) storeLink(data.ext.run_url);
-            }
         }
 
         return hasNewData;

@@ -270,12 +270,12 @@ ORDER BY day DESC
         """Generates JSON data records for the result and its test cases."""
         env = _Environment.get()
 
-        # Job-level usage attributes: host metrics plus the re-run attempt this
-        # row came from (0 = first run), so a consumer can tell a re-run's row
-        # from the original job's.
+        # Job-level usage attributes: host metrics plus the attempt this row came
+        # from (1-based; 1 = first run), so a consumer can tell a re-run's row
+        # from the original job's. Written only for re-runs to keep clean rows lean.
         job_attributes = cls._host_usage_attributes(result.ext.get("metrics"))
-        if env.RERUN_COUNT:
-            job_attributes["rerun_count"] = env.RERUN_COUNT
+        if env.RUN_ATTEMPT > 1:
+            job_attributes["run_attempt"] = env.RUN_ATTEMPT
 
         # Create the base record
         base_record = cls.TableRecord(
@@ -423,7 +423,7 @@ ORDER BY day DESC
         start_time: Optional[float] = None,
         duration_s: Optional[float] = None,
         workflow_status: str = "",
-        rerun_count: int = 0,
+        run_attempt: int = 1,
     ):
         """Write a single workflow-level summary row carrying pipeline
         utilization, storage and compute usage in the ``attributes`` JSON
@@ -435,9 +435,9 @@ ORDER BY day DESC
         ``pipeline_jobs`` below, which counts only the jobs substantial enough
         to qualify for the utilization KPI.
 
-        ``rerun_count`` is the highest per-job re-run count in the run; when
-        non-zero it is written as ``pipeline_max_rerun_count`` so a consumer can
-        tell a clean run's usage from one whose totals were affected by re-runs.
+        ``run_attempt`` is the highest per-job attempt in the run (1-based); when
+        greater than 1 it is written as ``pipeline_max_run_attempt`` so a consumer
+        can tell a clean run's usage from one whose totals were affected by re-runs.
 
         Replaces the older ``insert_storage_usage``/``insert_compute_usage``,
         which encoded these numbers into the ``check_duration_ms``/``test_*``
@@ -459,12 +459,12 @@ ORDER BY day DESC
             attributes["pipeline_duration_s"] = round(duration_s, 1)
         for bucket, count in (job_counts or {}).items():
             attributes[f"pipeline_{bucket}_jobs"] = count
-        # Highest per-job re-run count in the run. >0 means at least one job was
-        # re-run, so these usage totals reflect the latest attempt of each job
+        # Highest per-job attempt in the run (1-based). >1 means at least one job
+        # was re-run, so these usage totals reflect the latest attempt of each job
         # and understate the resources actually consumed across attempts — a
         # consumer can filter these rows out of clean-run baselines.
-        if rerun_count:
-            attributes["pipeline_max_rerun_count"] = rerun_count
+        if run_attempt > 1:
+            attributes["pipeline_max_run_attempt"] = run_attempt
         if pipeline_utilization and pipeline_utilization.jobs:
             for key, value in pipeline_utilization.to_summary().items():
                 attributes[f"pipeline_{key}"] = value

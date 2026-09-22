@@ -35,6 +35,16 @@ class _Environment(MetaClasses.Serializable):
     USER_LOGIN: str
     FORK_NAME: str
     COMMIT_MESSAGE: str = ""
+    # Attempt number of this run, 1-based (1 = first attempt, 2 = first re-run,
+    # …). Unified across engines: on GitHub Actions it is GITHUB_RUN_ATTEMPT; on
+    # the native orchestrator it is the per-job re-run count + 1. Job code reads
+    # it via Info().run_attempt.
+    RUN_ATTEMPT: int = 1
+    # Wall-clock start of the current attempt (Unix ts), set by the native
+    # orchestrator when it re-runs a job so test selection can pin its CIDB
+    # cutoff to the re-run. 0 on the first attempt and on GitHub Actions, which
+    # exposes the attempt's start via the REST API instead.
+    RUN_ATTEMPT_STARTED_AT: float = 0.0
     EVENT_ACTION: str = ""
     # Unix timestamp resolved once by the config job (see
     # native_jobs._config_workflow) and inherited by every other job with this
@@ -55,9 +65,6 @@ class _Environment(MetaClasses.Serializable):
     JOB_KV_DATA_BASE_KEYS: List[str] = dataclasses.field(default_factory=list)
     COMMIT_AUTHORS: List[str] = dataclasses.field(default_factory=list)
     WORKFLOW_CONFIG: Optional[Dict[str, Any]] = None
-    # How many times this job was manually re-run (0 = first attempt). Set
-    # per-job by the orchestrator; job code can read it via Info().
-    RERUN_COUNT: int = 0
     # True when this run is driven by the native orchestrator, which is the SOLE
     # writer of the workflow report summary. Job-side report writers
     # (push_pending_ci_report / configure / pre_run / post_run's summary merge /
@@ -244,6 +251,7 @@ class _Environment(MetaClasses.Serializable):
             EVENT_TIME=EVENT_TIME,
             PR_NUMBER=PR_NUMBER,
             RUN_ID=RUN_ID,
+            RUN_ATTEMPT=int(os.getenv("GITHUB_RUN_ATTEMPT", "1")),
             CHANGE_URL=CHANGE_URL,
             COMMIT_URL=COMMIT_URL,
             RUN_URL=RUN_URL,
@@ -283,6 +291,10 @@ class _Environment(MetaClasses.Serializable):
         # CI engine environments serialised by `_build_ci_environment` are not wiped.
         JOB_OUTPUT_STREAM = os.getenv("GITHUB_OUTPUT", "") or obj.get("JOB_OUTPUT_STREAM", "")
         obj["JOB_OUTPUT_STREAM"] = JOB_OUTPUT_STREAM
+        # A failed-job rerun inherits the config job's previous environment.
+        # Capture the current attempt on the host before serializing for Docker.
+        if "GITHUB_RUN_ATTEMPT" in os.environ:
+            obj["RUN_ATTEMPT"] = int(os.environ["GITHUB_RUN_ATTEMPT"])
         if "PARAMETER" in obj:
             obj["PARAMETER"] = _to_object(obj["PARAMETER"])
         # Filter out unexpected arguments - only keep fields defined in the dataclass
