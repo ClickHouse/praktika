@@ -216,9 +216,12 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
         "INSTANCE_LIFE_CYCLE": instance_life_cycle,
         "TRACEBACKS": [],
         "LOCAL_RUN": bool(local_run),
-        # Per-job re-run counter (0 = first attempt); never inherited from an
-        # upstream job's dump, so it lives in the per-runner overrides.
-        "RERUN_COUNT": int(task.get("rerun_count") or 0),
+        # Attempt number for this run (1-based; 1 = first attempt) = per-job
+        # re-run count + 1, plus the attempt's start time for a re-run so test
+        # selection can pin its CIDB cutoff. Per-runner: never inherited from an
+        # upstream job's dump.
+        "RUN_ATTEMPT": int(task.get("rerun_count") or 0) + 1,
+        "RUN_ATTEMPT_STARTED_AT": float(task.get("run_attempt_started_at") or 0.0),
         # This run is orchestrator-driven, so the orchestrator is the sole writer
         # of the workflow report summary — job-side report writers stand down (see
         # orchestrator/REPORT_OWNERSHIP.md). False for local runs.
@@ -283,7 +286,8 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
             },
             WORKFLOW_CONFIG=None,
             LOCAL_RUN=bool(local_run),
-            RERUN_COUNT=int(task.get("rerun_count") or 0),
+            RUN_ATTEMPT=int(task.get("rerun_count") or 0) + 1,
+            RUN_ATTEMPT_STARTED_AT=float(task.get("run_attempt_started_at") or 0.0),
             ORCHESTRATOR_OWNS_REPORT=not bool(local_run),
             SNAPSHOT_SHA=task.get("snapshot_sha", ""),
             REPO_SNAPSHOT_KEY=task.get("repo_snapshot_key", ""),

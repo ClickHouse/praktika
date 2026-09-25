@@ -67,11 +67,6 @@ class Info:
         return self.env.JOB_NAME
 
     @property
-    def rerun_count(self):
-        """How many times this job was manually re-run (0 = first attempt)."""
-        return self.env.RERUN_COUNT
-
-    @property
     def pr_body(self):
         return self.env.PR_BODY
 
@@ -138,6 +133,20 @@ class Info:
     @property
     def run_id(self):
         return self.env.RUN_ID
+
+    @property
+    def run_attempt(self):
+        """Attempt number of this run, 1-based (1 = first attempt). Unified
+        across engines: GITHUB_RUN_ATTEMPT on GitHub Actions, per-job re-run
+        count + 1 on the native orchestrator."""
+        return self.env.RUN_ATTEMPT
+
+    @property
+    def run_attempt_started_at(self):
+        """Wall-clock start (Unix ts) of the current attempt, set by the native
+        orchestrator when it re-runs a job; 0 on the first attempt and on GitHub
+        Actions (which exposes the attempt start via the REST API instead)."""
+        return self.env.RUN_ATTEMPT_STARTED_AT
 
     @property
     def pr_labels(self):

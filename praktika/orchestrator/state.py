@@ -420,6 +420,11 @@ class JobState:
         # apart from the first attempt; persisted in the run snapshot so it
         # survives a finished-run resume.
         self.rerun_count = 0
+        # Wall-clock start (Unix ts) of the current re-run attempt, stamped by
+        # apply_rerun and threaded into the job env (RUN_ATTEMPT_STARTED_AT) so
+        # test selection pins its CIDB cutoff to the re-run; 0 on first attempt.
+        # Persisted in the run snapshot so it survives an orchestrator restart.
+        self.run_attempt_started_at = 0.0
 
     @property
     def name(self):
@@ -427,13 +432,14 @@ class JobState:
 
     def published_result(self):
         """The job's Result as a fresh dict for the workflow report, with the
-        orchestrator-owned ``rerun_count`` projected into ``ext``.
+        orchestrator-owned attempt number projected into ``ext`` as
+        ``run_attempt`` (1-based; 1 = first attempt).
 
-        ``rerun_count`` lives canonically on the JobState (persisted in the run
-        snapshot). Projecting it here — the single point report rows are built —
-        keeps it consistent across both the live completion path and a resume,
-        instead of mutating and persisting a copy of the runner's raw result.
-        Returns None when no result is set.
+        The re-run count lives canonically on the JobState (persisted in the run
+        snapshot). Projecting ``run_attempt`` here — the single point report rows
+        are built — keeps it consistent across both the live completion path and
+        a resume, instead of mutating and persisting a copy of the runner's raw
+        result. Returns None when no result is set.
         """
         if not isinstance(self.result, dict):
             return None
@@ -444,7 +450,7 @@ class JobState:
         if not isinstance(ext, dict):
             ext = {}
             pub["ext"] = ext
-        ext["rerun_count"] = self.rerun_count
+        ext["run_attempt"] = self.rerun_count + 1
         return pub
 
     def _update_check(self, transition):
@@ -1380,6 +1386,7 @@ class WorkflowState:
                     "cancel_reason": js.cancel_reason,
                     "skip_details_url": js.skip_details_url,
                     "rerun_count": js.rerun_count,
+                    "run_attempt_started_at": js.run_attempt_started_at,
                 }
                 for name, js in self.jobs.items()
             },
@@ -1472,6 +1479,7 @@ class WorkflowState:
             js.cancel_reason = rec.get("cancel_reason")
             js.skip_details_url = rec.get("skip_details_url")
             js.rerun_count = rec.get("rerun_count", 0) or 0
+            js.run_attempt_started_at = rec.get("run_attempt_started_at", 0.0) or 0.0
             if js.status in _TERMINAL:
                 # Raw result from final.json; rerun_count (restored onto
                 # js.rerun_count above) is projected into ext at report time by
@@ -1537,13 +1545,19 @@ class WorkflowState:
                 ):
                     to_reset.add(dep)
                     frontier.append(dep)
-        reset_ok = {name for name in to_reset if self._reset_job(name)}
+        # One timestamp for the whole re-run batch so all jobs reset together
+        # agree on the test-selection cutoff (mirrors GitHub Actions, where every
+        # job in a re-run shares the attempt's run_started_at).
+        attempt_started_at = time.time()
+        reset_ok = {
+            name for name in to_reset if self._reset_job(name, attempt_started_at)
+        }
         # Whatever we meant to reset but couldn't (only reason: _reset_job
         # returned False) must be retried, not consumed.
         failed = to_reset - reset_ok
         return reset_ok, failed
 
-    def _reset_job(self, name):
+    def _reset_job(self, name, attempt_started_at):
         """Reset a finished job to PENDING for re-run. Returns True on success.
 
         Returns False (and leaves the job untouched) if the stale ``final.json``
@@ -1581,6 +1595,7 @@ class WorkflowState:
         js.stale_flagged = False
         js.filter_reason = None
         js.rerun_count += 1
+        js.run_attempt_started_at = attempt_started_at
         # Post a NEW check run for the re-run instead of reusing the old one.
         # GitHub does NOT allow un-completing a check: PATCHing a completed check
         # back to queued/in_progress is silently ignored (status stays
@@ -2023,6 +2038,7 @@ class WorkflowState:
             "final_state_s3_key": self._final_state_s3_key(job_state.name),
             "check_run_id": job_state.check.id if job_state.check else None,
             "rerun_count": job_state.rerun_count,
+            "run_attempt_started_at": job_state.run_attempt_started_at,
             # The orchestrator run_id (S3 run prefix). Lets the Config job's
             # report-summary create-once guard tell a duplicate Config attempt
             # *within this run* (reuse the summary) from a fresh run reusing the

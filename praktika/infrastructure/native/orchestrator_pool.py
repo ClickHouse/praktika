@@ -374,11 +374,13 @@ class OrchestratorPool:
             self._webhook_secret_name(): "GH_WEBHOOK_SECRET",
         }
         self.lambda_config.environments["SQS_QUEUE_NAME"] = queue_name
-        self.lambda_config.environments["ALLOWED_PUSH_BRANCHES"] = ",".join(
-            allowed_push_branches
+        self.lambda_config.environments["ALLOWED_PUSH_BRANCHES_JSON"] = json.dumps(
+            allowed_push_branches,
+            sort_keys=True,
         )
-        self.lambda_config.environments["ALLOWED_PR_BASE_BRANCHES"] = ",".join(
-            allowed_pr_base_branches
+        self.lambda_config.environments["ALLOWED_PR_BASE_BRANCHES_JSON"] = json.dumps(
+            allowed_pr_base_branches,
+            sort_keys=True,
         )
         self.lambda_config.environments["ALLOWED_REPOSITORIES_JSON"] = json.dumps(
             allowed_repositories,

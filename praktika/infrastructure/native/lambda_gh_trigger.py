@@ -43,24 +43,40 @@ _PERMISSION_LEVELS = {
 ALLOWED_SENDERS = set()
 
 
-def _parse_allowed_push_branches():
-    value = os.environ.get("ALLOWED_PUSH_BRANCHES")
+def _parse_json_branch_list(env_name):
+    """Shared parser for the two branch allow-lists, both JSON arrays of strings.
+
+    JSON (not comma-separated) so entries may safely contain commas - notably the
+    regex quantifiers ALLOWED_PR_BASE_BRANCHES_JSON accepts, e.g. "release/[0-9]{2,3}".
+
+    An unset env var defaults to {"main"}; an explicitly empty value (including an
+    empty JSON array) means no branch is accepted."""
+    value = os.environ.get(env_name)
     if value is None:
         return {"main"}
-    return {branch.strip() for branch in value.split(",") if branch.strip()}
+    value = value.strip()
+    if not value:
+        return set()
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        print(f"WARNING: {env_name} is not valid JSON")
+        return set()
+    if not isinstance(parsed, list):
+        print(f"WARNING: {env_name} must decode to a list")
+        return set()
+    return {str(branch).strip() for branch in parsed if str(branch).strip()}
+
+
+def _parse_allowed_push_branches():
+    return _parse_json_branch_list("ALLOWED_PUSH_BRANCHES_JSON")
 
 
 def _parse_allowed_pr_base_branches():
     """PR target-branch allow-list. Entries are exact names or regex patterns
     (matched with re.fullmatch), mirroring the orchestrator's workflow
-    base_branches matching so both layers agree on which PRs are in scope.
-
-    An unset env var defaults to {"main"}; an explicitly empty value means no PR
-    is accepted (symmetric with ALLOWED_PUSH_BRANCHES)."""
-    value = os.environ.get("ALLOWED_PR_BASE_BRANCHES")
-    if value is None:
-        return {"main"}
-    return {branch.strip() for branch in value.split(",") if branch.strip()}
+    base_branches matching so both layers agree on which PRs are in scope."""
+    return _parse_json_branch_list("ALLOWED_PR_BASE_BRANCHES_JSON")
 
 
 def _parse_autoapprove_paths():
