@@ -186,6 +186,50 @@ def get_github_token(region: str = "") -> str:
     return token
 
 
+def load_ci_config(region: str = "", log=None) -> dict:
+    """Per-project, CI-wide config read from the SSM parameter
+    ``{PRAKTIKA_PROJECT_SLUG}-ci-config`` as a JSON object.
+
+    This is the out-of-repo knob surface for the whole CI (controller today, and
+    praktika's runtime later can read the same parameter): values that must apply
+    regardless of the (possibly old) checked-out branch state, e.g.
+    ``{"force_merge_commit": true}`` to force the ephemeral PR merge on during a
+    migration. It lives in SSM rather than an instance tag so operators can flip a
+    value and have the next run pick it up, without replacing instances.
+
+    Best-effort: a missing / unreadable / non-JSON / non-object parameter yields
+    ``{}`` (every feature off), so the parameter is entirely optional and absence
+    is safe. Read fresh by the caller each run — one ``GetParameter`` is trivial
+    next to a full CI run and keeps the config live-editable.
+    """
+    import boto3
+
+    slug = os.environ.get("PRAKTIKA_PROJECT_SLUG", "").strip()
+    if not slug:
+        return {}
+    region = (
+        region
+        or os.environ.get("AWS_DEFAULT_REGION", "").strip()
+        or os.environ.get("AWS_REGION", "").strip()
+    )
+    if not region:
+        return {}
+    name = f"{slug}-ci-config"
+    try:
+        ssm = boto3.client("ssm", region_name=region)
+        value = ssm.get_parameter(Name=name)["Parameter"]["Value"]
+        data = json.loads(value)
+        if not isinstance(data, dict):
+            if log:
+                log.warning("Controller config %s is not a JSON object; ignoring", name)
+            return {}
+        return data
+    except Exception as e:  # noqa: BLE001 - missing/unreadable config -> defaults
+        if log:
+            log.debug("No controller config from %s: %s", name, e)
+        return {}
+
+
 def imds_token() -> str:
     import requests
 

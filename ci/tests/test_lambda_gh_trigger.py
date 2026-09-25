@@ -4,9 +4,11 @@ import json
 
 def _reload_lambda(monkeypatch, allowed_push_branches=None, allowed_users=None):
     if allowed_push_branches is None:
-        monkeypatch.delenv("ALLOWED_PUSH_BRANCHES", raising=False)
+        monkeypatch.delenv("ALLOWED_PUSH_BRANCHES_JSON", raising=False)
     else:
-        monkeypatch.setenv("ALLOWED_PUSH_BRANCHES", allowed_push_branches)
+        monkeypatch.setenv(
+            "ALLOWED_PUSH_BRANCHES_JSON", json.dumps(allowed_push_branches)
+        )
     if allowed_users is None:
         monkeypatch.delenv("ALLOWED_USERS_JSON", raising=False)
     else:
@@ -76,7 +78,7 @@ def test_push_branches_default_to_main(monkeypatch):
 
 
 def test_push_branches_can_be_redefined_from_env(monkeypatch):
-    mod = _reload_lambda(monkeypatch, "release/1.0,develop")
+    mod = _reload_lambda(monkeypatch, ["release/1.0", "develop"])
 
     assert mod._build_push_workflow(_push_payload("refs/heads/release/1.0"), 123.0)[
         "head_ref"

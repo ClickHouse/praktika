@@ -322,6 +322,16 @@ class OrchestratorPool:
                             ],
                             "Resource": iam_scope.cloudwatch_log_group_arns(),
                         },
+                        {
+                            # Read the project's CI config parameter
+                            # ({slug}-ci-config) — out-of-repo, live-editable knobs
+                            # such as force_merge_commit (see
+                            # praktika_controller.common.load_ci_config).
+                            "Sid": "ReadCiConfig",
+                            "Effect": "Allow",
+                            "Action": ["ssm:GetParameter"],
+                            "Resource": iam_scope.ssm_parameter_arns(),
+                        },
                         *extra_iam_statements,
                     ],
                 }
