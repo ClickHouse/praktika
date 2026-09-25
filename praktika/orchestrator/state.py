@@ -780,6 +780,12 @@ class WorkflowState:
         # DAG root, so it is always the first job to report them.
         self._snapshot_sha = ""
         self._repo_snapshot_key = ""
+        # Out-of-repo CI config ({slug}-ci-config in SSM), resolved ONCE by the
+        # controller at run start and passed via env. Frozen into run state (and
+        # state.json) so every job reads the same values instead of re-reading SSM
+        # (which could change mid-run), and a resume reuses the original run's
+        # config. Empty when no config parameter is set. See praktika/docs/ci-config.md.
+        self._ci_config = {}
         self.cancelled = (
             False  # set by sweep_cancel() on cancel-request / cancel-before
         )
@@ -861,6 +867,19 @@ class WorkflowState:
         if not self._repo_snapshot_key and snapshot_sha and repo_snapshot_key:
             self._snapshot_sha = snapshot_sha
             self._repo_snapshot_key = repo_snapshot_key
+
+    def seed_ci_config(self, ci_config):
+        """Pin the controller-resolved CI config into run state.
+
+        The controller reads {slug}-ci-config from SSM once at run start (trusted
+        infra, before any PR code runs) and passes it to the orchestrator via env.
+        Seeding it here — before any job is dispatched — freezes it into state.json
+        and threads it into every job task, so all jobs of the run (and any resume)
+        read one consistent value rather than re-reading SSM. First-write-wins: a
+        resume restores the original config via seed_from_snapshot and must not be
+        overwritten by a fresh env read."""
+        if not self._ci_config and isinstance(ci_config, dict) and ci_config:
+            self._ci_config = ci_config
 
     def override_repo_snapshot(self, snapshot_sha, repo_snapshot_key):
         """Force-replace the pinned snapshot (unlike the first-write-wins
@@ -1376,6 +1395,9 @@ class WorkflowState:
             # from the (mutable) environment snapshot.
             "snapshot_sha": self._snapshot_sha,
             "repo_snapshot_key": self._repo_snapshot_key,
+            # Frozen CI config so a resumed run reuses the original run's config
+            # rather than re-reading SSM (see seed_ci_config).
+            "ci_config": self._ci_config,
             "jobs": {
                 name: {
                     "status": js.status.value,
@@ -1465,6 +1487,7 @@ class WorkflowState:
         # re-derive from the mutable environment on resume).
         self._snapshot_sha = snap.get("snapshot_sha") or ""
         self._repo_snapshot_key = snap.get("repo_snapshot_key") or ""
+        self._ci_config = snap.get("ci_config") or {}
         for name, rec in (snap.get("jobs") or {}).items():
             js = self.jobs.get(name)
             if js is None or not isinstance(rec, dict):
@@ -2002,6 +2025,9 @@ class WorkflowState:
             "head_sha": self._event.get("head_sha", ""),
             "snapshot_sha": snapshot_sha,
             "repo_snapshot_key": repo_snapshot_key,
+            # Frozen out-of-repo CI config, read once by the controller and pinned
+            # into run state; every job reads it from here, not from SSM.
+            "ci_config": self._ci_config,
             # When set, the controller uploads its full per-job log next to
             # final.json and the job result links to it (Settings.PRAKTIKA_DEBUG or
             # the workflow's praktika_debug). Distinct from the runner's "debug"

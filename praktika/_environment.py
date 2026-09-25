@@ -78,6 +78,12 @@ class _Environment(MetaClasses.Serializable):
     # (see native_jobs._prepare_repo_snapshot). Empty when snapshots are disabled.
     SNAPSHOT_SHA: str = ""
     REPO_SNAPSHOT_KEY: str = ""
+    # Out-of-repo CI config ({slug}-ci-config in SSM), resolved ONCE by the
+    # controller at run start and threaded through the job task so every job of
+    # the run reads the same frozen values instead of re-reading SSM (which could
+    # change mid-run). Empty when no config parameter is set. Job code reads it via
+    # Info().ci_config. See praktika/docs/ci-config.md.
+    CI_CONFIG: Dict[str, Any] = dataclasses.field(default_factory=dict)
     name = "environment"
 
     @classmethod

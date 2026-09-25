@@ -56,6 +56,7 @@ def _make_state(s3, statuses, always_run=()):
     state._environment = {"WORKFLOW_CONFIG": {}}
     state._snapshot_sha = ""
     state._repo_snapshot_key = ""
+    state._ci_config = {}
     state._gh_token = None  # can_post_checks False -> no check API calls
     state.cancelled = False
     state.jobs = {}
@@ -188,6 +189,27 @@ def test_snapshot_roundtrip():
     assert fresh.jobs["C"].status == JobStatus.CANCELLED
     assert fresh.jobs["B"].rerun_count == 2
     assert fresh._environment == {"WORKFLOW_CONFIG": {}}
+
+
+def test_ci_config_frozen_and_preserved_across_resume():
+    """The controller-resolved CI config is frozen into run state (first-write-wins),
+    persisted in state.json, and restored on resume — so a resumed run reuses the
+    original config instead of re-reading SSM."""
+    s3 = _FakeS3()
+    state = _make_state(s3, {"A": JobStatus.SUCCESS})
+    state.seed_ci_config({"force_merge_commit": True})
+    # First-write-wins: a later env read must not overwrite the frozen value.
+    state.seed_ci_config({"force_merge_commit": False})
+    assert state._ci_config == {"force_merge_commit": True}
+    state.save_snapshot(finalized=True)
+
+    snap = json.loads(s3.store[("test-bucket", "runs/run42/state.json")])
+    assert snap["ci_config"] == {"force_merge_commit": True}
+
+    # A resumed orchestrator restores the config from state.json (not SSM).
+    fresh = _make_state(s3, {"A": JobStatus.PENDING})
+    fresh.seed_from_snapshot(snap)
+    assert fresh._ci_config == {"force_merge_commit": True}
 
 
 def test_sweep_rerun_applies_and_consumes_requests():

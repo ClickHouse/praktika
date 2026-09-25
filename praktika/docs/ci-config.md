@@ -26,10 +26,13 @@ can't live there:
 
 SSM (rather than an instance tag or env var) is used deliberately:
 
-- **Live-editable.** The value is read fresh on each run, so you set or clear it
-  in the console / CLI and the *next run* picks it up — no instance replacement,
-  no redeploy. Instance tags are only read at boot.
-- **Cheap.** One `GetParameter` per run is negligible next to a full CI run.
+- **Live-editable.** The value is read once at the **start of each run** (by the
+  controller — see [How the config reaches
+  jobs](#how-the-config-reaches-jobs-read-once-frozen-in-run-metadata)), so you
+  set or clear it in the console / CLI and the *next run* picks it up — no instance
+  replacement, no redeploy. Instance tags are only read at boot.
+- **Cheap.** One `GetParameter` per run is negligible next to a full CI run. It is
+  read once and then frozen into run metadata, so jobs never re-read it.
 - **Safe by absence.** A missing / unreadable / non-JSON / non-object parameter
   reads as `{}` — every feature off. The parameter is entirely optional; nothing
   breaks if it doesn't exist.
@@ -180,13 +183,34 @@ aws ssm get-parameter --name "{PROJECT_SLUG}-ci-config" --region "$AWS_REGION" \
 aws ssm delete-parameter --name "{PROJECT_SLUG}-ci-config" --region "$AWS_REGION"
 ```
 
+## How the config reaches jobs (read once, frozen in run metadata)
+
+The SSM parameter is read **once per run, by the controller**, and then frozen
+into run metadata so no job re-reads SSM (which could change mid-run) and a resume
+reuses the original run's config:
+
+1. **Controller** (`controller.py`) calls `common.load_ci_config` once at run start
+   and (a) passes it to `merge.read_repo_settings` for the `force_merge_commit`
+   gate, and (b) exports it to the orchestrator as `PRAKTIKA_CI_CONFIG` (JSON).
+2. **Orchestrator** (`orchestrator/__init__.py`) parses `PRAKTIKA_CI_CONFIG` and
+   calls `WorkflowState.seed_ci_config(...)` — first-write-wins — which freezes it
+   into `state.json` (`save_snapshot`) and restores it on resume
+   (`seed_from_snapshot`). Same lifecycle as `snapshot_sha`.
+3. Every per-job **task** carries `ci_config` (`state.py`), and `job_runner.py`
+   puts it into `_Environment.CI_CONFIG`.
+4. **Job code** reads it via `Info().ci_config` (a dict; empty when unset).
+
+So `force_merge_commit` is consumed on trusted infra in the controller; the
+job-visible copy in `Info().ci_config` is the frozen snapshot for any future
+job-side settings — treat it as advisory for anything security-relevant.
+
 ## Implementation notes
 
 - The reader lives in the **controller** package
   (`bootstrap/src/praktika_controller/common.py`) because the merge module must
   not import praktika (it runs before praktika is reinstalled from the — possibly
-  PR-tampered — checkout). When praktika's runtime needs to honor the same
-  parameter, add a parallel reader in praktika rather than sharing this one.
+  PR-tampered — checkout). Praktika's runtime does **not** re-read SSM; it reads
+  the frozen copy threaded through run metadata (above).
 - IAM: the orchestrator instance role grants `ssm:GetParameter` on
   `iam_scope.ssm_parameter_arns()` (`{slug}-*`); see
   `praktika/infrastructure/native/orchestrator_pool.py`.

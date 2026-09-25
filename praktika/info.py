@@ -55,6 +55,15 @@ class Info:
         return self.env.WORKFLOW_START_TIME
 
     @property
+    def ci_config(self):
+        """Out-of-repo CI config ({slug}-ci-config in SSM), resolved once by the
+        controller at run start and frozen into run metadata. The same value in
+        every job of the run (and across a resume); read from here, not SSM.
+        Empty dict when no config parameter is set. See praktika/docs/ci-config.md.
+        """
+        return self.env.CI_CONFIG or {}
+
+    @property
     def event_action(self):
         return self.env.EVENT_ACTION
 

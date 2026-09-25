@@ -101,7 +101,7 @@ def _git_out(args, cwd) -> str:
     return _git(args, cwd).stdout.strip()
 
 
-def read_repo_settings(clone_dir, log) -> dict:
+def read_repo_settings(clone_dir, log, ci_config=None) -> dict:
     """Read the merge-relevant settings from the repo checkout.
 
     Mirrors ``common.resolve_praktika_base_venv``: import the project's
@@ -142,7 +142,13 @@ def read_repo_settings(clone_dir, log) -> dict:
     # gate only decides whether to merge; once merged, the run reinstalls praktika
     # from the merged tree (which carries the target branch's own True settings),
     # so the rest of the pipeline stays consistent.
-    if bool(load_ci_config(log=log).get("force_merge_commit")):
+    #
+    # ``ci_config`` may be passed pre-resolved by the caller (the controller reads
+    # it once per run and also freezes it into run metadata); fall back to reading
+    # it here when called standalone.
+    if ci_config is None:
+        ci_config = load_ci_config(log=log)
+    if bool(ci_config.get("force_merge_commit")):
         values["ENABLE_S3_REPO_SNAPSHOT"] = True
         values["ENABLE_PR_EPHEMERAL_MERGE_COMMIT"] = True
         log.info(
