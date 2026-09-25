@@ -1101,6 +1101,11 @@ def _handle_partial_rerun(
         "snapshot_sha": snap.get("snapshot_sha", ""),
         "repo_snapshot_key": snap.get("repo_snapshot_key", ""),
         "base_sha": snap.get("base_sha", ""),
+        # Reuse the original run's frozen out-of-repo CI config so a resume never
+        # diverges from the run it resumes (e.g. a fresh-base rerun must make the
+        # SAME force_merge_commit decision the original run did, regardless of what
+        # SSM says now). Carried like the snapshot identity above. See ci-config.md.
+        "ci_config": snap.get("ci_config") or {},
         # Fresh-base rerun (per-job "Rerun w/ fresh base" button): the controller
         # re-merges the head against the CURRENT base tip and publishes a new
         # snapshot instead of restoring the one above. Finished-run only.

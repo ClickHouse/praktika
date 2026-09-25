@@ -342,11 +342,19 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
         # merge) or inherited from run state on a resume. Handed to the
         # orchestrator so it seeds run state before dispatching any job.
         snapshot = None
-        # Out-of-repo CI config, read from SSM ONCE per run here. Reused for the
-        # force_merge_commit merge gate (read_repo_settings) and handed to the
-        # orchestrator (PRAKTIKA_CI_CONFIG) so it is frozen into run state and every
-        # job reads the same values instead of re-reading SSM. See ci-config.md.
-        ci_config = load_ci_config(region=REGION, log=log)
+        # Out-of-repo CI config. A fresh run reads it from SSM ONCE here; a resume
+        # reuses the ORIGINAL run's frozen config carried on the event (from
+        # state.json) instead of re-reading SSM, so the resume never makes a
+        # different force_merge_commit / merge decision than the run it resumes
+        # (which would mismatch the DAG/runtime against the restored snapshot on a
+        # fresh-base rerun). It is reused for the force_merge_commit merge gate
+        # (read_repo_settings) and handed to the orchestrator (PRAKTIKA_CI_CONFIG),
+        # which freezes it into run state so every job reads the same values. See
+        # ci-config.md.
+        if is_resume:
+            ci_config = event.get("ci_config") or {}
+        else:
+            ci_config = load_ci_config(region=REGION, log=log)
         resume_snapshot_key = event.get("repo_snapshot_key", "") if is_resume else ""
         resume_snapshot_sha = event.get("snapshot_sha", "") if is_resume else ""
         # Fresh-base resume (per-job "Rerun w/ fresh base" button): re-run the

@@ -189,9 +189,15 @@ The SSM parameter is read **once per run, by the controller**, and then frozen
 into run metadata so no job re-reads SSM (which could change mid-run) and a resume
 reuses the original run's config:
 
-1. **Controller** (`controller.py`) calls `common.load_ci_config` once at run start
-   and (a) passes it to `merge.read_repo_settings` for the `force_merge_commit`
-   gate, and (b) exports it to the orchestrator as `PRAKTIKA_CI_CONFIG` (JSON).
+1. **Controller** (`controller.py`) resolves the config once at run start and
+   (a) passes it to `merge.read_repo_settings` for the `force_merge_commit` gate,
+   and (b) exports it to the orchestrator as `PRAKTIKA_CI_CONFIG` (JSON). A **fresh
+   run** reads it from SSM (`common.load_ci_config`); a **resume/rerun** instead
+   uses the original run's frozen config carried on the rerun event (from
+   `state.json`, alongside the snapshot identity), so a resume never re-reads SSM
+   and cannot make a different merge decision than the run it resumes — important
+   for a fresh-base rerun, where a divergent decision would mismatch the DAG/runtime
+   against the restored snapshot.
 2. **Orchestrator** (`orchestrator/__init__.py`) parses `PRAKTIKA_CI_CONFIG` and
    calls `WorkflowState.seed_ci_config(...)` — first-write-wins — which freezes it
    into `state.json` (`save_snapshot`) and restores it on resume
