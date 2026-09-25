@@ -33,6 +33,9 @@ class _Log:
     def exception(self, *args, **_kwargs):
         self.events.append(("exception", args))
 
+    def debug(self, *args, **_kwargs):
+        self.events.append(("debug", args))
+
 
 class _NoopVisibilityHeartbeat:
     def __init__(self, *_args, **_kwargs):

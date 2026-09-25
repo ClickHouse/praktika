@@ -77,6 +77,7 @@ def _make_state(s3, statuses, always_run=()):
         js.filter_reason = None
         js.skip_details_url = None
         js.rerun_count = 0
+        js.run_attempt_started_at = 0.0
         js.cancel_reason = None
         js._workflow_state = state
         state.jobs[name] = js

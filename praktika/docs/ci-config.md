@@ -47,6 +47,9 @@ grow into the general surface for out-of-repo CI settings, for example:
 - **Per-user settings** — a `users` sub-object keyed by GitHub login, letting
   individual developers opt into experimental behavior for their own PRs without
   touching the repo (e.g. `{"users": {"alice": {"...": true}}}`).
+- **Version pinning** — pin the praktika / praktika-controller version a run uses,
+  read once and preserved in run metadata (see [Proposed: version
+  pinning](#proposed-version-pinning-not-yet-implemented)).
 
 When adding a key, keep the same contract: optional, safe-by-absence, and
 documented here.
@@ -84,6 +87,79 @@ DAG, and every job stay consistent without any further override.
 leave it on until old branches age out, then delete the parameter (or set it to
 `false`). Because it's read per run, both flipping it on and removing it take
 effect on the next run.
+
+## Proposed: version pinning (not yet implemented)
+
+> Status: **design only.** Nothing below is wired up yet — the sole implemented
+> setting today is `force_merge_commit`. This section records the intended shape
+> so the config schema grows coherently.
+
+Goal: pin the praktika (and praktika-controller) version a run uses, so an
+unexpected upgrade cannot break an already-started run, and so the version can be
+rolled out from SSM instead of rebaking the AMI. Proposed keys:
+
+```json
+{
+  "praktika_version": "<source>",
+  "praktika_controller_version": "<source>"
+}
+```
+
+Each `<source>` supports three interchangeable forms, all of which `pip install`
+already accepts as-is:
+
+- **version** — a released spec, e.g. `"praktika==0.1.9"` (once published to an
+  index).
+- **https path** — a wheel URL, e.g. `"https://.../praktika-0.1.9-py3-none-any.whl"`.
+- **repo path** — a filesystem path/checkout, e.g. `"."` or `/opt/praktika/src`
+  (the current `runtime_source` behavior).
+
+### Two different lifecycles (do not conflate)
+
+- **`praktika_version` → per-run pin.** Read once at run start, frozen into the
+  run metadata (the `_Environment` / `task` / `state.json` carrier — same pattern
+  as `SNAPSHOT_SHA` / `WORKFLOW_START_TIME`), and every job of the run sources its
+  runtime from that frozen value. This is what protects a started run from a
+  mid-run upgrade: all jobs agree on one version regardless of what changes in SSM
+  afterward. In S3-snapshot mode a repo-sourced praktika is *already* content-pinned
+  by the snapshot; this closes the gap for the URL / version / moving-source forms.
+- **`praktika_controller_version` → global desired-state, NOT a per-run pin.** One
+  controller process serves many runs off the queue, so it cannot run a different
+  controller version per in-flight run. Instead the controller converges to the
+  SSM-desired version by self-reinstalling **between runs** (at an idle boundary),
+  never mid-run. It still protects in-flight runs (the reinstall/re-exec happens
+  when the controller is idle), but the mechanism is a rolling self-update.
+
+### Sketch of the mechanism
+
+- **`venv_manager._normalize_source`** must branch on the form (URL scheme or
+  requirement spec → pass through verbatim; otherwise resolve as a local path).
+  This is the only code gap for the three forms; pip handles the rest.
+- **Version introspection already exists** (`praktika/version.py`:
+  `current_praktika_version`, `current_praktika_controller_version`,
+  `version_key`). Mismatch detection compares the running version to the desired
+  one.
+- **Controller self-reinstall** reads `praktika_controller_version` from SSM
+  (trusted infra, read before any PR code runs — keep it in SSM, never in
+  PR-influenced metadata), and on mismatch installs the desired form into a fresh
+  overlay venv and re-execs into it (mirroring `_install_runtime_over_base_venv`),
+  rather than mutating the live system-python in place.
+
+### Risks / guards this needs before shipping
+
+- **Crash-loop protection** — a bad version otherwise makes every fresh instance
+  reinstall → crash → restart → reinstall forever. Fall back to the baked version
+  on install/import/health failure, cap attempts, persist last-known-good.
+- **Install atomicity** — install into an overlay venv and re-exec into it; never
+  half-mutate the running controller's env.
+- **Idle boundary** — only reinstall/re-exec with no message in flight (or at
+  process start, before claiming work).
+- **Bootstrapping** — only controllers that already ship this logic can
+  self-update; the first rollout is still a normal AMI/deploy.
+
+Because parts differ in risk, the intended rollout order is: (1) `_normalize_source`
+three-form support + freeze `praktika_version` into run metadata (low risk), then
+(2) controller self-reinstall as a separate, carefully-guarded change.
 
 ## Setting / clearing the parameter
 

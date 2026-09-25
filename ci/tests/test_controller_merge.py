@@ -22,6 +22,9 @@ class _Log:
     def warning(self, *a, **k):
         pass
 
+    def debug(self, *a, **k):
+        pass
+
 
 class _FakeS3:
     """Minimal boto3-S3 stand-in for _build_and_publish_snapshot / sticky pin."""
