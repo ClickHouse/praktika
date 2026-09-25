@@ -35,6 +35,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from praktika_controller.common import load_ci_config
+
 # Deterministic identity/dates so the merge sha depends only on the two parents
 # and the resulting tree, not on wall-clock or runner identity. Must stay
 # byte-identical to praktika.native_jobs so a later fail-closed verify (and any
@@ -130,6 +132,23 @@ def read_repo_settings(clone_dir, log) -> dict:
         _apply(primary)
     for override in sorted(settings_dir.glob("*_overrides.py")):
         _apply(override)
+
+    # Per-project migration override (out-of-repo). ``force_merge_commit`` in the
+    # project's CI config ({slug}-ci-config, see common.load_ci_config) forces the
+    # ephemeral PR merge + repo snapshot ON even for old branches whose checkout
+    # predates these settings (or has them off), so their CI runs the current
+    # praktika code against the merge with the target tip instead of the stale
+    # head. Applied last so it wins over whatever the checked-out repo says. This
+    # gate only decides whether to merge; once merged, the run reinstalls praktika
+    # from the merged tree (which carries the target branch's own True settings),
+    # so the rest of the pipeline stays consistent.
+    if bool(load_ci_config(log=log).get("force_merge_commit")):
+        values["ENABLE_S3_REPO_SNAPSHOT"] = True
+        values["ENABLE_PR_EPHEMERAL_MERGE_COMMIT"] = True
+        log.info(
+            "force_merge_commit set in controller config: forcing "
+            "ENABLE_S3_REPO_SNAPSHOT and ENABLE_PR_EPHEMERAL_MERGE_COMMIT on"
+        )
     return values
 
 
