@@ -188,6 +188,20 @@ def _current_attempt():
     return (os.environ.get("PRAKTIKA_ATTEMPT") or "").strip()
 
 
+def _parse_ci_config_env():
+    """The out-of-repo CI config the controller resolved once from SSM and passed
+    via ``PRAKTIKA_CI_CONFIG`` (JSON object). Best-effort: unset / non-JSON /
+    non-object yields ``{}`` so the config stays optional (see ci-config.md)."""
+    raw = (os.environ.get("PRAKTIKA_CI_CONFIG") or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _is_retry_attempt(attempt):
     """True only when ``attempt`` ("N/M") is a genuine infra retry (N > 1).
 
@@ -593,6 +607,10 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
                     os.environ.get("PRAKTIKA_SNAPSHOT_SHA", "").strip(),
                     os.environ.get("PRAKTIKA_REPO_SNAPSHOT_KEY", "").strip(),
                 )
+                # Freeze the out-of-repo CI config the controller resolved once
+                # (from SSM) into run state, so every job reads it from the task
+                # rather than re-reading SSM. See praktika/docs/ci-config.md.
+                state.seed_ci_config(_parse_ci_config_env())
                 state.print_plan()
                 # Native path: the orchestrator owns the workflow report. Create
                 # the initial summary (all jobs PENDING) here, once, at fresh-run

@@ -685,7 +685,7 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
         env = _Environment.get()
 
     # checks:
-    if not results or results[-1].is_ok():
+    if results[-1].is_ok():
         if os.environ.get("PRAKTIKA_TEST_ACTIVE") != "1":
             result_ = _check_yaml_up_to_date()
             if result_.status != Result.Status.OK:
@@ -693,14 +693,6 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
             results.append(result_)
         else:
             print("NOTE: Skipping yaml-up-to-date check (PRAKTIKA_TEST_ACTIVE=1)")
-
-    # TODO: commented out to decrease risk of throttling:
-    #       An error occurred (ThrottlingException) when calling the GetParameter operation (reached max retries: 2): Rate exceeded
-    # if results[-1].is_ok() and workflow.secrets:
-    #     result_ = _check_secrets(workflow.secrets)
-    #     if result_.status != Result.Status.OK:
-    #         print(f"ERROR: Invalid secrets in workflow [{workflow.name}]")
-    #     results.append(result_)
 
     if results[-1].is_ok() and workflow.enable_cidb and not Info().is_local_run:
         result_ = _check_db(workflow)

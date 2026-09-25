@@ -4,9 +4,11 @@ import json
 
 def _reload_lambda(monkeypatch, allowed_push_branches=None, allowed_users=None):
     if allowed_push_branches is None:
-        monkeypatch.delenv("ALLOWED_PUSH_BRANCHES", raising=False)
+        monkeypatch.delenv("ALLOWED_PUSH_BRANCHES_JSON", raising=False)
     else:
-        monkeypatch.setenv("ALLOWED_PUSH_BRANCHES", allowed_push_branches)
+        monkeypatch.setenv(
+            "ALLOWED_PUSH_BRANCHES_JSON", json.dumps(allowed_push_branches)
+        )
     if allowed_users is None:
         monkeypatch.delenv("ALLOWED_USERS_JSON", raising=False)
     else:
@@ -76,7 +78,7 @@ def test_push_branches_default_to_main(monkeypatch):
 
 
 def test_push_branches_can_be_redefined_from_env(monkeypatch):
-    mod = _reload_lambda(monkeypatch, "release/1.0,develop")
+    mod = _reload_lambda(monkeypatch, ["release/1.0", "develop"])
 
     assert mod._build_push_workflow(_push_payload("refs/heads/release/1.0"), 123.0)[
         "head_ref"
@@ -639,7 +641,15 @@ def test_fresh_base_rerun_finished_enqueues_resume_with_flag(monkeypatch):
     requests = []
     enqueued = []
 
-    snap = {"finalized": True, "repo": "owner/repo", "head_sha": "b" * 40, "pr_number": 17}
+    snap = {
+        "finalized": True,
+        "repo": "owner/repo",
+        "head_sha": "b" * 40,
+        "pr_number": 17,
+        # Frozen at run start; the resume must carry it forward (not re-read SSM) so
+        # the fresh-base rerun makes the SAME merge decision as the original run.
+        "ci_config": {"force_merge_commit": True},
+    }
     monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
     monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr_number: ("b" * 40, _rerun_meta(external=False)))
     monkeypatch.setattr(mod, "_load_run_snapshot", lambda run_id: snap)
@@ -653,6 +663,8 @@ def test_fresh_base_rerun_finished_enqueues_resume_with_flag(monkeypatch):
     assert len(enqueued) == 1
     assert enqueued[0]["type"] == "rerun"
     assert enqueued[0]["fresh_base"] is True
+    # The original run's frozen config rides on the resume event.
+    assert enqueued[0]["ci_config"] == {"force_merge_commit": True}
 
 
 def test_fresh_base_rerun_running_ignores_flag(monkeypatch):

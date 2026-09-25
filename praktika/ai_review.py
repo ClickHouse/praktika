@@ -30,7 +30,7 @@ The provider is any name in the AI registry (``mock`` / ``anthropic`` /
 ``--prompt`` points at a repo-local Markdown file with project-specific review
 guidance, appended to the fixed review protocol. ``--fail-for-draft-pr`` makes
 the job fail (without consulting the model) while the PR is a draft — unless the
-job was manually re-run (``Info().rerun_count > 0``), which is taken as an
+job was manually re-run (``Info().run_attempt > 1``), which is taken as an
 explicit "review it anyway" request and lets the review run on the draft.
 """
 import json
@@ -560,12 +560,12 @@ def review(args):
         return Result.create_from(status=Result.Status.SKIPPED, info="not a PR")
 
     # Draft PRs fail the review by default so it doesn't run on unfinished work.
-    # A manual re-run (rerun_count > 0) is an explicit "review it anyway" signal,
+    # A manual re-run (run_attempt > 1) is an explicit "review it anyway" signal,
     # so let it through even while the PR is still a draft.
     if (
         getattr(args, "fail_for_draft_pr", False)
         and info.pr_is_draft
-        and info.rerun_count == 0
+        and info.run_attempt <= 1
     ):
         print("PR is a draft — failing without running the review (re-run to override)")
         return Result.create_from(

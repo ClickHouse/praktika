@@ -55,6 +55,15 @@ class Info:
         return self.env.WORKFLOW_START_TIME
 
     @property
+    def ci_config(self):
+        """Out-of-repo CI config ({slug}-ci-config in SSM), resolved once by the
+        controller at run start and frozen into run metadata. The same value in
+        every job of the run (and across a resume); read from here, not SSM.
+        Empty dict when no config parameter is set. See praktika/docs/ci-config.md.
+        """
+        return self.env.CI_CONFIG or {}
+
+    @property
     def event_action(self):
         return self.env.EVENT_ACTION
 
@@ -65,11 +74,6 @@ class Info:
     @property
     def job_name(self):
         return self.env.JOB_NAME
-
-    @property
-    def rerun_count(self):
-        """How many times this job was manually re-run (0 = first attempt)."""
-        return self.env.RERUN_COUNT
 
     @property
     def pr_body(self):
@@ -138,6 +142,20 @@ class Info:
     @property
     def run_id(self):
         return self.env.RUN_ID
+
+    @property
+    def run_attempt(self):
+        """Attempt number of this run, 1-based (1 = first attempt). Unified
+        across engines: GITHUB_RUN_ATTEMPT on GitHub Actions, per-job re-run
+        count + 1 on the native orchestrator."""
+        return self.env.RUN_ATTEMPT
+
+    @property
+    def run_attempt_started_at(self):
+        """Wall-clock start (Unix ts) of the current attempt, set by the native
+        orchestrator when it re-runs a job; 0 on the first attempt and on GitHub
+        Actions (which exposes the attempt start via the REST API instead)."""
+        return self.env.RUN_ATTEMPT_STARTED_AT
 
     @property
     def pr_labels(self):

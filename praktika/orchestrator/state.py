@@ -420,6 +420,11 @@ class JobState:
         # apart from the first attempt; persisted in the run snapshot so it
         # survives a finished-run resume.
         self.rerun_count = 0
+        # Wall-clock start (Unix ts) of the current re-run attempt, stamped by
+        # apply_rerun and threaded into the job env (RUN_ATTEMPT_STARTED_AT) so
+        # test selection pins its CIDB cutoff to the re-run; 0 on first attempt.
+        # Persisted in the run snapshot so it survives an orchestrator restart.
+        self.run_attempt_started_at = 0.0
 
     @property
     def name(self):
@@ -427,13 +432,14 @@ class JobState:
 
     def published_result(self):
         """The job's Result as a fresh dict for the workflow report, with the
-        orchestrator-owned ``rerun_count`` projected into ``ext``.
+        orchestrator-owned attempt number projected into ``ext`` as
+        ``run_attempt`` (1-based; 1 = first attempt).
 
-        ``rerun_count`` lives canonically on the JobState (persisted in the run
-        snapshot). Projecting it here — the single point report rows are built —
-        keeps it consistent across both the live completion path and a resume,
-        instead of mutating and persisting a copy of the runner's raw result.
-        Returns None when no result is set.
+        The re-run count lives canonically on the JobState (persisted in the run
+        snapshot). Projecting ``run_attempt`` here — the single point report rows
+        are built — keeps it consistent across both the live completion path and
+        a resume, instead of mutating and persisting a copy of the runner's raw
+        result. Returns None when no result is set.
         """
         if not isinstance(self.result, dict):
             return None
@@ -444,7 +450,7 @@ class JobState:
         if not isinstance(ext, dict):
             ext = {}
             pub["ext"] = ext
-        ext["rerun_count"] = self.rerun_count
+        ext["run_attempt"] = self.rerun_count + 1
         return pub
 
     def _update_check(self, transition):
@@ -774,6 +780,12 @@ class WorkflowState:
         # DAG root, so it is always the first job to report them.
         self._snapshot_sha = ""
         self._repo_snapshot_key = ""
+        # Out-of-repo CI config ({slug}-ci-config in SSM), resolved ONCE by the
+        # controller at run start and passed via env. Frozen into run state (and
+        # state.json) so every job reads the same values instead of re-reading SSM
+        # (which could change mid-run), and a resume reuses the original run's
+        # config. Empty when no config parameter is set. See praktika/docs/ci-config.md.
+        self._ci_config = {}
         self.cancelled = (
             False  # set by sweep_cancel() on cancel-request / cancel-before
         )
@@ -855,6 +867,19 @@ class WorkflowState:
         if not self._repo_snapshot_key and snapshot_sha and repo_snapshot_key:
             self._snapshot_sha = snapshot_sha
             self._repo_snapshot_key = repo_snapshot_key
+
+    def seed_ci_config(self, ci_config):
+        """Pin the controller-resolved CI config into run state.
+
+        The controller reads {slug}-ci-config from SSM once at run start (trusted
+        infra, before any PR code runs) and passes it to the orchestrator via env.
+        Seeding it here — before any job is dispatched — freezes it into state.json
+        and threads it into every job task, so all jobs of the run (and any resume)
+        read one consistent value rather than re-reading SSM. First-write-wins: a
+        resume restores the original config via seed_from_snapshot and must not be
+        overwritten by a fresh env read."""
+        if not self._ci_config and isinstance(ci_config, dict) and ci_config:
+            self._ci_config = ci_config
 
     def override_repo_snapshot(self, snapshot_sha, repo_snapshot_key):
         """Force-replace the pinned snapshot (unlike the first-write-wins
@@ -1370,6 +1395,9 @@ class WorkflowState:
             # from the (mutable) environment snapshot.
             "snapshot_sha": self._snapshot_sha,
             "repo_snapshot_key": self._repo_snapshot_key,
+            # Frozen CI config so a resumed run reuses the original run's config
+            # rather than re-reading SSM (see seed_ci_config).
+            "ci_config": self._ci_config,
             "jobs": {
                 name: {
                     "status": js.status.value,
@@ -1380,6 +1408,7 @@ class WorkflowState:
                     "cancel_reason": js.cancel_reason,
                     "skip_details_url": js.skip_details_url,
                     "rerun_count": js.rerun_count,
+                    "run_attempt_started_at": js.run_attempt_started_at,
                 }
                 for name, js in self.jobs.items()
             },
@@ -1458,6 +1487,7 @@ class WorkflowState:
         # re-derive from the mutable environment on resume).
         self._snapshot_sha = snap.get("snapshot_sha") or ""
         self._repo_snapshot_key = snap.get("repo_snapshot_key") or ""
+        self._ci_config = snap.get("ci_config") or {}
         for name, rec in (snap.get("jobs") or {}).items():
             js = self.jobs.get(name)
             if js is None or not isinstance(rec, dict):
@@ -1472,6 +1502,7 @@ class WorkflowState:
             js.cancel_reason = rec.get("cancel_reason")
             js.skip_details_url = rec.get("skip_details_url")
             js.rerun_count = rec.get("rerun_count", 0) or 0
+            js.run_attempt_started_at = rec.get("run_attempt_started_at", 0.0) or 0.0
             if js.status in _TERMINAL:
                 # Raw result from final.json; rerun_count (restored onto
                 # js.rerun_count above) is projected into ext at report time by
@@ -1537,13 +1568,19 @@ class WorkflowState:
                 ):
                     to_reset.add(dep)
                     frontier.append(dep)
-        reset_ok = {name for name in to_reset if self._reset_job(name)}
+        # One timestamp for the whole re-run batch so all jobs reset together
+        # agree on the test-selection cutoff (mirrors GitHub Actions, where every
+        # job in a re-run shares the attempt's run_started_at).
+        attempt_started_at = time.time()
+        reset_ok = {
+            name for name in to_reset if self._reset_job(name, attempt_started_at)
+        }
         # Whatever we meant to reset but couldn't (only reason: _reset_job
         # returned False) must be retried, not consumed.
         failed = to_reset - reset_ok
         return reset_ok, failed
 
-    def _reset_job(self, name):
+    def _reset_job(self, name, attempt_started_at):
         """Reset a finished job to PENDING for re-run. Returns True on success.
 
         Returns False (and leaves the job untouched) if the stale ``final.json``
@@ -1581,6 +1618,7 @@ class WorkflowState:
         js.stale_flagged = False
         js.filter_reason = None
         js.rerun_count += 1
+        js.run_attempt_started_at = attempt_started_at
         # Post a NEW check run for the re-run instead of reusing the old one.
         # GitHub does NOT allow un-completing a check: PATCHing a completed check
         # back to queued/in_progress is silently ignored (status stays
@@ -1987,6 +2025,9 @@ class WorkflowState:
             "head_sha": self._event.get("head_sha", ""),
             "snapshot_sha": snapshot_sha,
             "repo_snapshot_key": repo_snapshot_key,
+            # Frozen out-of-repo CI config, read once by the controller and pinned
+            # into run state; every job reads it from here, not from SSM.
+            "ci_config": self._ci_config,
             # When set, the controller uploads its full per-job log next to
             # final.json and the job result links to it (Settings.PRAKTIKA_DEBUG or
             # the workflow's praktika_debug). Distinct from the runner's "debug"
@@ -2023,6 +2064,7 @@ class WorkflowState:
             "final_state_s3_key": self._final_state_s3_key(job_state.name),
             "check_run_id": job_state.check.id if job_state.check else None,
             "rerun_count": job_state.rerun_count,
+            "run_attempt_started_at": job_state.run_attempt_started_at,
             # The orchestrator run_id (S3 run prefix). Lets the Config job's
             # report-summary create-once guard tell a duplicate Config attempt
             # *within this run* (reuse the summary) from a fresh run reusing the

@@ -21,6 +21,7 @@ from praktika_controller.common import (
     get_github_token,
     head_commit_info,
     imds_token,
+    load_ci_config,
     post_early_check,
     instance_tag,
     resolve_praktika_base_venv,
@@ -152,6 +153,7 @@ def _praktika_env(
     attempt: str = "",
     bootstrap_check_id=None,
     snapshot=None,
+    ci_config=None,
 ) -> dict[str, str]:
     env = venv_env(venv_dir)
     # Stream the orchestrator/runner subprocess stdout live to CloudWatch. Python
@@ -184,6 +186,11 @@ def _praktika_env(
             env["PRAKTIKA_REPO_SNAPSHOT_KEY"] = repo_snapshot_key
         if base_sha:
             env["PRAKTIKA_BASE_SHA"] = base_sha
+    if ci_config:
+        # Out-of-repo CI config, resolved once from SSM here and handed to the
+        # orchestrator so it freezes it into run state and every job reads it from
+        # the task rather than re-reading SSM. See praktika/docs/ci-config.md.
+        env["PRAKTIKA_CI_CONFIG"] = json.dumps(ci_config)
     return env
 
 
@@ -335,6 +342,19 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
         # merge) or inherited from run state on a resume. Handed to the
         # orchestrator so it seeds run state before dispatching any job.
         snapshot = None
+        # Out-of-repo CI config. A fresh run reads it from SSM ONCE here; a resume
+        # reuses the ORIGINAL run's frozen config carried on the event (from
+        # state.json) instead of re-reading SSM, so the resume never makes a
+        # different force_merge_commit / merge decision than the run it resumes
+        # (which would mismatch the DAG/runtime against the restored snapshot on a
+        # fresh-base rerun). It is reused for the force_merge_commit merge gate
+        # (read_repo_settings) and handed to the orchestrator (PRAKTIKA_CI_CONFIG),
+        # which freezes it into run state so every job reads the same values. See
+        # ci-config.md.
+        if is_resume:
+            ci_config = event.get("ci_config") or {}
+        else:
+            ci_config = load_ci_config(region=REGION, log=log)
         resume_snapshot_key = event.get("repo_snapshot_key", "") if is_resume else ""
         resume_snapshot_sha = event.get("snapshot_sha", "") if is_resume else ""
         # Fresh-base resume (per-job "Rerun w/ fresh base" button): re-run the
@@ -378,7 +398,7 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
                 event["commit_message"] = head_commit["message"]
                 event["commit_authors"] = head_commit["authors"]
                 try:
-                    settings = read_repo_settings(clone_dir, log)
+                    settings = read_repo_settings(clone_dir, log, ci_config=ci_config)
                     if settings.get("ENABLE_S3_REPO_SNAPSHOT"):
                         import boto3
 
@@ -461,7 +481,7 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
                 # _resolve_runtime below installs praktika from the MERGED tree, and
                 # the orchestrator's DAG (built from the same tree) matches execution.
                 try:
-                    settings = read_repo_settings(clone_dir, log)
+                    settings = read_repo_settings(clone_dir, log, ci_config=ci_config)
                     if settings.get("ENABLE_S3_REPO_SNAPSHOT"):
                         import boto3
 
@@ -531,6 +551,7 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
                 attempt=attempt,
                 bootstrap_check_id=early_check_id,
                 snapshot=snapshot,
+                ci_config=ci_config,
             ),
             stderr=subprocess.PIPE,
             text=True,

@@ -74,6 +74,9 @@ class _FakeState:
     def seed_repo_snapshot(self, *a, **k):
         pass
 
+    def seed_ci_config(self, *a, **k):
+        pass
+
     def print_plan(self):
         pass
 
