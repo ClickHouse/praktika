@@ -685,13 +685,8 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
         env = _Environment.get()
 
     # checks:
-    if not results or results[-1].is_ok():
-        if workflow.engine == Workflow.Engine.PRAKTIKA:
-            # The yaml files are only consumed by the GitHub Actions engine.
-            # On the native praktika engine they are not used, so there is no
-            # point in checking they are up to date.
-            print("NOTE: Skipping yaml-up-to-date check (native praktika engine)")
-        elif os.environ.get("PRAKTIKA_TEST_ACTIVE") != "1":
+    if results[-1].is_ok():
+        if os.environ.get("PRAKTIKA_TEST_ACTIVE") != "1":
             result_ = _check_yaml_up_to_date()
             if result_.status != Result.Status.OK:
                 print("ERROR: yaml files are outdated - regenerate, commit and push")
