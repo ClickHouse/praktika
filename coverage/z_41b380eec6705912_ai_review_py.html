@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_41b380eec6705912_artifact_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-09-22 17:00 +0000
+            created at 2026-09-25 16:33 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -114,7 +114,7 @@
     <p class="pln"><span class="n"><a id="t30" href="#t30">30</a></span><span class="t"><span class="str">``--prompt`` points at a repo-local Markdown file with project-specific review</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t31" href="#t31">31</a></span><span class="t"><span class="str">guidance, appended to the fixed review protocol. ``--fail-for-draft-pr`` makes</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t32" href="#t32">32</a></span><span class="t"><span class="str">the job fail (without consulting the model) while the PR is a draft &#8212; unless the</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t33" href="#t33">33</a></span><span class="t"><span class="str">job was manually re-run (``Info().rerun_count &gt; 0``), which is taken as an</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t33" href="#t33">33</a></span><span class="t"><span class="str">job was manually re-run (``Info().run_attempt &gt; 1``), which is taken as an</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t34" href="#t34">34</a></span><span class="t"><span class="str">explicit &quot;review it anyway&quot; request and lets the review run on the draft.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t35" href="#t35">35</a></span><span class="t"><span class="str">&quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t36" href="#t36">36</a></span><span class="t"><span class="key">import</span> <span class="nam">json</span>&nbsp;</span><span class="r"></span></p>
@@ -644,12 +644,12 @@
     <p class="run"><span class="n"><a id="t560" href="#t560">560</a></span><span class="t">        <span class="key">return</span> <span class="nam">Result</span><span class="op">.</span><span class="nam">create_from</span><span class="op">(</span><span class="nam">status</span><span class="op">=</span><span class="nam">Result</span><span class="op">.</span><span class="nam">Status</span><span class="op">.</span><span class="nam">SKIPPED</span><span class="op">,</span> <span class="nam">info</span><span class="op">=</span><span class="str">&quot;not a PR&quot;</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t561" href="#t561">561</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t562" href="#t562">562</a></span><span class="t">    <span class="com"># Draft PRs fail the review by default so it doesn&#x27;t run on unfinished work.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t563" href="#t563">563</a></span><span class="t">    <span class="com"># A manual re-run (rerun_count &gt; 0) is an explicit &quot;review it anyway&quot; signal,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t563" href="#t563">563</a></span><span class="t">    <span class="com"># A manual re-run (run_attempt &gt; 1) is an explicit &quot;review it anyway&quot; signal,</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t564" href="#t564">564</a></span><span class="t">    <span class="com"># so let it through even while the PR is still a draft.</span>&nbsp;</span><span class="r"></span></p>
     <p class="par run show_par"><span class="n"><a id="t565" href="#t565">565</a></span><span class="t">    <span class="key">if</span> <span class="op">(</span>&nbsp;</span><span class="r"><span class="annotate short">565&#x202F;&#x219B;&#x202F;570</span><span class="annotate long">line 565 didn't jump to line 570 because the condition on line 565 was never true</span></span></p>
     <p class="par par2 ru2 show_par"><span class="n"><a id="t566" href="#t566">566</a></span><span class="t">        <span class="nam">getattr</span><span class="op">(</span><span class="nam">args</span><span class="op">,</span> <span class="str">&quot;fail_for_draft_pr&quot;</span><span class="op">,</span> <span class="key">False</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="par par2 ru2 show_par"><span class="n"><a id="t567" href="#t567">567</a></span><span class="t">        <span class="key">and</span> <span class="nam">info</span><span class="op">.</span><span class="nam">pr_is_draft</span>&nbsp;</span><span class="r"></span></p>
-    <p class="par par2 ru2 show_par"><span class="n"><a id="t568" href="#t568">568</a></span><span class="t">        <span class="key">and</span> <span class="nam">info</span><span class="op">.</span><span class="nam">rerun_count</span> <span class="op">==</span> <span class="num">0</span>&nbsp;</span><span class="r"></span></p>
+    <p class="par par2 ru2 show_par"><span class="n"><a id="t568" href="#t568">568</a></span><span class="t">        <span class="key">and</span> <span class="nam">info</span><span class="op">.</span><span class="nam">run_attempt</span> <span class="op">&lt;=</span> <span class="num">1</span>&nbsp;</span><span class="r"></span></p>
     <p class="par par2 ru2 show_par"><span class="n"><a id="t569" href="#t569">569</a></span><span class="t">    <span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="mis show_mis"><span class="n"><a id="t570" href="#t570">570</a></span><span class="t">        <span class="nam">print</span><span class="op">(</span><span class="str">&quot;PR is a draft &#8212; failing without running the review (re-run to override)&quot;</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="mis show_mis"><span class="n"><a id="t571" href="#t571">571</a></span><span class="t">        <span class="key">return</span> <span class="nam">Result</span><span class="op">.</span><span class="nam">create_from</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
@@ -739,7 +739,7 @@
             <a class="nav" href="z_41b380eec6705912_artifact_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-09-22 17:00 +0000
+            created at 2026-09-25 16:33 +0000
         </p>
     </div>
 </footer>

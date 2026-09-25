@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_41b380eec6705912_runtime_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-09-22 17:00 +0000
+            created at 2026-09-25 16:33 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -1230,16 +1230,16 @@
     <p class="pln"><span class="n"><a id="t1146" href="#t1146">1146</a></span><span class="t">                <span class="com"># has up-to-date storage/compute/pipeline-utilization data. All</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1147" href="#t1147">1147</a></span><span class="t">                <span class="com"># three are written as a single workflow-level summary row into</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1148" href="#t1148">1148</a></span><span class="t">                <span class="com"># the `attributes` JSON column.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1149" href="#t1149">1149</a></span><span class="t">                <span class="com"># Highest per-job re-run count in the pipeline (0 = no job was</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1149" href="#t1149">1149</a></span><span class="t">                <span class="com"># Highest per-job attempt in the pipeline (1-based; 1 = no job was</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1150" href="#t1150">1150</a></span><span class="t">                <span class="com"># re-run). Marks a usage row whose storage/compute totals reflect</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1151" href="#t1151">1151</a></span><span class="t">                <span class="com"># re-run attempts rather than a single clean pass &#8212; the</span>&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t1152" href="#t1152">1152</a></span><span class="t">                <span class="com"># orchestrator stamps each job&#x27;s re-run count into its result ext.</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis show_mis"><span class="n"><a id="t1153" href="#t1153">1153</a></span><span class="t">                <span class="nam">max_rerun_count</span> <span class="op">=</span> <span class="nam">max</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t1152" href="#t1152">1152</a></span><span class="t">                <span class="com"># orchestrator stamps each job&#x27;s attempt into its result ext.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="mis show_mis"><span class="n"><a id="t1153" href="#t1153">1153</a></span><span class="t">                <span class="nam">max_run_attempt</span> <span class="op">=</span> <span class="nam">max</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
     <p class="mis mis2 show_mis"><span class="n"><a id="t1154" href="#t1154">1154</a></span><span class="t">                    <span class="op">(</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis mis2 show_mis"><span class="n"><a id="t1155" href="#t1155">1155</a></span><span class="t">                        <span class="nam">int</span><span class="op">(</span><span class="op">(</span><span class="nam">r</span><span class="op">.</span><span class="nam">ext</span> <span class="key">or</span> <span class="op">{</span><span class="op">}</span><span class="op">)</span><span class="op">.</span><span class="nam">get</span><span class="op">(</span><span class="str">&quot;rerun_count&quot;</span><span class="op">)</span> <span class="key">or</span> <span class="num">0</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
+    <p class="mis mis2 show_mis"><span class="n"><a id="t1155" href="#t1155">1155</a></span><span class="t">                        <span class="nam">int</span><span class="op">(</span><span class="op">(</span><span class="nam">r</span><span class="op">.</span><span class="nam">ext</span> <span class="key">or</span> <span class="op">{</span><span class="op">}</span><span class="op">)</span><span class="op">.</span><span class="nam">get</span><span class="op">(</span><span class="str">&quot;run_attempt&quot;</span><span class="op">)</span> <span class="key">or</span> <span class="num">1</span><span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="mis mis2 show_mis"><span class="n"><a id="t1156" href="#t1156">1156</a></span><span class="t">                        <span class="key">for</span> <span class="nam">r</span> <span class="key">in</span> <span class="nam">workflow_result</span><span class="op">.</span><span class="nam">results</span>&nbsp;</span><span class="r"></span></p>
     <p class="mis mis2 show_mis"><span class="n"><a id="t1157" href="#t1157">1157</a></span><span class="t">                    <span class="op">)</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis mis2 show_mis"><span class="n"><a id="t1158" href="#t1158">1158</a></span><span class="t">                    <span class="nam">default</span><span class="op">=</span><span class="num">0</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="mis mis2 show_mis"><span class="n"><a id="t1158" href="#t1158">1158</a></span><span class="t">                    <span class="nam">default</span><span class="op">=</span><span class="num">1</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="mis mis2 show_mis"><span class="n"><a id="t1159" href="#t1159">1159</a></span><span class="t">                <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="mis show_mis"><span class="n"><a id="t1160" href="#t1160">1160</a></span><span class="t">                <span class="nam">ci_db</span><span class="op">.</span><span class="nam">insert_workflow_usage</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
     <p class="mis mis2 show_mis"><span class="n"><a id="t1161" href="#t1161">1161</a></span><span class="t">                    <span class="nam">pipeline_utilization</span><span class="op">=</span><span class="nam">PipelineUtilization</span><span class="op">.</span><span class="nam">from_dict</span><span class="op">(</span>&nbsp;</span><span class="r"></span></p>
@@ -1255,7 +1255,7 @@
     <p class="mis mis2 show_mis"><span class="n"><a id="t1171" href="#t1171">1171</a></span><span class="t">                    <span class="nam">start_time</span><span class="op">=</span><span class="nam">workflow_result</span><span class="op">.</span><span class="nam">start_time</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="mis mis2 show_mis"><span class="n"><a id="t1172" href="#t1172">1172</a></span><span class="t">                    <span class="nam">duration_s</span><span class="op">=</span><span class="nam">workflow_result</span><span class="op">.</span><span class="nam">update_duration</span><span class="op">(</span><span class="op">)</span><span class="op">.</span><span class="nam">duration</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="mis mis2 show_mis"><span class="n"><a id="t1173" href="#t1173">1173</a></span><span class="t">                    <span class="nam">workflow_status</span><span class="op">=</span><span class="nam">workflow_result</span><span class="op">.</span><span class="nam">status</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
-    <p class="mis mis2 show_mis"><span class="n"><a id="t1174" href="#t1174">1174</a></span><span class="t">                    <span class="nam">rerun_count</span><span class="op">=</span><span class="nam">max_rerun_count</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
+    <p class="mis mis2 show_mis"><span class="n"><a id="t1174" href="#t1174">1174</a></span><span class="t">                    <span class="nam">run_attempt</span><span class="op">=</span><span class="nam">max_run_attempt</span><span class="op">,</span>&nbsp;</span><span class="r"></span></p>
     <p class="mis mis2 show_mis"><span class="n"><a id="t1175" href="#t1175">1175</a></span><span class="t">                <span class="op">)</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t1176" href="#t1176">1176</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
     <p class="par run show_par"><span class="n"><a id="t1177" href="#t1177">1177</a></span><span class="t">        <span class="key">if</span> <span class="nam">workflow</span><span class="op">.</span><span class="nam">enable_gh_summary_comment</span> <span class="key">and</span> <span class="op">(</span>&nbsp;</span><span class="r"><span class="annotate short">1177&#x202F;&#x219B;&#x202F;1180</span><span class="annotate long">line 1177 didn't jump to line 1180 because the condition on line 1177 was never true</span></span></p>
@@ -1674,7 +1674,7 @@
             <a class="nav" href="z_41b380eec6705912_runtime_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.1">coverage.py v7.16.1</a>,
-            created at 2026-09-22 17:00 +0000
+            created at 2026-09-25 16:33 +0000
         </p>
     </div>
 </footer>
