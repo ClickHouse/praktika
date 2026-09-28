@@ -8,7 +8,7 @@ from praktika import Artifact, Docker, Job, Secret, Workflow
 from ci.settings.settings import RunnerLabels
 from praktika.settings import Settings
 
-_HEAD_PRAKTIKA_VERSION = "0.1.11"
+_HEAD_PRAKTIKA_VERSION = "0.1.12"
 
 artifact = Artifact.Config(name="greet", type=Artifact.Type.S3, path="./artifact.txt")
 
@@ -31,6 +31,24 @@ workflow = Workflow.Config(
                 f"praktika=m.version('praktika'); "
                 "print('praktika=', praktika); "
                 f"assert praktika == '{_HEAD_PRAKTIKA_VERSION}', praktika\""
+            ),
+        ),
+        # Require a version bump whenever praktika / praktika-controller source
+        # changes in the PR (script fetches the base version via the GitHub API;
+        # the ephemeral-merge checkout has no base history locally).
+        Job.Config(
+            name="Version Bump Check",
+            runs_on=[RunnerLabels.SMALL_ARM],
+            command="python3 ./ci/scripts/check_version_bump.py",
+            enable_gh_auth=True,
+            digest_config=Job.CacheDigestConfig(
+                include_paths=[
+                    "./ci/scripts/check_version_bump.py",
+                    "./praktika",
+                    "./pyproject.toml",
+                    "./bootstrap/src",
+                    "./bootstrap/pyproject.toml",
+                ],
             ),
         ),
         Job.Config(

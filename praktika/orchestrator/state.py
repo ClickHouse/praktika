@@ -2070,6 +2070,10 @@ class WorkflowState:
             # *within this run* (reuse the summary) from a fresh run reusing the
             # same PR/sha report key (must refresh the stale summary).
             "run_id": self._run_id,
+            # workflow_dispatch inputs carried from the trigger event so native
+            # jobs can read them via Info.get_workflow_input_value (GH_IGNITION
+            # dispatch). Empty for events without inputs.
+            "inputs": self._event.get("inputs") or {},
             "environment": self._environment,
         }
 

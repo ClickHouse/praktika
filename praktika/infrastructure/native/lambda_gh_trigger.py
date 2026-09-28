@@ -1270,6 +1270,44 @@ def lambda_handler(event, context):
         print(f"SKIP: repository {repo_full_name} not in allow-list")
         return {"statusCode": 200, "body": "ok"}
 
+    if gh_event == "praktika_ignition":
+        # A GH_IGNITION workflow's ignition job POSTs a self-contained, HMAC-signed
+        # trigger (verified above). The body already carries the run sha, so unlike
+        # a webhook we need no GitHub-API HEAD resolution. The orchestrator's
+        # workflow_name + engine + branch filters bound what can actually run.
+        trigger_type = payload.get("type", "")
+        if trigger_type not in ("schedule", "dispatch"):
+            print(f"SKIP: ignition with unsupported type {trigger_type!r}")
+            return {"statusCode": 400, "body": "bad type"}
+        workflow_name = payload.get("workflow_name", "")
+        head_ref = payload.get("head_ref", "")
+        head_sha = payload.get("head_sha", "")
+        repo = payload.get("repo", "") or repo_full_name
+        if not (workflow_name and head_ref and head_sha and repo):
+            print("SKIP: ignition missing workflow_name/head_ref/head_sha/repo")
+            return {"statusCode": 400, "body": "missing fields"}
+        if not _is_allowed_repository(repo):
+            print(f"SKIP: ignition repository {repo} not in allow-list")
+            return {"statusCode": 200, "body": "ok"}
+        message = {
+            "type": trigger_type,
+            "event_ts": event_ts,
+            "workflow_name": workflow_name,
+            "head_ref": head_ref,
+            "head_sha": head_sha,
+            "repo": repo,
+            "sender": sender or "praktika-ignition",
+        }
+        inputs = payload.get("inputs")
+        if inputs:
+            message["inputs"] = inputs
+        _enqueue(message, delivery_id or f"ignite-{head_sha[:12]}")
+        print(
+            f"IGNITION: {trigger_type} wf={workflow_name} "
+            f"branch={head_ref} sha={head_sha[:12]}"
+        )
+        return {"statusCode": 200, "body": "ok"}
+
     if gh_event == "check_run":
         if action == "requested_action":
             identifier = payload.get("requested_action", {}).get("identifier", "")

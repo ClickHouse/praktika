@@ -180,7 +180,11 @@ class Validator:
         #         )
         #         normalized[normalized_name] = project.name
 
-        _VALID_ENGINES = (Workflow.Engine.PRAKTIKA, Workflow.Engine.GH_ACTIONS)
+        _VALID_ENGINES = (
+            Workflow.Engine.PRAKTIKA,
+            Workflow.Engine.GH_ACTIONS,
+            Workflow.Engine.GH_IGNITION,
+        )
         files = []
         workflows = _get_workflows(_for_validation_check=True, _file_names_out=files)
         from collections import Counter
@@ -197,6 +201,20 @@ class Validator:
                 f"Invalid engine [{workflow.engine}], must be one of {_VALID_ENGINES}",
                 workflow.name,
             )
+            # The ignition engine emits a thin schedule/dispatch trigger workflow
+            # and bakes the enqueued type from the event, so it only makes sense
+            # for those two events.
+            if workflow.engine == Workflow.Engine.GH_IGNITION:
+                cls.evaluate_check(
+                    workflow.event
+                    in (Workflow.Event.SCHEDULE, Workflow.Event.DISPATCH),
+                    f"Engine [{Workflow.Engine.GH_IGNITION}] supports only "
+                    f"SCHEDULE/DISPATCH events, got [{workflow.event}]",
+                    workflow.name,
+                )
+                # .branches is optional for ignition: empty means the native run
+                # fires on whatever ref the cron/dispatch used (any ref chosen in
+                # the GH UI). When set, it restricts routing to those refs.
             # GH Secrets / GH Vars are injected into the job environment only by
             # the GitHub Actions engine; on the Praktika engine they are never
             # populated and get_value() would fail at runtime with a confusing
