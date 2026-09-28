@@ -16,7 +16,8 @@ workflow = Workflow.Config(
     # branches keeps the native run pinned to it. Leave empty to run on whatever
     # ref the trigger used.
     branches=["main"],
-    cron_schedules=["30 2 * * *"],
+    # Hourly, for quick end-to-end testing of the ignition path.
+    cron_schedules=["0 * * * *"],
     jobs=[
         Job.Config(
             name="Style Check",

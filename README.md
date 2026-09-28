@@ -117,9 +117,6 @@ For deployment security considerations, see [SECURITY.md](./SECURITY.md).
 - **Re-run all / failed checks (check-suite)** — the check-suite "re-run all"
   button re-runs the whole workflow; scoping it to just the previously-failed
   set (like the per-check re-run) is not done yet
-- **Dispatch and cron workflows** — support manually-triggered
-  `workflow_dispatch` runs and scheduled `cron` / `schedule` pipelines on the
-  standalone engine
 - **One workflow per orchestrator, parallelized** — when an event matches
   several workflows, dispatch one message (and one GitHub check / instance)
   per workflow instead of running them sequentially in a single orchestrator

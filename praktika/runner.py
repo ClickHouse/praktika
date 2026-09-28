@@ -1408,14 +1408,21 @@ class Runner:
         self._load_local_env()
 
         if workflow_input:
-            inputs = self._parse_workflow_inputs(workflow_input)
+            # `workflow_input` is either the `--workflow-input` CLI string
+            # ("name=value,..."), or a ready dict of inputs passed programmatically
+            # by the orchestrator (GH_IGNITION dispatch, from the trigger message).
+            inputs = (
+                workflow_input
+                if isinstance(workflow_input, dict)
+                else self._parse_workflow_inputs(workflow_input)
+            )
             Info.set_workflow_inputs(inputs)
             print(f"Workflow inputs set: {inputs}")
         elif local_job_run or local_orchestrator_run:
-            # No --workflow-input given — clear any stale file from a previous
-            # local run so Info.get_workflow_input_value does not return old
-            # values. In CI the YAML-generated heredoc has already written the
-            # real dispatch inputs before Runner.run is invoked.
+            # No inputs given — clear any stale file from a previous local run so
+            # Info.get_workflow_input_value does not return old values. In CI the
+            # YAML-generated heredoc has already written the real dispatch inputs
+            # before Runner.run is invoked.
             Info.set_workflow_inputs({})
 
         res = True

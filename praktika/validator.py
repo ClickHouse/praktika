@@ -215,6 +215,22 @@ class Validator:
                 # .branches is optional for ignition: empty means the native run
                 # fires on whatever ref the cron/dispatch used (any ref chosen in
                 # the GH UI). When set, it restricts routing to those refs.
+                #
+                # The trigger lambda enqueues to a single (default-pool) queue, so
+                # an ignition workflow tagged for a non-default orchestrator pool
+                # would land on the default pool and be rejected there - never
+                # running anywhere. Fail fast instead of silently skipping. (To
+                # support base-pool ignition, route the message to the pool's
+                # queue in the lambda first.)
+                cls.evaluate_check(
+                    not (getattr(workflow, "orchestrator_filter", "") or "").strip()
+                    or workflow.orchestrator_filter.strip() == "default",
+                    f"Engine [{Workflow.Engine.GH_IGNITION}] does not support a "
+                    f"non-default .orchestrator_filter "
+                    f"[{workflow.orchestrator_filter}]: the trigger lambda enqueues "
+                    f"to the default pool, so the run would never route.",
+                    workflow.name,
+                )
             # GH Secrets / GH Vars are injected into the job environment only by
             # the GitHub Actions engine; on the Praktika engine they are never
             # populated and get_value() would fail at runtime with a confusing
