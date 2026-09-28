@@ -10,172 +10,7 @@ from praktika.settings import Settings
 
 _HEAD_PRAKTIKA_VERSION = "0.1.12"
 
-# Install the PEP 517 build frontend used by the wheel-publish jobs.
-_INSTALL_BUILD = (
-    "python3 -m pip install --break-system-packages build "
-    "|| python3 -m pip install build"
-)
-
 artifact = Artifact.Config(name="greet", type=Artifact.Type.S3, path="./artifact.txt")
-
-# All the regular CI jobs. The wheel-publish jobs below gate behind these so a
-# PR only publishes when the rest of CI is green.
-_ci_jobs = [
-    Job.Config(
-        name="Version Check",
-        runs_on=[RunnerLabels.SMALL_AMD_UBUNTU],
-        command=(
-            "python3 -c \"import importlib.metadata as m; "
-            f"praktika=m.version('praktika'); "
-            "print('praktika=', praktika); "
-            f"assert praktika == '{_HEAD_PRAKTIKA_VERSION}', praktika\""
-        ),
-    ),
-    # Require a version bump whenever praktika / praktika-controller source
-    # changes in the PR (script fetches the base version via the GitHub API;
-    # the ephemeral-merge checkout has no base history locally).
-    Job.Config(
-        name="Version Bump Check",
-        runs_on=[RunnerLabels.SMALL_ARM],
-        command="python3 ./ci/scripts/check_version_bump.py",
-        enable_gh_auth=True,
-        digest_config=Job.CacheDigestConfig(
-            include_paths=[
-                "./ci/scripts/check_version_bump.py",
-                "./praktika",
-                "./pyproject.toml",
-                "./bootstrap/src",
-                "./bootstrap/pyproject.toml",
-            ],
-        ),
-    ),
-    Job.Config(
-        name="Praktika Pytests",
-        runs_on=[RunnerLabels.SMALL_ARM],
-        command="python3 ./ci/scripts/run_ci_pytests.py",
-        digest_config=Job.CacheDigestConfig(
-            include_paths=[
-                "./ci/scripts/run_ci_pytests.py",
-                "./ci/tests",
-                "./praktika",
-                "./pyproject.toml",
-            ],
-        ),
-    ),
-    # Ruff style check (ruff is baked into the runner image venv, see
-    # ci/infrastructure/projects.py::_runtime_prebuilt_venvs).
-    Job.Config(
-        name="Style Check",
-        runs_on=[RunnerLabels.SMALL_ARM],
-        command="ruff check .",
-        digest_config=Job.CacheDigestConfig(
-            include_paths=[
-                "./praktika",
-                "./ci",
-                "./pyproject.toml",
-            ],
-        ),
-    ),
-    # S3 artifact with cache digest
-    Job.Config(
-        name="Build",
-        runs_on=[RunnerLabels.SMALL_ARM],
-        command='echo "Hello from praktika" > ./artifact.txt && python3 ./ci/tests/example_2/some_job_script.py',
-        provides=[artifact.name],
-        digest_config=Job.CacheDigestConfig(
-            include_paths=["./ci/tests/example_2/some_job_script.py"],
-        ),
-    ),
-    # Consumes artifact, also cached
-    Job.Config(
-        name="Test",
-        runs_on=[RunnerLabels.SMALL_ARM],
-        command="python3 ./ci/jobs/consume_artifact.py",
-        requires=[artifact.name],
-        digest_config=Job.CacheDigestConfig(
-            include_paths=["./ci/jobs/consume_artifact.py"],
-        ),
-    ),
-    # Docker job
-    Job.Config(
-        name="Docker Job",
-        runs_on=[RunnerLabels.SMALL_ARM],
-        command="python3 ./ci/tests/example_2/some_job_script.py",
-        digest_config=Job.CacheDigestConfig(
-            include_paths=["./ci/tests/example_2/some_job_script.py"],
-        ),
-        run_in_docker="clickhouse/praktika-test",
-    ),
-    # Parametrized with digests
-    *Job.Config(
-        name="Parametrized",
-        runs_on=[RunnerLabels.SMALL_ARM],
-        command="python3 ./ci/tests/example_3/script_for_parametrized_job.py",
-        requires=[artifact.name],
-    ).parametrize(
-        Job.ParamSet(parameter={"key_1": [1, 2, "ABC"], "key_2": None}),
-        Job.ParamSet(parameter={"key_1": [2, 3]}),
-    ),
-    # Native AI code review: consults an OpenAI model on Bedrock for a
-    # structured result, then posts the summary / inline findings and
-    # resolves its own threads from trusted job code (see praktika.ai_review).
-    # allow_failure so a review hiccup never blocks merge; enable_gh_auth so
-    # the job can post comments and manage review threads.
-    Job.Config(
-        name="Code Review",
-        runs_on=[RunnerLabels.SMALL_ARM_BEDROCK],
-        command=(
-            "python3 -m praktika review --provider bedrock-openai "
-            "--model global.openai.gpt-5.6-sol --reasoning-effort high "
-            "--prompt ./ci/prompts/code_review.md --fail-for-draft-pr"
-        ),
-        allow_failure=True,
-        enable_gh_auth=True,
-    ),
-]
-
-# Gate publishing behind green CI: run only after every required job. A blocking
-# upstream failure drops these jobs (they never run); a cache-hit/SKIPPED dep
-# counts as green. allow_failure jobs (e.g. Code Review) are excluded — they are
-# not part of "green" by design. run_after is ordering-only, so it does not
-# perturb the publish jobs' own cache digests.
-_green_gate = [job.name for job in _ci_jobs if not job.allow_failure]
-
-# Publish the exact-version wheels for this PR so the not-yet-merged
-# praktika / praktika-controller can be installed and tested. --versioned-only
-# keeps it off the shared latest/ + compat aliases that the fleet installs from,
-# so a PR can never repoint everyone's install source. The Version Bump Check
-# guarantees the versioned key is unique per source change.
-_publish_jobs = [
-    Job.Config(
-        name="Publish wheel (PR)",
-        runs_on=[RunnerLabels.SMALL_ARM],
-        command="bash ./ci/scripts/publish_wheel.sh --versioned-only",
-        pre_hooks=[_INSTALL_BUILD],
-        run_after=_green_gate,
-        digest_config=Job.CacheDigestConfig(
-            include_paths=[
-                "./ci/scripts/publish_wheel.sh",
-                "./praktika",
-                "./pyproject.toml",
-            ],
-        ),
-    ),
-    Job.Config(
-        name="Publish controller wheel (PR)",
-        runs_on=[RunnerLabels.SMALL_ARM],
-        command="bash ./ci/scripts/publish_controller_wheel.sh --versioned-only",
-        pre_hooks=[_INSTALL_BUILD],
-        run_after=_green_gate,
-        digest_config=Job.CacheDigestConfig(
-            include_paths=[
-                "./ci/scripts/publish_controller_wheel.sh",
-                "./bootstrap/src",
-                "./bootstrap/pyproject.toml",
-            ],
-        ),
-    ),
-]
 
 workflow = Workflow.Config(
     name="Praktika CI Advanced",
@@ -187,7 +22,119 @@ workflow = Workflow.Config(
         provider="bedrock-anthropic",
         model="global.anthropic.claude-sonnet-5",
     ),
-    jobs=[*_ci_jobs, *_publish_jobs],
+    jobs=[
+        Job.Config(
+            name="Version Check",
+            runs_on=[RunnerLabels.SMALL_AMD_UBUNTU],
+            command=(
+                "python3 -c \"import importlib.metadata as m; "
+                f"praktika=m.version('praktika'); "
+                "print('praktika=', praktika); "
+                f"assert praktika == '{_HEAD_PRAKTIKA_VERSION}', praktika\""
+            ),
+        ),
+        # Require a version bump whenever praktika / praktika-controller source
+        # changes in the PR (script fetches the base version via the GitHub API;
+        # the ephemeral-merge checkout has no base history locally).
+        Job.Config(
+            name="Version Bump Check",
+            runs_on=[RunnerLabels.SMALL_ARM],
+            command="python3 ./ci/scripts/check_version_bump.py",
+            enable_gh_auth=True,
+            digest_config=Job.CacheDigestConfig(
+                include_paths=[
+                    "./ci/scripts/check_version_bump.py",
+                    "./praktika",
+                    "./pyproject.toml",
+                    "./bootstrap/src",
+                    "./bootstrap/pyproject.toml",
+                ],
+            ),
+        ),
+        Job.Config(
+            name="Praktika Pytests",
+            runs_on=[RunnerLabels.SMALL_ARM],
+            command="python3 ./ci/scripts/run_ci_pytests.py",
+            digest_config=Job.CacheDigestConfig(
+                include_paths=[
+                    "./ci/scripts/run_ci_pytests.py",
+                    "./ci/tests",
+                    "./praktika",
+                    "./pyproject.toml",
+                ],
+            ),
+        ),
+        # Ruff style check (ruff is baked into the runner image venv, see
+        # ci/infrastructure/projects.py::_runtime_prebuilt_venvs).
+        Job.Config(
+            name="Style Check",
+            runs_on=[RunnerLabels.SMALL_ARM],
+            command="ruff check .",
+            digest_config=Job.CacheDigestConfig(
+                include_paths=[
+                    "./praktika",
+                    "./ci",
+                    "./pyproject.toml",
+                ],
+            ),
+        ),
+        # S3 artifact with cache digest
+        Job.Config(
+            name="Build",
+            runs_on=[RunnerLabels.SMALL_ARM],
+            command='echo "Hello from praktika" > ./artifact.txt && python3 ./ci/tests/example_2/some_job_script.py',
+            provides=[artifact.name],
+            digest_config=Job.CacheDigestConfig(
+                include_paths=["./ci/tests/example_2/some_job_script.py"],
+            ),
+        ),
+        # Consumes artifact, also cached
+        Job.Config(
+            name="Test",
+            runs_on=[RunnerLabels.SMALL_ARM],
+            command="python3 ./ci/jobs/consume_artifact.py",
+            requires=[artifact.name],
+            digest_config=Job.CacheDigestConfig(
+                include_paths=["./ci/jobs/consume_artifact.py"],
+            ),
+        ),
+        # Docker job
+        Job.Config(
+            name="Docker Job",
+            runs_on=[RunnerLabels.SMALL_ARM],
+            command="python3 ./ci/tests/example_2/some_job_script.py",
+            digest_config=Job.CacheDigestConfig(
+                include_paths=["./ci/tests/example_2/some_job_script.py"],
+            ),
+            run_in_docker="clickhouse/praktika-test",
+        ),
+        # Parametrized with digests
+        *Job.Config(
+            name="Parametrized",
+            runs_on=[RunnerLabels.SMALL_ARM],
+            command="python3 ./ci/tests/example_3/script_for_parametrized_job.py",
+            requires=[artifact.name],
+        ).parametrize(
+            Job.ParamSet(parameter={"key_1": [1, 2, "ABC"], "key_2": None}),
+            Job.ParamSet(parameter={"key_1": [2, 3]}),
+        ),
+        # Native AI code review: consults an OpenAI model on Bedrock for a
+        # structured result, then posts the summary / inline findings and
+        # resolves its own threads from trusted job code (see praktika.ai_review).
+        # allow_failure so a review hiccup never blocks merge; enable_gh_auth so
+        # the job can post comments and manage review threads.
+        Job.Config(
+            name="Code Review",
+            runs_on=[RunnerLabels.SMALL_ARM_BEDROCK],
+            command=(
+                "python3 -m praktika review --provider bedrock-openai "
+                "--model global.openai.gpt-5.6-sol --reasoning-effort high "
+                "--prompt ./ci/prompts/code_review.md --fail-for-draft-pr"
+            ),
+            allow_failure=True,
+            enable_gh_auth=True,
+        ),
+    ],
     artifacts=[artifact],
     dockers=[
         Docker.Config(
