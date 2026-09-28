@@ -74,6 +74,11 @@ class GitCommit:
         else:
             assert env.BRANCH
             s3suffix = f"REFs/{env.BRANCH}"
+        # Scope the commits list by workflow so that branch-sharing workflows
+        # (push vs. cron vs. dispatch on main/master) each keep their own sha
+        # selector, instead of clobbering a single per-branch commits.json.
+        assert env.WORKFLOW_NAME
+        s3suffix += f"/{Utils.normalize_string(env.WORKFLOW_NAME)}"
         return f"{Settings.S3_REPORT_BUCKET}/{s3suffix}"
 
     @classmethod

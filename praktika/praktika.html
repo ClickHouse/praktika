@@ -2593,11 +2593,13 @@
 
         let hasNewData = false;
 
+        // commits.json is scoped by workflow so branch-sharing workflows
+        // (push vs. cron vs. dispatch on main/master) keep separate sha
+        // selectors. Must match get_s3_path() in hook_html.py.
+        const commitsSuffix = `${suffix}/${encodeURIComponent(normalizeTaskName(nameParams[0]))}`;
+
         if (!runtimeCache.commits || sha === 'latest') {
-            const { data, updated, status } = await fetchJson(`${baseUrl}/${suffix}/commits.json`);
-            if (status === 403) {
-                return { error: 403, message: 'Report does not exist or expired' };
-            }
+            const { data, updated } = await fetchJson(`${baseUrl}/${commitsSuffix}/commits.json`);
             if (updated) {
                 runtimeCache.commits = data ? data : [];
                 hasNewData = true;
