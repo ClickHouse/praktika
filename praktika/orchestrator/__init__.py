@@ -14,7 +14,15 @@ from ..workflow import Workflow
 _EVENT_MAP = {
     "pull_request": Workflow.Event.PULL_REQUEST,
     "push": Workflow.Event.PUSH,
+    # Fired by a GH_IGNITION workflow's ignition job via the gh-trigger lambda.
+    # Both carry the branch in head_ref and match against wf.branches like push.
+    "schedule": Workflow.Event.SCHEDULE,
+    "dispatch": Workflow.Event.DISPATCH,
 }
+
+# Event types whose message carries the target branch in `head_ref` and which
+# match against `wf.branches` (same as push).
+_HEAD_REF_EVENTS = ("push", "schedule", "dispatch")
 
 
 def _branch_matches(branch, patterns):
@@ -40,7 +48,10 @@ def _current_orchestrator_filter() -> str:
 
 def find_workflows_for_event(event, workflow_name=None):
     """Find all workflows matching the trigger event. Returns empty list if no match."""
-    workflow_name = (workflow_name or "").strip()
+    # Fall back to the workflow_name the trigger message carries (schedule /
+    # dispatch messages from the ignition lambda name exactly one workflow), so
+    # the SQS->orchestrate consumer needs no change to honor it.
+    workflow_name = (workflow_name or event.get("workflow_name") or "").strip()
     event_type = event.get("type", "")
     workflow_event = _EVENT_MAP.get(event_type)
     if not workflow_event:
@@ -49,7 +60,7 @@ def find_workflows_for_event(event, workflow_name=None):
 
     if event_type == "pull_request":
         branch = event.get("base_ref", "")
-    elif event_type == "push":
+    elif event_type in _HEAD_REF_EVENTS:
         branch = event.get("head_ref", "")
     else:
         branch = ""
@@ -73,7 +84,7 @@ def find_workflows_for_event(event, workflow_name=None):
         if event_type == "pull_request" and wf.base_branches:
             if _branch_matches(branch, wf.base_branches):
                 matched.append(wf)
-        elif event_type == "push" and wf.branches:
+        elif event_type in _HEAD_REF_EVENTS and wf.branches:
             if _branch_matches(branch, wf.branches):
                 matched.append(wf)
 

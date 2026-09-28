@@ -18,6 +18,20 @@ class Workflow:
     class Engine:
         PRAKTIKA = "praktika"
         GH_ACTIONS = "GHActions"
+        # A thin GitHub Actions "ignition" workflow is generated whose only job
+        # signs a trigger and POSTs it to the gh-trigger lambda; the real DAG
+        # then runs on the Praktika engine. Lets a SCHEDULE/DISPATCH workflow use
+        # GitHub for cron timing and the manual "Run workflow" UI button while
+        # doing no real work on GitHub-hosted runners.
+        GH_IGNITION = "GHIgnition"
+
+        @classmethod
+        def is_native(cls, engine) -> bool:
+            """True if the workflow's real DAG runs on the Praktika (native)
+            engine. GH_IGNITION only adds a thin GitHub trigger workflow; its jobs
+            execute natively, so it behaves like PRAKTIKA for execution,
+            reporting, and the S3 repo snapshot."""
+            return engine in (cls.PRAKTIKA, cls.GH_IGNITION)
 
     class OrchestratorAI:
         @dataclass
@@ -196,7 +210,7 @@ class Workflow:
                 # The repo snapshot is built by the Config Workflow, so a native
                 # workflow needs one injected even if it enables nothing else.
                 or (
-                    self.engine == Workflow.Engine.PRAKTIKA
+                    Workflow.Engine.is_native(self.engine)
                     and Settings.ENABLE_S3_REPO_SNAPSHOT
                 )
             )

@@ -915,3 +915,122 @@ def test_partial_rerun_finished_enqueue_failure_releases_lock(monkeypatch):
         raised = True
     assert raised
     assert released == ["run42"]
+
+
+def _ignition_event(body, delivery="d-ignite"):
+    return {
+        "headers": {
+            "X-GitHub-Event": "praktika_ignition",
+            "X-GitHub-Delivery": delivery,
+        },
+        "body": json.dumps(body),
+    }
+
+
+def test_ignition_schedule_enqueues_named_workflow(monkeypatch):
+    mod = _reload_lambda(monkeypatch)
+    enqueued = []
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(
+        mod, "_enqueue",
+        lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)),
+    )
+
+    mod.lambda_handler(
+        _ignition_event(
+            {
+                "type": "schedule",
+                "workflow_name": "Nightly",
+                "repo": "owner/repo",
+                "head_ref": "main",
+                "head_sha": "c" * 40,
+                "inputs": None,
+            }
+        ),
+        None,
+    )
+
+    assert len(enqueued) == 1
+    msg, delivery = enqueued[0]
+    assert msg["type"] == "schedule"
+    assert msg["workflow_name"] == "Nightly"
+    assert msg["head_ref"] == "main"
+    assert msg["head_sha"] == "c" * 40
+    assert msg["repo"] == "owner/repo"
+    assert "inputs" not in msg  # null inputs are dropped
+    assert delivery == "d-ignite"
+
+
+def test_ignition_dispatch_carries_inputs(monkeypatch):
+    mod = _reload_lambda(monkeypatch)
+    enqueued = []
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(
+        mod, "_enqueue",
+        lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)),
+    )
+
+    mod.lambda_handler(
+        _ignition_event(
+            {
+                "type": "dispatch",
+                "workflow_name": "Release",
+                "repo": "owner/repo",
+                "head_ref": "main",
+                "head_sha": "d" * 40,
+                "inputs": {"dry_run": "true"},
+            }
+        ),
+        None,
+    )
+
+    assert len(enqueued) == 1
+    msg, _ = enqueued[0]
+    assert msg["type"] == "dispatch"
+    assert msg["inputs"] == {"dry_run": "true"}
+
+
+def test_ignition_missing_fields_does_not_enqueue(monkeypatch):
+    mod = _reload_lambda(monkeypatch)
+    enqueued = []
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(
+        mod, "_enqueue",
+        lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)),
+    )
+
+    resp = mod.lambda_handler(
+        _ignition_event(
+            {"type": "schedule", "workflow_name": "Nightly", "repo": "owner/repo"}
+        ),
+        None,
+    )
+
+    assert enqueued == []
+    assert resp["statusCode"] == 400
+
+
+def test_ignition_bad_type_does_not_enqueue(monkeypatch):
+    mod = _reload_lambda(monkeypatch)
+    enqueued = []
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(
+        mod, "_enqueue",
+        lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)),
+    )
+
+    resp = mod.lambda_handler(
+        _ignition_event(
+            {
+                "type": "push",
+                "workflow_name": "Nightly",
+                "repo": "owner/repo",
+                "head_ref": "main",
+                "head_sha": "e" * 40,
+            }
+        ),
+        None,
+    )
+
+    assert enqueued == []
+    assert resp["statusCode"] == 400

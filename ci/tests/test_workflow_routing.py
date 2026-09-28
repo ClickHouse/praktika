@@ -83,6 +83,72 @@ def test_base_orchestrator_skips_default_workflows(monkeypatch):
     assert [wf.name for wf in matched] == ["base"]
 
 
+def _make_ignition_workflow(name, event, *, engine=Workflow.Engine.GH_IGNITION):
+    return Workflow.Config(
+        name=name,
+        event=event,
+        engine=engine,
+        branches=["main"],
+        cron_schedules=["23 2 * * *"] if event == Workflow.Event.SCHEDULE else [],
+        jobs=[Job.Config(name="User Job", runs_on=["arm-2xsmall"], command="true")],
+    )
+
+
+def test_schedule_event_routes_to_ignition_workflow(monkeypatch):
+    wf = _make_ignition_workflow("Nightly", Workflow.Event.SCHEDULE)
+    # workflow_name is carried in the message, not passed as a kwarg (the SQS
+    # consumer forwards the raw event only).
+    event = {"type": "schedule", "head_ref": "main", "workflow_name": "Nightly"}
+
+    monkeypatch.setenv("PRAKTIKA_CONTROLLER_QUEUE", "workflow-orchestrator")
+    monkeypatch.setattr("praktika.orchestrator._get_workflows", lambda: [wf])
+
+    matched = find_workflows_for_event(event)
+
+    assert [wf.name for wf in matched] == ["Nightly"]
+
+
+def test_dispatch_event_routes_to_ignition_workflow(monkeypatch):
+    wf = _make_ignition_workflow("Release", Workflow.Event.DISPATCH)
+    event = {"type": "dispatch", "head_ref": "main", "workflow_name": "Release"}
+
+    monkeypatch.setenv("PRAKTIKA_CONTROLLER_QUEUE", "workflow-orchestrator")
+    monkeypatch.setattr("praktika.orchestrator._get_workflows", lambda: [wf])
+
+    matched = find_workflows_for_event(event)
+
+    assert [wf.name for wf in matched] == ["Release"]
+
+
+def test_schedule_message_name_filters_to_one_workflow(monkeypatch):
+    a = _make_ignition_workflow("Nightly A", Workflow.Event.SCHEDULE)
+    b = _make_ignition_workflow("Nightly B", Workflow.Event.SCHEDULE)
+    event = {"type": "schedule", "head_ref": "main", "workflow_name": "Nightly B"}
+
+    monkeypatch.setenv("PRAKTIKA_CONTROLLER_QUEUE", "workflow-orchestrator")
+    monkeypatch.setattr("praktika.orchestrator._get_workflows", lambda: [a, b])
+
+    matched = find_workflows_for_event(event)
+
+    assert [wf.name for wf in matched] == ["Nightly B"]
+
+
+def test_gh_actions_schedule_workflow_is_skipped(monkeypatch):
+    # A schedule workflow still on the GH_ACTIONS engine runs its cron via
+    # generated YAML, so the orchestrator must ignore it.
+    wf = _make_ignition_workflow(
+        "GH Nightly", Workflow.Event.SCHEDULE, engine=Workflow.Engine.GH_ACTIONS
+    )
+    event = {"type": "schedule", "head_ref": "main", "workflow_name": "GH Nightly"}
+
+    monkeypatch.setenv("PRAKTIKA_CONTROLLER_QUEUE", "workflow-orchestrator")
+    monkeypatch.setattr("praktika.orchestrator._get_workflows", lambda: [wf])
+
+    matched = find_workflows_for_event(event)
+
+    assert matched == []
+
+
 def test_native_jobs_can_follow_base_runner_override():
     workflow = Workflow.Config(
         name="base workflow",

@@ -107,7 +107,7 @@ def _staged_praktika_package_dir() -> str:
 
 
 def _should_post_commit_status(workflow):
-    return workflow.engine != Workflow.Engine.PRAKTIKA
+    return not Workflow.Engine.is_native(workflow.engine)
 
 
 class _TimestampedStream:

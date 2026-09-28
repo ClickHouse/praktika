@@ -710,7 +710,7 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
     # results[-1].is_ok() guards and fails early.
     if (
         getattr(Settings, "ENABLE_S3_REPO_SNAPSHOT", False)
-        and workflow.engine == Workflow.Engine.PRAKTIKA
+        and Workflow.Engine.is_native(workflow.engine)
         and results[-1].is_ok()
     ):
         results.append(_prepare_repo_snapshot(workflow, workflow_config))
