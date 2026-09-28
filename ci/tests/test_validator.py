@@ -65,3 +65,41 @@ def test_validator_allows_failure_commit_status_for_praktika_workflow(
 
     out = capsys.readouterr().out
     assert ".enable_commit_status_on_failure is redundant" not in out
+
+
+def _ignition_schedule_workflow(branches):
+    return Workflow.Config(
+        name="ignition",
+        event=Workflow.Event.SCHEDULE,
+        engine=Workflow.Engine.GH_IGNITION,
+        branches=branches,
+        cron_schedules=["30 2 * * *"],
+        jobs=[Job.Config(name="job", runs_on=["runner"], command="ruff check .")],
+    )
+
+
+def test_validator_rejects_ignition_without_branches(monkeypatch):
+    import pytest
+
+    workflow = _ignition_schedule_workflow(branches=[])
+    with pytest.raises(SystemExit):
+        _run_validator_for_workflow(monkeypatch, workflow)
+
+
+def test_validator_allows_ignition_with_branches(monkeypatch):
+    workflow = _ignition_schedule_workflow(branches=["main"])
+    _run_validator_for_workflow(monkeypatch, workflow)  # no SystemExit
+
+
+def test_validator_rejects_ignition_for_unsupported_event(monkeypatch):
+    import pytest
+
+    workflow = Workflow.Config(
+        name="ignition-pr",
+        event=Workflow.Event.PULL_REQUEST,
+        engine=Workflow.Engine.GH_IGNITION,
+        base_branches=["main"],
+        jobs=[Job.Config(name="job", runs_on=["runner"], command="ruff check .")],
+    )
+    with pytest.raises(SystemExit):
+        _run_validator_for_workflow(monkeypatch, workflow)

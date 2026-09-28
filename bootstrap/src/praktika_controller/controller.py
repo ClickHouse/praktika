@@ -299,7 +299,10 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
     # "rerun" resumes a finished run to re-run a failed job (+ its downstream);
     # it reopens the run's existing top-level check itself, so it takes the same
     # clone -> `orchestrate workflow` path but without a fresh bootstrap check.
-    if wf_type not in ("pull_request", "push", "rerun"):
+    # schedule/dispatch are fired by GH_IGNITION workflows via the gh-trigger
+    # lambda; they take the same clone -> `orchestrate workflow` path as push
+    # (branch in head_ref, no pr_number).
+    if wf_type not in ("pull_request", "push", "rerun", "schedule", "dispatch"):
         log.info("Unknown event type: %s, skipping", wf_type)
         return {"status": "skipped", "reason": f"unknown type: {wf_type}"}
     is_resume = wf_type == "rerun"
