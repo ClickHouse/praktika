@@ -15,10 +15,12 @@ workflow = Workflow.Config(
     # No branches restriction: the native run fires on whatever ref is chosen in
     # the GitHub "Run workflow" UI. Set branches=[...] to restrict to specific refs.
     jobs=[
+        # Mock job: reads the dispatch input and asserts it propagated end to end
+        # (GH UI -> ignition trigger -> lambda -> native job).
         Job.Config(
-            name="Style Check",
+            name="Echo Dispatch Input",
             runs_on=[RunnerLabels.SMALL_ARM],
-            command="ruff check .",
+            command="python3 ./ci/tests/example_ignition/echo_input.py",
         ),
     ],
     inputs=[
