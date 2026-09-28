@@ -158,6 +158,44 @@ def test_dispatch_with_branches_restricts_ref(monkeypatch):
     assert matched == []  # ref not in the branches restriction
 
 
+def test_ignition_event_name_does_not_bypass_pool_routing(monkeypatch):
+    # An event-carried name must NOT bypass orchestrator_filter: a base-pool
+    # workflow named in a message reaching the default pool must not run there.
+    wf = _make_ignition_workflow("Nightly", Workflow.Event.SCHEDULE, branches=[])
+    wf.orchestrator_filter = "base"
+    event = {"type": "schedule", "head_ref": "main", "workflow_name": "Nightly"}
+
+    monkeypatch.setenv("PRAKTIKA_CONTROLLER_QUEUE", "workflow-orchestrator")  # default
+    monkeypatch.setattr("praktika.orchestrator._get_workflows", lambda: [wf])
+
+    assert find_workflows_for_event(event) == []
+
+
+def test_ignition_event_name_runs_on_its_own_pool(monkeypatch):
+    wf = _make_ignition_workflow("Nightly", Workflow.Event.SCHEDULE, branches=[])
+    wf.orchestrator_filter = "base"
+    event = {"type": "schedule", "head_ref": "main", "workflow_name": "Nightly"}
+
+    monkeypatch.setenv("PRAKTIKA_CONTROLLER_QUEUE", "workflow-orchestrator-base")
+    monkeypatch.setattr("praktika.orchestrator._get_workflows", lambda: [wf])
+
+    assert [w.name for w in find_workflows_for_event(event)] == ["Nightly"]
+
+
+def test_explicit_name_arg_still_bypasses_pool_routing(monkeypatch):
+    # The trusted CLI selector keeps its bypass: a base-pool workflow requested
+    # by explicit --name runs regardless of the serving pool.
+    wf = _make_ignition_workflow("Nightly", Workflow.Event.SCHEDULE, branches=[])
+    wf.orchestrator_filter = "base"
+    event = {"type": "schedule", "head_ref": "main"}
+
+    monkeypatch.setenv("PRAKTIKA_CONTROLLER_QUEUE", "workflow-orchestrator")  # default
+    monkeypatch.setattr("praktika.orchestrator._get_workflows", lambda: [wf])
+
+    matched = find_workflows_for_event(event, workflow_name="Nightly")
+    assert [w.name for w in matched] == ["Nightly"]
+
+
 def test_schedule_without_workflow_name_is_skipped(monkeypatch):
     # Guard against fan-out: an ignition event with no name matches nothing.
     wf = _make_ignition_workflow("Nightly", Workflow.Event.SCHEDULE, branches=[])

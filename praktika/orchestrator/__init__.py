@@ -48,10 +48,17 @@ def _current_orchestrator_filter() -> str:
 
 def find_workflows_for_event(event, workflow_name=None):
     """Find all workflows matching the trigger event. Returns empty list if no match."""
-    # Fall back to the workflow_name the trigger message carries (schedule /
-    # dispatch messages from the ignition lambda name exactly one workflow), so
-    # the SQS->orchestrate consumer needs no change to honor it.
-    workflow_name = (workflow_name or event.get("workflow_name") or "").strip()
+    # Two distinct sources of a name, kept separate on purpose:
+    #  - explicit_name: the trusted CLI selector (`orchestrate --name`). It also
+    #    bypasses pool (orchestrator_filter) routing, since an operator targeting
+    #    a workflow means "run it here".
+    #  - event_name: carried by an ignition message (schedule/dispatch). It only
+    #    selects which workflow to consider; it must NOT bypass pool routing, or a
+    #    message to the default pool could pull a base-pool workflow onto the
+    #    wrong capacity/IAM boundary.
+    explicit_name = (workflow_name or "").strip()
+    event_name = (event.get("workflow_name") or "").strip()
+    name_filter = explicit_name or event_name
     event_type = event.get("type", "")
     workflow_event = _EVENT_MAP.get(event_type)
     if not workflow_event:
@@ -60,7 +67,7 @@ def find_workflows_for_event(event, workflow_name=None):
 
     # Ignition messages always name exactly one workflow; without a name a
     # schedule/dispatch would fan out to every such workflow, so require it.
-    if event_type in ("schedule", "dispatch") and not workflow_name:
+    if event_type in ("schedule", "dispatch") and not name_filter:
         print(f"Ignition event [{event_type}] carries no workflow_name; skipping")
         return []
 
@@ -74,12 +81,14 @@ def find_workflows_for_event(event, workflow_name=None):
     matched = []
     orchestrator_filter = _current_orchestrator_filter()
     for wf in _get_workflows():
-        if workflow_name and wf.name != workflow_name:
+        if name_filter and wf.name != name_filter:
             continue
         if wf.engine == Workflow.Engine.GH_ACTIONS:
             continue
         workflow_filter = (getattr(wf, "orchestrator_filter", "") or "default").strip()
-        if not workflow_name and workflow_filter != orchestrator_filter:
+        # Only a trusted explicit --name bypasses pool routing; an event-carried
+        # name still has to match the pool the orchestrator instance serves.
+        if not explicit_name and workflow_filter != orchestrator_filter:
             print(
                 f"Skip workflow [{wf.name}] for orchestrator filter "
                 f"[{orchestrator_filter}] (workflow requires [{workflow_filter}])"
@@ -102,7 +111,7 @@ def find_workflows_for_event(event, workflow_name=None):
                 matched.append(wf)
 
     if not matched:
-        name_hint = f" name [{workflow_name}]" if workflow_name else ""
+        name_hint = f" name [{name_filter}]" if name_filter else ""
         print(
             f"No workflow found for event [{workflow_event}] "
             f"branch [{branch}]{name_hint}"
