@@ -326,14 +326,6 @@ def run_job(task, gh_token=None, local=False):
     # _get_workflows() triggers Info() -> _Environment.get() and would fall back to
     # the dummy from_env() path if the file doesn't exist yet.
     _build_ci_environment(task, job_name=job_name, local_run=local)
-    # Persist workflow_dispatch inputs (GH_IGNITION native run) before any
-    # workflow/job code loads, mirroring the heredoc the GH Actions engine emits,
-    # so jobs can read them via Info.get_workflow_input_value.
-    inputs = task.get("inputs")
-    if inputs:
-        from ..info import Info
-
-        Info.set_workflow_inputs(inputs)
     # Make sure modules that key off of the env var (e.g. praktika.s3) see local
     # mode regardless of whether they look at the env var or the dumped env.
     if local:
@@ -392,6 +384,10 @@ def run_job(task, gh_token=None, local=False):
         "path": task.get("path", ""),
         "path_1": task.get("path_1", ""),
         "workers": task.get("workers"),
+        # workflow_dispatch inputs (GH_IGNITION native run) as a dict; Runner.run
+        # writes them to WORKFLOW_INPUTS_FILE. None for events without inputs, so
+        # the runner clears any stale file instead.
+        "workflow_input": task.get("inputs") or None,
     }
 
     # Runner.run prints results and sys.exit(1) on failure; a clean return
