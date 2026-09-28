@@ -151,7 +151,7 @@ jobs:
         run: |
           URL='{REPORT_URL_PREFIX}?REF=${{{{ github.ref_name }}}}&sha=${{{{ github.sha }}}}&name_0={NAME_ENCODED}'
           echo "::notice title=Praktika report::$URL"
-          echo "[Praktika report]($URL)" >> "$GITHUB_STEP_SUMMARY"\
+          echo "[Praktika report]($URL)" >> "$GITHUB_STEP_SUMMARY"
 """
 
         TEMPLATE_DISPATCH_WORKFLOW = """\
