@@ -83,7 +83,7 @@ on:
   workflow_dispatch:{DISPATCH_INPUTS_BLOCK}
 
 concurrency:
-  group: ${{{{{{{{ github.workflow }}}}}}}}
+  group: ${{{{{{{{ github.workflow }}}}}}}}{CONCURRENCY_QUEUE}
 
 env:
   PYTHONUNBUFFERED: 1
@@ -103,7 +103,7 @@ jobs:
 
 name: {NAME}
 concurrency:
-  group: {CONCURRENCY_GROUP}
+  group: {CONCURRENCY_GROUP}{CONCURRENCY_QUEUE}
 on:
   workflow_dispatch:{DISPATCH_INPUTS_BLOCK}{WORKFLOW_CALL}
 
@@ -496,8 +496,13 @@ class PullRequestPushYamlGen:
                 ENV_CHECKOUT_REFERENCE = (
                     YamlGenerator.Templates.TEMPLATE_ENV_CHECKOUT_REF_DEFAULT
                 )
-                # github.event.pull_request is null on a push.
-                format_kwargs["CONCURRENCY"] = ""
+                # A fixed group serializes overlapping push runs; cancel-in-progress is left at its default false, so a running apply is never interrupted mid-tofu.
+                format_kwargs["CONCURRENCY"] = (
+                    "concurrency:\n"
+                    f"  group: {self.parser.config.concurrency_group}\n\n"
+                    if self.parser.config.concurrency_group
+                    else ""
+                )
         elif self.workflow_config.event in (Workflow.Event.SCHEDULE,):
             base_template = YamlGenerator.Templates.TEMPLATE_SCHEDULE
             format_kwargs = {
@@ -598,6 +603,11 @@ class PullRequestPushYamlGen:
 
         template_1 = base_template.strip().format(
             NAME=self.workflow_config.name,
+            CONCURRENCY_QUEUE=(
+                "\n  queue: max"
+                if self.workflow_config.config.enable_concurrency_queue
+                else ""
+            ),
             JOBS="{}" * len(job_items),
             ENV_CHECKOUT_REFERENCE=ENV_CHECKOUT_REFERENCE,
             **format_kwargs,
