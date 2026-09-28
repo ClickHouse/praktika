@@ -12,9 +12,8 @@ workflow = Workflow.Config(
     name="Ignition Manual Style",
     event=Workflow.Event.DISPATCH,
     engine=Workflow.Engine.GH_IGNITION,
-    # The native run matches head_ref against branches (like push), so the branch
-    # the workflow is dispatched from must be listed here.
-    branches=["main"],
+    # No branches restriction: the native run fires on whatever ref is chosen in
+    # the GitHub "Run workflow" UI. Set branches=[...] to restrict to specific refs.
     jobs=[
         Job.Config(
             name="Style Check",

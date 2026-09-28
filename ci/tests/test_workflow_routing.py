@@ -83,12 +83,14 @@ def test_base_orchestrator_skips_default_workflows(monkeypatch):
     assert [wf.name for wf in matched] == ["base"]
 
 
-def _make_ignition_workflow(name, event, *, engine=Workflow.Engine.GH_IGNITION):
+def _make_ignition_workflow(
+    name, event, *, engine=Workflow.Engine.GH_IGNITION, branches=("main",)
+):
     return Workflow.Config(
         name=name,
         event=event,
         engine=engine,
-        branches=["main"],
+        branches=list(branches),
         cron_schedules=["23 2 * * *"] if event == Workflow.Event.SCHEDULE else [],
         jobs=[Job.Config(name="User Job", runs_on=["arm-2xsmall"], command="true")],
     )
@@ -118,6 +120,55 @@ def test_dispatch_event_routes_to_ignition_workflow(monkeypatch):
     matched = find_workflows_for_event(event)
 
     assert [wf.name for wf in matched] == ["Release"]
+
+
+def test_dispatch_without_branches_runs_on_any_ref(monkeypatch):
+    # No branches restriction: a manual dispatch from any ref chosen in the GH UI
+    # must route, using that ref.
+    wf = _make_ignition_workflow("Release", Workflow.Event.DISPATCH, branches=[])
+    event = {
+        "type": "dispatch",
+        "head_ref": "feature/some-branch",
+        "workflow_name": "Release",
+    }
+
+    monkeypatch.setenv("PRAKTIKA_CONTROLLER_QUEUE", "workflow-orchestrator")
+    monkeypatch.setattr("praktika.orchestrator._get_workflows", lambda: [wf])
+
+    matched = find_workflows_for_event(event)
+
+    assert [wf.name for wf in matched] == ["Release"]
+
+
+def test_dispatch_with_branches_restricts_ref(monkeypatch):
+    wf = _make_ignition_workflow(
+        "Release", Workflow.Event.DISPATCH, branches=["main"]
+    )
+    event = {
+        "type": "dispatch",
+        "head_ref": "feature/x",
+        "workflow_name": "Release",
+    }
+
+    monkeypatch.setenv("PRAKTIKA_CONTROLLER_QUEUE", "workflow-orchestrator")
+    monkeypatch.setattr("praktika.orchestrator._get_workflows", lambda: [wf])
+
+    matched = find_workflows_for_event(event)
+
+    assert matched == []  # ref not in the branches restriction
+
+
+def test_schedule_without_workflow_name_is_skipped(monkeypatch):
+    # Guard against fan-out: an ignition event with no name matches nothing.
+    wf = _make_ignition_workflow("Nightly", Workflow.Event.SCHEDULE, branches=[])
+    event = {"type": "schedule", "head_ref": "main"}
+
+    monkeypatch.setenv("PRAKTIKA_CONTROLLER_QUEUE", "workflow-orchestrator")
+    monkeypatch.setattr("praktika.orchestrator._get_workflows", lambda: [wf])
+
+    matched = find_workflows_for_event(event)
+
+    assert matched == []
 
 
 def test_schedule_message_name_filters_to_one_workflow(monkeypatch):

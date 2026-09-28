@@ -58,6 +58,12 @@ def find_workflows_for_event(event, workflow_name=None):
         print(f"No workflow event mapping for trigger type [{event_type}]")
         return []
 
+    # Ignition messages always name exactly one workflow; without a name a
+    # schedule/dispatch would fan out to every such workflow, so require it.
+    if event_type in ("schedule", "dispatch") and not workflow_name:
+        print(f"Ignition event [{event_type}] carries no workflow_name; skipping")
+        return []
+
     if event_type == "pull_request":
         branch = event.get("base_ref", "")
     elif event_type in _HEAD_REF_EVENTS:
@@ -84,8 +90,15 @@ def find_workflows_for_event(event, workflow_name=None):
         if event_type == "pull_request" and wf.base_branches:
             if _branch_matches(branch, wf.base_branches):
                 matched.append(wf)
-        elif event_type in _HEAD_REF_EVENTS and wf.branches:
+        elif event_type == "push" and wf.branches:
             if _branch_matches(branch, wf.branches):
+                matched.append(wf)
+        elif event_type in ("schedule", "dispatch"):
+            # workflow_name (required above) already pins the exact workflow;
+            # branches is an optional restriction. Empty means run on whatever
+            # ref the cron/dispatch fired on - e.g. any ref chosen in the GH UI
+            # for a manual dispatch. When set, restrict to those refs.
+            if not wf.branches or _branch_matches(branch, wf.branches):
                 matched.append(wf)
 
     if not matched:

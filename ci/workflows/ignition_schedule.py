@@ -12,8 +12,9 @@ workflow = Workflow.Config(
     name="Ignition Nightly Style",
     event=Workflow.Event.SCHEDULE,
     engine=Workflow.Engine.GH_IGNITION,
-    # The native run matches head_ref against branches (like push), so the branch
-    # the cron fires on must be listed here.
+    # Optional restriction: GitHub fires cron on the default branch, and setting
+    # branches keeps the native run pinned to it. Leave empty to run on whatever
+    # ref the trigger used.
     branches=["main"],
     cron_schedules=["30 2 * * *"],
     jobs=[

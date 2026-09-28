@@ -212,17 +212,9 @@ class Validator:
                     f"SCHEDULE/DISPATCH events, got [{workflow.event}]",
                     workflow.name,
                 )
-                # The native run routes by matching head_ref against
-                # wf.branches (like push); an empty list validates but can never
-                # route, so a cron would fire with no effect. Require it.
-                cls.evaluate_check(
-                    bool(workflow.branches)
-                    and isinstance(workflow.branches, list),
-                    f"Engine [{Workflow.Engine.GH_IGNITION}] requires a "
-                    f"non-empty .branches list to route the native run, "
-                    f"got [{workflow.branches}]",
-                    workflow.name,
-                )
+                # .branches is optional for ignition: empty means the native run
+                # fires on whatever ref the cron/dispatch used (any ref chosen in
+                # the GH UI). When set, it restricts routing to those refs.
             # GH Secrets / GH Vars are injected into the job environment only by
             # the GitHub Actions engine; on the Praktika engine they are never
             # populated and get_value() would fail at runtime with a confusing

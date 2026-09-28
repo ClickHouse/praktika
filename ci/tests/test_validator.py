@@ -78,12 +78,11 @@ def _ignition_schedule_workflow(branches):
     )
 
 
-def test_validator_rejects_ignition_without_branches(monkeypatch):
-    import pytest
-
+def test_validator_allows_ignition_without_branches(monkeypatch):
+    # branches is optional for ignition (empty means "any ref"), so validation
+    # must accept an empty list.
     workflow = _ignition_schedule_workflow(branches=[])
-    with pytest.raises(SystemExit):
-        _run_validator_for_workflow(monkeypatch, workflow)
+    _run_validator_for_workflow(monkeypatch, workflow)  # no SystemExit
 
 
 def test_validator_allows_ignition_with_branches(monkeypatch):
