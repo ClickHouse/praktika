@@ -143,6 +143,14 @@ def read_repo_settings(clone_dir, log, ci_config=None) -> dict:
     # from the merged tree (which carries the target branch's own True settings),
     # so the rest of the pipeline stays consistent.
     #
+    # It also disables the sticky merge base: with force_merge_commit the checkout
+    # (which may be an upstream-sync head lacking the project's settings override)
+    # cannot be trusted to resolve the artifact bucket, so the bucket is read from
+    # the MERGED tree instead (see prepare_repo_snapshot). Sticky-base resolution
+    # would need that bucket BEFORE the merge, which we no longer have — so it is
+    # turned off in this mode (accepted limitation; every run just merges into the
+    # live target tip).
+    #
     # ``ci_config`` may be passed pre-resolved by the caller (the controller reads
     # it once per run and also freezes it into run metadata); fall back to reading
     # it here when called standalone.
@@ -151,9 +159,11 @@ def read_repo_settings(clone_dir, log, ci_config=None) -> dict:
     if bool(ci_config.get("force_merge_commit")):
         values["ENABLE_S3_REPO_SNAPSHOT"] = True
         values["ENABLE_PR_EPHEMERAL_MERGE_COMMIT"] = True
+        values["STICKY_MERGE_BASE_HOURS"] = 0.0
         log.info(
             "force_merge_commit set in controller config: forcing "
-            "ENABLE_S3_REPO_SNAPSHOT and ENABLE_PR_EPHEMERAL_MERGE_COMMIT on"
+            "ENABLE_S3_REPO_SNAPSHOT and ENABLE_PR_EPHEMERAL_MERGE_COMMIT on, "
+            "disabling sticky merge base (bucket read from merged tree)"
         )
     return values
 
@@ -429,6 +439,14 @@ def prepare_repo_snapshot(clone_dir, event, settings, s3, log):
     # in merge mode, otherwise the head as-is.
     snapshot_sha = head_sha
 
+    # The artifact bucket is infrastructure config, not PR content. In force-merge
+    # mode it is re-read from the MERGED tree below (post-merge), so it can never
+    # depend on a PR head that lacks the project's settings override (e.g. an
+    # upstream-sync branch resolving the public bucket). Sticky base is off in that
+    # mode, so nothing needs the bucket before the merge; other modes keep the
+    # value the caller read from the checkout.
+    artifact_bucket = settings["S3_ARTIFACT_BUCKET"]
+
     if do_merge:
         base_branch = event.get("base_ref", "")
         if not base_branch:
@@ -449,7 +467,7 @@ def prepare_repo_snapshot(clone_dir, event, settings, s3, log):
         if sticky_hours > 0:
             base_sha = _resolve_sticky_base(
                 s3,
-                settings["S3_ARTIFACT_BUCKET"],
+                artifact_bucket,
                 pr_number,
                 base_branch,
                 live_base_sha,
@@ -495,10 +513,28 @@ def prepare_repo_snapshot(clone_dir, event, settings, s3, log):
         snapshot_sha = _merge_head_into_base(
             clone_dir, base_branch, base_sha, head_sha, log
         )
+
+        # clone_dir HEAD is now the merge commit, so its ci/settings resolves the
+        # MERGED tree's artifact bucket (base + head). Re-read it here — this is the
+        # trusted, PR-independent target for the snapshot upload, correcting a head
+        # that resolved a different bucket (e.g. an upstream-sync branch missing the
+        # project's private override). ci_config={} skips the SSM re-read; only the
+        # bucket is consumed. Falls back to the pre-merge value if the merged tree
+        # yields nothing.
+        merged_bucket = str(
+            read_repo_settings(clone_dir, log, ci_config={}).get("S3_ARTIFACT_BUCKET")
+            or ""
+        ).strip()
+        if merged_bucket and merged_bucket != artifact_bucket:
+            log.info(
+                "Artifact bucket from merged tree [%s] overrides pre-merge value [%s]",
+                merged_bucket, artifact_bucket,
+            )
+            artifact_bucket = merged_bucket
     else:
         log.info("Repo snapshot: head %s (no merge)", head_sha[:12])
 
     repo_snapshot_key = _build_and_publish_snapshot(
-        clone_dir, snapshot_sha, is_pr, settings["S3_ARTIFACT_BUCKET"], s3, log
+        clone_dir, snapshot_sha, is_pr, artifact_bucket, s3, log
     )
     return base_sha, snapshot_sha, repo_snapshot_key

@@ -86,6 +86,17 @@ the ephemeral merge happens, the run reinstalls praktika from the **merged tree*
 which carries the target branch's own (True) settings — so the config workflow,
 DAG, and every job stay consistent without any further override.
 
+**Limitation — sticky merge base is disabled.** `force_merge_commit` also forces
+`STICKY_MERGE_BASE_HOURS` to `0`, so every run merges the PR head into the *live*
+target tip (the sticky-base optimization, which reuses a pinned target commit
+across a PR's rapid re-pushes to keep the digest cache warm, is off). This is
+deliberate: with `force_merge_commit` the checkout (e.g. an upstream-sync head)
+can't be trusted to resolve `S3_ARTIFACT_BUCKET`, so the bucket is read from the
+**merged tree** *after* the merge. Sticky-base resolution would need that bucket
+*before* the merge (it reads/writes an S3 pin), which is no longer available — so
+it is turned off in this mode. See `praktika_controller.merge.read_repo_settings`
+and `prepare_repo_snapshot`.
+
 **Lifecycle.** This is a migration lever: set it when you enable the feature,
 leave it on until old branches age out, then delete the parameter (or set it to
 `false`). Because it's read per run, both flipping it on and removing it take
