@@ -1,4 +1,5 @@
 import base64
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -176,10 +177,13 @@ class LaunchTemplate:
                 )
                 return self.image_id
 
-            # Detect architecture from instance type: Graviton families end in 'g'
-            # (t4g, m6g, c6g, r6g, ...). Everything else is x86_64.
+            # Detect architecture from instance type: Graviton (arm64) families
+            # have a 'g' immediately after the generation number, optionally
+            # followed by suffix letters (t4g, c6g, c7gn, c7gd, m7gd, im4gn, ...).
+            # Everything else is x86_64. Matching just endswith("g") missed the
+            # 'gn'/'gd' network/disk-optimized variants.
             family = (self.instance_type or "").split(".")[0]
-            is_arm = family.endswith("g")
+            is_arm = bool(re.search(r"[0-9]g[a-z]*$", family))
             if is_arm:
                 from .native.configs import resolve_al2023_arm64_ami
                 self.image_id = resolve_al2023_arm64_ami(self.region)

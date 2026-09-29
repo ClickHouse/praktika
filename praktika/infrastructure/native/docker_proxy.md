@@ -6,10 +6,15 @@ component (`Components.DockerProxy`).
 
 ```
 runner --[registry-mirror]--> zot (:5000) --> DockerHub (first pull of a tag/blob only)
-                                 |
+                                 |  \
+                                 |   \--307--> S3 (blob bytes; runner pulls direct)
                                  v
                        S3 (manifests + blobs)
 ```
+
+With `redirectBlobURL` enabled, blob (layer) pulls are answered with a `307` to a
+presigned S3 URL, so the runner downloads the bytes straight from S3 and the zot
+NIC carries only manifests and redirects — not the multi-GB layer traffic.
 
 ## Why zot, one process
 
@@ -29,7 +34,12 @@ removes that revalidation, so a single process does the whole job.
    check, `zot` serves it from S3 and DockerHub is **not** contacted. Otherwise
    `zot` fetches it from DockerHub once, stores it, and serves it.
 2. Runner requests each blob by digest. Blobs are content-addressed, so once in S3
-   they are served from S3 and never re-fetched.
+   they are served from S3 and never re-fetched. With `redirectBlobURL` on, zot
+   returns a `307` to a presigned S3 URL for the blob (for plain, non-`Range` GETs
+   — the normal first pull) and the runner fetches the bytes directly from S3;
+   zot's own NIC is not in the blob data path. If the driver returns no redirect
+   URL, or the request carries a `Range` header (a resumed download), zot falls
+   back to streaming the blob through itself.
 
 DockerHub is contacted only on the first pull of a tag/blob, plus one manifest
 re-check per tag after a process restart (the last-check time is in memory). With
@@ -70,8 +80,8 @@ Key fields:
 
 | Field | Default | Notes |
 |---|---|---|
-| `instance_type` | `c7g.large` | Graviton; the family must end in `g` for the launch-template AMI resolver to pick arm64 (it misses the `gn`/`gd` variants). |
-| `zot_version` | `v2.1.21` | Minimum — `manifestCheckInterval` was added here. |
+| `instance_type` | `c7g.large` | Graviton (arm64). The AMI resolver keys off a `g` right after the generation number, so network/disk-optimized variants like `c7gn`/`c7gd` resolve correctly too. |
+| `zot_version` | `v2.1.21` | Minimum — both `manifestCheckInterval` and `redirectBlobURL` are needed. |
 | `s3_bucket` / `s3_region` | — | Mirror storage. Reused across instance replacements, so a fresh node boots warm. |
 | `s3_rootdirectory` | `/zot` | S3 key prefix; isolates zot's layout from anything else in the bucket. |
 | `manifest_check_interval` | `168h` | Window a cached tag is served without re-checking DockerHub. |
@@ -79,6 +89,7 @@ Key fields:
 | `dns_zone` / `dns_record` | — | Private zone + record the instance self-registers and runners point their registry-mirror at. |
 | `listen_port` | `5000` | Registry port; runners mirror to `http://<dns_record>:<listen_port>`. |
 | `enable_ui` | `False` | Serve zot's web UI at `/` (see below). |
+| `redirect_blob_url` | `True` | `307`-redirect blob pulls to presigned S3 URLs so runners fetch layers directly from S3 (needs `zot_version` >= v2.1.21). Keeps the proxy NIC out of the multi-GB layer data path. |
 
 `dns_zone`, `dns_record`, `s3_bucket` and `dockerhub_pat_ssm` are external
 identities and are **not** project-namespaced; the IAM role, profile, launch
@@ -140,6 +151,12 @@ Settings that must be present (see `docker_proxy_user_data.sh`):
 - `storage.storageDriver.name: s3` (S3 accessed via the EC2 instance role);
   `dedupe: false` (no cache driver needed for a single instance); `gc: true`
   (safe with a single writer).
+- `storage.redirectBlobURL: true` (added in zot v2.1.21) — blob GETs return a `307`
+  to the S3 signed URL so runners pull layer bytes directly from S3. Without it zot
+  streams every blob byte `S3 -> zot -> runner`, doubling the instance's NIC load;
+  a single small instance then saturates its EC2 network allowance under CI
+  fan-out and pulls time out. zot soft-fails back to proxying if no redirect URL is
+  available, so it is safe to leave on.
 
 Under high concurrency, `reqConcurrent` / `reqPerSec` (per-host upstream caps) and
 `disableHTTP2` are the knobs if DockerHub throttles.

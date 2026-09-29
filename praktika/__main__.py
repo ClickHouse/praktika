@@ -192,7 +192,8 @@ def create_parser():
         help=(
             "Process only specified components (e.g. html ImageBuilder AMI VPC LaunchTemplate AutoScalingGroup Lambda DedicatedHost EC2Instance). "
             "With --deploy: deploys only these components or uploads html report. "
-            "With --destroy-runtime/--destroy-all: deletes only the selected component types."
+            "With --destroy-runtime/--destroy-all: deletes only the selected component types. "
+            "With --restart-instances: refreshes only the selected ASGs (e.g. DockerProxy)."
         ),
         nargs="+",
         type=str,
@@ -200,7 +201,7 @@ def create_parser():
     )
     _infra_parser.add_argument(
         "--restart-instances",
-        help="Trigger an instance refresh on all ASGs, replacing all EC2 instances with the current launch template version",
+        help="Trigger an instance refresh on ASGs, replacing their EC2 instances with the current launch template version. Refreshes all ASGs by default; scope with --only (e.g. --only DockerProxy) to roll a single pool without disturbing the others",
         action="store_true",
         default=False,
     )
@@ -400,7 +401,7 @@ def main(argv=None):
             if args.restart_instances:
                 from .mangle import _get_infra_config
 
-                _get_infra_config(project).restart_instances()
+                _get_infra_config(project).restart_instances(only=args.only)
 
             if args.verify:
                 from .mangle import _get_infra_config

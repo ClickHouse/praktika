@@ -2640,13 +2640,50 @@ class CloudInfrastructure:
                 )
             print("=" * 60)
 
-        def restart_instances(self):
-            """Trigger an instance refresh on all configured ASGs."""
+        def restart_instances(self, only: Optional[List[str]] = None):
+            """Trigger an instance refresh on the configured ASGs.
+
+            With no ``only`` filter this refreshes every ASG (all runner and
+            orchestrator pools too), which rolls their instances and kills any
+            in-flight jobs -- use it deliberately. Pass ``only`` to scope the
+            refresh, e.g. ``--only DockerProxy`` to roll just the DockerHub proxy
+            (a stateless single-instance cache, safe to replace) onto its current
+            launch template version.
+            """
             self._verify_account()
-            if not self.autoscaling_groups:
-                print("No ASGs configured")
+
+            only_set = {
+                s.strip().lower()
+                for s in (only or [])
+                if isinstance(s, str) and s.strip()
+            }
+
+            def _wants(type_name: str, *aliases: str) -> bool:
+                if not only_set:
+                    return True
+                keys = {type_name.lower(), *{a.lower() for a in aliases if a}}
+                return bool(keys & only_set)
+
+            # De-dupe by ASG name: the DockerProxy ASG is also present in
+            # self.autoscaling_groups, so a plain "all" pass would list it twice.
+            selected: Dict[str, "AutoScalingGroup.Config"] = {}
+
+            if self.docker_proxy and _wants(
+                "DockerProxy", "docker-proxy", "dockerproxy", "dockerhub-proxy"
+            ):
+                selected[self.docker_proxy.autoscaling_group.name] = (
+                    self.docker_proxy.autoscaling_group
+                )
+
+            if _wants("AutoScalingGroup", "AutoScalingGroups", "ASG", "ASGs"):
+                for asg_config in self.autoscaling_groups:
+                    selected.setdefault(asg_config.name, asg_config)
+
+            if not selected:
+                print(f"No ASGs match the selection: {sorted(only_set)}")
                 return
-            for asg_config in self.autoscaling_groups:
+
+            for asg_config in selected.values():
                 asg_config.region = self._settings.AWS_REGION
                 print("\n" + "=" * 60)
                 print(f"Restarting instances in ASG: {asg_config.name}")

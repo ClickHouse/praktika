@@ -63,9 +63,9 @@ class DockerProxy:
     """
 
     name: str = "dockerhub-proxy"
-    # Graviton (arm64). Keep a family ending in "g" so the launch-template AMI
-    # resolver detects arm64 (it keys off family.endswith("g"), which misses the
-    # "gn"/"gd" network/disk-optimized variants).
+    # Graviton (arm64). The launch-template AMI resolver detects arm64 from a "g"
+    # right after the generation number, so network/disk-optimized variants like
+    # "c7gn"/"c7gd" resolve correctly too.
     instance_type: str = "c7g.large"
     vpc_name: str = ""
     ami_id: str = ""  # AL2023 arm64/x86_64 resolved at deploy time if empty
@@ -91,6 +91,12 @@ class DockerProxy:
     # Serve zot's web UI (repo/tag browser) on the same port at `/` (the registry
     # API stays at `/v2/`). Lightweight: same binary, no CVE/trivy scanning.
     enable_ui: bool = False
+    # Set zot's storage.redirectBlobURL so blob (layer) GETs return a 307 to a
+    # presigned S3 URL and runners download layer bytes straight from S3, keeping
+    # the proxy NIC out of the data path (only manifests + redirects flow through
+    # it). Without it zot streams every blob byte S3 -> zot -> runner, doubling the
+    # instance's NIC load and saturating it under CI fan-out. Needs zot >= v2.1.21.
+    redirect_blob_url: bool = True
     # Route53 self-registration. The hosted zone must already exist; the record
     # is what runners point their registry-mirror at. Both are external DNS
     # identities and are NOT project-namespaced.
@@ -232,6 +238,7 @@ class DockerProxy:
             dns_record=self.dns_record,
             tailscale=ts,
             enable_ui=self.enable_ui,
+            redirect_blob_url=self.redirect_blob_url,
         )
 
     def _tailscale_config(self):
