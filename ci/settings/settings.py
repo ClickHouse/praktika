@@ -25,6 +25,7 @@ ENABLE_PR_EPHEMERAL_MERGE_COMMIT = True
 STICKY_MERGE_BASE_HOURS = 6
 
 AWS_REGION = "eu-north-1"
+
 AWS_PROFILE = "Box"
 
 S3_ARTIFACT_BUCKET = "praktika-artifacts-eu-north-1"

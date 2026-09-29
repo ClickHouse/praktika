@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import contextlib
 import errno
 import importlib.util
 import json
@@ -25,6 +26,22 @@ WORKDIR_CLEANUP_RETRY_DELAY_S = 2
 # carries the PR/push identity), so a stable name here keeps the checkout path
 # identical across events on the same pool.
 REPO_SUBDIR = "repo"
+
+
+@contextlib.contextmanager
+def profile_step(log, label):
+    """Time a bootstrap step and log its duration as a ``[profile]`` line.
+
+    The controller bootstrap (clone, ephemeral merge, snapshot pack/upload,
+    runtime install) can take minutes on large trees (e.g. ClickHouse); wrapping
+    each step gives a per-step breakdown to profile against without external
+    tooling. A no-op if ``log`` is None."""
+    start = time.time()
+    try:
+        yield
+    finally:
+        if log is not None:
+            log.info("[profile] %s: %.2fs", label, time.time() - start)
 
 
 class LogRateLimiter:
@@ -759,8 +776,22 @@ def clone_repo(
     # reachable-SHA fetch (GitHub advertises PR commits, so a fork PR's head_sha
     # is fetchable from the base repo); if the sha was force-pushed away and is no
     # longer reachable, the fetch fails and the caller aborts — the safe outcome.
-    git(["fetch", "--depth=1", "origin", head_sha], cwd=clone_dir)
-    git(["checkout", head_sha], cwd=clone_dir)
+    #
+    # --no-tags: don't auto-follow the remote's tags (thousands on large repos
+    # like ClickHouse) — we only need this one sha. --no-recurse-submodules: the
+    # bootstrap tree never needs submodules; jobs that do fetch them themselves.
+    with profile_step(log, "clone: fetch head (depth 1)"):
+        git(
+            [
+                "fetch", "--depth=1", "--no-tags", "--no-recurse-submodules",
+                "origin", head_sha,
+            ],
+            cwd=clone_dir,
+        )
+    # Parallel checkout (checkout.workers=0 => one worker per core) speeds up
+    # writing a large working tree (ClickHouse is ~30k+ files) to disk.
+    with profile_step(log, "clone: checkout head"):
+        git(["-c", "checkout.workers=0", "checkout", head_sha], cwd=clone_dir)
 
     actual_sha = git(["rev-parse", "HEAD"], cwd=clone_dir).strip()
     if log is not None:
@@ -818,27 +849,30 @@ def restore_repo_snapshot(
 
     archive_path = os.path.join(work_dir, f".repo_snapshot_{snapshot_sha[:12]}.tar.zst")
     try:
-        s3_client.download_file(bucket, key, archive_path)
+        with profile_step(log, "restore: download snapshot"):
+            s3_client.download_file(bucket, key, archive_path)
 
-        h = hashlib.sha256()
-        with open(archive_path, "rb") as f:
-            for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                h.update(chunk)
-        actual_hash = h.hexdigest()
-        if actual_hash != expected_hash:
-            raise RuntimeError(
-                f"Repo snapshot hash mismatch for {key}: expected "
-                f"{expected_hash}, got {actual_hash} — refusing to run"
-            )
+        with profile_step(log, "restore: verify sha256"):
+            h = hashlib.sha256()
+            with open(archive_path, "rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    h.update(chunk)
+            actual_hash = h.hexdigest()
+            if actual_hash != expected_hash:
+                raise RuntimeError(
+                    f"Repo snapshot hash mismatch for {key}: expected "
+                    f"{expected_hash}, got {actual_hash} — refusing to run"
+                )
 
         # Self-contained shallow repo (.git + worktree at snapshot_sha, no history).
-        subprocess.run(
-            f"zstd -dc {shlex.quote(archive_path)} | "
-            f"tar -xf - -C {shlex.quote(clone_dir)}",
-            shell=True,
-            check=True,
-            executable="/bin/bash",
-        )
+        with profile_step(log, "restore: unpack (zstd | tar)"):
+            subprocess.run(
+                f"zstd -dc {shlex.quote(archive_path)} | "
+                f"tar -xf - -C {shlex.quote(clone_dir)}",
+                shell=True,
+                check=True,
+                executable="/bin/bash",
+            )
     finally:
         if os.path.exists(archive_path):
             os.remove(archive_path)

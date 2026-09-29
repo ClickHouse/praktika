@@ -24,6 +24,7 @@ from praktika_controller.common import (
     load_ci_config,
     post_early_check,
     instance_tag,
+    profile_step,
     resolve_praktika_base_venv,
     restore_repo_snapshot,
     TaskLogCapture,
@@ -436,15 +437,16 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
                 # both match the original merge rather than the current head.
                 clone_dir, actual_sha, snapshot = _restore_original()
             else:
-                clone_dir, actual_sha = clone_repo(
-                    repo,
-                    head_sha,
-                    pr_number,
-                    gh_token,
-                    work_dir=WORK_DIR,
-                    branch=branch,
-                    log=log,
-                )
+                with profile_step(log, "clone: total"):
+                    clone_dir, actual_sha = clone_repo(
+                        repo,
+                        head_sha,
+                        pr_number,
+                        gh_token,
+                        work_dir=WORK_DIR,
+                        branch=branch,
+                        log=log,
+                    )
 
                 # Stale-head guard (TOCTOU): clone_repo fetches the live
                 # refs/pull/N/head, which can have advanced since the lambda verified
@@ -510,7 +512,8 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
                         "pr": pr_number,
                     }
 
-            base_venv, venv_dir = _resolve_runtime(clone_dir, log)
+            with profile_step(log, "runtime: resolve venv + install praktika"):
+                base_venv, venv_dir = _resolve_runtime(clone_dir, log)
 
             event_file = os.path.join(clone_dir, "ci", "tmp", "event.json")
             os.makedirs(os.path.dirname(event_file), exist_ok=True)
@@ -664,15 +667,16 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
             # authentication so a GitHub token/login outage doesn't fail a job
             # that a valid snapshot could satisfy. Jobs that need `gh` authenticate
             # themselves via GHAuth (enable_gh_auth), independent of this.
-            clone_dir, actual_sha = restore_repo_snapshot(
-                s3,
-                repo_snapshot_key,
-                snapshot_sha,
-                pr_number,
-                work_dir=WORK_DIR,
-                branch=task.get("head_ref", ""),
-                log=log,
-            )
+            with profile_step(log, "restore: download + verify + unpack snapshot"):
+                clone_dir, actual_sha = restore_repo_snapshot(
+                    s3,
+                    repo_snapshot_key,
+                    snapshot_sha,
+                    pr_number,
+                    work_dir=WORK_DIR,
+                    branch=task.get("head_ref", ""),
+                    log=log,
+                )
         else:
             # Cloning the head needs an authenticated remote.
             gh_token = get_github_token(REGION)
@@ -694,7 +698,8 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
 
         if cm_heartbeat is not None:
             cm_heartbeat.update(phase="resolving_runtime")
-        base_venv, venv_dir = _resolve_runtime(clone_dir, log)
+        with profile_step(log, "runtime: resolve venv + install praktika"):
+            base_venv, venv_dir = _resolve_runtime(clone_dir, log)
 
         if cm_heartbeat is not None:
             cm_heartbeat.update(phase="writing_task")

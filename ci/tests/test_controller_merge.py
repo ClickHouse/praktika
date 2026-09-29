@@ -44,6 +44,10 @@ class _FakeS3:
             raise err
         self.objects[(Bucket, Key)] = Body
 
+    def upload_file(self, Filename, Bucket, Key, Config=None):
+        with open(Filename, "rb") as f:
+            self.objects[(Bucket, Key)] = f.read()
+
     def get_object(self, Bucket, Key):
         if (Bucket, Key) not in self.objects:
             raise RuntimeError("NoSuchKey")

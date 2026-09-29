@@ -35,7 +35,9 @@ import tempfile
 import time
 from pathlib import Path
 
-from praktika_controller.common import load_ci_config
+from boto3.s3.transfer import TransferConfig
+
+from praktika_controller.common import load_ci_config, profile_step
 
 # Deterministic identity/dates so the merge sha depends only on the two parents
 # and the resulting tree, not on wall-clock or runner identity. Must stay
@@ -327,40 +329,64 @@ def _build_and_publish_snapshot(clone_dir, snapshot_sha, is_pr, artifact_bucket,
     snap_dir = os.path.join(scratch, "repo_snapshot")
     archive_path = os.path.join(scratch, "repo_snapshot.tar.zst")
     try:
-        subprocess.run(["git", "init", "-q", snap_dir], check=True)
-        # Tag the commit first so it is advertised to the fetch (an unadvertised
-        # sha would require uploadpack.allowAnySHA1InWant on the source).
-        _git(["tag", "-f", _REPO_SNAPSHOT_TAG, snapshot_sha], clone_dir)
-        try:
+        with profile_step(log, "snapshot: git init + local fetch (depth 1)"):
+            subprocess.run(["git", "init", "-q", snap_dir], check=True)
+            # Tag the commit first so it is advertised to the fetch (an unadvertised
+            # sha would require uploadpack.allowAnySHA1InWant on the source).
+            _git(["tag", "-f", _REPO_SNAPSHOT_TAG, snapshot_sha], clone_dir)
+            try:
+                subprocess.run(
+                    [
+                        "git", "-C", snap_dir, "fetch", "--depth=1", "-q",
+                        f"file://{os.path.abspath(clone_dir)}",
+                        f"refs/tags/{_REPO_SNAPSHOT_TAG}",
+                    ],
+                    check=True,
+                )
+            finally:
+                _git(["tag", "-d", _REPO_SNAPSHOT_TAG], clone_dir, check=False)
+
+        with profile_step(log, "snapshot: checkout worktree"):
+            # Parallel checkout (checkout.workers=0 => one worker per core) to
+            # write the large working tree to disk faster.
             subprocess.run(
                 [
-                    "git", "-C", snap_dir, "fetch", "--depth=1", "-q",
-                    f"file://{os.path.abspath(clone_dir)}",
-                    f"refs/tags/{_REPO_SNAPSHOT_TAG}",
+                    "git", "-C", snap_dir, "-c", "checkout.workers=0",
+                    "checkout", "-q", "--detach", "FETCH_HEAD",
                 ],
                 check=True,
             )
-        finally:
-            _git(["tag", "-d", _REPO_SNAPSHOT_TAG], clone_dir, check=False)
-        subprocess.run(
-            ["git", "-C", snap_dir, "checkout", "-q", "--detach", "FETCH_HEAD"],
-            check=True,
-        )
         snap_sha = _git_out(["rev-parse", "HEAD"], snap_dir)
         if snap_sha != snapshot_sha:
             raise RuntimeError(
                 f"snapshot HEAD {snap_sha} != expected {snapshot_sha}"
             )
 
-        subprocess.run(
-            f"tar -C {shlex.quote(snap_dir)} -cf - . | zstd -c -T0 -q > "
-            f"{shlex.quote(archive_path)}",
-            shell=True,
-            check=True,
-            executable="/bin/bash",
-        )
-
-        content_hash = _sha256_file(archive_path)
+        # Pack and hash in a single pass: stream tar|zstd to this process and
+        # tee each chunk into both the archive file and the sha256, so the
+        # content-addressed key needs no separate full-archive read (the archive
+        # is large for big trees). pipefail so a failing tar isn't masked by a
+        # succeeding zstd.
+        with profile_step(log, "snapshot: pack + hash (tar|zstd)"):
+            proc = subprocess.Popen(
+                f"set -o pipefail; tar -C {shlex.quote(snap_dir)} -cf - . | zstd -c -T0 -q",
+                shell=True,
+                executable="/bin/bash",
+                stdout=subprocess.PIPE,
+            )
+            h = hashlib.sha256()
+            assert proc.stdout is not None
+            with open(archive_path, "wb") as out:
+                for chunk in iter(lambda: proc.stdout.read(1024 * 1024), b""):
+                    out.write(chunk)
+                    h.update(chunk)
+            rc = proc.wait()
+            if rc != 0:
+                raise RuntimeError(
+                    f"Failed to pack repo snapshot archive (tar|zstd exited {rc})"
+                )
+            content_hash = h.hexdigest()
+        log.info("[profile] snapshot: archive size %.1f MiB", os.path.getsize(archive_path) / 1048576)
         # Trust tier: PRs/ (pull_request, fork-reachable) vs REFs/ (push/trusted).
         # IAM scopes these so a pr-* pool can read but not write REFs/, and a
         # trusted pool can neither read nor write PRs/.
@@ -373,16 +399,33 @@ def _build_and_publish_snapshot(clone_dir, snapshot_sha, is_pr, artifact_bucket,
         if _s3_object_exists(s3, bucket, key):
             log.info("Repo snapshot already present: %s", repo_snapshot_key)
         else:
+            # Managed multipart upload: stream the archive from disk in parallel
+            # parts rather than buffering the whole file in RAM and PUTting it
+            # single-stream (put_object(Body=f.read())). Decisive for large trees
+            # (e.g. ClickHouse), where the single-stream PUT dominated snapshot
+            # publish time. Multipart drops the atomic IfNoneMatch write-once, so
+            # the concurrent-producer case is handled by the head-object
+            # pre-check above and the existence re-check below — two producers of
+            # the SAME content-addressed key are uploading byte-identical
+            # archives, so last-writer-wins is safe.
             try:
-                with open(archive_path, "rb") as f:
-                    s3.put_object(Bucket=bucket, Key=key, Body=f.read(), IfNoneMatch="*")
+                with profile_step(log, "snapshot: multipart upload"):
+                    s3.upload_file(
+                        archive_path,
+                        bucket,
+                        key,
+                        Config=TransferConfig(
+                            multipart_threshold=8 * 1024 * 1024,
+                            multipart_chunksize=16 * 1024 * 1024,
+                            max_concurrency=16,
+                            use_threads=True,
+                        ),
+                    )
                 log.info("Repo snapshot uploaded: %s", repo_snapshot_key)
             except Exception as e:  # noqa: BLE001
-                code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
-                if str(code) in ("PreconditionFailed", "ConditionalRequestConflict"):
-                    # Lost a write-once race — the object exists, which is success.
-                    log.info("Repo snapshot created concurrently: %s", repo_snapshot_key)
-                elif _s3_object_exists(s3, bucket, key):
+                if _s3_object_exists(s3, bucket, key):
+                    # Lost a race with a concurrent producer — the object exists,
+                    # which is success.
                     log.info("Repo snapshot created concurrently: %s", repo_snapshot_key)
                 else:
                     raise RuntimeError(
@@ -400,14 +443,6 @@ def _s3_object_exists(s3, bucket: str, key: str) -> bool:
         return True
     except Exception:  # noqa: BLE001
         return False
-
-
-def _sha256_file(path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def prepare_repo_snapshot(clone_dir, event, settings, s3, log):
@@ -453,7 +488,8 @@ def prepare_repo_snapshot(clone_dir, event, settings, s3, log):
             raise RuntimeError(
                 "Ephemeral merge requested but no base branch on the event"
             )
-        _ensure_base_history(clone_dir, base_branch, log)
+        with profile_step(log, "merge: ensure base history (unshallow + fetch base)"):
+            _ensure_base_history(clone_dir, base_branch, log)
         live_base_sha = _git_out(["rev-parse", f"origin/{base_branch}"], clone_dir)
         if not live_base_sha:
             raise RuntimeError(f"Failed to resolve tip of base branch [{base_branch}]")
@@ -465,16 +501,17 @@ def prepare_repo_snapshot(clone_dir, event, settings, s3, log):
         base_sha = live_base_sha
         sticky_hours = float(settings.get("STICKY_MERGE_BASE_HOURS") or 0)
         if sticky_hours > 0:
-            base_sha = _resolve_sticky_base(
-                s3,
-                artifact_bucket,
-                pr_number,
-                base_branch,
-                live_base_sha,
-                sticky_hours,
-                clone_dir,
-                log,
-            )
+            with profile_step(log, "merge: resolve sticky base"):
+                base_sha = _resolve_sticky_base(
+                    s3,
+                    artifact_bucket,
+                    pr_number,
+                    base_branch,
+                    live_base_sha,
+                    sticky_hours,
+                    clone_dir,
+                    log,
+                )
         log.info(
             "Ephemeral merge: base [%s] %s (live tip %s) + head %s",
             base_branch, base_sha[:12], live_base_sha[:12], head_sha[:12],
@@ -484,14 +521,15 @@ def prepare_repo_snapshot(clone_dir, event, settings, s3, log):
         # PR merges cleanly with the CURRENT target HEAD so a green never hides a
         # real conflict with live main. Non-destructive (git merge-tree, >= 2.38).
         if base_sha != live_base_sha:
-            r = _git(
-                [
-                    "merge-tree", "--write-tree", "--name-only",
-                    live_base_sha, head_sha,
-                ],
-                clone_dir,
-                check=False,
-            )
+            with profile_step(log, "merge: verify head merges into live tip (merge-tree)"):
+                r = _git(
+                    [
+                        "merge-tree", "--write-tree", "--name-only",
+                        live_base_sha, head_sha,
+                    ],
+                    clone_dir,
+                    check=False,
+                )
             if r.returncode == 1:
                 raise MergeConflict(
                     f"PR head {head_sha[:12]} conflicts with the current "
@@ -510,9 +548,10 @@ def prepare_repo_snapshot(clone_dir, event, settings, s3, log):
                     f"{r.stdout}\n{r.stderr}",
                 )
 
-        snapshot_sha = _merge_head_into_base(
-            clone_dir, base_branch, base_sha, head_sha, log
-        )
+        with profile_step(log, "merge: merge head into base"):
+            snapshot_sha = _merge_head_into_base(
+                clone_dir, base_branch, base_sha, head_sha, log
+            )
 
         # clone_dir HEAD is now the merge commit, so its ci/settings resolves the
         # MERGED tree's artifact bucket (base + head). Re-read it here — this is the
@@ -521,10 +560,11 @@ def prepare_repo_snapshot(clone_dir, event, settings, s3, log):
         # project's private override). ci_config={} skips the SSM re-read; only the
         # bucket is consumed. Falls back to the pre-merge value if the merged tree
         # yields nothing.
-        merged_bucket = str(
-            read_repo_settings(clone_dir, log, ci_config={}).get("S3_ARTIFACT_BUCKET")
-            or ""
-        ).strip()
+        with profile_step(log, "merge: re-read artifact bucket from merged tree"):
+            merged_bucket = str(
+                read_repo_settings(clone_dir, log, ci_config={}).get("S3_ARTIFACT_BUCKET")
+                or ""
+            ).strip()
         if merged_bucket and merged_bucket != artifact_bucket:
             log.info(
                 "Artifact bucket from merged tree [%s] overrides pre-merge value [%s]",
@@ -534,7 +574,8 @@ def prepare_repo_snapshot(clone_dir, event, settings, s3, log):
     else:
         log.info("Repo snapshot: head %s (no merge)", head_sha[:12])
 
-    repo_snapshot_key = _build_and_publish_snapshot(
-        clone_dir, snapshot_sha, is_pr, artifact_bucket, s3, log
-    )
+    with profile_step(log, "snapshot: build + publish (total)"):
+        repo_snapshot_key = _build_and_publish_snapshot(
+            clone_dir, snapshot_sha, is_pr, artifact_bucket, s3, log
+        )
     return base_sha, snapshot_sha, repo_snapshot_key
