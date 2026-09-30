@@ -44,6 +44,10 @@ class _FakeS3:
             raise err
         self.objects[(Bucket, Key)] = Body
 
+    def upload_file(self, Filename, Bucket, Key, Config=None):
+        with open(Filename, "rb") as f:
+            self.objects[(Bucket, Key)] = f.read()
+
     def get_object(self, Bucket, Key):
         if (Bucket, Key) not in self.objects:
             raise RuntimeError("NoSuchKey")
@@ -229,6 +233,46 @@ def test_pr_without_merge_flag_is_plain_head(tmp_path):
     assert key.startswith("mybucket/prefix/repo-snapshots/v1/PRs/")  # still a PR event
 
 
+def test_merged_tree_bucket_overrides_head(tmp_path):
+    # Upstream-sync scenario: base (main) carries the project's private bucket via
+    # an overrides file; the PR head does not (it predates / omits the override). The
+    # controller must publish to the MERGED tree's bucket, never the head's.
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-q", "-b", "main")
+    os.makedirs(origin / "ci" / "settings")
+    _write(origin / "ci" / "settings", "settings.py", 'S3_ARTIFACT_BUCKET = "public-bucket"\n')
+    _git(origin, "add", ".")
+    _git(origin, "commit", "-q", "-m", "B0")
+    b0 = _git(origin, "rev-parse", "HEAD")
+
+    # PR head branches from B0 and leaves ci/settings alone -> still resolves public.
+    _git(origin, "checkout", "-q", "-b", "pr", b0)
+    _write(origin, "pr.txt", "pr\n")
+    _git(origin, "add", ".")
+    _git(origin, "commit", "-q", "-m", "H")
+    head_sha = _git(origin, "rev-parse", "HEAD")
+
+    # main advances: the private overrides file (resolving the private bucket) lands.
+    _git(origin, "checkout", "-q", "main")
+    _write(origin / "ci" / "settings", "private_settings_overrides.py",
+           'S3_ARTIFACT_BUCKET = "private-bucket"\n')
+    _git(origin, "add", ".")
+    _git(origin, "commit", "-q", "-m", "B1")
+
+    clone = _make_clone(tmp_path, origin, head_sha)
+    s3 = _FakeS3()
+    event = {"type": "pull_request", "pr_number": 7, "base_ref": "main"}
+    # Pre-merge settings resolve the head's public bucket; sticky off (force-merge mode).
+    settings = dict(PR_MERGE_SETTINGS, S3_ARTIFACT_BUCKET="public-bucket", STICKY_MERGE_BASE_HOURS=0)
+
+    _, _, key = merge.prepare_repo_snapshot(str(clone), event, settings, s3, _Log())
+
+    # Snapshot published to the merged (private) bucket, and nothing to the public one.
+    assert key.startswith("private-bucket/repo-snapshots/v1/PRs/")
+    assert not any(bucket == "public-bucket" for (bucket, _k) in s3.objects)
+
+
 def test_read_repo_settings(tmp_path):
     settings_dir = tmp_path / "ci" / "settings"
     settings_dir.mkdir(parents=True)
@@ -247,6 +291,23 @@ def test_read_repo_settings(tmp_path):
     assert vals["ENABLE_PR_EPHEMERAL_MERGE_COMMIT"] is True
     assert vals["STICKY_MERGE_BASE_HOURS"] == 6
     assert vals["S3_ARTIFACT_BUCKET"] == "bkt/pfx"
+
+
+def test_force_merge_commit_disables_sticky(tmp_path):
+    # force_merge_commit (out-of-repo) forces merge mode ON and, because the bucket
+    # is then read from the merged tree (post-merge), turns sticky base OFF so
+    # nothing needs the bucket before the merge.
+    settings_dir = tmp_path / "ci" / "settings"
+    settings_dir.mkdir(parents=True)
+    (settings_dir / "settings.py").write_text(
+        "STICKY_MERGE_BASE_HOURS = 6\nS3_ARTIFACT_BUCKET = 'bkt'\n"
+    )
+    vals = merge.read_repo_settings(
+        str(tmp_path), _Log(), ci_config={"force_merge_commit": True}
+    )
+    assert vals["ENABLE_S3_REPO_SNAPSHOT"] is True
+    assert vals["ENABLE_PR_EPHEMERAL_MERGE_COMMIT"] is True
+    assert vals["STICKY_MERGE_BASE_HOURS"] == 0.0  # disabled in force-merge mode
 
 
 def test_read_repo_settings_defaults_when_absent(tmp_path):

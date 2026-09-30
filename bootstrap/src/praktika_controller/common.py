@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import contextlib
 import errno
 import importlib.util
 import json
@@ -25,6 +26,22 @@ WORKDIR_CLEANUP_RETRY_DELAY_S = 2
 # carries the PR/push identity), so a stable name here keeps the checkout path
 # identical across events on the same pool.
 REPO_SUBDIR = "repo"
+
+
+@contextlib.contextmanager
+def profile_step(log, label):
+    """Time a bootstrap step and log its duration as a ``[profile]`` line.
+
+    The controller bootstrap (clone, ephemeral merge, snapshot pack/upload,
+    runtime install) can take minutes on large trees (e.g. ClickHouse); wrapping
+    each step gives a per-step breakdown to profile against without external
+    tooling. A no-op if ``log`` is None."""
+    start = time.time()
+    try:
+        yield
+    finally:
+        if log is not None:
+            log.info("[profile] %s: %.2fs", label, time.time() - start)
 
 
 class LogRateLimiter:
@@ -186,6 +203,59 @@ def get_github_token(region: str = "") -> str:
     return token
 
 
+def _strip_jsonc(text: str) -> str:
+    """Return ``text`` with JSONC niceties removed so plain ``json.loads`` accepts
+    it: ``//`` line comments, ``/* */`` block comments, and trailing commas.
+
+    Lets an operator comment out a line/field in the ci_config parameter without
+    silently disabling the WHOLE config (strict ``json.loads`` would reject the
+    comment and the caller would fall back to ``{}``). The scan is string-aware, so
+    a ``//`` inside a value (e.g. an ``https://`` wheel URL) or a quoted ``/*`` is
+    left untouched — only comments outside of strings are dropped."""
+    out = []
+    i, n = 0, len(text)
+    in_str = escaped = False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if escaped:
+                escaped = False
+            elif c == "\\":
+                escaped = True
+            elif c == '"':
+                in_str = False
+            i += 1
+        elif c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+        elif c == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                i += 1  # skip to end of line
+        elif c == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i += 2  # skip closing */
+        elif c in "}]":
+            # Drop a trailing comma before this closing bracket. Done here (not via
+            # regex on the whole text) so it stays string-aware: a "," inside a
+            # value like "x,]" is never touched because we only reach this branch
+            # outside of strings.
+            j = len(out) - 1
+            while j >= 0 and out[j].isspace():
+                j -= 1
+            if j >= 0 and out[j] == ",":
+                del out[j]
+            out.append(c)
+            i += 1
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
 def load_ci_config(region: str = "", log=None) -> dict:
     """Per-project, CI-wide config read from the SSM parameter
     ``{PRAKTIKA_PROJECT_SLUG}-ci-config`` as a JSON object.
@@ -201,6 +271,10 @@ def load_ci_config(region: str = "", log=None) -> dict:
     ``{}`` (every feature off), so the parameter is entirely optional and absence
     is safe. Read fresh by the caller each run — one ``GetParameter`` is trivial
     next to a full CI run and keeps the config live-editable.
+
+    JSONC is tolerated (``//`` and ``/* */`` comments, trailing commas) so an
+    operator can comment out a field without accidentally invalidating the whole
+    parameter (which would silently read as ``{}``). See ``_strip_jsonc``.
     """
     import boto3
 
@@ -218,7 +292,7 @@ def load_ci_config(region: str = "", log=None) -> dict:
     try:
         ssm = boto3.client("ssm", region_name=region)
         value = ssm.get_parameter(Name=name)["Parameter"]["Value"]
-        data = json.loads(value)
+        data = json.loads(_strip_jsonc(value))
         if not isinstance(data, dict):
             if log:
                 log.warning("Controller config %s is not a JSON object; ignoring", name)
@@ -759,8 +833,22 @@ def clone_repo(
     # reachable-SHA fetch (GitHub advertises PR commits, so a fork PR's head_sha
     # is fetchable from the base repo); if the sha was force-pushed away and is no
     # longer reachable, the fetch fails and the caller aborts — the safe outcome.
-    git(["fetch", "--depth=1", "origin", head_sha], cwd=clone_dir)
-    git(["checkout", head_sha], cwd=clone_dir)
+    #
+    # --no-tags: don't auto-follow the remote's tags (thousands on large repos
+    # like ClickHouse) — we only need this one sha. --no-recurse-submodules: the
+    # bootstrap tree never needs submodules; jobs that do fetch them themselves.
+    with profile_step(log, "clone: fetch head (depth 1)"):
+        git(
+            [
+                "fetch", "--depth=1", "--no-tags", "--no-recurse-submodules",
+                "origin", head_sha,
+            ],
+            cwd=clone_dir,
+        )
+    # Parallel checkout (checkout.workers=0 => one worker per core) speeds up
+    # writing a large working tree (ClickHouse is ~30k+ files) to disk.
+    with profile_step(log, "clone: checkout head"):
+        git(["-c", "checkout.workers=0", "checkout", head_sha], cwd=clone_dir)
 
     actual_sha = git(["rev-parse", "HEAD"], cwd=clone_dir).strip()
     if log is not None:
@@ -818,27 +906,30 @@ def restore_repo_snapshot(
 
     archive_path = os.path.join(work_dir, f".repo_snapshot_{snapshot_sha[:12]}.tar.zst")
     try:
-        s3_client.download_file(bucket, key, archive_path)
+        with profile_step(log, "restore: download snapshot"):
+            s3_client.download_file(bucket, key, archive_path)
 
-        h = hashlib.sha256()
-        with open(archive_path, "rb") as f:
-            for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                h.update(chunk)
-        actual_hash = h.hexdigest()
-        if actual_hash != expected_hash:
-            raise RuntimeError(
-                f"Repo snapshot hash mismatch for {key}: expected "
-                f"{expected_hash}, got {actual_hash} — refusing to run"
-            )
+        with profile_step(log, "restore: verify sha256"):
+            h = hashlib.sha256()
+            with open(archive_path, "rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    h.update(chunk)
+            actual_hash = h.hexdigest()
+            if actual_hash != expected_hash:
+                raise RuntimeError(
+                    f"Repo snapshot hash mismatch for {key}: expected "
+                    f"{expected_hash}, got {actual_hash} — refusing to run"
+                )
 
         # Self-contained shallow repo (.git + worktree at snapshot_sha, no history).
-        subprocess.run(
-            f"zstd -dc {shlex.quote(archive_path)} | "
-            f"tar -xf - -C {shlex.quote(clone_dir)}",
-            shell=True,
-            check=True,
-            executable="/bin/bash",
-        )
+        with profile_step(log, "restore: unpack (zstd | tar)"):
+            subprocess.run(
+                f"zstd -dc {shlex.quote(archive_path)} | "
+                f"tar -xf - -C {shlex.quote(clone_dir)}",
+                shell=True,
+                check=True,
+                executable="/bin/bash",
+            )
     finally:
         if os.path.exists(archive_path):
             os.remove(archive_path)

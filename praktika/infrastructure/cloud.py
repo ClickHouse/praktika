@@ -40,6 +40,28 @@ if TYPE_CHECKING:
     from .sqs_queue import SQSQueue
 
 
+# Seed value for the {slug}-ci-config SSM parameter created at deploy time: an
+# effectively-empty config (parses to {}) documenting every supported key,
+# commented out. JSONC is tolerated by the reader (praktika_controller.common.
+# load_ci_config), so operators uncomment a line to enable it. Keep descriptions
+# short; the full contract lives in praktika/docs/ci-config.md.
+_CI_CONFIG_TEMPLATE = """\
+{
+  // Praktika out-of-repo CI config. JSONC ok (// comments, trailing commas).
+  // Uncomment a key to enable it. Docs: praktika/docs/ci-config.md
+
+  // Force ephemeral PR merge + repo snapshot on every run (migration lever).
+  // "force_merge_commit": true,
+
+  // Pin praktika runtime for a run: version spec / wheel URL / repo path.
+  // "praktika_version": "praktika==0.1.14",
+
+  // Pin controller wheel: version spec / wheel URL / absolute host path.
+  // "praktika_controller_version": "praktika-controller==0.1.8"
+}
+"""
+
+
 class CloudInfrastructure:
     SLACK_APP_LAMBDAS = [lambda_app_config, lambda_worker_config]
 
@@ -1738,7 +1760,39 @@ class CloudInfrastructure:
                     asg_config.deploy()
                     deployed_asg_configs.append(asg_config)
 
+            # Seed the out-of-repo CI config SSM parameter (create-if-absent, so an
+            # operator's existing value is never clobbered by a redeploy).
+            if _wants("CIConfig", "ci-config", "ciconfig"):
+                print("\n" + "=" * 60)
+                print("Deploying CI config SSM parameter")
+                print("=" * 60)
+                self._ensure_ci_config_parameter()
+
             self._print_deployment_warnings(deployed_asg_configs)
+
+        def _ensure_ci_config_parameter(self):
+            """Create the ``{slug}-ci-config`` SSM parameter with a commented-out
+            template (parses to ``{}`` — every feature off) if it does not exist.
+
+            Create-if-absent only: a redeploy must never overwrite an operator's
+            live value (it's edited out-of-band, not from the repo). The name
+            matches what the controller reads (``PRAKTIKA_PROJECT_SLUG`` = the
+            project prefix). See praktika/docs/ci-config.md."""
+            region = self._settings.AWS_REGION
+            name = f"{self._project_prefix()}-ci-config"
+            client = aws_client("ssm", region, f"{self._project_prefix()}-ci-config")
+            try:
+                client.put_parameter(
+                    Name=name,
+                    Type="String",
+                    Value=_CI_CONFIG_TEMPLATE,
+                    Description=(
+                        "Praktika out-of-repo CI config; see praktika/docs/ci-config.md"
+                    ),
+                )
+                print(f"Created SSM parameter {name} (commented-out template)")
+            except client.exceptions.ParameterAlreadyExists:
+                print(f"SSM parameter {name} already exists; leaving its value unchanged")
 
         def destroy_runtime(
             self,
@@ -2640,13 +2694,50 @@ class CloudInfrastructure:
                 )
             print("=" * 60)
 
-        def restart_instances(self):
-            """Trigger an instance refresh on all configured ASGs."""
+        def restart_instances(self, only: Optional[List[str]] = None):
+            """Trigger an instance refresh on the configured ASGs.
+
+            With no ``only`` filter this refreshes every ASG (all runner and
+            orchestrator pools too), which rolls their instances and kills any
+            in-flight jobs -- use it deliberately. Pass ``only`` to scope the
+            refresh, e.g. ``--only DockerProxy`` to roll just the DockerHub proxy
+            (a stateless single-instance cache, safe to replace) onto its current
+            launch template version.
+            """
             self._verify_account()
-            if not self.autoscaling_groups:
-                print("No ASGs configured")
+
+            only_set = {
+                s.strip().lower()
+                for s in (only or [])
+                if isinstance(s, str) and s.strip()
+            }
+
+            def _wants(type_name: str, *aliases: str) -> bool:
+                if not only_set:
+                    return True
+                keys = {type_name.lower(), *{a.lower() for a in aliases if a}}
+                return bool(keys & only_set)
+
+            # De-dupe by ASG name: the DockerProxy ASG is also present in
+            # self.autoscaling_groups, so a plain "all" pass would list it twice.
+            selected: Dict[str, "AutoScalingGroup.Config"] = {}
+
+            if self.docker_proxy and _wants(
+                "DockerProxy", "docker-proxy", "dockerproxy", "dockerhub-proxy"
+            ):
+                selected[self.docker_proxy.autoscaling_group.name] = (
+                    self.docker_proxy.autoscaling_group
+                )
+
+            if _wants("AutoScalingGroup", "AutoScalingGroups", "ASG", "ASGs"):
+                for asg_config in self.autoscaling_groups:
+                    selected.setdefault(asg_config.name, asg_config)
+
+            if not selected:
+                print(f"No ASGs match the selection: {sorted(only_set)}")
                 return
-            for asg_config in self.autoscaling_groups:
+
+            for asg_config in selected.values():
                 asg_config.region = self._settings.AWS_REGION
                 print("\n" + "=" * 60)
                 print(f"Restarting instances in ASG: {asg_config.name}")

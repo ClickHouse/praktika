@@ -144,6 +144,7 @@ def docker_proxy_user_data(
     dns_zone,
     dns_record,
     enable_ui=False,
+    redirect_blob_url=True,
     tailscale=None,
 ):
     """Render the DockerHub proxy bootstrap script.
@@ -155,6 +156,12 @@ def docker_proxy_user_data(
 
     ``enable_ui`` adds zot's ``search`` + ``ui`` extensions (served at ``/`` on the
     same port). No CVE/trivy scanning is enabled, so it stays lightweight.
+
+    ``redirect_blob_url`` (default True) sets zot's ``storage.redirectBlobURL`` so
+    blob GETs return a ``307`` to the storage driver's signed URL (direct S3
+    download) instead of streaming the bytes through zot. Requires zot >= v2.1.21.
+    zot falls back to proxying if the driver returns no redirect URL, so it is safe
+    to leave on.
 
     ``tailscale`` (a dict with ``hostname``, ``tag``, ``oauth_client_id_ssm``,
     ``oauth_client_secret_ssm``) opts the node into Tailscale: it mints a tagged
@@ -181,6 +188,7 @@ def docker_proxy_user_data(
         "__DNS_ZONE__": str(dns_zone),
         "__DNS_RECORD__": str(dns_record),
         "__EXTRA_EXTENSIONS__": extra_extensions,
+        "__REDIRECT_BLOB_URL__": "true" if redirect_blob_url else "false",
         "__TAILSCALE_SETUP__": tailscale_setup,
     }
     for placeholder in replacements:

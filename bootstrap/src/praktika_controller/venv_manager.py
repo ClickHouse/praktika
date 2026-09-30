@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import hashlib
 import os
 import shutil
 import subprocess
@@ -32,14 +33,40 @@ def ensure_praktika_venv(
 
     python_path = str(python_executable or sys.executable)
     py_tag = f"py{sys.version_info.major}.{sys.version_info.minor}"
-    env_name = f"praktika-{py_tag}"
+    # Key the cache by the source too, so a changed source (e.g. a new
+    # praktika_version pin) resolves to a different venv and is (re)installed,
+    # instead of silently reusing an existing praktika-* venv built from the old
+    # source.
+    env_name = f"praktika-{py_tag}-{_source_key(source)}"
     venv_dir = cache_root / env_name
     lock_path = cache_root / f"{env_name}.lock"
 
     with _file_lock(lock_path):
         if _venv_has_praktika(venv_dir):
+            if is_passthrough(source):
+                # Immutable source (URL / version spec): the string identity IS the
+                # content identity, so an existing venv is safe to reuse.
+                if log is not None:
+                    log.info("Using Praktika from venv %s", venv_dir)
+                return venv_dir
+            # Mutable local-path source (e.g. "." / a checkout): the SAME path can
+            # hold different content across runs (a different restored snapshot),
+            # so the source string can't prove the cached venv is current.
+            # Reinstall from source on every task — matching the base-venv overlay
+            # (_install_runtime_over_base_venv) — so a run never executes stale
+            # Praktika. --no-deps keeps the venv's baked deps (add a new runtime
+            # dependency => rebuild the venv).
             if log is not None:
-                log.info("Using Praktika from venv %s", venv_dir)
+                log.info("Reinstalling Praktika from %s into %s", source, venv_dir)
+            subprocess.run(
+                _pip_install_cmd(
+                    venv_dir / "bin" / "python",
+                    "--force-reinstall",
+                    "--no-deps",
+                    source,
+                ),
+                check=True,
+            )
             return venv_dir
 
         if log is not None:
@@ -111,9 +138,39 @@ def venv_env(
     return env
 
 
+# Requirement-specifier operators (PEP 508). A source containing one of these is
+# a version spec (e.g. ``praktika==0.1.9``), not a filesystem path.
+_REQUIREMENT_OPERATORS = ("==", ">=", "<=", "~=", "!=", "<", ">")
+
+
+def is_passthrough(source: str) -> bool:
+    """True when ``source`` is a pip install target that must be passed to pip
+    verbatim rather than resolved as a local filesystem path: a URL (any
+    ``scheme://…`` — e.g. an ``https://…whl`` wheel) or a requirement spec (a
+    package name with a version operator, e.g. ``praktika==0.1.9``).
+
+    Bare package names without an operator are intentionally NOT passthrough:
+    they are ambiguous with a relative path and version pins always carry an
+    exact spec, so such inputs stay on the local-path branch."""
+    if "://" in source:
+        return True
+    return any(op in source for op in _REQUIREMENT_OPERATORS)
+
+
+def _source_key(source: str) -> str:
+    """Short stable slug of a (normalized) install source, for use in a venv
+    directory name. A hash keeps arbitrary URLs / long paths bounded and
+    filesystem-safe while staying 1:1 with the source string."""
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
+
+
 def _normalize_source(source: str) -> str:
-    # Runtime sources are filesystem paths (a checkout, typically "."); resolve
-    # to an absolute path for a stable pip target.
+    # A URL or requirement spec is a pip target in its own right (version pins:
+    # a wheel URL or ``name==version``); hand it to pip verbatim. Everything else
+    # is a filesystem path (a checkout, typically "."); resolve to an absolute
+    # path for a stable pip target.
+    if is_passthrough(source):
+        return source
     return str(Path(source).resolve())
 
 

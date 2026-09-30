@@ -3,15 +3,19 @@
 #
 # Runs a single zot instance as a DockerHub pull-through cache backed by S3:
 #   runner --[registry-mirror]--> zot (:PORT) --> DockerHub (first pull only)
-#                                    |
+#                                    |  \
+#                                    |   \--307--> S3 (blob bytes; runner pulls direct)
 #                                    v
 #                          S3 (manifests + blobs)
 #
 # zot serves DockerHub images at their native library/... paths, so Docker's
 # registry-mirror works with no image-reference rewrites. manifestCheckInterval
-# makes cached tags serve from S3 without re-contacting DockerHub. The DockerHub
-# PAT is read from SSM at boot; S3 uses the EC2 instance role. No static
-# credentials are written to disk except the short-lived sync-auth.json (0600).
+# makes cached tags serve from S3 without re-contacting DockerHub. With
+# redirectBlobURL enabled, blob (layer) GETs return a 307 to a presigned S3 URL,
+# so runners download layer bytes straight from S3 and the proxy NIC stays out of
+# the data path (only manifests + redirects flow through it). The DockerHub PAT is
+# read from SSM at boot; S3 uses the EC2 instance role. No static credentials are
+# written to disk except the short-lived sync-auth.json (0600).
 set -xeuo pipefail
 
 # --- Resolve region + private IP from IMDSv2 ---
@@ -44,6 +48,7 @@ cat > /etc/zot/config.json <<'ZOTCONF'
     "rootDirectory": "/var/lib/zot",
     "dedupe": false,
     "gc": true,
+    "redirectBlobURL": __REDIRECT_BLOB_URL__,
     "storageDriver": {
       "name": "s3",
       "region": "__S3_REGION__",

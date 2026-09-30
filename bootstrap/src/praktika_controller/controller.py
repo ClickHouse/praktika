@@ -24,6 +24,7 @@ from praktika_controller.common import (
     load_ci_config,
     post_early_check,
     instance_tag,
+    profile_step,
     resolve_praktika_base_venv,
     restore_repo_snapshot,
     TaskLogCapture,
@@ -36,8 +37,10 @@ from praktika_controller.merge import (
     prepare_repo_snapshot,
     read_repo_settings,
 )
+from praktika_controller.self_update import maybe_self_update
 from praktika_controller.venv_manager import (
     ensure_praktika_runtime,
+    is_passthrough,
     praktika_command,
     venv_env,
 )
@@ -104,22 +107,65 @@ def _role_config(role: str) -> tuple[str, str]:
     raise AssertionError(f"Unhandled role: {role}")
 
 
-def _resolve_runtime_source(clone_dir: str, log):
-    """Optional per-pool Praktika runtime source, carried on the instance's
-    ``praktika_runtime_source`` tag (set from the pool's ``ext['runtime_source']``).
+def _ci_config_for_message(role: str, payload, log) -> dict:
+    """The ci_config snapshot for this message, read **once**.
 
-    When set, the controller does NOT use the Praktika baked into the AMI; it
-    installs Praktika from this source on every task, so the pool always runs the
-    current checkout. The value is a filesystem path: an absolute path on the
-    instance, or a path relative to the cloned repo (so a tag of ``.`` installs
-    Praktika from the checked-out repo itself). Returns ``None`` when no runtime
-    source tag is set (the baked venv is used).
+    The orchestrator (workflow role) reads it from SSM for a fresh run — the same
+    single read that drives both the controller self-update decision and the value
+    frozen into run metadata by ``handle_workflow`` (pass this snapshot to it, do
+    NOT re-read SSM, or a mid-message parameter change could make the orchestrator
+    run one controller version while freezing another into the run). A rerun reuses
+    the frozen copy on the event; a job runner reads the frozen copy from the task
+    (never SSM). See ci-config.md."""
+    if not isinstance(payload, dict):
+        return {}
+    if role == ROLE_WORKFLOW and payload.get("type") != "rerun":
+        return load_ci_config(region=REGION, log=log)
+    return payload.get("ci_config") or {}
+
+
+def _controller_version_pin(ci_config) -> str:
+    value = (ci_config or {}).get("praktika_controller_version", "")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _resolve_runtime_source(clone_dir: str, log, ci_config=None):
+    """Optional Praktika runtime source override. Two sources, pin first:
+
+    1. ``ci_config['praktika_version']`` — a per-run version pin read once from
+       SSM by the orchestrator and frozen into run metadata (see ci-config.md), so
+       every job runner installs the SAME Praktika from run metadata, not SSM. It
+       supports the three pip forms: a version spec (``praktika==0.1.9``), a wheel
+       URL (``https://…whl``), or a repo/filesystem path (``.``). It takes
+       precedence over the per-pool tag below — an operator pinning a version wins
+       over a dev pool's checkout tag.
+    2. The per-pool ``praktika_runtime_source`` instance tag (set from the pool's
+       ``ext['runtime_source']``): a filesystem path installed on every task so
+       the pool always runs the current checkout.
+
+    When set (by either), the controller does NOT use the Praktika baked into the
+    AMI; it installs Praktika from the resolved source on every task. Relative
+    filesystem paths resolve against the cloned repo (so ``.`` installs Praktika
+    from the checked-out repo itself); URLs / version specs are handed to pip
+    verbatim. Returns ``None`` when neither is set (the baked venv is used).
 
     A failure to *read* the tag (transient IMDS/metadata error) is NOT treated as
     "unset": it propagates, so a pool configured to test the checkout fails the
     task (and the infra retry re-runs it) instead of silently passing on the
     baked Praktika. A genuinely absent tag returns "" from ``instance_tag`` (404)
     and is handled as unset below."""
+    pin = (ci_config or {}).get("praktika_version", "")
+    pin = pin.strip() if isinstance(pin, str) else ""
+    if pin:
+        if is_passthrough(pin):
+            # Wheel URL or version spec: a pip target in its own right.
+            log.info("Praktika runtime source: ci_config pin %s", pin)
+            return pin
+        # Repo-path form: resolve like the per-pool tag (relative to the clone).
+        resolved = pin if os.path.isabs(pin) else os.path.join(clone_dir, pin)
+        log.info("Praktika runtime source: ci_config pin path %s", resolved)
+        return resolved
+
     source = instance_tag("praktika_runtime_source")
     source = (source or "").strip()
     if not source:
@@ -132,13 +178,13 @@ def _resolve_runtime_source(clone_dir: str, log):
         )
     if not os.path.isabs(source):
         source = os.path.join(clone_dir, source)
-    log.info("Installing Praktika at runtime from per-pool source %s", source)
+    log.info("Praktika runtime source: per-pool source %s", source)
     return source
 
 
-def _resolve_runtime(clone_dir: str, log):
+def _resolve_runtime(clone_dir: str, log, ci_config=None):
     base_venv = resolve_praktika_base_venv(clone_dir, log)
-    source = _resolve_runtime_source(clone_dir, log)
+    source = _resolve_runtime_source(clone_dir, log, ci_config=ci_config)
     venv_dir = ensure_praktika_runtime(
         source,
         base_venv=base_venv,
@@ -292,7 +338,9 @@ def _prepare_runner_for_task(role: str, log) -> str:
         return f"workdir cleanup failed: {type(e).__name__}: {e}"
 
 
-def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
+def handle_workflow(
+    event, log, queue_name: str, receive_count: int = 1, ci_config=None
+):
     wf_type = event.get("type", "unknown")
     log.info("Processing: %s", wf_type)
 
@@ -345,19 +393,21 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
         # merge) or inherited from run state on a resume. Handed to the
         # orchestrator so it seeds run state before dispatching any job.
         snapshot = None
-        # Out-of-repo CI config. A fresh run reads it from SSM ONCE here; a resume
-        # reuses the ORIGINAL run's frozen config carried on the event (from
-        # state.json) instead of re-reading SSM, so the resume never makes a
-        # different force_merge_commit / merge decision than the run it resumes
-        # (which would mismatch the DAG/runtime against the restored snapshot on a
-        # fresh-base rerun). It is reused for the force_merge_commit merge gate
-        # (read_repo_settings) and handed to the orchestrator (PRAKTIKA_CI_CONFIG),
+        # Out-of-repo CI config. The poll loop already read it ONCE for this message
+        # (SSM for a fresh run, the frozen copy on the event for a resume) and passed
+        # it in, so the self-update decision and the value frozen into run metadata
+        # come from the SAME snapshot — never re-read SSM here (a mid-message change
+        # would split them). Fall back to reading it only if a caller didn't provide
+        # one (e.g. a direct/test call). It gates force_merge_commit
+        # (read_repo_settings) and is handed to the orchestrator (PRAKTIKA_CI_CONFIG),
         # which freezes it into run state so every job reads the same values. See
         # ci-config.md.
-        if is_resume:
-            ci_config = event.get("ci_config") or {}
-        else:
-            ci_config = load_ci_config(region=REGION, log=log)
+        if ci_config is None:
+            ci_config = (
+                (event.get("ci_config") or {})
+                if is_resume
+                else load_ci_config(region=REGION, log=log)
+            )
         resume_snapshot_key = event.get("repo_snapshot_key", "") if is_resume else ""
         resume_snapshot_sha = event.get("snapshot_sha", "") if is_resume else ""
         # Fresh-base resume (per-job "Rerun w/ fresh base" button): re-run the
@@ -436,15 +486,16 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
                 # both match the original merge rather than the current head.
                 clone_dir, actual_sha, snapshot = _restore_original()
             else:
-                clone_dir, actual_sha = clone_repo(
-                    repo,
-                    head_sha,
-                    pr_number,
-                    gh_token,
-                    work_dir=WORK_DIR,
-                    branch=branch,
-                    log=log,
-                )
+                with profile_step(log, "clone: total"):
+                    clone_dir, actual_sha = clone_repo(
+                        repo,
+                        head_sha,
+                        pr_number,
+                        gh_token,
+                        work_dir=WORK_DIR,
+                        branch=branch,
+                        log=log,
+                    )
 
                 # Stale-head guard (TOCTOU): clone_repo fetches the live
                 # refs/pull/N/head, which can have advanced since the lambda verified
@@ -510,7 +561,8 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
                         "pr": pr_number,
                     }
 
-            base_venv, venv_dir = _resolve_runtime(clone_dir, log)
+            with profile_step(log, "runtime: resolve venv + install praktika"):
+                base_venv, venv_dir = _resolve_runtime(clone_dir, log, ci_config=ci_config)
 
             event_file = os.path.join(clone_dir, "ci", "tmp", "event.json")
             os.makedirs(os.path.dirname(event_file), exist_ok=True)
@@ -664,15 +716,16 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
             # authentication so a GitHub token/login outage doesn't fail a job
             # that a valid snapshot could satisfy. Jobs that need `gh` authenticate
             # themselves via GHAuth (enable_gh_auth), independent of this.
-            clone_dir, actual_sha = restore_repo_snapshot(
-                s3,
-                repo_snapshot_key,
-                snapshot_sha,
-                pr_number,
-                work_dir=WORK_DIR,
-                branch=task.get("head_ref", ""),
-                log=log,
-            )
+            with profile_step(log, "restore: download + verify + unpack snapshot"):
+                clone_dir, actual_sha = restore_repo_snapshot(
+                    s3,
+                    repo_snapshot_key,
+                    snapshot_sha,
+                    pr_number,
+                    work_dir=WORK_DIR,
+                    branch=task.get("head_ref", ""),
+                    log=log,
+                )
         else:
             # Cloning the head needs an authenticated remote.
             gh_token = get_github_token(REGION)
@@ -694,7 +747,13 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
 
         if cm_heartbeat is not None:
             cm_heartbeat.update(phase="resolving_runtime")
-        base_venv, venv_dir = _resolve_runtime(clone_dir, log)
+        with profile_step(log, "runtime: resolve venv + install praktika"):
+            # ci_config was frozen into run metadata by the orchestrator and rides
+            # on the task, so the job runner installs the pinned Praktika from run
+            # metadata, not SSM (see ci-config.md).
+            base_venv, venv_dir = _resolve_runtime(
+                clone_dir, log, ci_config=task.get("ci_config") or {}
+            )
 
         if cm_heartbeat is not None:
             cm_heartbeat.update(phase="writing_task")
@@ -864,6 +923,36 @@ def poll():
             payload = json.loads(msg["Body"])
             log.info("RECEIVED: %s", json.dumps(payload))
 
+            # Read ci_config ONCE for this message: the same snapshot drives the
+            # controller self-update decision here and (for a workflow) the value
+            # handle_workflow freezes into run metadata — never re-read SSM, or a
+            # mid-message change could split the two.
+            ci_config = _ci_config_for_message(role, payload, log)
+
+            # Idle boundary: converge to the pinned controller version BEFORE doing
+            # any work for this message. Run the (possibly slow: network download +
+            # pip) update INSIDE a VisibilityHeartbeat so a long install doesn't let
+            # the message become visible and get picked up concurrently. If a
+            # reinstall happened, release the message un-processed (after the
+            # heartbeat has stopped, so it isn't re-extended) and exit so the
+            # Restart=always systemd unit relaunches into the new controller. No run
+            # is interrupted mid-flight. See self_update / ci-config.md.
+            pin = _controller_version_pin(ci_config)
+            if pin:
+                with VisibilityHeartbeat(sqs, queue_url, receipt, visibility):
+                    did_self_update = maybe_self_update(pin, log)
+                if did_self_update:
+                    try:
+                        sqs.change_message_visibility(
+                            QueueUrl=queue_url, ReceiptHandle=receipt, VisibilityTimeout=0
+                        )
+                    except Exception:
+                        log.exception(
+                            "Failed to release message before self-update restart"
+                        )
+                    log.info("Controller self-update complete; exiting to restart")
+                    return
+
             with VisibilityHeartbeat(sqs, queue_url, receipt, visibility):
                 cleanup_error = _prepare_runner_for_task(role, log)
                 if cleanup_error:
@@ -885,7 +974,11 @@ def poll():
 
                 if role == ROLE_WORKFLOW:
                     result = handle_workflow(
-                        payload, log, queue_name, receive_count=receive_count
+                        payload,
+                        log,
+                        queue_name,
+                        receive_count=receive_count,
+                        ci_config=ci_config,
                     )
                 else:
                     result = handle_task(
