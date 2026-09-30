@@ -220,12 +220,22 @@ def maybe_self_update(
     state = _load_state()
 
     if state.get("installed_source") == desired_source:
-        # Already converged; do not reinstall unless the pin changes in SSM.
+        # Already converged; do not reinstall unless the pin changes in SSM. Log it
+        # (at INFO) so the pin is visibly honored — otherwise a matching pin looks
+        # like nothing happened at all.
+        log.info(
+            "Controller already converged to pinned %s; no reinstall", desired_source
+        )
         return False
 
     # Fresh instance (no recorded install) already running the pinned exact
     # version: record it as satisfied instead of a pointless reinstall.
     if exp_version and exp_version == current_controller_version():
+        log.info(
+            "Controller already at pinned version %s (%s); no reinstall",
+            exp_version,
+            desired_source,
+        )
         state["installed_source"] = desired_source
         state["installed_version"] = exp_version
         state.get("failed", {}).pop(desired_source, None)
