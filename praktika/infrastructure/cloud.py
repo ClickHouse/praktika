@@ -40,6 +40,28 @@ if TYPE_CHECKING:
     from .sqs_queue import SQSQueue
 
 
+# Seed value for the {slug}-ci-config SSM parameter created at deploy time: an
+# effectively-empty config (parses to {}) documenting every supported key,
+# commented out. JSONC is tolerated by the reader (praktika_controller.common.
+# load_ci_config), so operators uncomment a line to enable it. Keep descriptions
+# short; the full contract lives in praktika/docs/ci-config.md.
+_CI_CONFIG_TEMPLATE = """\
+{
+  // Praktika out-of-repo CI config. JSONC ok (// comments, trailing commas).
+  // Uncomment a key to enable it. Docs: praktika/docs/ci-config.md
+
+  // Force ephemeral PR merge + repo snapshot on every run (migration lever).
+  // "force_merge_commit": true,
+
+  // Pin praktika runtime for a run: version spec / wheel URL / repo path.
+  // "praktika_version": "praktika==0.1.14",
+
+  // Pin controller wheel: version spec / wheel URL / absolute host path.
+  // "praktika_controller_version": "praktika-controller==0.1.8"
+}
+"""
+
+
 class CloudInfrastructure:
     SLACK_APP_LAMBDAS = [lambda_app_config, lambda_worker_config]
 
@@ -1738,7 +1760,39 @@ class CloudInfrastructure:
                     asg_config.deploy()
                     deployed_asg_configs.append(asg_config)
 
+            # Seed the out-of-repo CI config SSM parameter (create-if-absent, so an
+            # operator's existing value is never clobbered by a redeploy).
+            if _wants("CIConfig", "ci-config", "ciconfig"):
+                print("\n" + "=" * 60)
+                print("Deploying CI config SSM parameter")
+                print("=" * 60)
+                self._ensure_ci_config_parameter()
+
             self._print_deployment_warnings(deployed_asg_configs)
+
+        def _ensure_ci_config_parameter(self):
+            """Create the ``{slug}-ci-config`` SSM parameter with a commented-out
+            template (parses to ``{}`` — every feature off) if it does not exist.
+
+            Create-if-absent only: a redeploy must never overwrite an operator's
+            live value (it's edited out-of-band, not from the repo). The name
+            matches what the controller reads (``PRAKTIKA_PROJECT_SLUG`` = the
+            project prefix). See praktika/docs/ci-config.md."""
+            region = self._settings.AWS_REGION
+            name = f"{self._project_prefix()}-ci-config"
+            client = aws_client("ssm", region, f"{self._project_prefix()}-ci-config")
+            try:
+                client.put_parameter(
+                    Name=name,
+                    Type="String",
+                    Value=_CI_CONFIG_TEMPLATE,
+                    Description=(
+                        "Praktika out-of-repo CI config; see praktika/docs/ci-config.md"
+                    ),
+                )
+                print(f"Created SSM parameter {name} (commented-out template)")
+            except client.exceptions.ParameterAlreadyExists:
+                print(f"SSM parameter {name} already exists; leaving its value unchanged")
 
         def destroy_runtime(
             self,
