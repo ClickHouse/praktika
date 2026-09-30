@@ -175,11 +175,13 @@ The controller is the `praktika-controller` wheel installed into the system
 `praktika_controller_version` differs from the source the controller last
 installed, the controller **self-upgrades**: at the idle boundary (a message is
 received but not yet processed), it `pip install --force-reinstall`s the pinned
-source into system python, verifies the fresh install imports, persists the new
-source, releases the message back to the queue un-processed, and exits — the
-`Restart=always` unit relaunches into the new code, which re-receives the message
-and proceeds. No run is interrupted mid-flight. Mechanism lives in
-`praktika_controller.self_update.maybe_self_update`, wired into `controller.poll()`.
+source into system python, persists the new source, releases the message back to
+the queue un-processed, and exits — the `Restart=always` unit relaunches into the
+new code, which re-receives the message and proceeds. No run is interrupted
+mid-flight. Mechanism lives in `praktika_controller.self_update.maybe_self_update`,
+wired into `controller.poll()`.
+
+This is a **dev-mode** mechanism, kept deliberately simple:
 
 - **Source of the desired version.** The orchestrator (workflow role) reads it
   from SSM (`load_ci_config`) for a fresh run, or the frozen copy on a rerun event.
@@ -188,19 +190,11 @@ and proceeds. No run is interrupted mid-flight. Mechanism lives in
 - **Persistence.** The last-installed source string is persisted to
   `/var/lib/praktika/controller_version.json` (override with
   `PRAKTIKA_CONTROLLER_STATE_PATH`), so the controller reinstalls only when the pin
-  changes, not on every message. On a fresh instance already running the pinned
-  exact `==` version, it records the state and skips the reinstall.
-- **Crash-loop protection.** A per-source attempt counter caps reinstalls of a bad
-  pin (`MAX_ATTEMPTS = 3`); a failed install or a post-install import failure keeps
-  the controller on its current in-memory code (it does **not** restart into broken
-  code) and best-effort restores the last-known-good source (on a fresh instance,
-  the currently-running version by spec).
-  - *Deferred (production hardening).* The reinstall is **in place** in the system
-    interpreter, so a mid-install failure can still leave the env unable to import
-    on the next systemd restart, and the fresh-instance fallback can't recover a
-    version published only to a private index / S3. True atomicity — stage and
-    verify the install in a separate environment, swap only once verified — is a
-    known follow-up; today's use is a dev setup (see *When it applies*).
+  string changes, not on every message.
+- **Fail hard.** The pin is not validated, version-checked, or rolled back. A
+  bad/unreachable source makes pip fail and the error propagates (the message is
+  retried / the instance replaced by the normal infra-failure path) rather than
+  silently running the old controller. Use an exact, reachable pin.
 - **Bootstrapping.** Only controllers that already ship this logic can self-update;
   the first rollout is a normal AMI / boot-time wheel install, which also remains
   the fallback when no pin is set.
