@@ -26,7 +26,7 @@ STICKY_MERGE_BASE_HOURS = 6
 
 AWS_REGION = "eu-north-1"
 
-AWS_PROFILE = "Box"
+AWS_PROFILE = "SandBox"
 
 S3_ARTIFACT_BUCKET = "praktika-artifacts-eu-north-1"
 S3_REPORT_BUCKET = S3_ARTIFACT_BUCKET

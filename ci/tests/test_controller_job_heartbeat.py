@@ -59,7 +59,7 @@ def test_job_heartbeat_starts_before_runner_setup(monkeypatch, tmp_path):
     monkeypatch.setattr(controller, "Heartbeat", _FakeHeartbeat)
     monkeypatch.setattr(controller, "CancelWatchdog", _FakeCancelWatchdog)
     monkeypatch.setattr(controller, "get_github_token", lambda _region: "token")
-    monkeypatch.setattr(controller, "_resolve_runtime", lambda *_: ("base", "/venv"))
+    monkeypatch.setattr(controller, "_resolve_runtime", lambda *_a, **_k: ("base", "/venv"))
     monkeypatch.setattr(controller, "praktika_command", lambda *_: ["praktika"])
     monkeypatch.setattr(controller, "_praktika_env", lambda *_: {})
 
@@ -133,7 +133,7 @@ def test_cancelled_always_run_job_still_executes(monkeypatch, tmp_path):
     monkeypatch.setattr(controller, "Heartbeat", _FakeHeartbeat)
     monkeypatch.setattr(controller, "CancelWatchdog", _FakeCancelWatchdog)
     monkeypatch.setattr(controller, "get_github_token", lambda _region: "token")
-    monkeypatch.setattr(controller, "_resolve_runtime", lambda *_: ("base", "/venv"))
+    monkeypatch.setattr(controller, "_resolve_runtime", lambda *_a, **_k: ("base", "/venv"))
     monkeypatch.setattr(controller, "praktika_command", lambda *_: ["praktika"])
     monkeypatch.setattr(controller, "_praktika_env", lambda *_: {})
 

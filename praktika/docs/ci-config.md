@@ -42,17 +42,14 @@ SSM (rather than an instance tag or env var) is used deliberately:
 
 ## Intended scope (roadmap)
 
-Today the CI config carries a single migration switch (below). It is meant to
-grow into the general surface for out-of-repo CI settings, for example:
+Today the CI config carries a migration switch and version pins (below). It is
+meant to grow into the general surface for out-of-repo CI settings, for example:
 
 - **More CI-wide operational toggles** — rollout flags, feature gates, temporary
   overrides during incidents or migrations.
 - **Per-user settings** — a `users` sub-object keyed by GitHub login, letting
   individual developers opt into experimental behavior for their own PRs without
   touching the repo (e.g. `{"users": {"alice": {"...": true}}}`).
-- **Version pinning** — pin the praktika / praktika-controller version a run uses,
-  read once and preserved in run metadata (see [Proposed: version
-  pinning](#proposed-version-pinning-not-yet-implemented)).
 
 When adding a key, keep the same contract: optional, safe-by-absence, and
 documented here.
@@ -102,15 +99,11 @@ leave it on until old branches age out, then delete the parameter (or set it to
 `false`). Because it's read per run, both flipping it on and removing it take
 effect on the next run.
 
-## Proposed: version pinning (not yet implemented)
+### `praktika_version` / `praktika_controller_version` (version pins)
 
-> Status: **design only.** Nothing below is wired up yet — the sole implemented
-> setting today is `force_merge_commit`. This section records the intended shape
-> so the config schema grows coherently.
-
-Goal: pin the praktika (and praktika-controller) version a run uses, so an
-unexpected upgrade cannot break an already-started run, and so the version can be
-rolled out from SSM instead of rebaking the AMI. Proposed keys:
+Pin the praktika and/or praktika-controller version a run uses, so an unexpected
+upgrade cannot break an already-started run and so a version can be rolled out (or
+rolled back) from SSM instead of rebaking the AMI:
 
 ```json
 {
@@ -119,70 +112,103 @@ rolled out from SSM instead of rebaking the AMI. Proposed keys:
 }
 ```
 
-Each `<source>` supports three interchangeable forms, all of which `pip install`
-already accepts as-is:
+Both are optional and independent. Each `<source>` supports three interchangeable
+forms, all of which `pip install` accepts as-is (detected by
+`venv_manager.is_passthrough`):
 
-- **version** — a released spec, e.g. `"praktika==0.1.9"` (once published to an
-  index).
+- **version** — a released spec, e.g. `"praktika==0.1.9"` (must include an exact
+  `==`; a bare name is treated as a path).
 - **https path** — a wheel URL, e.g. `"https://.../praktika-0.1.9-py3-none-any.whl"`.
 - **repo path** — a filesystem path/checkout, e.g. `"."` or `/opt/praktika/src`
-  (the current `runtime_source` behavior).
+  (relative paths resolve against the run's checkout).
 
-### Two different lifecycles (do not conflate)
+Both pins are read **once from SSM by the orchestrator** and frozen into run
+metadata via the same `ci_config` carrier as `force_merge_commit` (§ *How the
+config reaches jobs*), so every controller of the run obeys the value the
+orchestrator pinned — **read from run metadata, not SSM**.
 
-- **`praktika_version` → per-run pin.** Read once at run start, frozen into the
-  run metadata (the `_Environment` / `task` / `state.json` carrier — same pattern
-  as `SNAPSHOT_SHA` / `WORKFLOW_START_TIME`), and every job of the run sources its
-  runtime from that frozen value. This is what protects a started run from a
-  mid-run upgrade: all jobs agree on one version regardless of what changes in SSM
-  afterward. In S3-snapshot mode a repo-sourced praktika is *already* content-pinned
-  by the snapshot; this closes the gap for the URL / version / moving-source forms.
-- **`praktika_controller_version` → global desired-state, NOT a per-run pin.** One
-  controller process serves many runs off the queue, so it cannot run a different
-  controller version per in-flight run. Instead the controller converges to the
-  SSM-desired version by self-reinstalling **between runs** (at an idle boundary),
-  never mid-run. It still protects in-flight runs (the reinstall/re-exec happens
-  when the controller is idle), but the mechanism is a rolling self-update.
+#### When it applies (praktika development setup)
 
-### Sketch of the mechanism
+Version pinning targets the **praktika development setup**: pools whose runtime is
+*not* already pinned on the runner — i.e. the install source points at a **floating
+"latest"** (a `.../latest/…whl` alias, a moving branch checkout, or a base venv
+built to track head). If a pool already pins an exact version on the runner (a
+versioned base venv / wheel), that fixed version is what runs; a `ci_config` pin is
+redundant there.
 
-- **`venv_manager._normalize_source`** must branch on the form (URL scheme or
-  requirement spec → pass through verbatim; otherwise resolve as a local path).
-  This is the only code gap for the three forms; pip handles the rest.
-- **Version introspection already exists** (`praktika/version.py`:
-  `current_praktika_version`, `current_praktika_controller_version`,
-  `version_key`). Mismatch detection compares the running version to the desired
-  one.
-- **Controller self-reinstall** reads `praktika_controller_version` from SSM
-  (trusted infra, read before any PR code runs — keep it in SSM, never in
-  PR-influenced metadata), and on mismatch installs the desired form into a fresh
-  overlay venv and re-execs into it (mirroring `_install_runtime_over_base_venv`),
-  rather than mutating the live system-python in place.
+Its purpose in that floating setup is twofold:
 
-### Risks / guards this needs before shipping
+- **Pin one version across the whole run fleet.** Without a pin, each instance
+  resolves "latest" independently, so a fleet can end up straddling versions
+  (some runners on the wheel published a minute ago, others on the previous one) —
+  and within a single run the orchestrator and its job runners could disagree.
+  A pin freezes one version into run metadata so the orchestrator and every job
+  runner of the run use exactly the same one.
+- **Change the version without an infra update.** Rolling a floating setup forward
+  or back otherwise means republishing the "latest" wheel and/or rebaking the AMI.
+  A pin moves that control to a single SSM edit that the *next* run picks up — no
+  wheel republish, no AMI rebake, no instance replacement.
 
-- **Crash-loop protection** — a bad version otherwise makes every fresh instance
-  reinstall → crash → restart → reinstall forever. Fall back to the baked version
-  on install/import/health failure, cap attempts, persist last-known-good.
-- **Install atomicity** — install into an overlay venv and re-exec into it; never
-  half-mutate the running controller's env.
-- **Idle boundary** — only reinstall/re-exec with no message in flight (or at
-  process start, before claiming work).
-- **Bootstrapping** — only controllers that already ship this logic can
-  self-update; the first rollout is still a normal AMI/deploy.
+#### `praktika_version` (per-run runtime pin)
 
-Because parts differ in risk, the intended rollout order is: (1) `_normalize_source`
-three-form support + freeze `praktika_version` into run metadata (low risk), then
-(2) controller self-reinstall as a separate, carefully-guarded change.
+Read once at run start, frozen into run metadata, and every job runner installs
+its praktika runtime from that frozen value (via
+`controller._resolve_runtime_source`, taking precedence over a pool's
+`praktika_runtime_source` tag). All jobs of a run agree on one version regardless
+of what changes in SSM afterward. In S3-snapshot mode a repo-sourced praktika is
+already content-pinned by the snapshot; this closes the gap for the URL / version
+forms. Installed into the base-venv overlay with `--no-deps`, so the base venv must
+already carry praktika's runtime dependencies (a new dependency needs an AMI
+rebake, as today).
+
+#### `praktika_controller_version` (per-run controller pin, self-upgrade)
+
+The controller is the `praktika-controller` wheel installed into the system
+`python3.12` and run by systemd (`Restart=always`). When the frozen
+`praktika_controller_version` differs from the source the controller last
+installed, the controller **self-upgrades**: at the idle boundary (a message is
+received but not yet processed), it `pip install --force-reinstall`s the pinned
+source into system python, verifies the fresh install imports, persists the new
+source, releases the message back to the queue un-processed, and exits — the
+`Restart=always` unit relaunches into the new code, which re-receives the message
+and proceeds. No run is interrupted mid-flight. Mechanism lives in
+`praktika_controller.self_update.maybe_self_update`, wired into `controller.poll()`.
+
+- **Source of the desired version.** The orchestrator (workflow role) reads it
+  from SSM (`load_ci_config`) for a fresh run, or the frozen copy on a rerun event.
+  Job runners read it from the task's frozen `ci_config` — never SSM — so all
+  runners of a run converge to the version the orchestrator pinned.
+- **Persistence.** The last-installed source string is persisted to
+  `/var/lib/praktika/controller_version.json` (override with
+  `PRAKTIKA_CONTROLLER_STATE_PATH`), so the controller reinstalls only when the pin
+  changes, not on every message. On a fresh instance already running the pinned
+  exact `==` version, it records the state and skips the reinstall.
+- **Crash-loop protection.** A per-source attempt counter caps reinstalls of a bad
+  pin (`MAX_ATTEMPTS = 3`); a failed install or a post-install import failure keeps
+  the controller on its current in-memory code (it does **not** restart into broken
+  code) and best-effort restores the last-known-good source.
+- **Bootstrapping.** Only controllers that already ship this logic can self-update;
+  the first rollout is a normal AMI / boot-time wheel install, which also remains
+  the fallback when no pin is set.
+
+> **Caveat — runner flapping.** Because the controller version is frozen per run, a
+> runner serving tasks from two concurrently-active runs pinned to *different*
+> controller versions will reinstall/restart back and forth. In practice SSM is
+> stable and all live runs share one value; changing SSM only affects new runs
+> while in-flight runs keep their frozen value.
+>
+> **Caveat — moving sources.** Persistence is keyed on the source *string*, so a
+> mutable `…/latest/…whl` URL is not detected as "changed". Pin to an immutable
+> exact version or versioned URL.
 
 ## Setting / clearing the parameter
 
 ```bash
-# Enable (migration on)
+# Enable (migration on) / pin versions
 aws ssm put-parameter \
   --name "{PROJECT_SLUG}-ci-config" \
   --type String \
-  --value '{"force_merge_commit": true}' \
+  --value '{"force_merge_commit": true, "praktika_version": "praktika==0.1.9", "praktika_controller_version": "praktika-controller==0.1.8"}' \
   --overwrite \
   --region "$AWS_REGION"
 

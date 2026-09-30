@@ -249,3 +249,42 @@ def test_ensure_praktika_runtime_reinstalls_source_every_task(tmp_path, monkeypa
         assert "--force-reinstall" in cmd
         assert "--no-deps" in cmd
         assert str(source_dir.resolve()) in cmd
+
+
+def test_is_passthrough_url_and_spec_but_not_path():
+    assert venv_manager.is_passthrough("https://x/praktika-0.1.9-py3-none-any.whl")
+    assert venv_manager.is_passthrough("praktika==0.1.9")
+    assert venv_manager.is_passthrough("praktika>=0.1")
+    # Bare name and paths are NOT passthrough (ambiguous with a relative path).
+    assert not venv_manager.is_passthrough("praktika")
+    assert not venv_manager.is_passthrough(".")
+    assert not venv_manager.is_passthrough("/opt/praktika/src")
+
+
+def test_normalize_source_passes_through_url_and_spec_resolves_path(tmp_path):
+    url = "https://x/praktika-0.1.9-py3-none-any.whl"
+    spec = "praktika==0.1.9"
+    assert venv_manager._normalize_source(url) == url
+    assert venv_manager._normalize_source(spec) == spec
+    # A local path is still resolved to an absolute path.
+    assert venv_manager._normalize_source(str(tmp_path)) == str(tmp_path.resolve())
+
+
+def test_build_venv_installs_url_verbatim(tmp_path, monkeypatch):
+    cache_root = tmp_path / "venvs"
+    calls = []
+
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
+        calls.append(cmd)
+        # Make the built venv look like it has praktika so ensure_* returns.
+        return _CompletedProcess()
+
+    monkeypatch.setattr(venv_manager.subprocess, "run", fake_run)
+
+    url = "https://x/praktika-0.1.9-py3-none-any.whl"
+    venv_manager.ensure_praktika_venv(url, cache_root=cache_root)
+    install_calls = [
+        c for c in calls if len(c) >= 4 and c[1:4] == ["-m", "pip", "install"]
+    ]
+    # The wheel URL reaches pip verbatim (not resolved to a filesystem path).
+    assert any(url in c for c in install_calls)

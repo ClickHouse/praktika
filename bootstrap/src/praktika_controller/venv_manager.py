@@ -111,9 +111,32 @@ def venv_env(
     return env
 
 
+# Requirement-specifier operators (PEP 508). A source containing one of these is
+# a version spec (e.g. ``praktika==0.1.9``), not a filesystem path.
+_REQUIREMENT_OPERATORS = ("==", ">=", "<=", "~=", "!=", "<", ">")
+
+
+def is_passthrough(source: str) -> bool:
+    """True when ``source`` is a pip install target that must be passed to pip
+    verbatim rather than resolved as a local filesystem path: a URL (any
+    ``scheme://…`` — e.g. an ``https://…whl`` wheel) or a requirement spec (a
+    package name with a version operator, e.g. ``praktika==0.1.9``).
+
+    Bare package names without an operator are intentionally NOT passthrough:
+    they are ambiguous with a relative path and version pins always carry an
+    exact spec, so such inputs stay on the local-path branch."""
+    if "://" in source:
+        return True
+    return any(op in source for op in _REQUIREMENT_OPERATORS)
+
+
 def _normalize_source(source: str) -> str:
-    # Runtime sources are filesystem paths (a checkout, typically "."); resolve
-    # to an absolute path for a stable pip target.
+    # A URL or requirement spec is a pip target in its own right (version pins:
+    # a wheel URL or ``name==version``); hand it to pip verbatim. Everything else
+    # is a filesystem path (a checkout, typically "."); resolve to an absolute
+    # path for a stable pip target.
+    if is_passthrough(source):
+        return source
     return str(Path(source).resolve())
 
 

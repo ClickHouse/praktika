@@ -37,8 +37,10 @@ from praktika_controller.merge import (
     prepare_repo_snapshot,
     read_repo_settings,
 )
+from praktika_controller.self_update import maybe_self_update
 from praktika_controller.venv_manager import (
     ensure_praktika_runtime,
+    is_passthrough,
     praktika_command,
     venv_env,
 )
@@ -105,22 +107,65 @@ def _role_config(role: str) -> tuple[str, str]:
     raise AssertionError(f"Unhandled role: {role}")
 
 
-def _resolve_runtime_source(clone_dir: str, log):
-    """Optional per-pool Praktika runtime source, carried on the instance's
-    ``praktika_runtime_source`` tag (set from the pool's ``ext['runtime_source']``).
+def _desired_controller_source(role: str, payload, log) -> str:
+    """The pinned controller version (``praktika_controller_version``) for this
+    message, or "" when unset.
 
-    When set, the controller does NOT use the Praktika baked into the AMI; it
-    installs Praktika from this source on every task, so the pool always runs the
-    current checkout. The value is a filesystem path: an absolute path on the
-    instance, or a path relative to the cloned repo (so a tag of ``.`` installs
-    Praktika from the checked-out repo itself). Returns ``None`` when no runtime
-    source tag is set (the baked venv is used).
+    The orchestrator (workflow role) reads the ci_config from SSM for a fresh run
+    (the same read that gets frozen into run metadata), or reuses the frozen copy
+    on a rerun event. A job runner reads it from the task's frozen ci_config, NOT
+    SSM — so every runner of a run converges to the version the orchestrator pinned
+    (see ci-config.md)."""
+    if not isinstance(payload, dict):
+        return ""
+    if role == ROLE_WORKFLOW:
+        if payload.get("type") == "rerun":
+            ci_config = payload.get("ci_config") or {}
+        else:
+            ci_config = load_ci_config(region=REGION, log=log)
+    else:
+        ci_config = payload.get("ci_config") or {}
+    value = ci_config.get("praktika_controller_version", "")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _resolve_runtime_source(clone_dir: str, log, ci_config=None):
+    """Optional Praktika runtime source override. Two sources, pin first:
+
+    1. ``ci_config['praktika_version']`` — a per-run version pin read once from
+       SSM by the orchestrator and frozen into run metadata (see ci-config.md), so
+       every job runner installs the SAME Praktika from run metadata, not SSM. It
+       supports the three pip forms: a version spec (``praktika==0.1.9``), a wheel
+       URL (``https://…whl``), or a repo/filesystem path (``.``). It takes
+       precedence over the per-pool tag below — an operator pinning a version wins
+       over a dev pool's checkout tag.
+    2. The per-pool ``praktika_runtime_source`` instance tag (set from the pool's
+       ``ext['runtime_source']``): a filesystem path installed on every task so
+       the pool always runs the current checkout.
+
+    When set (by either), the controller does NOT use the Praktika baked into the
+    AMI; it installs Praktika from the resolved source on every task. Relative
+    filesystem paths resolve against the cloned repo (so ``.`` installs Praktika
+    from the checked-out repo itself); URLs / version specs are handed to pip
+    verbatim. Returns ``None`` when neither is set (the baked venv is used).
 
     A failure to *read* the tag (transient IMDS/metadata error) is NOT treated as
     "unset": it propagates, so a pool configured to test the checkout fails the
     task (and the infra retry re-runs it) instead of silently passing on the
     baked Praktika. A genuinely absent tag returns "" from ``instance_tag`` (404)
     and is handled as unset below."""
+    pin = (ci_config or {}).get("praktika_version", "")
+    pin = pin.strip() if isinstance(pin, str) else ""
+    if pin:
+        if is_passthrough(pin):
+            # Wheel URL or version spec: a pip target in its own right.
+            log.info("Praktika runtime source: ci_config pin %s", pin)
+            return pin
+        # Repo-path form: resolve like the per-pool tag (relative to the clone).
+        resolved = pin if os.path.isabs(pin) else os.path.join(clone_dir, pin)
+        log.info("Praktika runtime source: ci_config pin path %s", resolved)
+        return resolved
+
     source = instance_tag("praktika_runtime_source")
     source = (source or "").strip()
     if not source:
@@ -133,13 +178,13 @@ def _resolve_runtime_source(clone_dir: str, log):
         )
     if not os.path.isabs(source):
         source = os.path.join(clone_dir, source)
-    log.info("Installing Praktika at runtime from per-pool source %s", source)
+    log.info("Praktika runtime source: per-pool source %s", source)
     return source
 
 
-def _resolve_runtime(clone_dir: str, log):
+def _resolve_runtime(clone_dir: str, log, ci_config=None):
     base_venv = resolve_praktika_base_venv(clone_dir, log)
-    source = _resolve_runtime_source(clone_dir, log)
+    source = _resolve_runtime_source(clone_dir, log, ci_config=ci_config)
     venv_dir = ensure_praktika_runtime(
         source,
         base_venv=base_venv,
@@ -513,7 +558,7 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
                     }
 
             with profile_step(log, "runtime: resolve venv + install praktika"):
-                base_venv, venv_dir = _resolve_runtime(clone_dir, log)
+                base_venv, venv_dir = _resolve_runtime(clone_dir, log, ci_config=ci_config)
 
             event_file = os.path.join(clone_dir, "ci", "tmp", "event.json")
             os.makedirs(os.path.dirname(event_file), exist_ok=True)
@@ -699,7 +744,12 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
         if cm_heartbeat is not None:
             cm_heartbeat.update(phase="resolving_runtime")
         with profile_step(log, "runtime: resolve venv + install praktika"):
-            base_venv, venv_dir = _resolve_runtime(clone_dir, log)
+            # ci_config was frozen into run metadata by the orchestrator and rides
+            # on the task, so the job runner installs the pinned Praktika from run
+            # metadata, not SSM (see ci-config.md).
+            base_venv, venv_dir = _resolve_runtime(
+                clone_dir, log, ci_config=task.get("ci_config") or {}
+            )
 
         if cm_heartbeat is not None:
             cm_heartbeat.update(phase="writing_task")
@@ -868,6 +918,21 @@ def poll():
         try:
             payload = json.loads(msg["Body"])
             log.info("RECEIVED: %s", json.dumps(payload))
+
+            # Idle boundary: converge to the pinned controller version BEFORE doing
+            # any work for this message. If a reinstall happened, release the
+            # message un-processed and exit so the Restart=always systemd unit
+            # relaunches into the new controller (which then re-receives it). No run
+            # is interrupted mid-flight. See self_update / ci-config.md.
+            if maybe_self_update(_desired_controller_source(role, payload, log), log):
+                try:
+                    sqs.change_message_visibility(
+                        QueueUrl=queue_url, ReceiptHandle=receipt, VisibilityTimeout=0
+                    )
+                except Exception:
+                    log.exception("Failed to release message before self-update restart")
+                log.info("Controller self-update complete; exiting to restart")
+                return
 
             with VisibilityHeartbeat(sqs, queue_url, receipt, visibility):
                 cleanup_error = _prepare_runner_for_task(role, log)
