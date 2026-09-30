@@ -46,8 +46,12 @@ def _current_orchestrator_filter() -> str:
     return "default"
 
 
-def find_workflows_for_event(event, workflow_name=None):
-    """Find all workflows matching the trigger event. Returns empty list if no match."""
+def find_workflows_for_event(event, workflow_name=None, _load_errors_out=None):
+    """Find all workflows matching the trigger event. Returns empty list if no match.
+
+    ``_load_errors_out``: optional list; workflow files that fail to import are
+    skipped (so one broken file can't crash the whole scan) and appended here as
+    ``(filename, error)`` so the caller can surface them (e.g. a GitHub check)."""
     # Two distinct sources of a name, kept separate on purpose:
     #  - explicit_name: the trusted CLI selector (`orchestrate --name`). It also
     #    bypasses pool (orchestrator_filter) routing, since an operator targeting
@@ -80,7 +84,7 @@ def find_workflows_for_event(event, workflow_name=None):
 
     matched = []
     orchestrator_filter = _current_orchestrator_filter()
-    for wf in _get_workflows():
+    for wf in _get_workflows(_load_errors_out=_load_errors_out):
         if name_filter and wf.name != name_filter:
             continue
         if wf.engine == Workflow.Engine.GH_ACTIONS:
@@ -433,7 +437,44 @@ def _orchestrate_event(
 
         check = CheckRun(gh_token, event.get("repo", ""), bootstrap_check_id, "CI")
 
-    workflows = find_workflows_for_event(event, workflow_name=workflow_name)
+    load_errors: list = []
+    workflows = find_workflows_for_event(
+        event, workflow_name=workflow_name, _load_errors_out=load_errors
+    )
+    # A workflow file that fails to import is skipped (so one broken file can't
+    # crash the whole scan), but the skip must not be silent — a developer whose
+    # workflow didn't run needs to see why. Surface each failed file as its own
+    # completed "failure" check on the PR head, independent of whether other
+    # workflows matched (typical cause: a pool pinned to an older baked praktika
+    # importing a workflow that uses a newer feature). See mangle._get_workflows.
+    if load_errors and ci and gh_token:
+        head_sha = event.get("head_sha", "")
+        repo = event.get("repo", "")
+        if head_sha and repo:
+            from .check_run import CheckRun
+
+            for filename, err in load_errors:
+                try:
+                    CheckRun.create_completed(
+                        gh_token,
+                        repo,
+                        head_sha,
+                        f"Workflow load error: {filename}",
+                        "failure",
+                        output={
+                            "title": "Workflow failed to load",
+                            "summary": (
+                                f"`ci/workflows/{filename}` could not be imported and "
+                                f"was skipped, so any workflow it defines did not run:\n\n"
+                                f"```\n{err}\n```\n\n"
+                                f"This usually means this orchestrator's praktika is "
+                                f"older than a feature the workflow uses."
+                            ),
+                        },
+                    )
+                except Exception as e:
+                    print(f"  [warn] could not post workflow-load-error check: {e}")
+
     if not workflows:
         print("No matching workflows, exiting")
         if check is not None:

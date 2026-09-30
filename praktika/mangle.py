@@ -43,6 +43,7 @@ def _get_workflows(
     file=None,
     _for_validation_check=False,
     _file_names_out=None,
+    _load_errors_out=None,
     default=False,
 ) -> List[Workflow.Config]:
     """
@@ -84,7 +85,26 @@ def _get_workflows(
         assert spec
         foo = importlib.util.module_from_spec(spec)
         assert spec.loader
-        spec.loader.exec_module(foo)
+        try:
+            spec.loader.exec_module(foo)
+        except Exception as e:
+            # One workflow file that fails to import must not take down the whole
+            # scan (and with it every other workflow). This notably happens on a
+            # version-skewed pool: a workflow file references a newer praktika
+            # feature (e.g. a new Workflow.Engine member) than the praktika the
+            # orchestrator is running, so importing it raises AttributeError. Skip
+            # the file with a clear warning so the remaining workflows still load
+            # and match. Validation re-raises so `praktika validate` (run under the
+            # checkout's own praktika) still catches genuinely broken files loudly.
+            if _for_validation_check:
+                raise
+            print(
+                f"WARNING: skipping workflow file [{py_file.name}] — failed to "
+                f"import: {type(e).__name__}: {e}"
+            )
+            if isinstance(_load_errors_out, list):
+                _load_errors_out.append((py_file.name, f"{type(e).__name__}: {e}"))
+            continue
         try:
             matched_default_workflow = False
             for workflow in foo.WORKFLOWS:
