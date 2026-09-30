@@ -36,15 +36,37 @@ def ensure_praktika_venv(
     # Key the cache by the source too, so a changed source (e.g. a new
     # praktika_version pin) resolves to a different venv and is (re)installed,
     # instead of silently reusing an existing praktika-* venv built from the old
-    # source. Same source => same venv => fast reuse.
+    # source.
     env_name = f"praktika-{py_tag}-{_source_key(source)}"
     venv_dir = cache_root / env_name
     lock_path = cache_root / f"{env_name}.lock"
 
     with _file_lock(lock_path):
         if _venv_has_praktika(venv_dir):
+            if is_passthrough(source):
+                # Immutable source (URL / version spec): the string identity IS the
+                # content identity, so an existing venv is safe to reuse.
+                if log is not None:
+                    log.info("Using Praktika from venv %s", venv_dir)
+                return venv_dir
+            # Mutable local-path source (e.g. "." / a checkout): the SAME path can
+            # hold different content across runs (a different restored snapshot),
+            # so the source string can't prove the cached venv is current.
+            # Reinstall from source on every task — matching the base-venv overlay
+            # (_install_runtime_over_base_venv) — so a run never executes stale
+            # Praktika. --no-deps keeps the venv's baked deps (add a new runtime
+            # dependency => rebuild the venv).
             if log is not None:
-                log.info("Using Praktika from venv %s", venv_dir)
+                log.info("Reinstalling Praktika from %s into %s", source, venv_dir)
+            subprocess.run(
+                _pip_install_cmd(
+                    venv_dir / "bin" / "python",
+                    "--force-reinstall",
+                    "--no-deps",
+                    source,
+                ),
+                check=True,
+            )
             return venv_dir
 
         if log is not None:
