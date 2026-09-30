@@ -141,6 +141,20 @@ def test_crash_loop_cap_stops_reinstalling(state_path, log, monkeypatch):
     assert calls == []  # gave up; no further reinstall attempts
 
 
+def test_relative_path_pin_is_rejected_without_install(state_path, log):
+    calls = []
+    for src in (".", "./bootstrap", "bootstrap/src"):
+        assert not self_update.maybe_self_update(
+            src, log, python="py", run=lambda *a, **k: calls.append(a) or _Proc()
+        )
+    assert calls == []  # never attempts an install for an unresolvable relative path
+    # Absolute path / URL / spec are accepted (validation passes).
+    assert self_update._is_valid_controller_source("/opt/praktika/src")
+    assert self_update._is_valid_controller_source("https://x/y.whl")
+    assert self_update._is_valid_controller_source("praktika-controller==1.0")
+    assert not self_update._is_valid_controller_source(".")
+
+
 def test_break_system_packages_retry_on_pep668(state_path, log, monkeypatch):
     monkeypatch.setattr(self_update, "current_controller_version", lambda: "1.0")
     cmds = []

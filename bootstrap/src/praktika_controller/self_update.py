@@ -56,6 +56,23 @@ def current_controller_version() -> str:
         return ""
 
 
+_REQUIREMENT_OPERATORS = ("==", ">=", "<=", "~=", "!=", "<", ">")
+
+
+def _is_valid_controller_source(source: str) -> bool:
+    """Whether ``source`` is installable at controller self-update time.
+
+    Self-update runs before the workflow repo is cloned, so there is no checkout to
+    resolve a relative path against. Only forms pip can install standalone are
+    allowed: a URL (``scheme://…``), a requirement spec (``name==…``), or an
+    **absolute** host path. A relative path (``.``, ``./bootstrap``) is rejected."""
+    if "://" in source:
+        return True
+    if any(op in source for op in _REQUIREMENT_OPERATORS):
+        return True
+    return os.path.isabs(source)
+
+
 def _spec_version(source: str) -> str:
     """The version from an exact ``name==X`` requirement spec, else "". Used to
     short-circuit a reinstall when the pin already matches the running version."""
@@ -141,6 +158,19 @@ def maybe_self_update(
     desired_source = (desired_source or "").strip()
     if not desired_source:
         return False  # no pin: run whatever is baked/booted
+
+    if not _is_valid_controller_source(desired_source):
+        # Controller self-update runs before any workflow checkout exists, so a
+        # relative repo path can't be resolved (pip would resolve it against the
+        # systemd process cwd and fail). Reject it cleanly — no install attempt,
+        # no attempt-cap churn — rather than looping until the cap.
+        log.error(
+            "Ignoring praktika_controller_version %r: a relative path cannot be "
+            "resolved at controller self-update time (it runs before any checkout). "
+            "Use a version spec, a wheel URL, or an absolute host path.",
+            desired_source,
+        )
+        return False
 
     python = python or sys.executable or "python3.12"
     state = _load_state()

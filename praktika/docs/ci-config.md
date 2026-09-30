@@ -119,8 +119,11 @@ forms, all of which `pip install` accepts as-is (detected by
 - **version** — a released spec, e.g. `"praktika==0.1.9"` (must include an exact
   `==`; a bare name is treated as a path).
 - **https path** — a wheel URL, e.g. `"https://.../praktika-0.1.9-py3-none-any.whl"`.
-- **repo path** — a filesystem path/checkout, e.g. `"."` or `/opt/praktika/src`
-  (relative paths resolve against the run's checkout).
+- **repo path** — a filesystem path/checkout, e.g. `"."` or `/opt/praktika/src`.
+  For `praktika_version`, relative paths resolve against the run's checkout. For
+  `praktika_controller_version`, **only absolute paths** are allowed (a URL or spec
+  otherwise): controller self-update runs *before* any checkout exists, so a
+  relative path has nothing to resolve against and is rejected.
 
 Both pins are read **once from SSM by the orchestrator** and frozen into run
 metadata via the same `ci_config` carrier as `force_merge_commit` (§ *How the
