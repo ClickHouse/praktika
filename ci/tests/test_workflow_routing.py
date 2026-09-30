@@ -334,3 +334,41 @@ def test_get_workflows_reraises_broken_file_during_validation(tmp_path, monkeypa
     # checkout's own praktika, so an import error is a genuine bug to surface).
     with pytest.raises(AttributeError):
         mangle._get_workflows(_for_validation_check=True)
+
+
+def test_orchestrate_posts_failure_check_for_workflow_load_error(monkeypatch):
+    # A skipped (unimportable) workflow file must surface as a real completed
+    # failure check — regression guard: CheckRun exposes start()+complete(), not a
+    # create_completed() one-shot.
+    from praktika import orchestrator
+    from praktika.orchestrator import check_run
+
+    posted = {}
+
+    class _FakeCheck:
+        def complete(self, conclusion, output=None, details_url=None):
+            posted["conclusion"] = conclusion
+            posted["output"] = output
+
+    def fake_start(cls, token, repo, head_sha, name, details_url=None, with_cancel_action=True):
+        posted["name"] = name
+        posted["with_cancel_action"] = with_cancel_action
+        return _FakeCheck()
+
+    monkeypatch.setattr(check_run.CheckRun, "start", classmethod(fake_start))
+
+    def fake_find(event, workflow_name=None, _load_errors_out=None):
+        if isinstance(_load_errors_out, list):
+            _load_errors_out.append(("ignition_dispatch.py", "AttributeError: GH_IGNITION"))
+        return []
+
+    monkeypatch.setattr(orchestrator, "find_workflows_for_event", fake_find)
+
+    event = {"type": "pull_request", "repo": "o/r", "head_sha": "abc123"}
+    rc = orchestrator._orchestrate_event(event, gh_token="tok", run_id="1", ci=True)
+
+    assert rc == 0
+    assert posted["name"] == "Workflow load error: ignition_dispatch.py"
+    assert posted["conclusion"] == "failure"
+    assert posted["with_cancel_action"] is False
+    assert "GH_IGNITION" in posted["output"]["summary"]

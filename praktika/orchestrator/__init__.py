@@ -455,11 +455,16 @@ def _orchestrate_event(
 
             for filename, err in load_errors:
                 try:
-                    CheckRun.create_completed(
+                    # start() opens the check (in_progress), complete() flips it to
+                    # the terminal failure — CheckRun has no one-shot create helper.
+                    # No Cancel action: there's nothing running to cancel.
+                    CheckRun.start(
                         gh_token,
                         repo,
                         head_sha,
                         f"Workflow load error: {filename}",
+                        with_cancel_action=False,
+                    ).complete(
                         "failure",
                         output={
                             "title": "Workflow failed to load",
