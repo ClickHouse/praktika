@@ -186,7 +186,14 @@ and proceeds. No run is interrupted mid-flight. Mechanism lives in
 - **Crash-loop protection.** A per-source attempt counter caps reinstalls of a bad
   pin (`MAX_ATTEMPTS = 3`); a failed install or a post-install import failure keeps
   the controller on its current in-memory code (it does **not** restart into broken
-  code) and best-effort restores the last-known-good source.
+  code) and best-effort restores the last-known-good source (on a fresh instance,
+  the currently-running version by spec).
+  - *Deferred (production hardening).* The reinstall is **in place** in the system
+    interpreter, so a mid-install failure can still leave the env unable to import
+    on the next systemd restart, and the fresh-instance fallback can't recover a
+    version published only to a private index / S3. True atomicity — stage and
+    verify the install in a separate environment, swap only once verified — is a
+    known follow-up; today's use is a dev setup (see *When it applies*).
 - **Bootstrapping.** Only controllers that already ship this logic can self-update;
   the first rollout is a normal AMI / boot-time wheel install, which also remains
   the fallback when no pin is set.

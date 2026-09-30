@@ -107,25 +107,25 @@ def _role_config(role: str) -> tuple[str, str]:
     raise AssertionError(f"Unhandled role: {role}")
 
 
-def _desired_controller_source(role: str, payload, log) -> str:
-    """The pinned controller version (``praktika_controller_version``) for this
-    message, or "" when unset.
+def _ci_config_for_message(role: str, payload, log) -> dict:
+    """The ci_config snapshot for this message, read **once**.
 
-    The orchestrator (workflow role) reads the ci_config from SSM for a fresh run
-    (the same read that gets frozen into run metadata), or reuses the frozen copy
-    on a rerun event. A job runner reads it from the task's frozen ci_config, NOT
-    SSM — so every runner of a run converges to the version the orchestrator pinned
-    (see ci-config.md)."""
+    The orchestrator (workflow role) reads it from SSM for a fresh run — the same
+    single read that drives both the controller self-update decision and the value
+    frozen into run metadata by ``handle_workflow`` (pass this snapshot to it, do
+    NOT re-read SSM, or a mid-message parameter change could make the orchestrator
+    run one controller version while freezing another into the run). A rerun reuses
+    the frozen copy on the event; a job runner reads the frozen copy from the task
+    (never SSM). See ci-config.md."""
     if not isinstance(payload, dict):
-        return ""
-    if role == ROLE_WORKFLOW:
-        if payload.get("type") == "rerun":
-            ci_config = payload.get("ci_config") or {}
-        else:
-            ci_config = load_ci_config(region=REGION, log=log)
-    else:
-        ci_config = payload.get("ci_config") or {}
-    value = ci_config.get("praktika_controller_version", "")
+        return {}
+    if role == ROLE_WORKFLOW and payload.get("type") != "rerun":
+        return load_ci_config(region=REGION, log=log)
+    return payload.get("ci_config") or {}
+
+
+def _controller_version_pin(ci_config) -> str:
+    value = (ci_config or {}).get("praktika_controller_version", "")
     return value.strip() if isinstance(value, str) else ""
 
 
@@ -338,7 +338,9 @@ def _prepare_runner_for_task(role: str, log) -> str:
         return f"workdir cleanup failed: {type(e).__name__}: {e}"
 
 
-def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
+def handle_workflow(
+    event, log, queue_name: str, receive_count: int = 1, ci_config=None
+):
     wf_type = event.get("type", "unknown")
     log.info("Processing: %s", wf_type)
 
@@ -391,19 +393,21 @@ def handle_workflow(event, log, queue_name: str, receive_count: int = 1):
         # merge) or inherited from run state on a resume. Handed to the
         # orchestrator so it seeds run state before dispatching any job.
         snapshot = None
-        # Out-of-repo CI config. A fresh run reads it from SSM ONCE here; a resume
-        # reuses the ORIGINAL run's frozen config carried on the event (from
-        # state.json) instead of re-reading SSM, so the resume never makes a
-        # different force_merge_commit / merge decision than the run it resumes
-        # (which would mismatch the DAG/runtime against the restored snapshot on a
-        # fresh-base rerun). It is reused for the force_merge_commit merge gate
-        # (read_repo_settings) and handed to the orchestrator (PRAKTIKA_CI_CONFIG),
+        # Out-of-repo CI config. The poll loop already read it ONCE for this message
+        # (SSM for a fresh run, the frozen copy on the event for a resume) and passed
+        # it in, so the self-update decision and the value frozen into run metadata
+        # come from the SAME snapshot — never re-read SSM here (a mid-message change
+        # would split them). Fall back to reading it only if a caller didn't provide
+        # one (e.g. a direct/test call). It gates force_merge_commit
+        # (read_repo_settings) and is handed to the orchestrator (PRAKTIKA_CI_CONFIG),
         # which freezes it into run state so every job reads the same values. See
         # ci-config.md.
-        if is_resume:
-            ci_config = event.get("ci_config") or {}
-        else:
-            ci_config = load_ci_config(region=REGION, log=log)
+        if ci_config is None:
+            ci_config = (
+                (event.get("ci_config") or {})
+                if is_resume
+                else load_ci_config(region=REGION, log=log)
+            )
         resume_snapshot_key = event.get("repo_snapshot_key", "") if is_resume else ""
         resume_snapshot_sha = event.get("snapshot_sha", "") if is_resume else ""
         # Fresh-base resume (per-job "Rerun w/ fresh base" button): re-run the
@@ -919,20 +923,35 @@ def poll():
             payload = json.loads(msg["Body"])
             log.info("RECEIVED: %s", json.dumps(payload))
 
+            # Read ci_config ONCE for this message: the same snapshot drives the
+            # controller self-update decision here and (for a workflow) the value
+            # handle_workflow freezes into run metadata — never re-read SSM, or a
+            # mid-message change could split the two.
+            ci_config = _ci_config_for_message(role, payload, log)
+
             # Idle boundary: converge to the pinned controller version BEFORE doing
-            # any work for this message. If a reinstall happened, release the
-            # message un-processed and exit so the Restart=always systemd unit
-            # relaunches into the new controller (which then re-receives it). No run
+            # any work for this message. Run the (possibly slow: network download +
+            # pip) update INSIDE a VisibilityHeartbeat so a long install doesn't let
+            # the message become visible and get picked up concurrently. If a
+            # reinstall happened, release the message un-processed (after the
+            # heartbeat has stopped, so it isn't re-extended) and exit so the
+            # Restart=always systemd unit relaunches into the new controller. No run
             # is interrupted mid-flight. See self_update / ci-config.md.
-            if maybe_self_update(_desired_controller_source(role, payload, log), log):
-                try:
-                    sqs.change_message_visibility(
-                        QueueUrl=queue_url, ReceiptHandle=receipt, VisibilityTimeout=0
-                    )
-                except Exception:
-                    log.exception("Failed to release message before self-update restart")
-                log.info("Controller self-update complete; exiting to restart")
-                return
+            pin = _controller_version_pin(ci_config)
+            if pin:
+                with VisibilityHeartbeat(sqs, queue_url, receipt, visibility):
+                    did_self_update = maybe_self_update(pin, log)
+                if did_self_update:
+                    try:
+                        sqs.change_message_visibility(
+                            QueueUrl=queue_url, ReceiptHandle=receipt, VisibilityTimeout=0
+                        )
+                    except Exception:
+                        log.exception(
+                            "Failed to release message before self-update restart"
+                        )
+                    log.info("Controller self-update complete; exiting to restart")
+                    return
 
             with VisibilityHeartbeat(sqs, queue_url, receipt, visibility):
                 cleanup_error = _prepare_runner_for_task(role, log)
@@ -955,7 +974,11 @@ def poll():
 
                 if role == ROLE_WORKFLOW:
                     result = handle_workflow(
-                        payload, log, queue_name, receive_count=receive_count
+                        payload,
+                        log,
+                        queue_name,
+                        receive_count=receive_count,
+                        ci_config=ci_config,
                     )
                 else:
                     result = handle_task(

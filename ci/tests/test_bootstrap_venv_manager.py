@@ -33,15 +33,18 @@ def test_ensure_praktika_venv_reuses_existing_installed_env(tmp_path, monkeypatc
     (source_dir / "setup.py").write_text("from setuptools import setup\n", encoding="utf-8")
 
     cache_root = tmp_path / "venvs"
+    # The venv name is keyed by the (normalized) source, so a changed source
+    # resolves to a different venv rather than silently reusing the old one.
+    env_name = f"praktika-{_PY_TAG}-{venv_manager._source_key(str(source_dir.resolve()))}"
     calls = []
 
     def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         calls.append(cmd)
-        expected_python = str(cache_root / f"praktika-{_PY_TAG}" / "bin" / "python")
+        expected_python = str(cache_root / env_name / "bin" / "python")
         if cmd == [expected_python, "-c", "import praktika"]:
             return _CompletedProcess(
                 returncode=0
-                if (cache_root / f"praktika-{_PY_TAG}" / "bin" / "python").exists()
+                if (cache_root / env_name / "bin" / "python").exists()
                 else 1
             )
         if len(cmd) >= 3 and cmd[1:3] == ["-m", "venv"]:
@@ -67,7 +70,7 @@ def test_ensure_praktika_venv_reuses_existing_installed_env(tmp_path, monkeypatc
     )
 
     assert first == second
-    assert first == (cache_root / f"praktika-{_PY_TAG}").resolve()
+    assert first == (cache_root / env_name).resolve()
 
     venv_creates = [cmd for cmd in first_calls if len(cmd) >= 3 and cmd[1:3] == ["-m", "venv"]]
     assert len(venv_creates) == 1
@@ -268,6 +271,36 @@ def test_normalize_source_passes_through_url_and_spec_resolves_path(tmp_path):
     assert venv_manager._normalize_source(spec) == spec
     # A local path is still resolved to an absolute path.
     assert venv_manager._normalize_source(str(tmp_path)) == str(tmp_path.resolve())
+
+
+def test_source_key_differs_by_source():
+    a = venv_manager._source_key("praktika==0.1.9")
+    b = venv_manager._source_key("praktika==0.2.0")
+    assert a != b
+    # Stable for the same source.
+    assert a == venv_manager._source_key("praktika==0.1.9")
+
+
+def test_ensure_praktika_venv_changed_source_uses_new_venv(tmp_path, monkeypatch):
+    cache_root = tmp_path / "venvs"
+
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
+        # Report "no praktika yet" so each distinct source triggers a build.
+        if len(cmd) >= 2 and cmd[-2:] == ["-c", "import praktika"]:
+            return _CompletedProcess(returncode=1)
+        if len(cmd) >= 3 and cmd[1:3] == ["-m", "venv"]:
+            venv_path = Path(cmd[3])
+            (venv_path / "bin").mkdir(parents=True, exist_ok=True)
+            (venv_path / "bin" / "python").write_text("", encoding="utf-8")
+        return _CompletedProcess()
+
+    monkeypatch.setattr(venv_manager.subprocess, "run", fake_run)
+
+    first = venv_manager.ensure_praktika_venv("praktika==0.1.9", cache_root=cache_root)
+    second = venv_manager.ensure_praktika_venv("praktika==0.2.0", cache_root=cache_root)
+    # A different pin resolves to a different venv (so it is actually reinstalled),
+    # instead of silently reusing the first one.
+    assert first != second
 
 
 def test_build_venv_installs_url_verbatim(tmp_path, monkeypatch):

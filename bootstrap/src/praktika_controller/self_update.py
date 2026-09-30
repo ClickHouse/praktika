@@ -171,6 +171,19 @@ def maybe_self_update(
         return False
 
     previous_source = state.get("installed_source") or ""
+    if not previous_source:
+        # Fresh instance: no recorded source to roll back to. Best-effort — target
+        # the currently-running version by spec so a failed in-place update can be
+        # undone rather than leaving the worker unable to import the controller on
+        # its next systemd restart.
+        #
+        # TODO (dev-only path today): this can't recover a version published only to
+        # a private index / S3 (a bare `name==X` spec won't resolve there). True
+        # atomicity — stage/verify the install in a separate env and only then swap,
+        # never mutating the live interpreter until verified — is deferred as
+        # production hardening. See ci-config.md.
+        running = current_controller_version()
+        previous_source = f"{CONTROLLER_PACKAGE}=={running}" if running else ""
 
     # Record the attempt before installing, so a crash mid-install still counts
     # toward the cap.

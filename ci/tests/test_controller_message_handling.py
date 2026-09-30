@@ -653,20 +653,30 @@ def test_task_log_capture_records_full_controller_log_to_file():
     assert not __import__("os").path.exists(cap.path)
 
 
-def test_desired_controller_source_workflow_reads_ssm(monkeypatch):
+def _pin(role, payload, log):
+    return controller._controller_version_pin(
+        controller._ci_config_for_message(role, payload, log)
+    )
+
+
+def test_ci_config_for_message_workflow_reads_ssm_once(monkeypatch):
     log = _Log()
+    reads = []
     monkeypatch.setattr(
         controller,
         "load_ci_config",
-        lambda region="", log=None: {"praktika_controller_version": "praktika-controller==5.0"},
+        lambda region="", log=None: reads.append(1)
+        or {"praktika_controller_version": "praktika-controller==5.0"},
     )
-    got = controller._desired_controller_source(
+    cfg = controller._ci_config_for_message(
         controller.ROLE_WORKFLOW, {"type": "pull_request"}, log
     )
-    assert got == "praktika-controller==5.0"
+    assert cfg == {"praktika_controller_version": "praktika-controller==5.0"}
+    assert controller._controller_version_pin(cfg) == "praktika-controller==5.0"
+    assert len(reads) == 1  # single SSM read; caller reuses the snapshot
 
 
-def test_desired_controller_source_rerun_uses_frozen_event_config(monkeypatch):
+def test_ci_config_for_message_rerun_uses_frozen_event_config(monkeypatch):
     log = _Log()
     # A rerun must NOT re-read SSM; it uses the frozen copy on the event.
     monkeypatch.setattr(
@@ -674,25 +684,30 @@ def test_desired_controller_source_rerun_uses_frozen_event_config(monkeypatch):
         "load_ci_config",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("SSM read on rerun")),
     )
-    got = controller._desired_controller_source(
-        controller.ROLE_WORKFLOW,
-        {"type": "rerun", "ci_config": {"praktika_controller_version": "praktika-controller==4.0"}},
-        log,
+    assert (
+        _pin(
+            controller.ROLE_WORKFLOW,
+            {
+                "type": "rerun",
+                "ci_config": {"praktika_controller_version": "praktika-controller==4.0"},
+            },
+            log,
+        )
+        == "praktika-controller==4.0"
     )
-    assert got == "praktika-controller==4.0"
 
 
-def test_desired_controller_source_runner_reads_task_metadata(monkeypatch):
+def test_ci_config_for_message_runner_reads_task_metadata(monkeypatch):
     log = _Log()
     monkeypatch.setattr(
         controller,
         "load_ci_config",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("runner read SSM")),
     )
-    task = {"type": "job_task", "ci_config": {"praktika_controller_version": "praktika-controller==6.0"}}
-    assert (
-        controller._desired_controller_source(controller.ROLE_RUNNER, task, log)
-        == "praktika-controller==6.0"
-    )
+    task = {
+        "type": "job_task",
+        "ci_config": {"praktika_controller_version": "praktika-controller==6.0"},
+    }
+    assert _pin(controller.ROLE_RUNNER, task, log) == "praktika-controller==6.0"
     # Unset pin -> empty.
-    assert controller._desired_controller_source(controller.ROLE_RUNNER, {"ci_config": {}}, log) == ""
+    assert _pin(controller.ROLE_RUNNER, {"ci_config": {}}, log) == ""
