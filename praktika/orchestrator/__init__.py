@@ -476,10 +476,15 @@ def _orchestrate_event(
                     print(f"  [warn] could not post workflow-load-error check: {e}")
 
     if not workflows:
+        # A genuine no-match is neutral; but if workflow files failed to import
+        # (load_errors) the bootstrap check must not close green/neutral — the
+        # per-file "Workflow load error" checks above already show red, and this
+        # completes (never leaves in_progress) the adopted bootstrap check too.
         print("No matching workflows, exiting")
         if check is not None:
+            conclusion = "failure" if load_errors else "neutral"
             try:
-                check.complete("neutral", output=_check_output(None, None))
+                check.complete(conclusion, output=_check_output(None, None))
             except Exception:
                 print(f"Failed to complete check run: {check}", file=sys.stderr)
         return 0

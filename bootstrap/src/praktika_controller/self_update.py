@@ -26,6 +26,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -73,15 +74,42 @@ def _is_valid_controller_source(source: str) -> bool:
     return os.path.isabs(source)
 
 
-def _spec_version(source: str) -> str:
-    """The version from an exact ``name==X`` requirement spec, else "". Used to
-    short-circuit a reinstall when the pin already matches the running version."""
+def _normalize_dist(name: str) -> str:
+    """PEP 503 normalized distribution name (``_``/``.``/``-`` runs -> ``-``,
+    lowercased), so ``praktika_controller`` and ``praktika-controller`` compare
+    equal."""
+    return re.sub(r"[-_.]+", "-", name.strip().lower())
+
+
+def _pin_identity(source: str):
+    """The (distribution name, exact version) a pin *targets*, as far as it can be
+    known before installing. Returns ``(name|None, version|None)``:
+
+    - wheel URL/path (``…/praktika_controller-0.1.8-py3-none-any.whl``): parsed from
+      the standardized wheel filename ``{dist}-{version}-…``.
+    - requirement spec (``praktika-controller==0.1.8``): the name, and the version
+      only for an exact ``==`` pin.
+    - anything else (a non-wheel URL, a bare directory path): ``(None, None)`` —
+      identity can't be determined up front.
+
+    Used to (a) reject a pin that targets the wrong project before installing it and
+    (b) confirm the intended version actually landed afterwards, so a typo like
+    ``praktika==0.1.8`` or a URL to an unrelated wheel can't be silently adopted."""
+    seg = source.rstrip("/").split("/")[-1].split("?")[0]
+    if seg.lower().endswith(".whl"):
+        parts = seg[:-4].split("-")
+        if len(parts) >= 2:
+            return _normalize_dist(parts[0]), parts[1]
+        return None, None
     if "://" in source:
-        return ""
-    name, sep, rest = source.partition("==")
-    if not sep or ">" in rest or "<" in rest or "," in rest:
-        return ""
-    return rest.strip()
+        return None, None  # non-wheel URL — can't tell without fetching
+    m = re.match(
+        r"^\s*([A-Za-z0-9._-]+)\s*(==|~=|!=|>=|<=|<|>)\s*([^,;\s]+)", source
+    )
+    if m:
+        version = m.group(3) if m.group(2) == "==" else None
+        return _normalize_dist(m.group(1)), version
+    return None, None
 
 
 def _load_state() -> dict:
@@ -172,6 +200,22 @@ def maybe_self_update(
         )
         return False
 
+    # Reject a pin that targets the wrong project BEFORE installing it. Otherwise
+    # a typo like "praktika==0.1.8" (or a URL to an unrelated wheel) installs fine,
+    # the still-old praktika-controller imports, and we'd persist the bad source as
+    # converged — running the old controller forever. Only enforce when the target
+    # is knowable (spec name / wheel filename); a bare path/non-wheel URL is checked
+    # by version after install where possible.
+    exp_name, exp_version = _pin_identity(desired_source)
+    if exp_name and exp_name != _normalize_dist(CONTROLLER_PACKAGE):
+        log.error(
+            "Ignoring praktika_controller_version %r: it targets %r, not %s.",
+            desired_source,
+            exp_name,
+            CONTROLLER_PACKAGE,
+        )
+        return False
+
     python = python or sys.executable or "python3.12"
     state = _load_state()
 
@@ -181,10 +225,9 @@ def maybe_self_update(
 
     # Fresh instance (no recorded install) already running the pinned exact
     # version: record it as satisfied instead of a pointless reinstall.
-    spec_v = _spec_version(desired_source)
-    if spec_v and spec_v == current_controller_version():
+    if exp_version and exp_version == current_controller_version():
         state["installed_source"] = desired_source
-        state["installed_version"] = spec_v
+        state["installed_version"] = exp_version
         state.get("failed", {}).pop(desired_source, None)
         _save_state(state, log)
         return False
@@ -240,6 +283,21 @@ def maybe_self_update(
             "Controller self-update to %r installed but failed to import; not "
             "restarting into it",
             desired_source,
+        )
+        _restore_previous(previous_source, python=python, run=run, log=log)
+        return False
+
+    # Confirm the intended version actually landed. _verify_import only proves that
+    # *some* praktika-controller imports; for an exact pin (== spec or a versioned
+    # wheel) require the installed version to match, so an install that resolved to
+    # something else (or silently left the old one) isn't adopted as converged.
+    if exp_version and version != exp_version:
+        log.error(
+            "Controller self-update to %r resolved to version %s, expected %s; "
+            "not adopting",
+            desired_source,
+            version,
+            exp_version,
         )
         _restore_previous(previous_source, python=python, run=run, log=log)
         return False

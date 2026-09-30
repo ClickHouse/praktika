@@ -155,6 +155,55 @@ def test_relative_path_pin_is_rejected_without_install(state_path, log):
     assert not self_update._is_valid_controller_source(".")
 
 
+def test_wrong_package_spec_rejected_before_install(state_path, log):
+    # A pin targeting the wrong project (typo: praktika instead of
+    # praktika-controller) must be rejected before any install, so the old
+    # controller isn't silently persisted as converged.
+    calls = []
+    assert not self_update.maybe_self_update(
+        "praktika==0.1.8",
+        log,
+        python="py",
+        run=lambda *a, **k: calls.append(a) or _Proc(),
+    )
+    assert calls == []
+    assert not state_path.exists()
+
+
+def test_wrong_package_wheel_url_rejected(state_path, log):
+    calls = []
+    assert not self_update.maybe_self_update(
+        "https://x/some_other_pkg-1.0-py3-none-any.whl",
+        log,
+        python="py",
+        run=lambda *a, **k: calls.append(a) or _Proc(),
+    )
+    assert calls == []
+
+
+def test_installed_version_mismatch_is_not_adopted(state_path, log, monkeypatch):
+    monkeypatch.setattr(self_update, "current_controller_version", lambda: "1.0")
+    state_path.write_text(
+        json.dumps({"installed_source": "praktika-controller==1.0", "failed": {}}),
+        encoding="utf-8",
+    )
+    installs = []
+
+    def run(cmd, **kwargs):
+        if "install" in cmd:
+            installs.append(cmd)
+            return _Proc(returncode=0)
+        return _Proc(returncode=0, stdout="1.0\n")  # verify: still the OLD version
+
+    # Pin asks for 5.0 but the install resolved to 1.0 -> must not adopt.
+    assert not self_update.maybe_self_update(
+        "praktika-controller==5.0", log, python="py", run=run
+    )
+    saved = _read(state_path)
+    assert saved["installed_source"] == "praktika-controller==1.0"  # unchanged
+    assert saved["failed"]["praktika-controller==5.0"] == 1
+
+
 def test_break_system_packages_retry_on_pep668(state_path, log, monkeypatch):
     monkeypatch.setattr(self_update, "current_controller_version", lambda: "1.0")
     cmds = []

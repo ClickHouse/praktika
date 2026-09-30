@@ -403,11 +403,18 @@ def _build_and_publish_snapshot(clone_dir, snapshot_sha, is_pr, artifact_bucket,
             # parts rather than buffering the whole file in RAM and PUTting it
             # single-stream (put_object(Body=f.read())). Decisive for large trees
             # (e.g. ClickHouse), where the single-stream PUT dominated snapshot
-            # publish time. Multipart drops the atomic IfNoneMatch write-once, so
-            # the concurrent-producer case is handled by the head-object
-            # pre-check above and the existence re-check below — two producers of
-            # the SAME content-addressed key are uploading byte-identical
-            # archives, so last-writer-wins is safe.
+            # publish time.
+            #
+            # This intentionally drops the old atomic IfNoneMatch="*" write-once.
+            # Safe for what must be protected — TRUSTED execution (main/release,
+            # the REFs/ tier): the IAM trust-tier policy (projects.py
+            # _UNTRUSTED_DENY_WRITE_TRUSTED_STATEMENT) denies untrusted pr-* pools
+            # PutObject/DeleteObject/AbortMultipartUpload on REFs/*, so no
+            # untrusted actor can overwrite a trusted snapshot, write-once or not.
+            # Within the untrusted PRs/ tier one PR can overwrite another PR's
+            # object (a cross-PR DoS) — an accepted non-threat; the restore-side
+            # hash check still fails closed, so no tampered bytes ever execute.
+            # The benign same-key race is fine too (byte-identical archive).
             try:
                 with profile_step(log, "snapshot: multipart upload"):
                     s3.upload_file(

@@ -133,6 +133,12 @@ def _get_workflows(
             #     f"WARNING: Failed to add WORKFLOWS config from [{module_name}], exception [{e}]"
             # )
     if not res:
+        if isinstance(_load_errors_out, list) and _load_errors_out:
+            # Every workflow file failed to import (e.g. a pool on an older baked
+            # praktika than the workflows use). Return empty instead of raising an
+            # opaque "no workflow found" so the caller can surface the collected
+            # load errors (and finalize the bootstrap check) rather than crash.
+            return res
         Utils.raise_with_error(f"Failed to find [{name or file or 'any'}] workflow")
 
     if not _for_validation_check:

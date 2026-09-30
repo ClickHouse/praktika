@@ -309,6 +309,21 @@ def test_get_workflows_skips_broken_file_and_records_error(tmp_path, monkeypatch
     assert "DOES_NOT_EXIST" in errors[0][1]
 
 
+def test_get_workflows_all_files_broken_returns_empty_with_errors(tmp_path, monkeypatch):
+    from praktika import mangle
+
+    # Only broken files: must NOT raise "no workflow found" (which the caller can't
+    # tell from a real misconfig). Return empty + the collected load errors so the
+    # orchestrator can surface them and finalize the bootstrap check.
+    (tmp_path / "broken_wf.py").write_text(_BROKEN_WF_FILE, encoding="utf-8")
+    monkeypatch.setattr(Settings, "WORKFLOWS_DIRECTORY", str(tmp_path))
+
+    errors = []
+    res = mangle._get_workflows(_load_errors_out=errors)
+    assert res == []
+    assert [f for f, _ in errors] == ["broken_wf.py"]
+
+
 def test_get_workflows_reraises_broken_file_during_validation(tmp_path, monkeypatch):
     from praktika import mangle
 
