@@ -711,3 +711,29 @@ def test_ci_config_for_message_runner_reads_task_metadata(monkeypatch):
     assert _pin(controller.ROLE_RUNNER, task, log) == "praktika-controller==6.0"
     # Unset pin -> empty.
     assert _pin(controller.ROLE_RUNNER, {"ci_config": {}}, log) == ""
+    # Explicit empty string is treated as unset (no pin), same as absent.
+    empty = {"type": "job_task", "ci_config": {"praktika_controller_version": ""}}
+    assert _pin(controller.ROLE_RUNNER, empty, log) == ""
+
+
+def test_strip_jsonc_preserves_urls_and_strips_comments_and_commas():
+    raw = """{
+        // pin the controller to an exact wheel
+        "praktika_controller_version": "https://x.s3.amazonaws.com/praktika_controller-0.1.8.whl",
+        /* praktika runtime is left floating for now
+        "praktika_version": "praktika==0.1.9", */
+        "force_merge_commit": true,
+    }"""
+    data = json.loads(common._strip_jsonc(raw))
+    # The // inside the https URL must survive (only out-of-string comments go).
+    assert data["praktika_controller_version"].startswith("https://")
+    assert data["praktika_controller_version"].endswith("0.1.8.whl")
+    # Block-commented field is gone; trailing comma tolerated.
+    assert "praktika_version" not in data
+    assert data["force_merge_commit"] is True
+
+
+def test_strip_jsonc_keeps_slashes_and_commas_inside_strings():
+    raw = '{"a": "b//c", "list": ["x,]", "y"],}'
+    data = json.loads(common._strip_jsonc(raw))
+    assert data == {"a": "b//c", "list": ["x,]", "y"]}

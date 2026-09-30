@@ -203,6 +203,59 @@ def get_github_token(region: str = "") -> str:
     return token
 
 
+def _strip_jsonc(text: str) -> str:
+    """Return ``text`` with JSONC niceties removed so plain ``json.loads`` accepts
+    it: ``//`` line comments, ``/* */`` block comments, and trailing commas.
+
+    Lets an operator comment out a line/field in the ci_config parameter without
+    silently disabling the WHOLE config (strict ``json.loads`` would reject the
+    comment and the caller would fall back to ``{}``). The scan is string-aware, so
+    a ``//`` inside a value (e.g. an ``https://`` wheel URL) or a quoted ``/*`` is
+    left untouched — only comments outside of strings are dropped."""
+    out = []
+    i, n = 0, len(text)
+    in_str = escaped = False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if escaped:
+                escaped = False
+            elif c == "\\":
+                escaped = True
+            elif c == '"':
+                in_str = False
+            i += 1
+        elif c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+        elif c == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                i += 1  # skip to end of line
+        elif c == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i += 2  # skip closing */
+        elif c in "}]":
+            # Drop a trailing comma before this closing bracket. Done here (not via
+            # regex on the whole text) so it stays string-aware: a "," inside a
+            # value like "x,]" is never touched because we only reach this branch
+            # outside of strings.
+            j = len(out) - 1
+            while j >= 0 and out[j].isspace():
+                j -= 1
+            if j >= 0 and out[j] == ",":
+                del out[j]
+            out.append(c)
+            i += 1
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
 def load_ci_config(region: str = "", log=None) -> dict:
     """Per-project, CI-wide config read from the SSM parameter
     ``{PRAKTIKA_PROJECT_SLUG}-ci-config`` as a JSON object.
@@ -218,6 +271,10 @@ def load_ci_config(region: str = "", log=None) -> dict:
     ``{}`` (every feature off), so the parameter is entirely optional and absence
     is safe. Read fresh by the caller each run — one ``GetParameter`` is trivial
     next to a full CI run and keeps the config live-editable.
+
+    JSONC is tolerated (``//`` and ``/* */`` comments, trailing commas) so an
+    operator can comment out a field without accidentally invalidating the whole
+    parameter (which would silently read as ``{}``). See ``_strip_jsonc``.
     """
     import boto3
 
@@ -235,7 +292,7 @@ def load_ci_config(region: str = "", log=None) -> dict:
     try:
         ssm = boto3.client("ssm", region_name=region)
         value = ssm.get_parameter(Name=name)["Parameter"]["Value"]
-        data = json.loads(value)
+        data = json.loads(_strip_jsonc(value))
         if not isinstance(data, dict):
             if log:
                 log.warning("Controller config %s is not a JSON object; ignoring", name)

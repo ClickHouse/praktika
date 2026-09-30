@@ -6,7 +6,11 @@ Store, outside the repository. It is the home for CI settings that must apply
 controls, not the code under test.
 
 - **Parameter name:** `{PROJECT_SLUG}-ci-config` (e.g. `myproject-ci-config`).
-- **Type:** `String`, holding a JSON **object**.
+- **Type:** `String`, holding a JSON **object**. JSONC is tolerated — `//` and
+  `/* */` comments and trailing commas are stripped before parsing (`_strip_jsonc`),
+  so you can comment a field out without silently invalidating the whole parameter
+  (a strict parse error reads as `{}` — every feature off). Comments/commas inside
+  string values (e.g. a `//` in an `https://` URL) are preserved.
 - **Region:** the project's region (`AWS_DEFAULT_REGION` / `AWS_REGION`).
 - **Reader:** `praktika_controller.common.load_ci_config`.
 
@@ -112,9 +116,9 @@ rolled back) from SSM instead of rebaking the AMI:
 }
 ```
 
-Both are optional and independent. Each `<source>` supports three interchangeable
-forms, all of which `pip install` accepts as-is (detected by
-`venv_manager.is_passthrough`):
+Both are optional and independent, and an empty string (`""`) is treated exactly
+like "not set" (no pin). Each `<source>` supports three interchangeable forms, all
+of which `pip install` accepts as-is (detected by `venv_manager.is_passthrough`):
 
 - **version** — a released spec, e.g. `"praktika==0.1.9"` (must include an exact
   `==`; a bare name is treated as a path).
