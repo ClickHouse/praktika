@@ -89,7 +89,7 @@ awaiting a ClickHouse run to confirm · **PLANNED**.
 | 5 | **zstd level → 1** (`SNAPSHOT_ZSTD_LEVEL`) — snapshot is transient/content-addressed, so favor speed over ratio; also speeds every job's restore (`zstd -dc`) | DONE | cut most of the 190s pack step; slightly larger archive | pack **190s → 57.95s (-69%)**, archive 700.5→700.9 MiB (negligible) |
 | 6 | **S3 client pool sizing** — `_s3_client()` sets `max_pool_connections = MULTIPART_MAX_CONCURRENCY (16)` so parallel parts don't exhaust the default-10 pool | DONE | remove "Connection pool is full" warnings / socket churn | **0 warnings** (was 6/run); upload 4.73s |
 | 7 | **Skip the redundant snapshot checkout** — keep the depth-1 local fetch for a minimal `.git`, but set `snap_dir` HEAD+index via plumbing (`update-ref` + `read-tree`, no worktree write) and tar `clone_dir`'s already-materialized worktree + `snap_dir/.git` in one pass | DONE | save ~12s (eliminate the second `checkout worktree` step) | `checkout worktree` **11.92s → `build minimal .git` 0.18s** |
-| 8 | **Warm / AMI-baked git mirror** — persistent blob-full mirror of the default branch; per-task fetch becomes a delta (`--reference`/alternates) | PLANNED | cut ~43s network (fetch 29 + unshallow 14) | — |
+| 8 | **Warm / AMI-baked git mirror** — borrow a baked mirror's objects via alternates so the head fetch is a delta + no unshallow | REJECTED | cut ~43s network (fetch 29 + unshallow 14) | net LOSS on AWS (EBS lazy-load); mechanism validated but not deployable on cold one-shot AMIs — see below |
 | 9 | **Overlay prebake in AMI** — pre-copy base venv → overlay at image-build time | PLANNED | save ~12s first-task overlay copy | — |
 
 ### Experiments run 2026-10-01 (all reverted — negative/null)
@@ -110,8 +110,9 @@ the committed baseline (zstd `-1`, git-default compression, single-pass hash).
 pack step is now **I/O-bound on tar reading the ~2-3 GB tree** (contrast: level
 3→1 cut it 190s→58s, when it *was* compression-bound). So **level 1 is the
 floor**; pack ~60s is near its minimum given the tree must be read+compressed
-once. No more to get from zstd/compression tuning. The next addressable cost is
-**#8 (warm/AMI mirror)** — clone fetch ~37s + unshallow ~15s of network.
+once. No more to get from zstd/compression tuning. The remaining large cost is
+network (clone fetch ~37s + unshallow ~15s), which #8 targeted — but #8 was tried
+and rejected (EBS lazy-load; see below).
 
 ### Notes / decisions
 
@@ -126,108 +127,40 @@ once. No more to get from zstd/compression tuning. The next addressable cost is
   changing the producer level needs no restore-side change and old archives keep
   working.
 - **Parallel checkout (opt #4)** did not visibly help the 31s checkout on
-  ClickHouse; kept because it is cheap and helps smaller trees. The real clone
-  lever is the warm mirror (#8).
+  ClickHouse; kept because it is cheap and helps smaller trees.
 
-## #8 design: warm git mirror (opt-in, warm-on-startup)
+## #8 warm git mirror — EVALUATED AND REJECTED (2026-10-01)
 
-**Status: DESIGN.** Target: the ~52s of network on every orchestrator run —
-`clone: fetch head` (~37s) + `merge: ensure base history (unshallow + fetch
-base)` (~15s). Both are large because a cold work-repo downloads the whole
-~2-3 GB tree from GitHub every task. A PR only changes a few files, so if the
-instance already holds the default branch locally, both collapse to a small
-delta.
+Target was the ~52s of network per run (`clone: fetch head` ~37s +
+`merge: ensure base history` ~15s). Idea: keep a local **mirror** of the repo's
+branches and have the per-task work-repo **borrow its objects via git alternates**
+(`.git/objects/info/alternates`), so the head fetch is only the PR delta and the
+merge's `--unshallow` is unnecessary (base history is already local). Baked into
+the orchestrator AMI (one-shot scale-from-zero instances can't warm on boot in
+time).
 
-### Mechanism: alternates (object borrowing)
+**Built, deployed, measured — it was a net LOSS and was removed (git reset).**
 
-A git repo stores objects under `.git/objects`. The file
-`.git/objects/info/alternates` lists *other* object directories git also reads
-from, so a repo can **borrow** another's objects instead of copying them
-(`git clone --reference` sets this up). If a local **mirror** of the default
-branch (full history + blobs) exists, a per-PR work-repo pointed at it via
-alternates already "has" ~the whole tree; fetching the PR head then transfers
-only the changed objects, and the merge's `--unshallow` is unnecessary (base
-history is already local).
+- **AWS AMI-baked run** (43-branch mirror): clone total **44s → 115s**. The
+  unshallow did drop (15s → 0.5s ✓), but `clone: fetch head` 33s → **49s** and
+  `clone: checkout head` 11s → **61s**, plus merge/snapshot reads all got slower.
+- **Local 1-to-1 test at full ClickHouse scale on warm SSD** (same
+  `_attach_local_mirror` code, real `../clickhouse-private`): mirror **fetch 0.7s
+  vs cold 13.3s (19× faster), checkout 9.8s vs 8.8s (same), total 2× faster.** So
+  the git mechanism is excellent *when the objects are resident*.
 
-Hazard: borrowing is a pointer, not a copy — if the mirror prunes/GCs reachable
-objects while a work-repo borrows them, the borrow breaks. The design never
-prunes the mirror (append-only fetches; `gc.auto=0`), which keeps borrows valid.
-`--dissociate` (copy borrowed objects into the work-repo) is the safe fallback if
-we ever need to prune, at the cost of the copy.
+**Root cause — EBS lazy-load.** An AMI-backed root volume hydrates from S3
+**lazily, per-block, on first access**. The baked mirror's packs are cold blocks;
+the moment checkout/fetch-negotiation touches them through alternates, EBS faults
+each block in from S3 — *random high-latency reads*, slower than GitHub's *bulk
+sequential* packfile download. Baking into a cold one-shot AMI just moves the
+download from GitHub to S3-via-EBS and loses. Shrinking the branch set (master
+only) would cut mirror size and freshen cost but **not** fix this: checkout still
+faults in the current tree's blocks regardless.
 
-### Approach: bake the mirror into the AMI
-
-Orchestrator instances are **one-shot** (boot -> poll -> handle one task ->
-terminate), so warm-on-startup would lose the race: the initial mirror clone takes
-minutes, but the single SQS message can arrive seconds after boot. The mirror must
-therefore already be present at boot -> **bake it into the AMI**.
-
-- **Bake:** an EC2 Image Builder component clones the default branch as a bare,
-  blob-full, full-history mirror into `/opt/praktika/git-mirror/<repo>.git` during
-  image build. The baked mirror is as of image-build time.
-- **Boot freshen (best-effort):** on controller start, a time-boxed, non-blocking
-  `git -C mirror fetch` pulls the (small) delta of commits since the AMI was
-  baked, using the runner's existing GitHub token. If a message arrives first, the
-  per-task clone just uses the slightly-staler baked mirror — still a tiny delta
-  vs a full cold clone. Never blocks the poll loop.
-- Per-task clone borrows from the mirror via alternates (next section).
-
-**Build-time auth — resolved via the token-minter lambda.** `clickhouse-private`
-is private, so the Image Builder build instance needs GitHub credentials to clone
-it at bake time. The existing `GitHubTokenMinter` lambda (same one the controller
-uses) mints a short-lived installation token; `GitHubTokenMinter.grant_invoke()`
-grants a role permission to call it. So: grant the Image Builder build role invoke
-on the minter, and the bake component invokes it for a token, clones, done — no
-long-lived secret on the build host. One consequence to record: the AMI artifact
-then contains the source tree — acceptable for a private project (runners already
-clone it), but a deliberate choice. Public repos (ClickHouse/ClickHouse) need no
-auth.
-
-**Alternative if build-time auth is a blocker — S3-distributed mirror.** A single
-warmer (cron/job) maintains the bare mirror and uploads a compressed tarball to
-S3; the AMI bakes nothing repo-specific, and at boot the instance downloads the
-tarball from S3 (in-region, ~seconds for a few GB) + a small GitHub delta fetch.
-Sidesteps build-time auth, keeps the AMI generic, and decouples mirror freshness
-from the AMI rebuild cadence. Boot download is short enough that most one-shot
-instances get it warm; a message arriving first falls back to the cold path (no
-regression). Noted as a fallback; primary plan is the AMI bake above.
-
-### Per-task wiring (`clone_repo`, when mirror enabled)
-
-1. `git init work/repo`; set `objects/info/alternates` -> the mirror's objects.
-2. `git remote add origin <github>`; `git fetch origin <head_sha>` — negotiation
-   counts the borrowed objects as "have", so GitHub sends only the PR delta.
-   (Still pinned to the authorized `head_sha` — security model unchanged.)
-3. Merge: `fetch origin <base_branch>` is a small delta; `--unshallow` is skipped
-   because full base history is borrowed from the mirror. Merge-base is local.
-
-Everything downstream (ephemeral merge, snapshot build) is unchanged. The
-snapshot still ships a self-contained minimal `.git` (the alternates are a
-build-time optimization of the work-repo, not something the snapshot references).
-
-### Trust & safety
-
-- **Trusted content only.** The mirror only ever fetches the default branch
-  (never PR/fork refs), so it holds only trusted objects. Work-repos borrow
-  read-only and fetch the untrusted head *on top* into their own object store;
-  nothing writes back into the mirror, so a fork PR cannot poison it. The base is
-  trusted content we already clone today — no new exposure.
-- **No pruning while borrowed** (above). Refreshes only add objects.
-- **Disk.** The mirror is a full clone (several GB for ClickHouse) plus the
-  per-task work-repo. Reserved instances need headroom; size the volume for it.
-
-### Opt-in via infra config
-
-Off by default. A pool-level `ext` flag (e.g. `warm_git_mirror: true`, plus the
-repo + default branch the pool serves) enables both the background warm-up and
-the `clone_repo` alternates wiring. Only pools that opt in pay the disk/warm-up
-cost.
-
-### Expected savings & open questions
-
-- Expected: most of `fetch head` (~37s) + `unshallow` (~15s) -> a few seconds of
-  delta, on warm instances. Snapshot pack (~60s, I/O-bound) is unaffected.
-- Open: refresh cadence while idle (keep the delta small vs churn); interaction
-  with instance lifetime (one-shot vs long-lived); exact `clone_repo` changes to
-  the depth/unshallow logic; whether to measure a `mirror: warm/refresh` profile
-  line; eventual AMI-bake for cold-scale.
+**If revisited:** the mechanism only pays off with the mirror **resident on fast
+local storage before the task**. Options, all constrained by one-shot
+scale-from-zero: a warm reserved pool that pre-reads the mirror during genuine
+idle; a **bulk** S3 download + extract at boot (writes resident blocks — avoids
+lazy-fault, unlike AMI-bake; still races the task); or Fast Snapshot Restore
+(cost per snapshot per AZ). Not pursued.
