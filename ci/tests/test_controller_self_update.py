@@ -72,6 +72,41 @@ def test_new_source_installs_persists_and_restarts(state_path, log):
     assert any("install" in c and "--force-reinstall" in c for c in installs)
 
 
+def test_installed_version_match_is_noop(state_path, log):
+    # Already on the pinned version (e.g. baked into the AMI) -> no reinstall and
+    # no restart, even with empty state and a different source-URL string. This is
+    # what stops a freshly-booted instance from burning an SQS delivery attempt,
+    # and makes a same-AMI runner mirror the orchestrator's no-update decision.
+    calls = []
+    assert not self_update.maybe_self_update(
+        "https://x/praktika_controller-3.0-py3-none-any.whl",
+        log,
+        python="py",
+        run=lambda *a, **k: calls.append(a) or _Proc(),
+        current_version="3.0",
+    )
+    assert calls == []
+    assert not state_path.exists()
+
+
+def test_version_mismatch_installs(state_path, log):
+    # Pinned version differs from the running one -> reinstall + restart.
+    installs = []
+
+    def run(cmd, **kwargs):
+        installs.append(cmd)
+        return _Proc(returncode=0)
+
+    assert self_update.maybe_self_update(
+        "https://x/praktika_controller-3.0-py3-none-any.whl",
+        log,
+        python="py",
+        run=run,
+        current_version="2.0",
+    )
+    assert any("install" in c and "--force-reinstall" in c for c in installs)
+
+
 def test_bad_pin_fails_hard(state_path, log):
     # A bad/unreachable pin is not validated or rolled back — pip's failure
     # propagates so the failure is loud.

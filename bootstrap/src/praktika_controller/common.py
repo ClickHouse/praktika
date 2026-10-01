@@ -331,6 +331,35 @@ def instance_tag(tag_name: str, token: str | None = None) -> str:
     return resp.text.strip()
 
 
+def terminate_if_auto_scaled(*, region: str, instance_id: str, log) -> bool:
+    """Terminate this box and decrement ASG desired capacity when it is
+    auto-scaled (``praktika_scaling`` == "auto"). Returns True if termination was
+    requested — the caller must then stop polling. Returns False for a pinned/dev
+    box or when the region/tags needed to self-terminate are missing.
+    """
+    if not region or not instance_id or instance_id == "local-dev":
+        return False
+    try:
+        token = imds_token()
+        if instance_tag("praktika_scaling", token=token) != "auto":
+            return False
+        asg_name = instance_tag("praktika_asg", token=token)
+        if not asg_name:
+            return False
+
+        import boto3
+
+        log.info("Terminating %s and decrementing ASG %s", instance_id, asg_name)
+        boto3.client("autoscaling", region_name=region).terminate_instance_in_auto_scaling_group(
+            InstanceId=instance_id,
+            ShouldDecrementDesiredCapacity=True,
+        )
+        return True
+    except Exception:
+        log.exception("Auto-scale termination failed")
+        return False
+
+
 def try_scale_in_if_idle(
     *,
     sqs,
@@ -733,9 +762,22 @@ def _github_api(method, url, token, body=None, timeout=15):
         return json.loads(raw) if raw else {}
 
 
-def post_early_check(repo, head_sha, token, name, log=None, details_url=None):
+def post_early_check(
+    repo,
+    head_sha,
+    token,
+    name,
+    log=None,
+    details_url=None,
+    title=None,
+    summary=None,
+):
     """Open an ``in_progress`` check run before the (slow) clone so the PR
     shows CI immediately and an interrupted clone still leaves a signal.
+
+    ``title``/``summary`` populate the check's output so the PR surfaces what
+    the controller is doing (preparing the runtime, checking mergeability) and
+    which orchestrator instance owns the run while the clone is still running.
 
     Best-effort: returns the check-run id, or ``None`` on any failure (a fork
     head_sha not in the base repo, a transient API error, …). Posting the
@@ -755,6 +797,8 @@ def post_early_check(repo, head_sha, token, name, log=None, details_url=None):
     }
     if details_url:
         body["details_url"] = details_url
+    if title or summary:
+        body["output"] = {"title": title or name, "summary": summary or ""}
     try:
         data = _github_api(
             "POST", f"{_GITHUB_API_BASE}/repos/{repo}/check-runs", token, body
