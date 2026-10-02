@@ -90,7 +90,8 @@ awaiting a ClickHouse run to confirm · **PLANNED**.
 | 6 | **S3 client pool sizing** — `_s3_client()` sets `max_pool_connections = MULTIPART_MAX_CONCURRENCY (16)` so parallel parts don't exhaust the default-10 pool | DONE | remove "Connection pool is full" warnings / socket churn | **0 warnings** (was 6/run); upload 4.73s |
 | 7 | **Skip the redundant snapshot checkout** — keep the depth-1 local fetch for a minimal `.git`, but set `snap_dir` HEAD+index via plumbing (`update-ref` + `read-tree`, no worktree write) and tar `clone_dir`'s already-materialized worktree + `snap_dir/.git` in one pass | DONE | save ~12s (eliminate the second `checkout worktree` step) | `checkout worktree` **11.92s → `build minimal .git` 0.18s** |
 | 8 | **Warm / AMI-baked git mirror** — borrow a baked mirror's objects via alternates so the head fetch is a delta + no unshallow | REJECTED | cut ~43s network (fetch 29 + unshallow 14) | net LOSS on AWS (EBS lazy-load); mechanism validated but not deployable on cold one-shot AMIs — see below |
-| 9 | **Overlay prebake in AMI** — pre-copy base venv → overlay at image-build time | PLANNED | save ~12s first-task overlay copy | — |
+| 9 | **Remove the runtime overlay** — install the `runtime_source` straight into the base venv (force-reinstall --no-deps every task) instead of copying it to a per-instance overlay first | DEV | drop the one-time ~12-20s overlay copytree | overlay copy was 20s this warm run; safe because a `runtime_source` pool always reinstalls and never runs a baked-mode task, and each instance has its own AMI copy |
+| 10 | **Idle boot warm-clone** — an idle (reserved) orchestrator pre-fetches the base branch into a warm `.git` (+ checkout); the per-task clone adopts it and applies only the PR delta | DEV | fetch ~33s→~1s + unshallow ~15s→0 + checkout→delta on warm instances | **AWS: head fetch 33s→0.32s, unshallow 15s→0.45s, clone total 44s→15s.** checkout was 14.8s (treeless lazy-fetch) → idle checkout added to make it a delta |
 
 ### Experiments run 2026-10-01 (all reverted — negative/null)
 
@@ -164,3 +165,46 @@ scale-from-zero: a warm reserved pool that pre-reads the mirror during genuine
 idle; a **bulk** S3 download + extract at boot (writes resident blocks — avoids
 lazy-fault, unlike AMI-bake; still races the task); or Fast Snapshot Restore
 (cost per snapshot per AZ). Not pursued.
+
+## #10 idle boot warm-clone (the resident-via-fetch version of #8)
+
+#8 failed only because an AMI-baked mirror lazy-faults from S3. Populating the
+same objects by **fetching at boot** writes them as resident EBS blocks, so the
+borrow-reads are local — exactly what the local 1-to-1 test showed works. #10 is
+that, without a bare mirror or alternates: warm the *work repo's* `.git` directly.
+
+**Mechanism** (`common.warm_default_branch` + `clone_repo` adopt):
+- **Boot, when idle (reserved instance), background:** into `WORK_DIR/warm-repo`,
+  `git fetch --depth=1 origin <branch>` (branch tip tree+blobs — so the per-task
+  head fetch dedups) then `git fetch --unshallow --filter=tree:0 origin <branch>`
+  (full history treeless — so the merge needs no per-task unshallow) + **checkout**
+  the first branch (local, since its tip tree+blobs are present) so the per-task
+  checkout is a delta too. Branch set resolved via `ls-remote` + fnmatch, so globs
+  (`release/2*`) expand and non-existent names (a push-branch placeholder) are
+  skipped. Token scrubbed from the remote; a ready sentinel written last.
+- **Per task:** `clone_repo(warm_dir=…)` adopts a *ready* warm repo —
+  `os.replace` it into the clone dir, re-auth origin, `fetch --filter=tree:0
+  <head_sha>` (small delta; history present so it doesn't deepen/hang), then
+  `checkout -f <head_sha>` + `clean -ffdx` so the worktree is EXACTLY the
+  authorized tree (warm base is the trusted branch). No ready sentinel → cold
+  clone (no regression). Used for PR **and** push events (push just has no merge,
+  so only the head-fetch dedup applies).
+
+**Boot sequence** (orchestrator): self-update → receive once → if a task is
+waiting, handle it (no warm) → if idle (and not scaling in), warm once in the
+background, keep polling.
+
+**Measured on AWS (reserved instance):** head fetch **33s → 0.47s**, unshallow
+**15s → 0.38s**, `clone: total` **44s → 6.5s** (checkout 6s = delta write). With
+the overlay removed (#9) runtime also dropped 24s → 4s. Bootstrap **≈340s → 102s**
+end to end. Caveat: `fetch <head>` must stay shallow/treeless — a plain non-shallow
+fetch into a *shallow* repo deepens the full history and hangs. Adopt correctness
+(exact head tree, full history, cold fallback) covered by `test_warm_clone.py`.
+
+**Config.** Enabled + tuned entirely in SSM: `ci_config["repo"]` (owner/name) +
+`ci_config["warm_branches"]` (a non-empty list of concrete names or globs, e.g.
+`["master", "release/2*"]`) — both required. The repo is a ci_config key because
+the controller has no reliable owner/name source at boot. Warm the PR base **and**
+push branches (list them in `warm_branches`). Orchestrator-only; only pays off with
+reserved capacity (`capacity_reserve > 0`) — cold scale-from-zero falls back to the
+cold clone. See ci-config.md.

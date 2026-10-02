@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 
 from praktika_controller.common import (
@@ -32,6 +33,8 @@ from praktika_controller.common import (
     terminate_instance_for_replacement,
     terminate_process_group,
     try_scale_in_if_idle,
+    warm_branches,
+    warm_repo_dir,
 )
 from praktika_controller.merge import (
     MergeConflict,
@@ -144,6 +147,44 @@ def _ci_config_for_message(role: str, payload, log) -> dict:
 def _controller_version_pin(ci_config) -> str:
     value = (ci_config or {}).get("praktika_controller_version", "")
     return value.strip() if isinstance(value, str) else ""
+
+
+def _warm_clone_config(ci_config):
+    """Opt-in warm-clone target, configured entirely in ci_config (SSM-tunable, no
+    pool redeploy). Both keys are required and together enable warm:
+    ``ci_config["repo"]`` (this project's ``owner/name``) and
+    ``ci_config["warm_branches"]`` (a non-empty list of concrete names or globs like
+    release/2*). Returns ``(repo, [patterns])`` or None when either is missing.
+    warm_branches resolves the patterns against the remote's heads, so globs expand
+    and missing names are skipped. (The repo lives in ci_config because the
+    controller has no reliable owner/name source at boot — Settings.PROJECT_NAME is
+    only the bare name.)"""
+    cfg = ci_config or {}
+    repo = str(cfg.get("repo", "")).strip()
+    raw = cfg.get("warm_branches")
+    patterns = [str(b).strip() for b in raw if str(b).strip()] if isinstance(raw, list) else []
+    if not repo or not patterns:
+        return None
+    return (repo, patterns)
+
+
+def _start_warm_repo(warm_cfg, log):
+    """Background, best-effort warm of the PR base branch(es) into WORK_DIR while
+    the orchestrator is idle, so the next task's clone adopts it. Non-blocking: the
+    poll loop keeps running, and a task that arrives before it finishes just
+    cold-clones. Daemon thread, so it dies with the process on scale-in."""
+    repo, branches = warm_cfg
+
+    def _run():
+        try:
+            token = get_github_token(REGION)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Warm clone skipped (no GitHub token): %s", e)
+            return
+        warm_branches(repo, branches, token, WORK_DIR, log=log)
+
+    threading.Thread(target=_run, name="warm-clone", daemon=True).start()
+    log.info("Started background warm clone of %s %s", repo, branches)
 
 
 def _resolve_runtime_source(clone_dir: str, log, ci_config=None):
@@ -515,6 +556,10 @@ def handle_workflow(
                         work_dir=WORK_DIR,
                         branch=branch,
                         log=log,
+                        # Adopt an idle-warmed base branch if present (no-op cold
+                        # clone otherwise); the per-task clone then only applies
+                        # the PR delta and the merge needs no unshallow.
+                        warm_dir=warm_repo_dir(WORK_DIR),
                     )
 
                 # Stale-head guard (TOCTOU): clone_repo fetches the live
@@ -899,11 +944,14 @@ def poll():
     # in the loop below. Because runners boot from the same AMI as the
     # orchestrator, when the orchestrator needs no self-update a same-version
     # runner won't either.
+    warm_cfg = None
     if role == ROLE_WORKFLOW:
-        boot_pin = _controller_version_pin(load_ci_config(region=REGION, log=log))
+        boot_ci_config = load_ci_config(region=REGION, log=log)
+        boot_pin = _controller_version_pin(boot_ci_config)
         if boot_pin and maybe_self_update(boot_pin, log):
             log.info("Controller self-update complete at boot; exiting to restart")
             return
+        warm_cfg = _warm_clone_config(boot_ci_config)
 
     sqs = boto3.client("sqs", region_name=REGION)
     queue_url = sqs.get_queue_url(QueueName=queue_name)["QueueUrl"]
@@ -915,6 +963,7 @@ def poll():
     log.info("Role=%s polling %s (visibility_timeout=%ss)", role, queue_url, visibility)
 
     has_received_message = False
+    warmed = False
     # SQS long polling is capped at 20s; keep polling responsive and throttle
     # the pre-first-job reserved-capacity idle log separately.
     reserved_capacity_log_limiter = LogRateLimiter(
@@ -940,6 +989,11 @@ def poll():
                 log=log,
             ):
                 return
+            # Still here = a reserved idle instance. Warm the base branch once (in
+            # the background) so the first task's clone only applies the PR delta.
+            if warm_cfg and not warmed:
+                _start_warm_repo(warm_cfg, log)
+                warmed = True
             continue
 
         has_received_message = True

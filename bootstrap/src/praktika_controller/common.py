@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 import contextlib
 import errno
+import fnmatch
 import importlib.util
 import json
 import logging
@@ -839,6 +840,150 @@ def finalize_check(repo, check_id, token, conclusion, title, summary, log=None):
             log.warning("Could not finalize early check run %s: %s", check_id, e)
 
 
+# Warm clone: an idle orchestrator pre-fetches the repo's PR base branch(es) into
+# a sibling of the per-event clone dir so the real clone just applies the PR delta.
+# The ready sentinel is written LAST, so its presence means the warm repo is
+# complete and safe to adopt.
+WARM_SUBDIR = "warm-repo"
+_WARM_READY = ".praktika_warm_ready"
+
+
+def warm_repo_dir(work_dir):
+    return os.path.join(str(work_dir), WARM_SUBDIR)
+
+
+def warm_branches(repo, patterns, token, work_dir, log=None, timeout=600):
+    """Pre-populate a warm ``.git`` for ``repo`` covering the branches matched by
+    ``patterns`` (PR base + push branches; concrete names or globs like
+    ``release/2*``) so a later ``clone_repo`` adopts it and only transfers the PR
+    delta.
+
+    ``patterns`` are resolved against the remote's actual heads (``ls-remote`` +
+    fnmatch), so globs expand and names that don't exist (e.g. a push-branch
+    placeholder) are simply skipped — no error. Then two fetches: each resolved
+    branch tip at ``--depth=1`` (its tree+blobs, so a head fetch based on ANY of
+    them dedups to ~the changed files) then an ``--unshallow --filter=tree:0`` to
+    bring full commit history treeless (so the ephemeral merge needs no per-task
+    unshallow). The first resolved branch is checked out as the worktree, so the
+    per-task ``checkout -f <head>`` rewrites only the changed files. The token is
+    scrubbed from the persisted remote (``clone_repo`` re-auths). Best-effort:
+    writes the ready sentinel only on full success."""
+    patterns = [p.strip() for p in patterns if p and p.strip()]
+    if not patterns:
+        if log is not None:
+            log.warning("Warm skipped: no branch patterns for %s", repo)
+        return False
+    warm = warm_repo_dir(work_dir)
+    shutil.rmtree(warm, ignore_errors=True)
+    os.makedirs(warm, exist_ok=True)
+    url = f"https://x-access-token:{token}@github.com/{repo}.git"
+
+    def _g(args, step):
+        with profile_step(log, step):
+            subprocess.run(
+                ["git", "-C", warm, *args],
+                check=True, capture_output=True, text=True, timeout=timeout,
+            )
+
+    try:
+        subprocess.run(["git", "init", "-q", warm], check=True)
+        subprocess.run(["git", "-C", warm, "remote", "add", "origin", url], check=True)
+        # Resolve patterns to branches that actually exist (globs expand; missing
+        # names skipped). ls-remote lists refs only — no object transfer.
+        ls = subprocess.run(
+            ["git", "-C", warm, "ls-remote", "--heads", "origin"],
+            check=True, capture_output=True, text=True, timeout=timeout,
+        ).stdout
+        heads = [
+            line.split("\t", 1)[1][len("refs/heads/") :]
+            for line in ls.splitlines()
+            if "\trefs/heads/" in line
+        ]
+        branches = []
+        for pat in patterns:
+            for name in heads:
+                if (name == pat or fnmatch.fnmatch(name, pat)) and name not in branches:
+                    branches.append(name)
+        if not branches:
+            if log is not None:
+                log.warning("Warm skipped: no remote branches match %s for %s", patterns, repo)
+            shutil.rmtree(warm, ignore_errors=True)
+            return False
+        if log is not None:
+            log.info("Warm resolving %s -> %d branch(es): %s", patterns, len(branches), branches)
+        _g(
+            ["fetch", "--depth=1", "--no-tags", "--no-recurse-submodules",
+             "origin", *branches],
+            "warm: fetch branch tips (depth 1)",
+        )
+        _g(
+            ["fetch", "--unshallow", "--filter=tree:0", "--no-tags",
+             "--no-recurse-submodules", "origin", *branches],
+            "warm: unshallow history (treeless)",
+        )
+        # Materialize the first branch as the worktree now (idle), so the per-task
+        # adopt's `checkout -f <head>` only rewrites the PR's changed files instead
+        # of the whole ~30k-file tree. Its tip tree+blobs are already local (from
+        # the depth-1 fetch), so this checkout is local — no promisor round-trips.
+        _g(
+            ["-c", "checkout.workers=0", "checkout", "-q", branches[0]],
+            "warm: checkout branch",
+        )
+        # Don't persist the token in the baked remote; clone_repo re-auths.
+        subprocess.run(
+            ["git", "-C", warm, "remote", "set-url", "origin",
+             f"https://github.com/{repo}.git"],
+            check=True,
+        )
+        Path(warm, _WARM_READY).write_text(
+            f"{repo}\n{','.join(branches)}\n", encoding="utf-8"
+        )
+        if log is not None:
+            log.info("Warm repo ready: %s [%s] in %s", repo, ",".join(branches), warm)
+        return True
+    except Exception as e:  # noqa: BLE001
+        if log is not None:
+            log.warning("Warm repo failed for %s [%s]: %s", repo, ",".join(branches), e)
+        shutil.rmtree(warm, ignore_errors=True)
+        return False
+
+
+def _adopt_warm_repo(clone_dir, warm_dir, clone_url, head_sha, log):
+    """Adopt a ready warm repo as ``clone_dir`` and apply the PR delta.
+
+    Moves the warm ``.git`` into place, re-auths origin, fetches ``head_sha``
+    (a small delta — base objects + full history are already present, so no
+    unshallow), and force-checks-out + cleans so the worktree is EXACTLY the
+    authorized tree (the warm base is the trusted branch). Returns ``actual_sha``
+    on success, or None to fall back to the cold clone."""
+    ready = os.path.join(warm_dir, _WARM_READY)
+    if not os.path.exists(ready):
+        return None
+    try:
+        if os.path.exists(clone_dir):
+            shutil.rmtree(clone_dir)
+        os.replace(warm_dir, clone_dir)  # same filesystem (both under work_dir)
+        os.remove(os.path.join(clone_dir, _WARM_READY))
+        git(["remote", "set-url", "origin", clone_url], cwd=clone_dir)
+        # History is present (warm unshallowed), so this is a small delta and does
+        # NOT deepen; --filter=tree:0 keeps it to commits (changed blobs lazy on
+        # checkout). Still pinned to the authorized head_sha.
+        with profile_step(log, "clone: fetch head (warm delta)"):
+            git(
+                ["fetch", "--filter=tree:0", "--no-tags", "--no-recurse-submodules",
+                 "origin", head_sha],
+                cwd=clone_dir,
+            )
+        with profile_step(log, "clone: checkout head (warm)"):
+            git(["-c", "checkout.workers=0", "checkout", "-f", head_sha], cwd=clone_dir)
+            git(["clean", "-ffdq"], cwd=clone_dir)
+        return git(["rev-parse", "HEAD"], cwd=clone_dir).strip()
+    except Exception as e:  # noqa: BLE001
+        if log is not None:
+            log.warning("Could not adopt warm repo (%s); cold clone instead", e)
+        return None
+
+
 def clone_repo(
     repo,
     head_sha,
@@ -848,17 +993,15 @@ def clone_repo(
     branch=None,
     log=None,
     clean_existing=True,
+    warm_dir=None,
 ):
-    """Clone repo into a per-event work dir."""
+    """Clone repo into a per-event work dir.
+
+    If ``warm_dir`` holds a ready warm repo (see warm_branches), adopt it so
+    the fetch is only the PR delta and the merge needs no unshallow; otherwise do
+    the cold depth-1 clone."""
     work_dir = str(work_dir)
     clone_dir = os.path.join(work_dir, REPO_SUBDIR)
-    if os.path.exists(clone_dir) and clean_existing:
-        shutil.rmtree(clone_dir)
-    elif os.path.exists(clone_dir) and any(Path(clone_dir).iterdir()):
-        raise RuntimeError(
-            f"Workdir {clone_dir} is not clean before clone; refusing in-task cleanup"
-        )
-    os.makedirs(clone_dir, exist_ok=True)
 
     clone_url = f"https://x-access-token:{token}@github.com/{repo}.git"
     if log is not None:
@@ -866,6 +1009,21 @@ def clone_repo(
             log.info("Cloning %s PR#%s at %s", repo, pr_number, head_sha[:12])
         else:
             log.info("Cloning %s branch=%s at %s", repo, branch, head_sha[:12])
+
+    if warm_dir:
+        actual_sha = _adopt_warm_repo(clone_dir, warm_dir, clone_url, head_sha, log)
+        if actual_sha is not None:
+            if log is not None:
+                log.info("Adopted warm repo -> %s in %s", actual_sha[:12], clone_dir)
+            return clone_dir, actual_sha
+
+    if os.path.exists(clone_dir) and clean_existing:
+        shutil.rmtree(clone_dir)
+    elif os.path.exists(clone_dir) and any(Path(clone_dir).iterdir()):
+        raise RuntimeError(
+            f"Workdir {clone_dir} is not clean before clone; refusing in-task cleanup"
+        )
+    os.makedirs(clone_dir, exist_ok=True)
 
     git(["init", clone_dir])
     git(["remote", "add", "origin", clone_url], cwd=clone_dir)

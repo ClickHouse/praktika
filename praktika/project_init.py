@@ -729,6 +729,11 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                 report_pages=[Components.report_page_config],
                 image_builders=_IMAGE_BUILDERS,
                 github_token_minters=[_GH_TOKEN_MINTER],{optional_s3_proxy}
+                # Warm clone (optional, SSM-tunable): set ci_config["repo"] =
+                # "owner/name" and ci_config["warm_branches"] = ["{answers.main_branch}"]
+                # so an idle reserved orchestrator pre-fetches those branches and the
+                # per-task clone only applies the PR delta (no full head fetch, no
+                # unshallow). See praktika/docs/ci-config.md.
                 orchestrator_pool=Components.OrchestratorPool(
                     instance_type="t4g.small",
                     scaling=Components.OrchestratorPool.Scaling.Auto,

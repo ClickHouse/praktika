@@ -57,7 +57,14 @@ _CI_CONFIG_TEMPLATE = """\
   // "praktika_version": "praktika==0.1.14",
 
   // Pin controller wheel: version spec / wheel URL / absolute host path.
-  // "praktika_controller_version": "praktika-controller==0.1.8"
+  // "praktika_controller_version": "praktika-controller==0.1.8",
+
+  // Warm clone: an idle reserved orchestrator pre-fetches the repo's branches so
+  // the per-task clone only applies the PR delta (needs capacity_reserve > 0).
+  // Both keys required. "repo" is this project's repo (owner/name); branches are
+  // concrete names or globs (release/2*), non-existent names skipped.
+  // "repo": "owner/name",
+  // "warm_branches": ["master"]
 }
 """
 
