@@ -340,11 +340,11 @@ _ORCHESTRATOR_BEDROCK_IAM_STATEMENT = {
 
 _orchestrator_pool = Components.OrchestratorPool(
     name="workflow-orchestrator",
-    instance_type="t4g.small",
+    instance_type="t4g.xlarge",
     scaling=Components.OrchestratorPool.Scaling.Auto,
     size=0,
     max_size=10,
-    capacity_reserve=0,
+    capacity_reserve=1,
     image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
     ext={
         "iam_statements": [_ORCHESTRATOR_BEDROCK_IAM_STATEMENT],

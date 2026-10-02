@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 
 from praktika_controller.common import (
@@ -28,12 +29,16 @@ from praktika_controller.common import (
     resolve_praktika_base_venv,
     restore_repo_snapshot,
     TaskLogCapture,
+    terminate_if_auto_scaled,
     terminate_instance_for_replacement,
     terminate_process_group,
     try_scale_in_if_idle,
+    warm_branches,
+    warm_repo_dir,
 )
 from praktika_controller.merge import (
     MergeConflict,
+    MULTIPART_MAX_CONCURRENCY,
     prepare_repo_snapshot,
     read_repo_settings,
 )
@@ -63,6 +68,21 @@ INFRA_EXIT_CODE = 100
 # workflow name isn't known until the repo config is read). The orchestrator
 # renames it to the matched workflow's name once it takes over.
 EARLY_CHECK_NAME = "CI"
+
+
+def _s3_client():
+    """S3 client whose connection pool matches the snapshot multipart upload
+    concurrency. The default botocore pool is 10; the parallel part uploads
+    (MULTIPART_MAX_CONCURRENCY) would otherwise exhaust it and make urllib3 warn
+    and churn sockets ("Connection pool is full, discarding connection")."""
+    import boto3
+    from botocore.config import Config
+
+    return boto3.client(
+        "s3",
+        region_name=REGION,
+        config=Config(max_pool_connections=MULTIPART_MAX_CONCURRENCY),
+    )
 
 
 class InfraOrchestrationError(RuntimeError):
@@ -127,6 +147,44 @@ def _ci_config_for_message(role: str, payload, log) -> dict:
 def _controller_version_pin(ci_config) -> str:
     value = (ci_config or {}).get("praktika_controller_version", "")
     return value.strip() if isinstance(value, str) else ""
+
+
+def _warm_clone_config(ci_config):
+    """Opt-in warm-clone target, configured entirely in ci_config (SSM-tunable, no
+    pool redeploy). Both keys are required and together enable warm:
+    ``ci_config["repo"]`` (this project's ``owner/name``) and
+    ``ci_config["warm_branches"]`` (a non-empty list of concrete names or globs like
+    release/2*). Returns ``(repo, [patterns])`` or None when either is missing.
+    warm_branches resolves the patterns against the remote's heads, so globs expand
+    and missing names are skipped. (The repo lives in ci_config because the
+    controller has no reliable owner/name source at boot — Settings.PROJECT_NAME is
+    only the bare name.)"""
+    cfg = ci_config or {}
+    repo = str(cfg.get("repo", "")).strip()
+    raw = cfg.get("warm_branches")
+    patterns = [str(b).strip() for b in raw if str(b).strip()] if isinstance(raw, list) else []
+    if not repo or not patterns:
+        return None
+    return (repo, patterns)
+
+
+def _start_warm_repo(warm_cfg, log):
+    """Background, best-effort warm of the PR base branch(es) into WORK_DIR while
+    the orchestrator is idle, so the next task's clone adopts it. Non-blocking: the
+    poll loop keeps running, and a task that arrives before it finishes just
+    cold-clones. Daemon thread, so it dies with the process on scale-in."""
+    repo, branches = warm_cfg
+
+    def _run():
+        try:
+            token = get_github_token(REGION)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Warm clone skipped (no GitHub token): %s", e)
+            return
+        warm_branches(repo, branches, token, WORK_DIR, log=log)
+
+    threading.Thread(target=_run, name="warm-clone", daemon=True).start()
+    log.info("Started background warm clone of %s %s", repo, branches)
 
 
 def _resolve_runtime_source(clone_dir: str, log, ci_config=None):
@@ -286,9 +344,7 @@ def _write_infra_failure_final(task, exc: Exception, log) -> bool:
     if not final_bucket or not final_key:
         return False
     try:
-        import boto3
-
-        s3 = boto3.client("s3", region_name=REGION)
+        s3 = _s3_client()
         body = {
             "type": "job_completion",
             "job_name": task.get("job_name"),
@@ -383,8 +439,17 @@ def handle_workflow(
         # adopts this id and renames it to the matched workflow.
         early_check_id = None
         if head_sha and not is_resume:
+            # Give the in-progress check a summary so the PR surfaces what the
+            # controller is doing (preparing the runtime, and for a PR running
+            # the ephemeral merge to check mergeability) and which orchestrator
+            # owns the run, before the clone finishes. The orchestrator replaces
+            # this once it adopts the check and knows the workflow name.
+            prep = "Preparing CI runtime and checking mergeability" if pr_number \
+                else "Preparing CI runtime"
+            early_summary = f"{prep}…\n\n**Orchestrator instance:** `{INSTANCE_ID}`"
             early_check_id = post_early_check(
-                repo, head_sha, gh_token, EARLY_CHECK_NAME, log=log
+                repo, head_sha, gh_token, EARLY_CHECK_NAME, log=log,
+                title=prep, summary=early_summary,
             )
 
         # The run's single commit (base_sha, snapshot_sha, repo_snapshot_key),
@@ -418,9 +483,7 @@ def handle_workflow(
 
         def _restore_original():
             """Restore the run's ORIGINAL published snapshot (reuse mode)."""
-            import boto3
-
-            s3 = boto3.client("s3", region_name=REGION)
+            s3 = _s3_client()
             cd, sha = restore_repo_snapshot(
                 s3,
                 resume_snapshot_key,
@@ -453,9 +516,7 @@ def handle_workflow(
                 try:
                     settings = read_repo_settings(clone_dir, log, ci_config=ci_config)
                     if settings.get("ENABLE_S3_REPO_SNAPSHOT"):
-                        import boto3
-
-                        s3 = boto3.client("s3", region_name=REGION)
+                        s3 = _s3_client()
                         snapshot = prepare_repo_snapshot(
                             clone_dir, event, settings, s3, log
                         )
@@ -495,6 +556,10 @@ def handle_workflow(
                         work_dir=WORK_DIR,
                         branch=branch,
                         log=log,
+                        # Adopt an idle-warmed base branch if present (no-op cold
+                        # clone otherwise); the per-task clone then only applies
+                        # the PR delta and the merge needs no unshallow.
+                        warm_dir=warm_repo_dir(WORK_DIR),
                     )
 
                 # Stale-head guard (TOCTOU): clone_repo fetches the live
@@ -537,9 +602,7 @@ def handle_workflow(
                 try:
                     settings = read_repo_settings(clone_dir, log, ci_config=ci_config)
                     if settings.get("ENABLE_S3_REPO_SNAPSHOT"):
-                        import boto3
-
-                        s3 = boto3.client("s3", region_name=REGION)
+                        s3 = _s3_client()
                         snapshot = prepare_repo_snapshot(
                             clone_dir, event, settings, s3, log
                         )
@@ -663,9 +726,7 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
     heartbeat_s3_key = task.get("heartbeat_s3_key", "")
     heartbeat_interval_s = task.get("heartbeat_interval_s", 30)
 
-    import boto3
-
-    s3 = boto3.client("s3", region_name=REGION)
+    s3 = _s3_client()
     if not always_run and _s3_key_exists(s3, cancel_s3_bucket, cancel_s3_key, log):
         log.info(
             "Task %r belongs to a cancelled run, skipping before clone",
@@ -875,6 +936,23 @@ def poll():
     )
     log.info("Resolved controller role=%s queue=%s", role, queue_name)
 
+    # Converge to the pinned controller BEFORE polling, so a self-update never
+    # consumes an SQS delivery (attempt N/3 == ApproximateReceiveCount; the old
+    # per-message self-update released the message and restarted, silently burning
+    # one delivery on every fresh instance). Only the ORCHESTRATOR reads SSM; job
+    # runners receive the pin frozen into their task and converge on the task path
+    # in the loop below. Because runners boot from the same AMI as the
+    # orchestrator, when the orchestrator needs no self-update a same-version
+    # runner won't either.
+    warm_cfg = None
+    if role == ROLE_WORKFLOW:
+        boot_ci_config = load_ci_config(region=REGION, log=log)
+        boot_pin = _controller_version_pin(boot_ci_config)
+        if boot_pin and maybe_self_update(boot_pin, log):
+            log.info("Controller self-update complete at boot; exiting to restart")
+            return
+        warm_cfg = _warm_clone_config(boot_ci_config)
+
     sqs = boto3.client("sqs", region_name=REGION)
     queue_url = sqs.get_queue_url(QueueName=queue_name)["QueueUrl"]
     visibility = int(
@@ -885,6 +963,7 @@ def poll():
     log.info("Role=%s polling %s (visibility_timeout=%ss)", role, queue_url, visibility)
 
     has_received_message = False
+    warmed = False
     # SQS long polling is capped at 20s; keep polling responsive and throttle
     # the pre-first-job reserved-capacity idle log separately.
     reserved_capacity_log_limiter = LogRateLimiter(
@@ -910,6 +989,11 @@ def poll():
                 log=log,
             ):
                 return
+            # Still here = a reserved idle instance. Warm the base branch once (in
+            # the background) so the first task's clone only applies the PR delta.
+            if warm_cfg and not warmed:
+                _start_warm_repo(warm_cfg, log)
+                warmed = True
             continue
 
         has_received_message = True
@@ -1062,6 +1146,17 @@ def poll():
                     "RESULT produced but message delete failed; message may retry"
                 )
             log.info("RESULT: %s", json.dumps(result))
+
+        # One workflow per orchestrator: once its single message is finalized
+        # (success, permanent give-up, or malformed), an auto-scaled orchestrator
+        # terminates immediately instead of polling for more work or waiting for
+        # an idle scale-in. _await_termination (not a bare return) so the
+        # Restart=always unit can't relaunch and re-receive the next message.
+        # A pinned/dev box (praktika_scaling != "auto") keeps polling.
+        if role == ROLE_WORKFLOW and terminate_if_auto_scaled(
+            region=REGION, instance_id=INSTANCE_ID, log=log
+        ):
+            _await_termination(log)
 
 
 def main():

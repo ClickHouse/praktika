@@ -422,11 +422,91 @@ def test_poll_workflow_infra_failure_gives_up_at_max_receives(monkeypatch):
     assert not any(e[0] == "terminate" for e in events if isinstance(e, tuple))
 
 
+def test_poll_workflow_terminates_on_finish_when_auto_scaled(monkeypatch):
+    # One workflow per orchestrator: after a successful run, an auto-scaled
+    # orchestrator terminates immediately (does not poll for more work or wait
+    # for an idle scale-in), blocking in _await_termination so the box can't
+    # re-receive.
+    events = []
+    sqs = _workflow_sqs(events, receive_count=1, stop_after_first=True)
+    _setup_workflow_poll(monkeypatch, sqs)
+    monkeypatch.setattr(
+        controller,
+        "handle_workflow",
+        lambda *_args, **_kwargs: {"status": "OK"},
+    )
+
+    def fake_terminate(**_kwargs):
+        events.append("terminate")
+        return True
+
+    monkeypatch.setattr(controller, "terminate_if_auto_scaled", fake_terminate)
+    monkeypatch.setattr(
+        controller,
+        "_await_termination",
+        lambda *_a, **_k: (_ for _ in ()).throw(_Stopped()),
+    )
+
+    with pytest.raises(_Stopped):
+        controller.poll()
+
+    # Message finalized, then terminated — the second receive never happens.
+    assert "delete" in events
+    assert events[-1] == "terminate"
+    assert events.count("receive") == 1
+
+
+def test_poll_workflow_keeps_polling_when_not_auto_scaled(monkeypatch):
+    # A pinned/dev orchestrator (praktika_scaling != "auto") keeps polling after
+    # a run instead of terminating.
+    events = []
+    sqs = _workflow_sqs(events, receive_count=1, stop_after_first=True)
+    _setup_workflow_poll(monkeypatch, sqs)
+    monkeypatch.setattr(
+        controller,
+        "handle_workflow",
+        lambda *_args, **_kwargs: {"status": "OK"},
+    )
+    monkeypatch.setattr(controller, "terminate_if_auto_scaled", lambda **_k: False)
+
+    with pytest.raises(_Done):
+        controller.poll()
+
+    # Fell through to a second receive rather than terminating.
+    assert events.count("receive") == 2
+
+
 def test_post_early_check_returns_id(monkeypatch):
     monkeypatch.setattr(
         common, "_github_api", lambda method, url, token, body=None, **_k: {"id": 42}
     )
     assert common.post_early_check("o/r", "deadbeef", "tok", "CI") == 42
+
+
+def test_post_early_check_includes_output_summary(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        common,
+        "_github_api",
+        lambda method, url, token, body=None, **_k: captured.update(body=body)
+        or {"id": 7},
+    )
+    common.post_early_check(
+        "o/r", "deadbeef", "tok", "CI", title="Preparing", summary="hello\nworld"
+    )
+    assert captured["body"]["output"] == {"title": "Preparing", "summary": "hello\nworld"}
+
+
+def test_post_early_check_omits_output_when_no_summary(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        common,
+        "_github_api",
+        lambda method, url, token, body=None, **_k: captured.update(body=body)
+        or {"id": 7},
+    )
+    common.post_early_check("o/r", "deadbeef", "tok", "CI")
+    assert "output" not in captured["body"]
 
 
 def test_post_early_check_is_best_effort_on_error(monkeypatch):

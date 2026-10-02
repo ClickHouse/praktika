@@ -140,9 +140,10 @@ def test_ensure_praktika_runtime_uses_base_venv_when_no_source(
     assert resolved == base_dir.resolve()
 
 
-def test_ensure_praktika_runtime_source_overrides_base_venv(tmp_path, monkeypatch):
+def test_ensure_praktika_runtime_source_installs_into_base_venv(tmp_path, monkeypatch):
     # An explicit source is a runtime override: even when the base venv already
-    # ships praktika, the source is installed on top of a copy of it.
+    # ships praktika, the source is force-reinstalled straight into the base venv
+    # (no overlay copy) and the base venv path is returned.
     source_dir = tmp_path / "praktika-src"
     source_dir.mkdir()
     (source_dir / "setup.py").write_text("from setuptools import setup\n", encoding="utf-8")
@@ -159,7 +160,7 @@ def test_ensure_praktika_runtime_source_overrides_base_venv(tmp_path, monkeypatc
     def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
         calls.append(cmd)
         # Base venv HAS praktika — the old fallback semantics would short-circuit
-        # to it here; the override must ignore that and build the overlay.
+        # to it here; the override must ignore that and reinstall from source.
         if cmd == [str(base_dir / "bin" / "python"), "-c", "import praktika"]:
             return _CompletedProcess(returncode=0)
         return _CompletedProcess()
@@ -173,16 +174,20 @@ def test_ensure_praktika_runtime_source_overrides_base_venv(tmp_path, monkeypatc
         cache_root=cache_root,
     )
 
-    assert resolved != base_dir.resolve()
-    assert resolved == (cache_root / f"praktika-pytest-{_PY_TAG}").resolve()
+    # Installs into, and returns, the base venv itself — no overlay under cache_root.
+    assert resolved == base_dir.resolve()
+    assert not (cache_root / f"praktika-pytest-{_PY_TAG}").exists()
     install_calls = [
         cmd for cmd in calls if len(cmd) >= 4 and cmd[1:4] == ["-m", "pip", "install"]
     ]
     assert len(install_calls) == 1
+    assert install_calls[0][0] == str(base_dir / "bin" / "python")
     assert str(source_dir.resolve()) in install_calls[0]
 
 
-def test_ensure_praktika_runtime_builds_overlay_from_base_venv(tmp_path, monkeypatch):
+def test_ensure_praktika_runtime_source_installs_even_when_base_lacks_praktika(
+    tmp_path, monkeypatch
+):
     source_dir = tmp_path / "praktika-src"
     source_dir.mkdir()
     (source_dir / "setup.py").write_text("from setuptools import setup\n", encoding="utf-8")
@@ -211,12 +216,12 @@ def test_ensure_praktika_runtime_builds_overlay_from_base_venv(tmp_path, monkeyp
         cache_root=cache_root,
     )
 
-    assert resolved != base_dir.resolve()
-    assert resolved == (cache_root / f"praktika-pytest-{_PY_TAG}").resolve()
+    assert resolved == base_dir.resolve()
     install_calls = [
         cmd for cmd in calls if len(cmd) >= 4 and cmd[1:4] == ["-m", "pip", "install"]
     ]
     assert len(install_calls) == 1
+    assert install_calls[0][0] == str(base_dir / "bin" / "python")
     assert str(source_dir.resolve()) in install_calls[0]
 
 
@@ -254,8 +259,8 @@ def test_ensure_praktika_runtime_requires_explicit_source_when_base_lacks_prakti
 
 
 def test_ensure_praktika_runtime_reinstalls_source_every_task(tmp_path, monkeypatch):
-    # A warm runner processes tasks from many checkouts. The overlay is created
-    # once, but praktika is reinstalled from the source on EVERY task (with
+    # A warm runner processes tasks from many checkouts. Praktika is reinstalled
+    # from the source straight into the base venv on EVERY task (with
     # --force-reinstall so a checkout change takes effect even at the same
     # version, and --no-deps so the baked deps are reused).
     source_dir = tmp_path / "praktika-src"
@@ -281,12 +286,13 @@ def test_ensure_praktika_runtime_reinstalls_source_every_task(tmp_path, monkeypa
     first = venv_manager.ensure_praktika_runtime(str(source_dir), **kw)
     second = venv_manager.ensure_praktika_runtime(str(source_dir), **kw)
 
-    assert first == second == (cache_root / f"praktika-pytest-{_PY_TAG}").resolve()
+    assert first == second == base_dir.resolve()
     install_calls = [
         c for c in calls if len(c) >= 4 and c[1:4] == ["-m", "pip", "install"]
     ]
     assert len(install_calls) == 2  # reinstalled on every task
     for cmd in install_calls:
+        assert cmd[0] == str(base_dir / "bin" / "python")  # into the base venv
         assert "--force-reinstall" in cmd
         assert "--no-deps" in cmd
         assert str(source_dir.resolve()) in cmd

@@ -48,6 +48,10 @@ class _FakeS3:
         with open(Filename, "rb") as f:
             self.objects[(Bucket, Key)] = f.read()
 
+    def download_file(self, Bucket, Key, Filename, Config=None):
+        with open(Filename, "wb") as f:
+            f.write(self.objects[(Bucket, Key)])
+
     def get_object(self, Bucket, Key):
         if (Bucket, Key) not in self.objects:
             raise RuntimeError("NoSuchKey")
@@ -166,6 +170,34 @@ def test_prepare_merges_base_and_head(tmp_path):
     # Published to the PRs/ tier, content-addressed, and actually uploaded.
     assert key.startswith("mybucket/prefix/repo-snapshots/v1/PRs/")
     assert ("mybucket", key.split("/", 1)[1]) in s3.objects
+
+
+def test_snapshot_restores_to_merge_commit(tmp_path):
+    # The published archive (built by tarring clone_dir's worktree + snap_dir's
+    # minimal .git, with no second checkout) must restore to a usable repo:
+    # HEAD == snapshot_sha, both sides' files present, and the hash check passes.
+    origin, head_sha, b1 = _make_origin(tmp_path)
+    clone = _make_clone(tmp_path, origin, head_sha)
+    s3 = _FakeS3()
+    event = {"type": "pull_request", "pr_number": 7, "base_ref": "main"}
+
+    _, snapshot_sha, key = merge.prepare_repo_snapshot(
+        str(clone), event, PR_MERGE_SETTINGS, s3, _Log()
+    )
+
+    # Restore through the real restore path (download + sha256 verify + untar).
+    restore_work = tmp_path / "restore"
+    restore_work.mkdir()
+    restored_dir, actual_sha = common.restore_repo_snapshot(
+        s3, key, snapshot_sha, 7, work_dir=str(restore_work), log=_Log()
+    )
+
+    assert actual_sha == snapshot_sha
+    assert _git(restored_dir, "rev-parse", "HEAD") == snapshot_sha
+    assert os.path.exists(os.path.join(restored_dir, "pr.txt"))  # from head
+    assert os.path.exists(os.path.join(restored_dir, "added_by_base.txt"))  # from base
+    # Worktree matches HEAD (index was seeded via read-tree, not a checkout).
+    assert _git(restored_dir, "status", "--porcelain") == ""
 
 
 def test_merge_is_deterministic(tmp_path):
