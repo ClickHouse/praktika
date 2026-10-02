@@ -1602,6 +1602,26 @@ class CloudInfrastructure:
                     print("=" * 60)
                     secret_config.deploy()
 
+            # Ensure the GitHub App secret exists (before the minter Lambda).
+            # Non-destructive: creates an empty-valued secret if absent so a
+            # human can fill in the credentials; never overwrites an existing one.
+            if _wants(
+                "GitHubTokenMinter",
+                "GitHubTokenMinters",
+                "github-token-minter",
+                "githubtokenminter",
+                "gh-token",
+            ):
+                for token_minter in self.github_token_minters:
+                    if not token_minter.region:
+                        token_minter.region = self._settings.AWS_REGION
+                    print("\n" + "=" * 60)
+                    print(
+                        f"Deploying GitHub App secret: {token_minter.secret_name}"
+                    )
+                    print("=" * 60)
+                    token_minter.deploy_secret()
+
             # Deploy CI DB cluster: authorizes SG ingress for ClickHouse ports
             # and launches each replica EC2. Runs after SecretParameter so the
             # admin password is in SSM before user_data fetches it.

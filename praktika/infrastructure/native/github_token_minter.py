@@ -1,8 +1,16 @@
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
+from praktika.infrastructure._utils import aws_client
 from praktika.infrastructure.iam_role import IAMRole
 from praktika.infrastructure.lambda_function import Lambda
+
+
+# Keys the minting Lambda reads out of the Secrets Manager secret
+# (see lambda_github_token.py::_get_app_credentials). deploy_secret()
+# creates the secret with exactly these keys and empty string values so
+# the secret exists for a human to fill in before the Lambda runs.
+GITHUB_APP_SECRET_KEYS = ("app-id", "app-key", "app-installation-id")
 
 
 DEFAULT_GITHUB_TOKEN_PERMISSIONS = {
@@ -94,6 +102,42 @@ class GitHubTokenMinter:
     def _validate(self):
         if not self.permissions:
             raise ValueError("GitHubTokenMinter.permissions must not be empty")
+
+    def deploy_secret(self):
+        """Ensure the GitHub App secret exists in Secrets Manager.
+
+        Idempotent and non-destructive: if the secret is absent it is created
+        with the expected keys (GITHUB_APP_SECRET_KEYS) and empty string values
+        so a human can fill in the real credentials. If it already exists it is
+        left untouched, so manually-entered values and rotations are preserved.
+        """
+        import json
+
+        sm = aws_client("secretsmanager", self.region, self.secret_name)
+        try:
+            sm.describe_secret(SecretId=self.secret_name)
+            print(
+                f"GitHub App secret '{self.secret_name}' already exists, skipping"
+            )
+            return self
+        except sm.exceptions.ResourceNotFoundException:
+            pass
+
+        placeholder = {key: "" for key in GITHUB_APP_SECRET_KEYS}
+        sm.create_secret(
+            Name=self.secret_name,
+            Description=(
+                "GitHub App credentials for token minting "
+                "(fill in app-id, app-key, app-installation-id)"
+            ),
+            SecretString=json.dumps(placeholder),
+        )
+        print(
+            f"Created empty GitHub App secret '{self.secret_name}' with keys "
+            f"{', '.join(GITHUB_APP_SECRET_KEYS)} — set their values in "
+            f"AWS Secrets Manager before the minter Lambda runs"
+        )
+        return self
 
     def apply_defaults(self, default_repository: str = ""):
         if not self.repositories and default_repository:
