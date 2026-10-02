@@ -378,14 +378,28 @@ def _build_and_publish_snapshot(clone_dir, snapshot_sha, is_pr, artifact_bucket,
                 f"snapshot HEAD {snap_sha} != expected {snapshot_sha}"
             )
 
+        # Drop anything not in the pinned tree before packing. A fresh checkout +
+        # deterministic merge produce clean tracked files, but loading repo
+        # settings (read_repo_settings imports ci/settings/settings.py) leaves
+        # byproducts like ci/settings/__pycache__ on disk. Without this, tar would
+        # fold those untracked/ignored files into the content-addressed snapshot,
+        # so the restored tree would not equal snapshot_sha. -ffdx also clears
+        # ignored files and nested-repo dirs.
+        with profile_step(log, "snapshot: clean untracked/ignored"):
+            _git(["clean", "-ffdx"], clone_dir)
+
         # Pack and hash in a single pass: one tar invocation pulls the minimal
         # .git from snap_dir and the worktree entries (everything but .git) from
         # clone_dir, piped to zstd; we tee each chunk into both the archive file
         # and the sha256, so the content-addressed key needs no separate
-        # full-archive read. clone_dir is clean here (a fresh checkout + a
-        # deterministic merge leave no untracked files), so its top-level entries
-        # are exactly the tree. zstd at SNAPSHOT_ZSTD_LEVEL (fast, not max ratio)
-        # and -T0 (all cores).
+        # full-archive read. clone_dir is clean (tracked tree only) after the
+        # clean above, so its top-level entries are exactly the tree. zstd at
+        # SNAPSHOT_ZSTD_LEVEL (fast, not max ratio) and -T0 (all cores).
+        #
+        # `--` terminates tar option parsing: worktree_entries are PR-controlled
+        # top-level names, and a file like `--exclude=ci` would otherwise be read
+        # as an option (silently truncating the snapshot, or invoking checkpoint
+        # actions).
         worktree_entries = sorted(
             e for e in os.listdir(clone_dir) if e != ".git"
         )
@@ -394,7 +408,7 @@ def _build_and_publish_snapshot(clone_dir, snapshot_sha, is_pr, artifact_bucket,
                 [
                     "tar", "-cf", "-",
                     "-C", snap_dir, ".git",
-                    "-C", str(clone_dir), *worktree_entries,
+                    "-C", str(clone_dir), "--", *worktree_entries,
                 ],
                 stdout=subprocess.PIPE,
             )
