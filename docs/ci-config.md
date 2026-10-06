@@ -174,12 +174,27 @@ The controller is the `praktika-controller` wheel installed into the system
 `python3.12` and run by systemd (`Restart=always`). When the frozen
 `praktika_controller_version` differs from the source the controller last
 installed, the controller **self-upgrades**: at the idle boundary (a message is
-received but not yet processed), it `pip install --force-reinstall`s the pinned
-source into system python, persists the new source, releases the message back to
-the queue un-processed, and exits — the `Restart=always` unit relaunches into the
-new code, which re-receives the message and proceeds. No run is interrupted
-mid-flight. Mechanism lives in `praktika_controller.self_update.maybe_self_update`,
-wired into `controller.poll()`.
+received but not yet processed), it **releases the message back to the queue
+un-processed first** (`change_message_visibility` to 0), *then*
+`pip install --force-reinstall`s the pinned source into system python, persists
+the new source, and exits — the `Restart=always` unit relaunches into the new code
+and resumes normal polling. No run is interrupted mid-flight. Mechanism lives in
+`praktika_controller.self_update` (`update_pending` decides, `maybe_self_update`
+installs), wired into `controller.poll()`.
+
+> **Release before install, don't reclaim the same task.** The decision
+> (`update_pending`) is made *before* the install so the message is freed
+> immediately — a controller already on the pinned version can pick it up right
+> away instead of waiting out our (possibly slow) download + pip + restart, and a
+> crash mid-install can't strand the task until the visibility timeout lapses. The
+> restarted controller does **not** try to reclaim that specific task; it just
+> polls. This matters most for **job runners**: the SQS queue's `maxReceiveCount`
+> is 3 (`sqs_queue.py`), and a runner that self-updates burns one receive on the
+> task it released. Holding the task through the install (the old behavior) blocked
+> it for the whole install and, with several freshly-booted stale runners each
+> receive-then-self-updating the same task, could push it past `maxReceiveCount`
+> into the DLQ — i.e. a dropped job and a hung run. Releasing first lets a
+> converged runner absorb it before that happens.
 
 This is a **dev-mode** mechanism, kept deliberately simple:
 

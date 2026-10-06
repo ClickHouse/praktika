@@ -104,6 +104,52 @@ def test_calculate_desired_capacity_applies_capacity_reserve_once():
     )
 
 
+def test_calculate_desired_capacity_steps_by_30_percent_of_gap():
+    # A large backlog grows by ~30% of the outstanding gap per invocation, not
+    # just +1, so it drains quickly.
+    assert (
+        _calculate_desired_capacity(
+            current_desired=0,
+            max_size=1000,
+            visible_messages=100,
+            in_flight_messages=0,
+        )
+        == 30
+    )
+    # Next minute, the 30 instances we just asked for are still booting so the
+    # backlog is unchanged -- but current_desired already covers them, so the
+    # step is 30% of the *remaining* gap (70), not another 30 off the raw 100.
+    assert (
+        _calculate_desired_capacity(
+            current_desired=30,
+            max_size=1000,
+            visible_messages=100,
+            in_flight_messages=0,
+        )
+        == 51
+    )
+    # Near the target the 30% step floors to +1 and is capped at the target, so
+    # we approach the backlog without ever overshooting it.
+    assert (
+        _calculate_desired_capacity(
+            current_desired=98,
+            max_size=1000,
+            visible_messages=100,
+            in_flight_messages=0,
+        )
+        == 99
+    )
+    assert (
+        _calculate_desired_capacity(
+            current_desired=99,
+            max_size=1000,
+            visible_messages=100,
+            in_flight_messages=0,
+        )
+        == 100
+    )
+
+
 def test_calculate_desired_capacity_never_scales_down():
     assert (
         _calculate_desired_capacity(

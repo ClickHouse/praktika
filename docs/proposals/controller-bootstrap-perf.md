@@ -92,6 +92,7 @@ awaiting a ClickHouse run to confirm · **PLANNED**.
 | 8 | **Warm / AMI-baked git mirror** — borrow a baked mirror's objects via alternates so the head fetch is a delta + no unshallow | REJECTED | cut ~43s network (fetch 29 + unshallow 14) | net LOSS on AWS (EBS lazy-load); mechanism validated but not deployable on cold one-shot AMIs — see below |
 | 9 | **Remove the runtime overlay** — install the `runtime_source` straight into the base venv (force-reinstall --no-deps every task) instead of copying it to a per-instance overlay first | DEV | drop the one-time ~12-20s overlay copytree | overlay copy was 20s this warm run; safe because a `runtime_source` pool always reinstalls and never runs a baked-mode task, and each instance has its own AMI copy |
 | 10 | **Idle boot warm-clone** — an idle (reserved) orchestrator pre-fetches the base branch into a warm `.git` (+ checkout); the per-task clone adopts it and applies only the PR delta | DEV | fetch ~33s→~1s + unshallow ~15s→0 + checkout→delta on warm instances | **AWS: head fetch 33s→0.32s, unshallow 15s→0.45s, clone total 44s→15s.** checkout was 14.8s (treeless lazy-fetch) → idle checkout added to make it a delta |
+| 11 | **Run Praktika from the checkout via `PYTHONPATH`** — for a local-checkout `runtime_source`, skip the per-task `pip install` of `./ci` into the base venv and instead set `PYTHONPATH=<checkout>/ci` so `python -P -m praktika` imports Praktika straight from the tree (`venv_manager.resolve_praktika_runtime`) | DEV | drop the per-task wheel build + install (~several s); also removes the `ci/build` + `*.egg-info` the in-tree build left in the checkout (dirty-repo noise) | — |
 
 ### Experiments run 2026-10-01 (all reverted — negative/null)
 
@@ -208,3 +209,33 @@ the controller has no reliable owner/name source at boot. Warm the PR base **and
 push branches (list them in `warm_branches`). Orchestrator-only; only pays off with
 reserved capacity (`capacity_reserve > 0`) — cold scale-from-zero falls back to the
 cold clone. See ci-config.md.
+
+## #11 run Praktika from the checkout via `PYTHONPATH`
+
+The remaining `runtime: resolve venv + install praktika` step pip-installs the
+`./ci` checkout into the base venv on EVERY task (`--force-reinstall --no-deps`,
+default build isolation). Praktika is **pure Python** and its runtime deps are
+baked into the base venv (the `infrastructure` extra: boto3 / PyJWT / cryptography /
+requests), so there is nothing to compile — the install only copies files and
+provisions a throwaway build env. `resolve_praktika_runtime` replaces it: for a
+local-checkout source it returns the base venv **plus** `PYTHONPATH=<checkout>/ci`,
+and the controller runs `python -P -m praktika` with that env, importing Praktika
+straight from the tree. URL / version-pin sources and no-source (baked) pools are
+unchanged (still installed / baked).
+
+**Why it's correct:**
+- **`-P` still honors `PYTHONPATH`.** `-P` only drops the implicit cwd/script-dir
+  entry from `sys.path`; `PYTHONPATH` is applied regardless, so `-m praktika`
+  resolves from the checkout.
+- **Stronger freshness than `--force-reinstall`.** The exact checked-out tree is
+  imported by construction, so a run can never execute a stale install.
+- **No base-venv mutation.** Nothing is written to the venv, so the per-task file
+  lock is unnecessary, and the checkout stays clean — no `ci/build`, no
+  `ci/*.egg-info` (the in-tree build artifacts that previously showed up as a dirty
+  repo before each job).
+- **Minimal path pollution.** `<checkout>/ci` on `sys.path` also exposes `ci`'s
+  loose top-level modules, but no `ci/` subdir is a package and Praktika imports
+  everything package-qualified (`praktika.*`) + loads project config by file path
+  (`importlib.util.spec_from_file_location`), so there is no collision.
+
+Covered by `test_resolve_praktika_runtime_*` in `test_bootstrap_venv_manager.py`.

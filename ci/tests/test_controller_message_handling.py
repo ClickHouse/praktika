@@ -311,6 +311,84 @@ def test_poll_deletes_after_infra_failure_final_state_at_max_receives(monkeypatc
     assert "delete" in events
 
 
+def test_poll_runner_releases_task_before_self_update(monkeypatch):
+    """A runner whose pinned controller version differs from the running one must
+    RELEASE the task back to the queue (visibility 0) BEFORE running the install, so
+    a controller already on the pinned version can pick it up immediately — then
+    self-update and exit to restart, without handling or deleting the task."""
+    events = []
+
+    class _SQS:
+        def get_queue_url(self, QueueName):
+            return {"QueueUrl": "queue-url"}
+
+        def get_queue_attributes(self, QueueUrl, AttributeNames):
+            return {"Attributes": {"VisibilityTimeout": "30"}}
+
+        def receive_message(self, **_kwargs):
+            events.append("receive")
+            return {
+                "Messages": [
+                    {
+                        "ReceiptHandle": "receipt",
+                        "Body": json.dumps(
+                            {
+                                "type": "job_task",
+                                "job_name": "Test",
+                                "ci_config": {
+                                    "praktika_controller_version": (
+                                        "praktika-controller==9.0"
+                                    )
+                                },
+                            }
+                        ),
+                        "Attributes": {"ApproximateReceiveCount": "1"},
+                    }
+                ]
+            }
+
+        def delete_message(self, **_kwargs):
+            events.append("delete")
+
+        def change_message_visibility(self, **kwargs):
+            events.append(("visibility", kwargs["VisibilityTimeout"]))
+
+    sqs = _SQS()
+    monkeypatch.setitem(
+        sys.modules,
+        "boto3",
+        types.SimpleNamespace(client=lambda *_args, **_kwargs: sqs),
+    )
+    monkeypatch.setattr(
+        controller, "_resolve_role_and_queue", lambda: (controller.ROLE_RUNNER, "queue")
+    )
+    monkeypatch.setattr(controller, "configure_logging", lambda *_args: _Log())
+    monkeypatch.setattr(controller, "_prepare_runner_for_task", lambda *_args: "")
+    monkeypatch.setattr(controller, "update_pending", lambda *_args, **_kwargs: True)
+
+    def _self_update(pin, _log, **_kwargs):
+        events.append(("self_update", pin))
+        return True
+
+    monkeypatch.setattr(controller, "maybe_self_update", _self_update)
+    monkeypatch.setattr(
+        controller,
+        "handle_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("must not handle a task that triggers self-update")
+        ),
+    )
+
+    # poll() returns (does not loop) once it self-updates, so a single receive.
+    assert controller.poll() is None
+    assert events.count("receive") == 1
+    assert "delete" not in events
+    # Released BEFORE the install so a ready controller can grab it meanwhile.
+    assert events.index(("visibility", 0)) < events.index(
+        ("self_update", "praktika-controller==9.0")
+    )
+
+
 def _workflow_sqs(events, receive_count, stop_after_first):
     class _SQS:
         def get_queue_url(self, QueueName):
@@ -531,7 +609,7 @@ def _setup_handle_workflow(monkeypatch, tmp_path, clone_error=None):
     monkeypatch.setattr(controller, "venv_env", lambda *_a, **_k: {})
     monkeypatch.setattr(controller, "praktika_command", lambda *_a, **_k: ["orch"])
     monkeypatch.setattr(
-        controller, "_resolve_runtime", lambda *_a, **_k: ("base", "/venv")
+        controller, "_resolve_runtime", lambda *_a, **_k: ("base", "/venv", None)
     )
     runs = []
 

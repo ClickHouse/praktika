@@ -42,11 +42,11 @@ from praktika_controller.merge import (
     prepare_repo_snapshot,
     read_repo_settings,
 )
-from praktika_controller.self_update import maybe_self_update
+from praktika_controller.self_update import maybe_self_update, update_pending
 from praktika_controller.venv_manager import (
-    ensure_praktika_runtime,
     is_passthrough,
     praktika_command,
+    resolve_praktika_runtime,
     venv_env,
 )
 
@@ -243,12 +243,15 @@ def _resolve_runtime_source(clone_dir: str, log, ci_config=None):
 def _resolve_runtime(clone_dir: str, log, ci_config=None):
     base_venv = resolve_praktika_base_venv(clone_dir, log)
     source = _resolve_runtime_source(clone_dir, log, ci_config=ci_config)
-    venv_dir = ensure_praktika_runtime(
+    # A local-checkout source runs straight from the tree via PYTHONPATH (no per-task
+    # install); a URL/version pin or no source resolves to an installed/baked venv.
+    # See venv_manager.resolve_praktika_runtime.
+    venv_dir, pythonpath = resolve_praktika_runtime(
         source,
         base_venv=base_venv,
         log=log,
     )
-    return base_venv, venv_dir
+    return base_venv, venv_dir, pythonpath
 
 
 def _praktika_env(
@@ -258,8 +261,17 @@ def _praktika_env(
     bootstrap_check_id=None,
     snapshot=None,
     ci_config=None,
+    pythonpath=None,
 ) -> dict[str, str]:
     env = venv_env(venv_dir)
+    if pythonpath:
+        # Local-checkout runtime (see venv_manager.resolve_praktika_runtime): import
+        # Praktika straight from the checkout instead of an installed copy. Prepend
+        # so it wins over anything already on PYTHONPATH.
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            f"{pythonpath}{os.pathsep}{existing}" if existing else pythonpath
+        )
     # Stream the orchestrator/runner subprocess stdout live to CloudWatch. Python
     # block-buffers stdout when it isn't a TTY, so without this the progress lines
     # (Trigger/KICK/DONE) only flush at process exit — and are LOST if the process
@@ -625,7 +637,9 @@ def handle_workflow(
                     }
 
             with profile_step(log, "runtime: resolve venv + install praktika"):
-                base_venv, venv_dir = _resolve_runtime(clone_dir, log, ci_config=ci_config)
+                base_venv, venv_dir, runtime_pythonpath = _resolve_runtime(
+                    clone_dir, log, ci_config=ci_config
+                )
 
             event_file = os.path.join(clone_dir, "ci", "tmp", "event.json")
             os.makedirs(os.path.dirname(event_file), exist_ok=True)
@@ -670,6 +684,7 @@ def handle_workflow(
                 bootstrap_check_id=early_check_id,
                 snapshot=snapshot,
                 ci_config=ci_config,
+                pythonpath=runtime_pythonpath,
             ),
             stderr=subprocess.PIPE,
             text=True,
@@ -812,7 +827,7 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
             # ci_config was frozen into run metadata by the orchestrator and rides
             # on the task, so the job runner installs the pinned Praktika from run
             # metadata, not SSM (see ci-config.md).
-            base_venv, venv_dir = _resolve_runtime(
+            base_venv, venv_dir, runtime_pythonpath = _resolve_runtime(
                 clone_dir, log, ci_config=task.get("ci_config") or {}
             )
 
@@ -830,7 +845,7 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
         proc = subprocess.Popen(
             praktika_command(venv_dir, "orchestrate", "job", task_file, "--ci"),
             cwd=clone_dir,
-            env=_praktika_env(venv_dir, queue_name),
+            env=_praktika_env(venv_dir, queue_name, pythonpath=runtime_pythonpath),
             stderr=subprocess.PIPE,
             text=True,
             start_new_session=True,
@@ -1014,28 +1029,28 @@ def poll():
             ci_config = _ci_config_for_message(role, payload, log)
 
             # Idle boundary: converge to the pinned controller version BEFORE doing
-            # any work for this message. Run the (possibly slow: network download +
-            # pip) update INSIDE a VisibilityHeartbeat so a long install doesn't let
-            # the message become visible and get picked up concurrently. If a
-            # reinstall happened, release the message un-processed (after the
-            # heartbeat has stopped, so it isn't re-extended) and exit so the
-            # Restart=always systemd unit relaunches into the new controller. No run
-            # is interrupted mid-flight. See self_update / ci-config.md.
+            # any work for this message. When the running controller is NOT the pin,
+            # release this task back to the queue FIRST — before the (possibly slow:
+            # network download + pip) install — so a controller already on the pinned
+            # version can pick it up immediately instead of waiting out our install +
+            # restart. Then self-update in place and exit so the Restart=always
+            # systemd unit relaunches into the new controller, which resumes normal
+            # polling; we deliberately do NOT reclaim this specific task afterwards.
+            # (Releasing first also means a crash mid-install can't strand the task
+            # until the visibility timeout lapses — the old code held it through the
+            # whole install.) No run is interrupted mid-flight. See self_update /
+            # ci-config.md.
             pin = _controller_version_pin(ci_config)
-            if pin:
-                with VisibilityHeartbeat(sqs, queue_url, receipt, visibility):
-                    did_self_update = maybe_self_update(pin, log)
-                if did_self_update:
-                    try:
-                        sqs.change_message_visibility(
-                            QueueUrl=queue_url, ReceiptHandle=receipt, VisibilityTimeout=0
-                        )
-                    except Exception:
-                        log.exception(
-                            "Failed to release message before self-update restart"
-                        )
-                    log.info("Controller self-update complete; exiting to restart")
-                    return
+            if pin and update_pending(pin):
+                try:
+                    sqs.change_message_visibility(
+                        QueueUrl=queue_url, ReceiptHandle=receipt, VisibilityTimeout=0
+                    )
+                except Exception:
+                    log.exception("Failed to release message before self-update")
+                maybe_self_update(pin, log)  # fail hard on a bad pin
+                log.info("Controller self-update complete; exiting to restart")
+                return
 
             with VisibilityHeartbeat(sqs, queue_url, receipt, visibility):
                 cleanup_error = _prepare_runner_for_task(role, log)

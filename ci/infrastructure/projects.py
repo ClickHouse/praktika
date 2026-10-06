@@ -86,14 +86,14 @@ def _image_builders():
             version=recipe_version,
             controller_package=_PRAKTIKA_CONTROLLER_BASE_WHL,
             prebuilt_venvs=_runtime_prebuilt_venvs(),
-            instance_types=["t4g.small"],
+            instance_types=["t4g.xlarge"],
         ),
         Components.create_awslinux_image_builder_config(
             name="ci-x86_64-image",
             version=recipe_version,
             controller_package=_PRAKTIKA_CONTROLLER_BASE_WHL,
             prebuilt_venvs=_runtime_prebuilt_venvs(),
-            instance_types=["t3.small"],
+            instance_types=["t3.xlarge"],
         ),
         Components.create_ubuntu_image_builder_config(
             name="ci-ubuntu-x86_64-image",
@@ -101,7 +101,7 @@ def _image_builders():
             controller_package=_PRAKTIKA_CONTROLLER_BASE_WHL,
             prebuilt_venvs=_runtime_prebuilt_venvs(),
             components=_custom_image_tests(),
-            instance_types=["t3.small"],
+            instance_types=["t3.xlarge"],
         ),
     ]
 
@@ -419,7 +419,7 @@ PROJECTS = [
             Components.report_page_config,
         ],
         image_builders=_IMAGE_BUILDERS,
-        github_token_minters=[Components.GitHubTokenMinter(secret_name="gh-app-echt")],
+        github_token_minters=[Components.GitHubTokenMinter()],
         orchestrator_pools=[_orchestrator_pool, _orchestrator_pool_base],
         runner_pools=_runner_pools,
         cidb_cluster=_cidb_cluster,

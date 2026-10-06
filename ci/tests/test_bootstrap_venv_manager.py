@@ -347,6 +347,91 @@ def test_ensure_praktika_venv_changed_source_uses_new_venv(tmp_path, monkeypatch
     assert first != second
 
 
+def test_resolve_praktika_runtime_path_source_uses_pythonpath_no_install(
+    tmp_path, monkeypatch
+):
+    # A local checkout source runs straight from the tree via PYTHONPATH: the base
+    # venv is returned as-is (deps baked), the source is handed back as the
+    # PYTHONPATH, and NOTHING is installed (no pip call, no venv build).
+    source_dir = tmp_path / "praktika-src"
+    source_dir.mkdir()
+
+    base_root = tmp_path / "base-venvs"
+    base_dir = base_root / "pytest"
+    (base_dir / "bin").mkdir(parents=True)
+    (base_dir / "bin" / "python").write_text("", encoding="utf-8")
+
+    calls = []
+
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
+        calls.append(cmd)
+        return _CompletedProcess()
+
+    monkeypatch.setattr(venv_manager.subprocess, "run", fake_run)
+
+    venv_dir, pythonpath = venv_manager.resolve_praktika_runtime(
+        str(source_dir), base_venv="pytest", base_venv_root=base_root
+    )
+
+    assert venv_dir == base_dir.resolve()
+    assert pythonpath == str(source_dir.resolve())
+    # No install / no venv build — purely a path resolution.
+    assert calls == []
+
+
+def test_resolve_praktika_runtime_passthrough_installs_into_base(tmp_path, monkeypatch):
+    # A URL / version pin is immutable: it is installed into the base venv (not
+    # path-imported), so pythonpath is None.
+    base_root = tmp_path / "base-venvs"
+    base_dir = base_root / "pytest"
+    (base_dir / "bin").mkdir(parents=True)
+    (base_dir / "bin" / "python").write_text("", encoding="utf-8")
+    (base_dir / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+
+    calls = []
+
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
+        calls.append(cmd)
+        return _CompletedProcess()
+
+    monkeypatch.setattr(venv_manager.subprocess, "run", fake_run)
+
+    url = "https://x/praktika-0.1.15-py3-none-any.whl"
+    venv_dir, pythonpath = venv_manager.resolve_praktika_runtime(
+        url, base_venv="pytest", base_venv_root=base_root, cache_root=tmp_path / "venvs"
+    )
+
+    assert venv_dir == base_dir.resolve()
+    assert pythonpath is None
+    install_calls = [
+        c for c in calls if len(c) >= 4 and c[1:4] == ["-m", "pip", "install"]
+    ]
+    assert len(install_calls) == 1
+    assert url in install_calls[0]
+
+
+def test_resolve_praktika_runtime_no_source_uses_baked_base(tmp_path, monkeypatch):
+    # No source: the baked base venv is used, pythonpath is None.
+    base_root = tmp_path / "base-venvs"
+    base_dir = base_root / "pytest"
+    (base_dir / "bin").mkdir(parents=True)
+    (base_dir / "bin" / "python").write_text("", encoding="utf-8")
+
+    def fake_run(cmd, check=False, capture_output=False, text=False, **kwargs):
+        if cmd == [str(base_dir / "bin" / "python"), "-c", "import praktika"]:
+            return _CompletedProcess(returncode=0)
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(venv_manager.subprocess, "run", fake_run)
+
+    venv_dir, pythonpath = venv_manager.resolve_praktika_runtime(
+        None, base_venv="pytest", base_venv_root=base_root
+    )
+
+    assert venv_dir == base_dir.resolve()
+    assert pythonpath is None
+
+
 def test_build_venv_installs_url_verbatim(tmp_path, monkeypatch):
     cache_root = tmp_path / "venvs"
     calls = []

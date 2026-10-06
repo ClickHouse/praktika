@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from .interactive import UserPrompt
-from .version import compat_version, current_praktika_version
+from .version import current_praktika_version
 
 
 PRAKTIKA_MARKERS = {
@@ -632,18 +632,12 @@ def _infrastructure_template(answers: InitAnswers) -> str:
 
 
         # until published in pip
-        _PRAKTIKA_PACKAGE_BASE_URL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages"
-        # Floating compat alias: the latest backwards-compatible patch in the
-        # {compat_version(current_praktika_version())} branch, so the project picks up BC bug fixes
-        # without re-pinning on every Praktika release.
-        _PRAKTIKA_COMPAT_VERSION = "{compat_version(current_praktika_version())}"
-        _PRAKTIKA_WHL = (
-            f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/{{_PRAKTIKA_COMPAT_VERSION}}/"
-            "praktika-0.0.0-py3-none-any.whl"
+        _PRAKTIKA_PACKAGE_BASE_URL = (
+            "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages"
         )
+        _PRAKTIKA_WHL = f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/praktika-0.1.15-py3-none-any.whl"
         _PRAKTIKA_CONTROLLER_WHL = (
-            f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/{{_PRAKTIKA_COMPAT_VERSION}}/"
-            "praktika_controller-0.0.0-py3-none-any.whl"
+            f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/praktika_controller-0.1.9-py3-none-any.whl"
         )
 
 
