@@ -21,6 +21,9 @@ workflow = Workflow.Config(
         enabled=True,
         provider="bedrock-anthropic",
         model="global.anthropic.claude-sonnet-5",
+        # The Code Review job is advisory (allow_failure) — its failure is never a
+        # real CI problem, so the advisor must not investigate it.
+        exclude_jobs=["Code Review"],
     ),
     jobs=[
         # Verify the Praktika actually executing the job is the head version.
