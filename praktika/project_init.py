@@ -642,7 +642,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
         )
         _PRAKTIKA_WHL = f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/praktika-0.1.15-py3-none-any.whl"
         _PRAKTIKA_CONTROLLER_WHL = (
-            f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/praktika_controller-0.1.9-py3-none-any.whl"
+            f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/praktika_controller-0.1.10-py3-none-any.whl"
         )
 
 

@@ -1053,27 +1053,22 @@ def poll():
             # mid-message change could split the two.
             ci_config = _ci_config_for_message(role, payload, log)
 
-            # Idle boundary: converge to the pinned controller version BEFORE doing
-            # any work for this message. When the running controller is NOT the pin,
-            # release this task back to the queue FIRST — before the (possibly slow:
-            # network download + pip) install — so a controller already on the pinned
-            # version can pick it up immediately instead of waiting out our install +
-            # restart. Then self-update in place and exit so the Restart=always
-            # systemd unit relaunches into the new controller, which resumes normal
-            # polling; we deliberately do NOT reclaim this specific task afterwards.
-            # (Releasing first also means a crash mid-install can't strand the task
-            # until the visibility timeout lapses — the old code held it through the
-            # whole install.) No run is interrupted mid-flight. See self_update /
-            # ci-config.md.
+            # Idle boundary: converge to the pinned controller, then self-update and
+            # exit so the Restart=always unit relaunches into it. Keep the message
+            # hidden under a heartbeat during the install (don't release to 0): on a
+            # cold pool releasing lets stale peers re-receive it in a loop and DLQ it
+            # before any install finishes. After we exit, it reappears once the last
+            # heartbeat lapses and a converged runner picks it up.
+            #
+            # Skip reruns: a rerun's frozen pin may be older than the SSM pin we
+            # converged to at boot, so updating to it here just ping-pongs and DLQs
+            # the rerun. The controller is only a launcher — a rerun reproduces via
+            # its frozen praktika runtime + snapshot, not the controller version.
+            is_rerun = isinstance(payload, dict) and payload.get("type") == "rerun"
             pin = _controller_version_pin(ci_config)
-            if pin and update_pending(pin):
-                try:
-                    sqs.change_message_visibility(
-                        QueueUrl=queue_url, ReceiptHandle=receipt, VisibilityTimeout=0
-                    )
-                except Exception:
-                    log.exception("Failed to release message before self-update")
-                maybe_self_update(pin, log)  # fail hard on a bad pin
+            if pin and not is_rerun and update_pending(pin):
+                with VisibilityHeartbeat(sqs, queue_url, receipt, visibility):
+                    maybe_self_update(pin, log)  # fail hard on a bad pin
                 log.info("Controller self-update complete; exiting to restart")
                 return
 

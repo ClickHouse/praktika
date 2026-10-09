@@ -6,13 +6,13 @@ from ci.settings.settings import SECRET_CI_DB_CONNECTION, SECRET_DOCKER_REGISTRY
 _PRAKTIKA_PACKAGE_BASE_URL = (
     "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages"
 )
-_PRAKTIKA_BASE_VERSION = "0.1.13"
+_PRAKTIKA_BASE_VERSION = "0.1.15"
 # The baked AMI venv pins an exact Praktika version so image builds are
 # reproducible and a version bump forces a fresh AMI (see _image_builders).
 _PRAKTIKA_BASE_WHL = (
     f"{_PRAKTIKA_PACKAGE_BASE_URL}/praktika-{_PRAKTIKA_BASE_VERSION}-py3-none-any.whl"
 )
-_PRAKTIKA_CONTROLLER_BASE_VERSION = "0.1.3"
+_PRAKTIKA_CONTROLLER_BASE_VERSION = "0.1.10"
 _PRAKTIKA_CONTROLLER_BASE_WHL = (
     f"{_PRAKTIKA_PACKAGE_BASE_URL}/"
     f"praktika_controller-{_PRAKTIKA_CONTROLLER_BASE_VERSION}-py3-none-any.whl"

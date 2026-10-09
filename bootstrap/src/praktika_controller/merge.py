@@ -324,7 +324,15 @@ def compute_run_git_metadata(clone_dir, event, log, depth=BASE_GIT_HISTORY_DEPTH
     first. Best-effort: on any git failure returns the authors already on the event
     and an empty history, never raising (this metadata must not fail a run).
     """
-    is_pr = bool(event.get("pr_number")) and event.get("type", "") == "pull_request"
+    # A PR-flavored rerun (type="rerun", e.g. the per-job "Rerun w/ fresh base")
+    # still carries pr_number/base_ref and must be treated like a pull_request here.
+    # Otherwise it takes the non-PR branch: base_git_history starts at the PR head
+    # instead of the merge-base, and the author list stays limited to the head
+    # commit. A push/dispatch rerun has no pr_number and correctly stays non-PR.
+    is_pr = bool(event.get("pr_number")) and event.get("type", "") in (
+        "pull_request",
+        "rerun",
+    )
     base_branch = event.get("base_ref", "")
     authors = list(event.get("commit_authors") or [])
     history = []
@@ -460,14 +468,19 @@ def _build_and_publish_snapshot(clone_dir, snapshot_sha, is_pr, artifact_bucket,
                 f"snapshot HEAD {snap_sha} != expected {snapshot_sha}"
             )
 
-        # Drop anything not in the pinned tree before packing. A fresh checkout +
+        # Restore the exact pinned tree before packing. A fresh checkout +
         # deterministic merge produce clean tracked files, but loading repo
-        # settings (read_repo_settings imports ci/settings/settings.py) leaves
-        # byproducts like ci/settings/__pycache__ on disk. Without this, tar would
-        # fold those untracked/ignored files into the content-addressed snapshot,
-        # so the restored tree would not equal snapshot_sha. -ffdx also clears
-        # ignored files and nested-repo dirs.
-        with profile_step(log, "snapshot: clean untracked/ignored"):
+        # settings (read_repo_settings imports ci/settings/settings.py) runs
+        # project code before this point. A hard reset first undoes any import
+        # side effect that rewrote a TRACKED file — `git clean` only removes
+        # untracked/ignored files, it does NOT restore modified tracked ones, so
+        # without the reset those edits would be archived even though snapshot_sha
+        # holds the original bytes. The clean then drops untracked/ignored
+        # byproducts like ci/settings/__pycache__ (and, via -ffdx, ignored files
+        # and nested-repo dirs). Together they make the archived top-level entries
+        # equal snapshot_sha exactly.
+        with profile_step(log, "snapshot: restore + clean to pinned tree"):
+            _git(["reset", "--hard", snapshot_sha], clone_dir)
             _git(["clean", "-ffdx"], clone_dir)
 
         # Pack and hash in a single pass: one tar invocation pulls the minimal
