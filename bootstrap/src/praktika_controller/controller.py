@@ -37,6 +37,7 @@ from praktika_controller.common import (
     warm_repo_dir,
 )
 from praktika_controller.merge import (
+    compute_run_git_metadata,
     MergeConflict,
     MULTIPART_MAX_CONCURRENCY,
     prepare_repo_snapshot,
@@ -525,6 +526,17 @@ def handle_workflow(
                 head_commit = head_commit_info(clone_dir, log)
                 event["commit_message"] = head_commit["message"]
                 event["commit_authors"] = head_commit["authors"]
+
+                # Base-branch history (from the PR merge-base back) and the full PR
+                # author set, computed here on the head clone BEFORE any ephemeral
+                # merge rewrites HEAD. The controller is the only layer with the
+                # repo's real git history in every mode — the snapshot each job
+                # restores is history-free — so jobs read these from the run
+                # (Info.base_git_history / Info.commit_authors) instead of deriving
+                # them locally. Works with snapshot/merge on or off.
+                event["commit_authors"], event["base_git_history"] = (
+                    compute_run_git_metadata(clone_dir, event, log)
+                )
                 try:
                     settings = read_repo_settings(clone_dir, log, ci_config=ci_config)
                     if settings.get("ENABLE_S3_REPO_SNAPSHOT"):
@@ -605,6 +617,17 @@ def handle_workflow(
                 head_commit = head_commit_info(clone_dir, log)
                 event["commit_message"] = head_commit["message"]
                 event["commit_authors"] = head_commit["authors"]
+
+                # Base-branch history (from the PR merge-base back) and the full PR
+                # author set, computed here on the head clone BEFORE any ephemeral
+                # merge rewrites HEAD. The controller is the only layer with the
+                # repo's real git history in every mode — the snapshot each job
+                # restores is history-free — so jobs read these from the run
+                # (Info.base_git_history / Info.commit_authors) instead of deriving
+                # them locally. Works with snapshot/merge on or off.
+                event["commit_authors"], event["base_git_history"] = (
+                    compute_run_git_metadata(clone_dir, event, log)
+                )
 
                 # Establish the run's single commit before praktika is reinstalled
                 # from the checkout: compute the ephemeral PR merge (or plain head)

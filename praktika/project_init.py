@@ -476,6 +476,11 @@ def _settings_template(answers: InitAnswers) -> str:
         S3_REPORT_BUCKET = S3_ARTIFACT_BUCKET
         CACHE_S3_PATH = f"{{S3_ARTIFACT_BUCKET}}/ci_cache"
         ENABLE_SUBMODULE_CACHE = True
+
+        # Snapshot the repo to S3 once (Config Workflow) so downstream jobs restore instead
+        # of cloning; for PRs, snapshot the ephemeral merge of head into the target tip.
+        ENABLE_S3_REPO_SNAPSHOT = False
+        ENABLE_PR_EPHEMERAL_MERGE_COMMIT = False
 {s3_endpoint_block}
 
         GH_AUTH_LAMBDA_NAME = f"{{PROJECT_SLUG}}-gh-token"

@@ -64,6 +64,20 @@ workflow = Workflow.Config(
                 ],
             ),
         ),
+        # Assert the controller-resolved run metadata (base_git_history,
+        # commit_authors, …) is present and correct inside a job, with the S3
+        # repo snapshot + ephemeral merge enabled project-wide.
+        Job.Config(
+            name="Check CI Runtime",
+            runs_on=[RunnerLabels.SMALL_ARM],
+            command="python3 ./ci/scripts/check_ci_runtime.py",
+            digest_config=Job.CacheDigestConfig(
+                include_paths=[
+                    "./ci/scripts/check_ci_runtime.py",
+                    "./praktika",
+                ],
+            ),
+        ),
         # Ruff style check (ruff is baked into the runner image venv, see
         # ci/infrastructure/projects.py::_runtime_prebuilt_venvs).
         Job.Config(

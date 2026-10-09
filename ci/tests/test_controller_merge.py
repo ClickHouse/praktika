@@ -364,3 +364,41 @@ def test_split_artifact_bucket():
     assert merge._split_artifact_bucket("bucket", "a/b") == ("bucket", "a/b")
     assert merge._split_artifact_bucket("bucket/prefix", "a/b") == ("bucket", "prefix/a/b")
     assert merge._split_artifact_bucket("s3://bucket/pfx/", "x") == ("bucket", "pfx/x")
+
+
+def test_run_git_metadata_pr(tmp_path):
+    # For a PR the base history is the commits from the merge-base back and the
+    # authors are the PR's own commit authors (not the seeded head value).
+    origin, head_sha, _ = _make_origin(tmp_path)
+    b0 = _git(origin, "rev-parse", "main~1")  # the PR fork point (merge-base)
+    clone = _make_clone(tmp_path, origin, head_sha)
+    event = {
+        "type": "pull_request",
+        "pr_number": 7,
+        "base_ref": "main",
+        "commit_authors": ["seed@x"],
+    }
+    authors, history = merge.compute_run_git_metadata(clone, event, _Log())
+    assert history == [b0]
+    assert authors == ["t@t"]
+
+
+def test_run_git_metadata_push_from_head(tmp_path):
+    # A push has no merge-base: the history is just HEAD and its ancestors, and the
+    # webhook-provided authors are kept.
+    origin, head_sha, _ = _make_origin(tmp_path)
+    b0 = _git(origin, "rev-parse", "main~1")
+    clone = _make_clone(tmp_path, origin, head_sha)
+    event = {"type": "push", "commit_authors": ["seed@x"]}
+    authors, history = merge.compute_run_git_metadata(clone, event, _Log())
+    assert history == [head_sha, b0]
+    assert authors == ["seed@x"]
+
+
+def test_run_git_metadata_depth_cap(tmp_path):
+    # base_git_history is capped at the configured depth.
+    origin, head_sha, _ = _make_origin(tmp_path)
+    clone = _make_clone(tmp_path, origin, head_sha)
+    event = {"type": "push", "commit_authors": []}
+    _, history = merge.compute_run_git_metadata(clone, event, _Log(), depth=1)
+    assert history == [head_sha]

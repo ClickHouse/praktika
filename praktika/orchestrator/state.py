@@ -2043,6 +2043,10 @@ class WorkflowState:
             # merge snapshot still reports the branch head, not the merge commit.
             "commit_message": self._event.get("commit_message", ""),
             "commit_authors": self._event.get("commit_authors", []),
+            # Base-branch commit SHAs from the PR merge-base back (newest first),
+            # computed by the controller from its real history so jobs restoring the
+            # history-free snapshot can still read them via Info.base_git_history.
+            "base_git_history": self._event.get("base_git_history", []),
             "sender": self._event.get("sender", ""),
             "title": self._event.get("title", ""),
             "labels": self._event.get("labels", []),

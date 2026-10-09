@@ -304,6 +304,88 @@ def _ensure_base_history(clone_dir, base_branch, log) -> None:
     )
 
 
+# How many commits (newest-first), starting at the PR merge-base, to record on the
+# run as the base-branch history jobs read via Info().base_git_history().
+BASE_GIT_HISTORY_DEPTH = 100
+
+
+def compute_run_git_metadata(clone_dir, event, log, depth=BASE_GIT_HISTORY_DEPTH):
+    """Base-branch commit SHAs from the PR merge-base back, and the full set of PR
+    commit-author emails.
+
+    Computed in the controller — the one layer that holds the repo's real git
+    history in EVERY mode (the snapshot each job restores is history-free, so a job
+    cannot derive this itself when Settings.ENABLE_S3_REPO_SNAPSHOT is on). Called
+    on the head clone BEFORE any ephemeral merge rewrites HEAD, so the merge-base
+    and the PR commit range are taken against the true PR head regardless of
+    ENABLE_PR_EPHEMERAL_MERGE_COMMIT.
+
+    Returns ``(commit_authors, base_git_history)`` — ``base_git_history`` newest
+    first. Best-effort: on any git failure returns the authors already on the event
+    and an empty history, never raising (this metadata must not fail a run).
+    """
+    is_pr = bool(event.get("pr_number")) and event.get("type", "") == "pull_request"
+    base_branch = event.get("base_ref", "")
+    authors = list(event.get("commit_authors") or [])
+    history = []
+    try:
+        if is_pr and base_branch:
+            _ensure_base_history(clone_dir, base_branch, log)
+            base_ref = f"origin/{base_branch}"
+            merge_base = _git_out(["merge-base", base_ref, "HEAD"], clone_dir)
+            if merge_base:
+                history = [
+                    line
+                    for line in _git_out(
+                        ["rev-list", f"--max-count={int(depth)}", merge_base],
+                        clone_dir,
+                    ).splitlines()
+                    if line
+                ]
+            # Author emails of the PR's own commits (merge-base..head), excluding
+            # merges and GitHub noreply/bot addresses ("+" in the local part).
+            emails = {
+                e
+                for e in _git_out(
+                    ["log", "--no-merges", "--pretty=%ae", f"{base_ref}..HEAD"],
+                    clone_dir,
+                ).splitlines()
+                if "@" in e and "+" not in e
+            }
+            if emails:
+                authors = sorted(emails)
+        else:
+            # Non-PR (push/dispatch): no merge-base. Record the history from HEAD
+            # back and keep the authors the webhook payload already supplied.
+            # Unshallow first so the walk sees real history, not just the clone tip.
+            if (
+                _git_out(["rev-parse", "--is-shallow-repository"], clone_dir)
+                == "true"
+            ):
+                _git(
+                    [
+                        "fetch", "--unshallow", "--prune", "--no-recurse-submodules",
+                        "--filter=tree:0", "origin", "HEAD",
+                    ],
+                    clone_dir,
+                    check=False,
+                )
+            head_sha = _git_out(["rev-parse", "HEAD"], clone_dir)
+            if head_sha:
+                history = [
+                    line
+                    for line in _git_out(
+                        ["rev-list", f"--max-count={int(depth)}", head_sha],
+                        clone_dir,
+                    ).splitlines()
+                    if line
+                ]
+    except Exception as e:  # noqa: BLE001
+        if log is not None:
+            log.warning("Could not compute run git metadata: %s", e)
+    return authors, history
+
+
 def _merge_head_into_base(clone_dir, base_branch, base_sha, head_sha, log) -> str:
     """Deterministically merge ``head_sha`` into ``base_sha`` in place. Returns
     the merge commit sha. Raises ``MergeConflict`` if the merge does not apply

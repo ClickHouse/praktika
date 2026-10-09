@@ -832,7 +832,12 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
         if result is not None:
             results.append(result)
 
-    if workflow.enable_slack_feed:
+    # commit_authors for the Slack feed. On the native engine the controller has
+    # already resolved these from the repo's real git history and threaded them
+    # onto the run (see merge.compute_run_git_metadata) — recomputing here is
+    # redundant and, with the history-free repo snapshot, would fail or diverge.
+    # Only the GH Actions engine, which has no controller, computes them here.
+    if workflow.enable_slack_feed and not Workflow.Engine.is_native(workflow.engine):
         if env.PR_NUMBER:
             commit_authors = set()
             try:

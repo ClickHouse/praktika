@@ -161,6 +161,10 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
     # real head values. Empty when snapshots/merge are disabled -> keep git HEAD.
     commit_message = task.get("commit_message") or commit_message
     commit_authors = task.get("commit_authors") or commit_authors
+    # Base-branch history (PR merge-base back, newest first) computed by the
+    # controller; empty when unavailable (e.g. a push with no base). Jobs read it
+    # via Info.base_git_history.
+    base_git_history = task.get("base_git_history") or []
 
     # For push and merge-queue events there is no PR_NUMBER, but workflow hooks
     # may need the number of the PR this ref corresponds to. Mirror
@@ -296,6 +300,7 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
             SNAPSHOT_SHA=task.get("snapshot_sha", ""),
             REPO_SNAPSHOT_KEY=task.get("repo_snapshot_key", ""),
             CI_CONFIG=task.get("ci_config") or {},
+            BASE_GIT_HISTORY=base_git_history,
         )
     env.dump()
     return env
