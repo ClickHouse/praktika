@@ -866,7 +866,9 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
         if cm_heartbeat is not None:
             cm_heartbeat.update(phase="running_job")
         proc = subprocess.Popen(
-            praktika_command(venv_dir, "orchestrate", "job", task_file, "--ci"),
+            praktika_command(
+                venv_dir, "orchestrate", "job", task_file, "--ci", "--timestamp"
+            ),
             cwd=clone_dir,
             env=_praktika_env(venv_dir, queue_name, pythonpath=runtime_pythonpath),
             stderr=subprocess.PIPE,

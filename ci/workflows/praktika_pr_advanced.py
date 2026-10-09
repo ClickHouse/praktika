@@ -23,14 +23,21 @@ workflow = Workflow.Config(
         model="global.anthropic.claude-sonnet-5",
     ),
     jobs=[
+        # Verify the Praktika actually executing the job is the head version.
+        # This repo runs Praktika straight from the checkout via PYTHONPATH (no
+        # per-task install — see controller._resolve_runtime), so the installed
+        # wheel metadata (importlib.metadata) is the stale baked AMI version, not
+        # what runs. current_praktika_version() reads the pyproject next to the
+        # imported package: head when run from the checkout, the baked version
+        # otherwise — so this also guards that the run-from-checkout path works.
         Job.Config(
             name="Version Check",
             runs_on=[RunnerLabels.SMALL_AMD_UBUNTU],
             command=(
-                "python3 -c \"import importlib.metadata as m; "
-                f"praktika=m.version('praktika'); "
-                "print('praktika=', praktika); "
-                f"assert praktika == '{_HEAD_PRAKTIKA_VERSION}', praktika\""
+                "python3 -c \"from praktika.version import "
+                "current_praktika_version as v; "
+                "print('praktika=', v()); "
+                f"assert v() == '{_HEAD_PRAKTIKA_VERSION}', v()\""
             ),
         ),
         # Require a version bump whenever praktika / praktika-controller source

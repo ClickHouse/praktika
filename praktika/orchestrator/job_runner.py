@@ -306,7 +306,7 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
     return env
 
 
-def run_job(task, gh_token=None, local=False):
+def run_job(task, gh_token=None, local=False, timestamp=False):
     """Resolve the praktika Workflow + Job from ``task`` and invoke
     ``Runner.run``. Returns the job exit code (0 = success).
 
@@ -317,6 +317,9 @@ def run_job(task, gh_token=None, local=False):
     ``local=True`` runs the job in dev-sandbox mode (``local_run=True``,
     hooks off). In EC2 polling mode the runner calls with ``local=False``
     so jobs go through the full CI setup/post-run steps.
+
+    ``timestamp=True`` prefixes every job.log line with a wall-clock timestamp
+    (the controller passes it so CI job logs carry per-line timing).
     """
     workflow_name = task.get("workflow_name", "")
     job_name = task.get("job_name", "")
@@ -393,6 +396,7 @@ def run_job(task, gh_token=None, local=False):
         # writes them to WORKFLOW_INPUTS_FILE. None for events without inputs, so
         # the runner clears any stale file instead.
         "workflow_input": task.get("inputs") or None,
+        "timestamp": timestamp,
     }
 
     # Runner.run prints results and sys.exit(1) on failure; a clean return
