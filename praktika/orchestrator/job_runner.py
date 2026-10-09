@@ -252,6 +252,17 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
         # swap in this runner's per-invocation fields.
         env_dict = dict(carried)
         env_dict.update(per_runner)
+        # A fresh-base rerun puts newly-computed run-wide metadata on the task that
+        # differs from the original run's serialized env; prefer the task's value
+        # when present, else keep the carried (upstream hand-off) value. Guard on
+        # task presence: a normal hand-off carries none of these, and an
+        # unconditional override would wipe the correct carried values with [].
+        if task.get("base_git_history"):
+            env_dict["BASE_GIT_HISTORY"] = base_git_history
+        if task.get("commit_authors"):
+            env_dict["COMMIT_AUTHORS"] = commit_authors
+        if task.get("commit_message"):
+            env_dict["COMMIT_MESSAGE"] = commit_message
         env = _Environment.from_dict(env_dict)
     else:
         env = _Environment(

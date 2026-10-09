@@ -86,6 +86,27 @@ def _s3_client():
     )
 
 
+def _release_resume_lock(s3, bucket, run_id, log):
+    """Best-effort delete of a finished run's resume boot-lease
+    (``runs/<run_id>/resume.lock``).
+
+    The lambda claims this lease before enqueuing a resume so only one orchestrator
+    boots per finished run; the resume orchestrator normally drops it once it
+    publishes ``finalized=false``. On a terminal controller give-up that never boots
+    an orchestrator (e.g. a fresh-base merge conflict) nothing would otherwise drop
+    it, and every later partial-rerun click for the run would be wrongly treated as
+    "resume already in flight". Idempotent + best-effort: a missing lock or S3 error
+    is fine. Bucket is ``S3_ARTIFACT_BUCKET`` — the same bucket the lambda claims and
+    the orchestrator deletes it in (orchestrator state ``_cancel_s3_bucket``)."""
+    if not bucket or not run_id:
+        return
+    try:
+        s3.delete_object(Bucket=bucket, Key=f"runs/{run_id}/resume.lock")
+        log.info("Released resume lock for run %s", run_id)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Could not release resume lock for run %s: %s", run_id, e)
+
+
 class InfraOrchestrationError(RuntimeError):
     """Raised when the orchestrator subprocess exits with INFRA_EXIT_CODE, so
     the poll loop releases the message and replaces the instance for a retry."""
@@ -558,6 +579,14 @@ def handle_workflow(
                         "Merge conflict",
                         f"{mc}{files}",
                         log=log,
+                    )
+                    # Terminal give-up: no orchestrator boots, so nothing else drops
+                    # this resume's boot-lease. Release it here or every later
+                    # partial-rerun click for the run is stuck behind a phantom
+                    # "resume in flight". settings/s3 are in scope — a conflict can
+                    # only come from prepare_repo_snapshot above, after both are set.
+                    _release_resume_lock(
+                        s3, settings["S3_ARTIFACT_BUCKET"], event.get("run_id"), log
                     )
                     return {
                         "status": "skipped",
@@ -1053,27 +1082,22 @@ def poll():
             # mid-message change could split the two.
             ci_config = _ci_config_for_message(role, payload, log)
 
-            # Idle boundary: converge to the pinned controller version BEFORE doing
-            # any work for this message. When the running controller is NOT the pin,
-            # release this task back to the queue FIRST — before the (possibly slow:
-            # network download + pip) install — so a controller already on the pinned
-            # version can pick it up immediately instead of waiting out our install +
-            # restart. Then self-update in place and exit so the Restart=always
-            # systemd unit relaunches into the new controller, which resumes normal
-            # polling; we deliberately do NOT reclaim this specific task afterwards.
-            # (Releasing first also means a crash mid-install can't strand the task
-            # until the visibility timeout lapses — the old code held it through the
-            # whole install.) No run is interrupted mid-flight. See self_update /
-            # ci-config.md.
+            # Idle boundary: converge to the pinned controller, then self-update and
+            # exit so the Restart=always unit relaunches into it. Keep the message
+            # hidden under a heartbeat during the install (don't release to 0): on a
+            # cold pool releasing lets stale peers re-receive it in a loop and DLQ it
+            # before any install finishes. After we exit, it reappears once the last
+            # heartbeat lapses and a converged runner picks it up.
+            #
+            # Skip reruns: a rerun's frozen pin may be older than the SSM pin we
+            # converged to at boot, so updating to it here just ping-pongs and DLQs
+            # the rerun. The controller is only a launcher — a rerun reproduces via
+            # its frozen praktika runtime + snapshot, not the controller version.
+            is_rerun = isinstance(payload, dict) and payload.get("type") == "rerun"
             pin = _controller_version_pin(ci_config)
-            if pin and update_pending(pin):
-                try:
-                    sqs.change_message_visibility(
-                        QueueUrl=queue_url, ReceiptHandle=receipt, VisibilityTimeout=0
-                    )
-                except Exception:
-                    log.exception("Failed to release message before self-update")
-                maybe_self_update(pin, log)  # fail hard on a bad pin
+            if pin and not is_rerun and update_pending(pin):
+                with VisibilityHeartbeat(sqs, queue_url, receipt, visibility):
+                    maybe_self_update(pin, log)  # fail hard on a bad pin
                 log.info("Controller self-update complete; exiting to restart")
                 return
 

@@ -311,11 +311,13 @@ def test_poll_deletes_after_infra_failure_final_state_at_max_receives(monkeypatc
     assert "delete" in events
 
 
-def test_poll_runner_releases_task_before_self_update(monkeypatch):
+def test_poll_runner_holds_task_hidden_during_self_update(monkeypatch):
     """A runner whose pinned controller version differs from the running one must
-    RELEASE the task back to the queue (visibility 0) BEFORE running the install, so
-    a controller already on the pinned version can pick it up immediately — then
-    self-update and exit to restart, without handling or deleting the task."""
+    self-update and exit to restart WITHOUT releasing the task to visibility 0 and
+    without handling or deleting it. The task stays hidden (under a visibility
+    heartbeat) during the install so that on a cold pool stale peers cannot
+    re-receive and re-release it in a loop and burn it to the DLQ before any install
+    finishes; it reappears for a converged runner once the heartbeat lapses."""
     events = []
 
     class _SQS:
@@ -383,10 +385,11 @@ def test_poll_runner_releases_task_before_self_update(monkeypatch):
     assert controller.poll() is None
     assert events.count("receive") == 1
     assert "delete" not in events
-    # Released BEFORE the install so a ready controller can grab it meanwhile.
-    assert events.index(("visibility", 0)) < events.index(
-        ("self_update", "praktika-controller==9.0")
-    )
+    assert ("self_update", "praktika-controller==9.0") in events
+    # The task must NOT be released to visibility 0 — doing so lets stale cold-pool
+    # peers re-receive it and burn ApproximateReceiveCount to the DLQ before any
+    # install finishes. It stays hidden under the heartbeat instead.
+    assert ("visibility", 0) not in events
 
 
 def _workflow_sqs(events, receive_count, stop_after_first):

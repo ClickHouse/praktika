@@ -877,6 +877,11 @@ def warm_branches(repo, patterns, token, work_dir, log=None, timeout=600):
     shutil.rmtree(warm, ignore_errors=True)
     os.makedirs(warm, exist_ok=True)
     url = f"https://x-access-token:{token}@github.com/{repo}.git"
+    # Assign before the try so the except handler (which logs ",".join(branches))
+    # can't raise UnboundLocalError on an early failure (git init / remote add /
+    # ls-remote) — that would escape the handler and skip rmtree(warm)/return False,
+    # leaving the warm dir behind with the token-bearing remote URL baked in.
+    branches = []
 
     def _g(args, step):
         with profile_step(log, step):
@@ -899,7 +904,6 @@ def warm_branches(repo, patterns, token, work_dir, log=None, timeout=600):
             for line in ls.splitlines()
             if "\trefs/heads/" in line
         ]
-        branches = []
         for pat in patterns:
             for name in heads:
                 if (name == pat or fnmatch.fnmatch(name, pat)) and name not in branches:

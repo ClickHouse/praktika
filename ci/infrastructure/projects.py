@@ -6,13 +6,13 @@ from ci.settings.settings import SECRET_CI_DB_CONNECTION, SECRET_DOCKER_REGISTRY
 _PRAKTIKA_PACKAGE_BASE_URL = (
     "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages"
 )
-_PRAKTIKA_BASE_VERSION = "0.1.13"
+_PRAKTIKA_BASE_VERSION = "0.1.15"
 # The baked AMI venv pins an exact Praktika version so image builds are
 # reproducible and a version bump forces a fresh AMI (see _image_builders).
 _PRAKTIKA_BASE_WHL = (
     f"{_PRAKTIKA_PACKAGE_BASE_URL}/praktika-{_PRAKTIKA_BASE_VERSION}-py3-none-any.whl"
 )
-_PRAKTIKA_CONTROLLER_BASE_VERSION = "0.1.3"
+_PRAKTIKA_CONTROLLER_BASE_VERSION = "0.1.10"
 _PRAKTIKA_CONTROLLER_BASE_WHL = (
     f"{_PRAKTIKA_PACKAGE_BASE_URL}/"
     f"praktika_controller-{_PRAKTIKA_CONTROLLER_BASE_VERSION}-py3-none-any.whl"
@@ -78,7 +78,7 @@ def _image_builders():
     #
     # Bump on any change to the baked venv contents (_runtime_prebuilt_venvs) or
     # the baked controller component (_praktika_controller_component).
-    recipe_version = "1.0.18"
+    recipe_version = "1.0.19"
 
     return [
         Components.create_awslinux_image_builder_config(
