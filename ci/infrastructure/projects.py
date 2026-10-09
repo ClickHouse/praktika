@@ -6,13 +6,13 @@ from ci.settings.settings import SECRET_CI_DB_CONNECTION, SECRET_DOCKER_REGISTRY
 _PRAKTIKA_PACKAGE_BASE_URL = (
     "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages"
 )
-_PRAKTIKA_BASE_VERSION = "0.1.13"
+_PRAKTIKA_BASE_VERSION = "0.1.15"
 # The baked AMI venv pins an exact Praktika version so image builds are
 # reproducible and a version bump forces a fresh AMI (see _image_builders).
 _PRAKTIKA_BASE_WHL = (
     f"{_PRAKTIKA_PACKAGE_BASE_URL}/praktika-{_PRAKTIKA_BASE_VERSION}-py3-none-any.whl"
 )
-_PRAKTIKA_CONTROLLER_BASE_VERSION = "0.1.3"
+_PRAKTIKA_CONTROLLER_BASE_VERSION = "0.1.10"
 _PRAKTIKA_CONTROLLER_BASE_WHL = (
     f"{_PRAKTIKA_PACKAGE_BASE_URL}/"
     f"praktika_controller-{_PRAKTIKA_CONTROLLER_BASE_VERSION}-py3-none-any.whl"
@@ -86,14 +86,14 @@ def _image_builders():
             version=recipe_version,
             controller_package=_PRAKTIKA_CONTROLLER_BASE_WHL,
             prebuilt_venvs=_runtime_prebuilt_venvs(),
-            instance_types=["t4g.small"],
+            instance_types=["t4g.xlarge"],
         ),
         Components.create_awslinux_image_builder_config(
             name="ci-x86_64-image",
             version=recipe_version,
             controller_package=_PRAKTIKA_CONTROLLER_BASE_WHL,
             prebuilt_venvs=_runtime_prebuilt_venvs(),
-            instance_types=["t3.small"],
+            instance_types=["t3.xlarge"],
         ),
         Components.create_ubuntu_image_builder_config(
             name="ci-ubuntu-x86_64-image",
@@ -101,7 +101,7 @@ def _image_builders():
             controller_package=_PRAKTIKA_CONTROLLER_BASE_WHL,
             prebuilt_venvs=_runtime_prebuilt_venvs(),
             components=_custom_image_tests(),
-            instance_types=["t3.small"],
+            instance_types=["t3.xlarge"],
         ),
     ]
 
@@ -340,11 +340,11 @@ _ORCHESTRATOR_BEDROCK_IAM_STATEMENT = {
 
 _orchestrator_pool = Components.OrchestratorPool(
     name="workflow-orchestrator",
-    instance_type="t4g.small",
+    instance_type="t4g.xlarge",
     scaling=Components.OrchestratorPool.Scaling.Auto,
     size=0,
     max_size=10,
-    capacity_reserve=0,
+    capacity_reserve=1,
     image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
     ext={
         "iam_statements": [_ORCHESTRATOR_BEDROCK_IAM_STATEMENT],
@@ -419,7 +419,7 @@ PROJECTS = [
             Components.report_page_config,
         ],
         image_builders=_IMAGE_BUILDERS,
-        github_token_minters=[Components.GitHubTokenMinter(secret_name="gh-app-echt")],
+        github_token_minters=[Components.GitHubTokenMinter()],
         orchestrator_pools=[_orchestrator_pool, _orchestrator_pool_base],
         runner_pools=_runner_pools,
         cidb_cluster=_cidb_cluster,

@@ -48,6 +48,10 @@ class _FakeS3:
         with open(Filename, "rb") as f:
             self.objects[(Bucket, Key)] = f.read()
 
+    def download_file(self, Bucket, Key, Filename, Config=None):
+        with open(Filename, "wb") as f:
+            f.write(self.objects[(Bucket, Key)])
+
     def get_object(self, Bucket, Key):
         if (Bucket, Key) not in self.objects:
             raise RuntimeError("NoSuchKey")
@@ -166,6 +170,34 @@ def test_prepare_merges_base_and_head(tmp_path):
     # Published to the PRs/ tier, content-addressed, and actually uploaded.
     assert key.startswith("mybucket/prefix/repo-snapshots/v1/PRs/")
     assert ("mybucket", key.split("/", 1)[1]) in s3.objects
+
+
+def test_snapshot_restores_to_merge_commit(tmp_path):
+    # The published archive (built by tarring clone_dir's worktree + snap_dir's
+    # minimal .git, with no second checkout) must restore to a usable repo:
+    # HEAD == snapshot_sha, both sides' files present, and the hash check passes.
+    origin, head_sha, b1 = _make_origin(tmp_path)
+    clone = _make_clone(tmp_path, origin, head_sha)
+    s3 = _FakeS3()
+    event = {"type": "pull_request", "pr_number": 7, "base_ref": "main"}
+
+    _, snapshot_sha, key = merge.prepare_repo_snapshot(
+        str(clone), event, PR_MERGE_SETTINGS, s3, _Log()
+    )
+
+    # Restore through the real restore path (download + sha256 verify + untar).
+    restore_work = tmp_path / "restore"
+    restore_work.mkdir()
+    restored_dir, actual_sha = common.restore_repo_snapshot(
+        s3, key, snapshot_sha, 7, work_dir=str(restore_work), log=_Log()
+    )
+
+    assert actual_sha == snapshot_sha
+    assert _git(restored_dir, "rev-parse", "HEAD") == snapshot_sha
+    assert os.path.exists(os.path.join(restored_dir, "pr.txt"))  # from head
+    assert os.path.exists(os.path.join(restored_dir, "added_by_base.txt"))  # from base
+    # Worktree matches HEAD (index was seeded via read-tree, not a checkout).
+    assert _git(restored_dir, "status", "--porcelain") == ""
 
 
 def test_merge_is_deterministic(tmp_path):
@@ -332,3 +364,41 @@ def test_split_artifact_bucket():
     assert merge._split_artifact_bucket("bucket", "a/b") == ("bucket", "a/b")
     assert merge._split_artifact_bucket("bucket/prefix", "a/b") == ("bucket", "prefix/a/b")
     assert merge._split_artifact_bucket("s3://bucket/pfx/", "x") == ("bucket", "pfx/x")
+
+
+def test_run_git_metadata_pr(tmp_path):
+    # For a PR the base history is the commits from the merge-base back and the
+    # authors are the PR's own commit authors (not the seeded head value).
+    origin, head_sha, _ = _make_origin(tmp_path)
+    b0 = _git(origin, "rev-parse", "main~1")  # the PR fork point (merge-base)
+    clone = _make_clone(tmp_path, origin, head_sha)
+    event = {
+        "type": "pull_request",
+        "pr_number": 7,
+        "base_ref": "main",
+        "commit_authors": ["seed@x"],
+    }
+    authors, history = merge.compute_run_git_metadata(clone, event, _Log())
+    assert history == [b0]
+    assert authors == ["t@t"]
+
+
+def test_run_git_metadata_push_from_head(tmp_path):
+    # A push has no merge-base: the history is just HEAD and its ancestors, and the
+    # webhook-provided authors are kept.
+    origin, head_sha, _ = _make_origin(tmp_path)
+    b0 = _git(origin, "rev-parse", "main~1")
+    clone = _make_clone(tmp_path, origin, head_sha)
+    event = {"type": "push", "commit_authors": ["seed@x"]}
+    authors, history = merge.compute_run_git_metadata(clone, event, _Log())
+    assert history == [head_sha, b0]
+    assert authors == ["seed@x"]
+
+
+def test_run_git_metadata_depth_cap(tmp_path):
+    # base_git_history is capped at the configured depth.
+    origin, head_sha, _ = _make_origin(tmp_path)
+    clone = _make_clone(tmp_path, origin, head_sha)
+    event = {"type": "push", "commit_authors": []}
+    _, history = merge.compute_run_git_metadata(clone, event, _Log(), depth=1)
+    assert history == [head_sha]

@@ -283,11 +283,17 @@ def _patch_commit_message(detail, round_id=""):
 class OrchestratorAI:
     """Routes workflow lifecycle events to the provider's hooks and records turns."""
 
-    def __init__(self, provider, console, session=None, event=None, patcher=None):
+    def __init__(
+        self, provider, console, session=None, event=None, patcher=None,
+        exclude_jobs=None,
+    ):
         self._provider = provider
         self._console = console
         self._session = session
         self._event = event or {}
+        # Job names the workflow configured as never-evaluate
+        # (ai_orchestrator.exclude_jobs). Their failures never trigger the advisor.
+        self._excluded = set(exclude_jobs or ())
         # Injected by the orchestrator: patcher(files, message) -> commit_sha,
         # commits the working-tree edits to the PR branch and pushes. None when
         # pushing isn't possible (local mode / fork PR / no token) — then a
@@ -355,7 +361,10 @@ class OrchestratorAI:
             except Exception as e:
                 print(f"  [warn] AI session unavailable: {type(e).__name__}: {e}")
                 session = None
-        return cls(provider, console, session=session, event=event, patcher=patcher)
+        return cls(
+            provider, console, session=session, event=event, patcher=patcher,
+            exclude_jobs=getattr(ai_config, "exclude_jobs", None) or (),
+        )
 
     def _delta(self, state):
         """Return [{name, status, ...}] for jobs newly terminal since last turn."""
@@ -372,6 +381,11 @@ class OrchestratorAI:
                     entry["reason"] = reason
                 changed.append(entry)
         return changed
+
+    def _is_excluded(self, name):
+        """True if the workflow configured this job name as never-evaluate via
+        ai_orchestrator.exclude_jobs."""
+        return name in self._excluded
 
     def _consult(self, event, observation, state):
         """Dispatch a lifecycle ``event`` to the provider and, if it produced a
@@ -416,7 +430,16 @@ class OrchestratorAI:
         changed = self._delta(state)
         if not changed:
             return None
-        failures = [c for c in changed if c.get("status") == "failure"]
+        # Jobs the workflow listed in ai_orchestrator.exclude_jobs are never
+        # investigated: their failure carries no problem for the advisor to act on
+        # (e.g. an advisory Code Review job), so skip them as a trigger — no round,
+        # no consult, no tokens. They still appear in build_observation's full-DAG
+        # context.
+        failures = [
+            c
+            for c in changed
+            if c.get("status") == "failure" and not self._is_excluded(c.get("name"))
+        ]
         successes = [c for c in changed if c.get("status") == "success"]
         turn = None
         if failures:

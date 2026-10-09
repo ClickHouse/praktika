@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from .interactive import UserPrompt
-from .version import compat_version, current_praktika_version
+from .version import current_praktika_version
 
 
 PRAKTIKA_MARKERS = {
@@ -476,6 +476,11 @@ def _settings_template(answers: InitAnswers) -> str:
         S3_REPORT_BUCKET = S3_ARTIFACT_BUCKET
         CACHE_S3_PATH = f"{{S3_ARTIFACT_BUCKET}}/ci_cache"
         ENABLE_SUBMODULE_CACHE = True
+
+        # Snapshot the repo to S3 once (Config Workflow) so downstream jobs restore instead
+        # of cloning; for PRs, snapshot the ephemeral merge of head into the target tip.
+        ENABLE_S3_REPO_SNAPSHOT = False
+        ENABLE_PR_EPHEMERAL_MERGE_COMMIT = False
 {s3_endpoint_block}
 
         GH_AUTH_LAMBDA_NAME = f"{{PROJECT_SLUG}}-gh-token"
@@ -632,18 +637,12 @@ def _infrastructure_template(answers: InitAnswers) -> str:
 
 
         # until published in pip
-        _PRAKTIKA_PACKAGE_BASE_URL = "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages"
-        # Floating compat alias: the latest backwards-compatible patch in the
-        # {compat_version(current_praktika_version())} branch, so the project picks up BC bug fixes
-        # without re-pinning on every Praktika release.
-        _PRAKTIKA_COMPAT_VERSION = "{compat_version(current_praktika_version())}"
-        _PRAKTIKA_WHL = (
-            f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/{{_PRAKTIKA_COMPAT_VERSION}}/"
-            "praktika-0.0.0-py3-none-any.whl"
+        _PRAKTIKA_PACKAGE_BASE_URL = (
+            "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages"
         )
+        _PRAKTIKA_WHL = f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/praktika-0.1.15-py3-none-any.whl"
         _PRAKTIKA_CONTROLLER_WHL = (
-            f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/{{_PRAKTIKA_COMPAT_VERSION}}/"
-            "praktika_controller-0.0.0-py3-none-any.whl"
+            f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/praktika_controller-0.1.10-py3-none-any.whl"
         )
 
 
@@ -729,6 +728,11 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                 report_pages=[Components.report_page_config],
                 image_builders=_IMAGE_BUILDERS,
                 github_token_minters=[_GH_TOKEN_MINTER],{optional_s3_proxy}
+                # Warm clone (optional, SSM-tunable): set ci_config["repo"] =
+                # "owner/name" and ci_config["warm_branches"] = ["{answers.main_branch}"]
+                # so an idle reserved orchestrator pre-fetches those branches and the
+                # per-task clone only applies the PR delta (no full head fetch, no
+                # unshallow). See praktika/docs/ci-config.md.
                 orchestrator_pool=Components.OrchestratorPool(
                     instance_type="t4g.small",
                     scaling=Components.OrchestratorPool.Scaling.Auto,

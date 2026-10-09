@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 
 from praktika_controller.common import (
@@ -28,20 +29,25 @@ from praktika_controller.common import (
     resolve_praktika_base_venv,
     restore_repo_snapshot,
     TaskLogCapture,
+    terminate_if_auto_scaled,
     terminate_instance_for_replacement,
     terminate_process_group,
     try_scale_in_if_idle,
+    warm_branches,
+    warm_repo_dir,
 )
 from praktika_controller.merge import (
+    compute_run_git_metadata,
     MergeConflict,
+    MULTIPART_MAX_CONCURRENCY,
     prepare_repo_snapshot,
     read_repo_settings,
 )
-from praktika_controller.self_update import maybe_self_update
+from praktika_controller.self_update import maybe_self_update, update_pending
 from praktika_controller.venv_manager import (
-    ensure_praktika_runtime,
     is_passthrough,
     praktika_command,
+    resolve_praktika_runtime,
     venv_env,
 )
 
@@ -63,6 +69,21 @@ INFRA_EXIT_CODE = 100
 # workflow name isn't known until the repo config is read). The orchestrator
 # renames it to the matched workflow's name once it takes over.
 EARLY_CHECK_NAME = "CI"
+
+
+def _s3_client():
+    """S3 client whose connection pool matches the snapshot multipart upload
+    concurrency. The default botocore pool is 10; the parallel part uploads
+    (MULTIPART_MAX_CONCURRENCY) would otherwise exhaust it and make urllib3 warn
+    and churn sockets ("Connection pool is full, discarding connection")."""
+    import boto3
+    from botocore.config import Config
+
+    return boto3.client(
+        "s3",
+        region_name=REGION,
+        config=Config(max_pool_connections=MULTIPART_MAX_CONCURRENCY),
+    )
 
 
 class InfraOrchestrationError(RuntimeError):
@@ -129,6 +150,44 @@ def _controller_version_pin(ci_config) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _warm_clone_config(ci_config):
+    """Opt-in warm-clone target, configured entirely in ci_config (SSM-tunable, no
+    pool redeploy). Both keys are required and together enable warm:
+    ``ci_config["repo"]`` (this project's ``owner/name``) and
+    ``ci_config["warm_branches"]`` (a non-empty list of concrete names or globs like
+    release/2*). Returns ``(repo, [patterns])`` or None when either is missing.
+    warm_branches resolves the patterns against the remote's heads, so globs expand
+    and missing names are skipped. (The repo lives in ci_config because the
+    controller has no reliable owner/name source at boot — Settings.PROJECT_NAME is
+    only the bare name.)"""
+    cfg = ci_config or {}
+    repo = str(cfg.get("repo", "")).strip()
+    raw = cfg.get("warm_branches")
+    patterns = [str(b).strip() for b in raw if str(b).strip()] if isinstance(raw, list) else []
+    if not repo or not patterns:
+        return None
+    return (repo, patterns)
+
+
+def _start_warm_repo(warm_cfg, log):
+    """Background, best-effort warm of the PR base branch(es) into WORK_DIR while
+    the orchestrator is idle, so the next task's clone adopts it. Non-blocking: the
+    poll loop keeps running, and a task that arrives before it finishes just
+    cold-clones. Daemon thread, so it dies with the process on scale-in."""
+    repo, branches = warm_cfg
+
+    def _run():
+        try:
+            token = get_github_token(REGION)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Warm clone skipped (no GitHub token): %s", e)
+            return
+        warm_branches(repo, branches, token, WORK_DIR, log=log)
+
+    threading.Thread(target=_run, name="warm-clone", daemon=True).start()
+    log.info("Started background warm clone of %s %s", repo, branches)
+
+
 def _resolve_runtime_source(clone_dir: str, log, ci_config=None):
     """Optional Praktika runtime source override. Two sources, pin first:
 
@@ -185,12 +244,15 @@ def _resolve_runtime_source(clone_dir: str, log, ci_config=None):
 def _resolve_runtime(clone_dir: str, log, ci_config=None):
     base_venv = resolve_praktika_base_venv(clone_dir, log)
     source = _resolve_runtime_source(clone_dir, log, ci_config=ci_config)
-    venv_dir = ensure_praktika_runtime(
+    # A local-checkout source runs straight from the tree via PYTHONPATH (no per-task
+    # install); a URL/version pin or no source resolves to an installed/baked venv.
+    # See venv_manager.resolve_praktika_runtime.
+    venv_dir, pythonpath = resolve_praktika_runtime(
         source,
         base_venv=base_venv,
         log=log,
     )
-    return base_venv, venv_dir
+    return base_venv, venv_dir, pythonpath
 
 
 def _praktika_env(
@@ -200,8 +262,17 @@ def _praktika_env(
     bootstrap_check_id=None,
     snapshot=None,
     ci_config=None,
+    pythonpath=None,
 ) -> dict[str, str]:
     env = venv_env(venv_dir)
+    if pythonpath:
+        # Local-checkout runtime (see venv_manager.resolve_praktika_runtime): import
+        # Praktika straight from the checkout instead of an installed copy. Prepend
+        # so it wins over anything already on PYTHONPATH.
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            f"{pythonpath}{os.pathsep}{existing}" if existing else pythonpath
+        )
     # Stream the orchestrator/runner subprocess stdout live to CloudWatch. Python
     # block-buffers stdout when it isn't a TTY, so without this the progress lines
     # (Trigger/KICK/DONE) only flush at process exit — and are LOST if the process
@@ -286,9 +357,7 @@ def _write_infra_failure_final(task, exc: Exception, log) -> bool:
     if not final_bucket or not final_key:
         return False
     try:
-        import boto3
-
-        s3 = boto3.client("s3", region_name=REGION)
+        s3 = _s3_client()
         body = {
             "type": "job_completion",
             "job_name": task.get("job_name"),
@@ -383,8 +452,17 @@ def handle_workflow(
         # adopts this id and renames it to the matched workflow.
         early_check_id = None
         if head_sha and not is_resume:
+            # Give the in-progress check a summary so the PR surfaces what the
+            # controller is doing (preparing the runtime, and for a PR running
+            # the ephemeral merge to check mergeability) and which orchestrator
+            # owns the run, before the clone finishes. The orchestrator replaces
+            # this once it adopts the check and knows the workflow name.
+            prep = "Preparing CI runtime and checking mergeability" if pr_number \
+                else "Preparing CI runtime"
+            early_summary = f"{prep}…\n\n**Orchestrator instance:** `{INSTANCE_ID}`"
             early_check_id = post_early_check(
-                repo, head_sha, gh_token, EARLY_CHECK_NAME, log=log
+                repo, head_sha, gh_token, EARLY_CHECK_NAME, log=log,
+                title=prep, summary=early_summary,
             )
 
         # The run's single commit (base_sha, snapshot_sha, repo_snapshot_key),
@@ -418,9 +496,7 @@ def handle_workflow(
 
         def _restore_original():
             """Restore the run's ORIGINAL published snapshot (reuse mode)."""
-            import boto3
-
-            s3 = boto3.client("s3", region_name=REGION)
+            s3 = _s3_client()
             cd, sha = restore_repo_snapshot(
                 s3,
                 resume_snapshot_key,
@@ -450,12 +526,21 @@ def handle_workflow(
                 head_commit = head_commit_info(clone_dir, log)
                 event["commit_message"] = head_commit["message"]
                 event["commit_authors"] = head_commit["authors"]
+
+                # Base-branch history (from the PR merge-base back) and the full PR
+                # author set, computed here on the head clone BEFORE any ephemeral
+                # merge rewrites HEAD. The controller is the only layer with the
+                # repo's real git history in every mode — the snapshot each job
+                # restores is history-free — so jobs read these from the run
+                # (Info.base_git_history / Info.commit_authors) instead of deriving
+                # them locally. Works with snapshot/merge on or off.
+                event["commit_authors"], event["base_git_history"] = (
+                    compute_run_git_metadata(clone_dir, event, log)
+                )
                 try:
                     settings = read_repo_settings(clone_dir, log, ci_config=ci_config)
                     if settings.get("ENABLE_S3_REPO_SNAPSHOT"):
-                        import boto3
-
-                        s3 = boto3.client("s3", region_name=REGION)
+                        s3 = _s3_client()
                         snapshot = prepare_repo_snapshot(
                             clone_dir, event, settings, s3, log
                         )
@@ -495,6 +580,10 @@ def handle_workflow(
                         work_dir=WORK_DIR,
                         branch=branch,
                         log=log,
+                        # Adopt an idle-warmed base branch if present (no-op cold
+                        # clone otherwise); the per-task clone then only applies
+                        # the PR delta and the merge needs no unshallow.
+                        warm_dir=warm_repo_dir(WORK_DIR),
                     )
 
                 # Stale-head guard (TOCTOU): clone_repo fetches the live
@@ -529,6 +618,17 @@ def handle_workflow(
                 event["commit_message"] = head_commit["message"]
                 event["commit_authors"] = head_commit["authors"]
 
+                # Base-branch history (from the PR merge-base back) and the full PR
+                # author set, computed here on the head clone BEFORE any ephemeral
+                # merge rewrites HEAD. The controller is the only layer with the
+                # repo's real git history in every mode — the snapshot each job
+                # restores is history-free — so jobs read these from the run
+                # (Info.base_git_history / Info.commit_authors) instead of deriving
+                # them locally. Works with snapshot/merge on or off.
+                event["commit_authors"], event["base_git_history"] = (
+                    compute_run_git_metadata(clone_dir, event, log)
+                )
+
                 # Establish the run's single commit before praktika is reinstalled
                 # from the checkout: compute the ephemeral PR merge (or plain head)
                 # in place and publish its snapshot. The merge mutates clone_dir, so
@@ -537,9 +637,7 @@ def handle_workflow(
                 try:
                     settings = read_repo_settings(clone_dir, log, ci_config=ci_config)
                     if settings.get("ENABLE_S3_REPO_SNAPSHOT"):
-                        import boto3
-
-                        s3 = boto3.client("s3", region_name=REGION)
+                        s3 = _s3_client()
                         snapshot = prepare_repo_snapshot(
                             clone_dir, event, settings, s3, log
                         )
@@ -562,7 +660,9 @@ def handle_workflow(
                     }
 
             with profile_step(log, "runtime: resolve venv + install praktika"):
-                base_venv, venv_dir = _resolve_runtime(clone_dir, log, ci_config=ci_config)
+                base_venv, venv_dir, runtime_pythonpath = _resolve_runtime(
+                    clone_dir, log, ci_config=ci_config
+                )
 
             event_file = os.path.join(clone_dir, "ci", "tmp", "event.json")
             os.makedirs(os.path.dirname(event_file), exist_ok=True)
@@ -607,6 +707,7 @@ def handle_workflow(
                 bootstrap_check_id=early_check_id,
                 snapshot=snapshot,
                 ci_config=ci_config,
+                pythonpath=runtime_pythonpath,
             ),
             stderr=subprocess.PIPE,
             text=True,
@@ -663,9 +764,7 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
     heartbeat_s3_key = task.get("heartbeat_s3_key", "")
     heartbeat_interval_s = task.get("heartbeat_interval_s", 30)
 
-    import boto3
-
-    s3 = boto3.client("s3", region_name=REGION)
+    s3 = _s3_client()
     if not always_run and _s3_key_exists(s3, cancel_s3_bucket, cancel_s3_key, log):
         log.info(
             "Task %r belongs to a cancelled run, skipping before clone",
@@ -751,7 +850,7 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
             # ci_config was frozen into run metadata by the orchestrator and rides
             # on the task, so the job runner installs the pinned Praktika from run
             # metadata, not SSM (see ci-config.md).
-            base_venv, venv_dir = _resolve_runtime(
+            base_venv, venv_dir, runtime_pythonpath = _resolve_runtime(
                 clone_dir, log, ci_config=task.get("ci_config") or {}
             )
 
@@ -767,9 +866,11 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
         if cm_heartbeat is not None:
             cm_heartbeat.update(phase="running_job")
         proc = subprocess.Popen(
-            praktika_command(venv_dir, "orchestrate", "job", task_file, "--ci"),
+            praktika_command(
+                venv_dir, "orchestrate", "job", task_file, "--ci", "--timestamp"
+            ),
             cwd=clone_dir,
-            env=_praktika_env(venv_dir, queue_name),
+            env=_praktika_env(venv_dir, queue_name, pythonpath=runtime_pythonpath),
             stderr=subprocess.PIPE,
             text=True,
             start_new_session=True,
@@ -875,6 +976,23 @@ def poll():
     )
     log.info("Resolved controller role=%s queue=%s", role, queue_name)
 
+    # Converge to the pinned controller BEFORE polling, so a self-update never
+    # consumes an SQS delivery (attempt N/3 == ApproximateReceiveCount; the old
+    # per-message self-update released the message and restarted, silently burning
+    # one delivery on every fresh instance). Only the ORCHESTRATOR reads SSM; job
+    # runners receive the pin frozen into their task and converge on the task path
+    # in the loop below. Because runners boot from the same AMI as the
+    # orchestrator, when the orchestrator needs no self-update a same-version
+    # runner won't either.
+    warm_cfg = None
+    if role == ROLE_WORKFLOW:
+        boot_ci_config = load_ci_config(region=REGION, log=log)
+        boot_pin = _controller_version_pin(boot_ci_config)
+        if boot_pin and maybe_self_update(boot_pin, log):
+            log.info("Controller self-update complete at boot; exiting to restart")
+            return
+        warm_cfg = _warm_clone_config(boot_ci_config)
+
     sqs = boto3.client("sqs", region_name=REGION)
     queue_url = sqs.get_queue_url(QueueName=queue_name)["QueueUrl"]
     visibility = int(
@@ -885,6 +1003,7 @@ def poll():
     log.info("Role=%s polling %s (visibility_timeout=%ss)", role, queue_url, visibility)
 
     has_received_message = False
+    warmed = False
     # SQS long polling is capped at 20s; keep polling responsive and throttle
     # the pre-first-job reserved-capacity idle log separately.
     reserved_capacity_log_limiter = LogRateLimiter(
@@ -910,6 +1029,11 @@ def poll():
                 log=log,
             ):
                 return
+            # Still here = a reserved idle instance. Warm the base branch once (in
+            # the background) so the first task's clone only applies the PR delta.
+            if warm_cfg and not warmed:
+                _start_warm_repo(warm_cfg, log)
+                warmed = True
             continue
 
         has_received_message = True
@@ -929,29 +1053,24 @@ def poll():
             # mid-message change could split the two.
             ci_config = _ci_config_for_message(role, payload, log)
 
-            # Idle boundary: converge to the pinned controller version BEFORE doing
-            # any work for this message. Run the (possibly slow: network download +
-            # pip) update INSIDE a VisibilityHeartbeat so a long install doesn't let
-            # the message become visible and get picked up concurrently. If a
-            # reinstall happened, release the message un-processed (after the
-            # heartbeat has stopped, so it isn't re-extended) and exit so the
-            # Restart=always systemd unit relaunches into the new controller. No run
-            # is interrupted mid-flight. See self_update / ci-config.md.
+            # Idle boundary: converge to the pinned controller, then self-update and
+            # exit so the Restart=always unit relaunches into it. Keep the message
+            # hidden under a heartbeat during the install (don't release to 0): on a
+            # cold pool releasing lets stale peers re-receive it in a loop and DLQ it
+            # before any install finishes. After we exit, it reappears once the last
+            # heartbeat lapses and a converged runner picks it up.
+            #
+            # Skip reruns: a rerun's frozen pin may be older than the SSM pin we
+            # converged to at boot, so updating to it here just ping-pongs and DLQs
+            # the rerun. The controller is only a launcher — a rerun reproduces via
+            # its frozen praktika runtime + snapshot, not the controller version.
+            is_rerun = isinstance(payload, dict) and payload.get("type") == "rerun"
             pin = _controller_version_pin(ci_config)
-            if pin:
+            if pin and not is_rerun and update_pending(pin):
                 with VisibilityHeartbeat(sqs, queue_url, receipt, visibility):
-                    did_self_update = maybe_self_update(pin, log)
-                if did_self_update:
-                    try:
-                        sqs.change_message_visibility(
-                            QueueUrl=queue_url, ReceiptHandle=receipt, VisibilityTimeout=0
-                        )
-                    except Exception:
-                        log.exception(
-                            "Failed to release message before self-update restart"
-                        )
-                    log.info("Controller self-update complete; exiting to restart")
-                    return
+                    maybe_self_update(pin, log)  # fail hard on a bad pin
+                log.info("Controller self-update complete; exiting to restart")
+                return
 
             with VisibilityHeartbeat(sqs, queue_url, receipt, visibility):
                 cleanup_error = _prepare_runner_for_task(role, log)
@@ -1062,6 +1181,17 @@ def poll():
                     "RESULT produced but message delete failed; message may retry"
                 )
             log.info("RESULT: %s", json.dumps(result))
+
+        # One workflow per orchestrator: once its single message is finalized
+        # (success, permanent give-up, or malformed), an auto-scaled orchestrator
+        # terminates immediately instead of polling for more work or waiting for
+        # an idle scale-in. _await_termination (not a bare return) so the
+        # Restart=always unit can't relaunch and re-receive the next message.
+        # A pinned/dev box (praktika_scaling != "auto") keeps polling.
+        if role == ROLE_WORKFLOW and terminate_if_auto_scaled(
+            region=REGION, instance_id=INSTANCE_ID, log=log
+        ):
+            _await_termination(log)
 
 
 def main():

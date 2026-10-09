@@ -35,7 +35,16 @@ def _calculate_desired_capacity(
     if target_work_capacity <= current_work_capacity:
         return min(max_size, max(current_desired, capacity_reserve))
 
-    new_work_capacity = min(target_work_capacity, current_work_capacity + 1)
+    # Grow toward the target by max(30% of the OUTSTANDING gap, 1) per
+    # invocation (the schedule fires once a minute). The gap is backlog not yet
+    # covered by current_desired, which already includes instances we requested
+    # on earlier runs but that are still booting. Stepping off the gap (rather
+    # than the raw backlog) means each minute decelerates as pending capacity
+    # ramps up, instead of slamming in another big batch for a backlog that is
+    # already being provisioned for and just hasn't been picked up yet.
+    gap = target_work_capacity - current_work_capacity
+    step = max(1, math.ceil(gap * 0.3))
+    new_work_capacity = min(target_work_capacity, current_work_capacity + step)
     target_capacity = min(max_size, capacity_reserve + new_work_capacity)
     if target_capacity <= current_desired:
         return current_desired

@@ -49,6 +49,17 @@ _TIMESTAMP_INDENT = len(
 def _job_python_env() -> dict:
     env = os.environ.copy()
 
+    # The native-job subprocess (``python3 -m praktika.native_jobs ...``) must
+    # import the SAME praktika that is running right now. Under the PYTHONPATH
+    # runtime model the controller runs praktika straight from the checkout with
+    # no per-task install (see venv_manager.resolve_praktika_runtime), so the base
+    # venv's site-packages can hold a STALE leftover copy. Anchor on the executing
+    # package's root (the parent of this ``praktika/`` package) and put it first,
+    # so the native job resolves to the same tree as its parent runner rather than
+    # the installed copy. When praktika itself runs from site-packages this root is
+    # already site-packages, so it is a no-op in that mode.
+    runtime_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
     # Keep the runtime environment ahead of the checkout. Jobs reference their
     # config as ``ci.*`` modules, so only the repo root ("."; the parent of the
     # ``ci`` package) belongs on PYTHONPATH — NOT "./ci". Putting "./ci" on the
@@ -61,7 +72,7 @@ def _job_python_env() -> dict:
     if hasattr(site, "getusersitepackages"):
         site_paths.append(site.getusersitepackages())
 
-    pythonpath_entries = []
+    pythonpath_entries = [runtime_root]
     for entry in site_paths:
         if entry and entry not in pythonpath_entries:
             pythonpath_entries.append(entry)

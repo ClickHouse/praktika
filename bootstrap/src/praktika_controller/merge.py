@@ -28,7 +28,6 @@ import importlib.util
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import tempfile
@@ -60,6 +59,24 @@ _COMMIT_SHA_RE = re.compile(r"[0-9a-fA-F]{40,64}")
 # Short-lived local tag used only to advertise the snapshot commit to the shallow
 # local fetch that builds the archive.
 _REPO_SNAPSHOT_TAG = "_praktika_repo_snapshot"
+
+# Snapshot archive tuning.
+#
+# zstd level: the snapshot is a transient, content-addressed artifact, re-created
+# on demand and lifecycle-expired, so optimize for speed over ratio. On a large
+# tree (ClickHouse) the pack+compress step dominated snapshot publish time at the
+# zstd default (level 3); level 1 compresses far faster for a modest size cost,
+# and — because restore runs `zstd -dc` — a lower level also speeds every job's
+# restore. Upload is cheap (multipart), so a slightly larger archive is a good
+# trade. Tunable.
+SNAPSHOT_ZSTD_LEVEL = 1
+
+# Multipart upload tuning. Parts upload concurrently; the S3 client's connection
+# pool must be >= MULTIPART_MAX_CONCURRENCY (see controller._s3_client) or urllib3
+# warns ("Connection pool is full, discarding connection") and churns sockets.
+MULTIPART_MAX_CONCURRENCY = 16
+MULTIPART_CHUNKSIZE = 16 * 1024 * 1024
+MULTIPART_THRESHOLD = 8 * 1024 * 1024
 
 # Defaults mirror praktika/settings.py:_Settings for the fields the merge needs.
 _SETTING_DEFAULTS = {
@@ -287,6 +304,96 @@ def _ensure_base_history(clone_dir, base_branch, log) -> None:
     )
 
 
+# How many commits (newest-first), starting at the PR merge-base, to record on the
+# run as the base-branch history jobs read via Info().base_git_history().
+BASE_GIT_HISTORY_DEPTH = 100
+
+
+def compute_run_git_metadata(clone_dir, event, log, depth=BASE_GIT_HISTORY_DEPTH):
+    """Base-branch commit SHAs from the PR merge-base back, and the full set of PR
+    commit-author emails.
+
+    Computed in the controller — the one layer that holds the repo's real git
+    history in EVERY mode (the snapshot each job restores is history-free, so a job
+    cannot derive this itself when Settings.ENABLE_S3_REPO_SNAPSHOT is on). Called
+    on the head clone BEFORE any ephemeral merge rewrites HEAD, so the merge-base
+    and the PR commit range are taken against the true PR head regardless of
+    ENABLE_PR_EPHEMERAL_MERGE_COMMIT.
+
+    Returns ``(commit_authors, base_git_history)`` — ``base_git_history`` newest
+    first. Best-effort: on any git failure returns the authors already on the event
+    and an empty history, never raising (this metadata must not fail a run).
+    """
+    # A PR-flavored rerun (type="rerun", e.g. the per-job "Rerun w/ fresh base")
+    # still carries pr_number/base_ref and must be treated like a pull_request here.
+    # Otherwise it takes the non-PR branch: base_git_history starts at the PR head
+    # instead of the merge-base, and the author list stays limited to the head
+    # commit. A push/dispatch rerun has no pr_number and correctly stays non-PR.
+    is_pr = bool(event.get("pr_number")) and event.get("type", "") in (
+        "pull_request",
+        "rerun",
+    )
+    base_branch = event.get("base_ref", "")
+    authors = list(event.get("commit_authors") or [])
+    history = []
+    try:
+        if is_pr and base_branch:
+            _ensure_base_history(clone_dir, base_branch, log)
+            base_ref = f"origin/{base_branch}"
+            merge_base = _git_out(["merge-base", base_ref, "HEAD"], clone_dir)
+            if merge_base:
+                history = [
+                    line
+                    for line in _git_out(
+                        ["rev-list", f"--max-count={int(depth)}", merge_base],
+                        clone_dir,
+                    ).splitlines()
+                    if line
+                ]
+            # Author emails of the PR's own commits (merge-base..head), excluding
+            # merges and GitHub noreply/bot addresses ("+" in the local part).
+            emails = {
+                e
+                for e in _git_out(
+                    ["log", "--no-merges", "--pretty=%ae", f"{base_ref}..HEAD"],
+                    clone_dir,
+                ).splitlines()
+                if "@" in e and "+" not in e
+            }
+            if emails:
+                authors = sorted(emails)
+        else:
+            # Non-PR (push/dispatch): no merge-base. Record the history from HEAD
+            # back and keep the authors the webhook payload already supplied.
+            # Unshallow first so the walk sees real history, not just the clone tip.
+            if (
+                _git_out(["rev-parse", "--is-shallow-repository"], clone_dir)
+                == "true"
+            ):
+                _git(
+                    [
+                        "fetch", "--unshallow", "--prune", "--no-recurse-submodules",
+                        "--filter=tree:0", "origin", "HEAD",
+                    ],
+                    clone_dir,
+                    check=False,
+                )
+            head_sha = _git_out(["rev-parse", "HEAD"], clone_dir)
+            if head_sha:
+                history = [
+                    line
+                    for line in _git_out(
+                        ["rev-list", f"--max-count={int(depth)}", head_sha],
+                        clone_dir,
+                    ).splitlines()
+                    if line
+                ]
+    except Exception as e:  # noqa: BLE001
+        if log is not None:
+            log.warning("Could not compute run git metadata: %s", e)
+    return authors, history
+
+
 def _merge_head_into_base(clone_dir, base_branch, base_sha, head_sha, log) -> str:
     """Deterministically merge ``head_sha`` into ``base_sha`` in place. Returns
     the merge commit sha. Raises ``MergeConflict`` if the merge does not apply
@@ -346,44 +453,80 @@ def _build_and_publish_snapshot(clone_dir, snapshot_sha, is_pr, artifact_bucket,
             finally:
                 _git(["tag", "-d", _REPO_SNAPSHOT_TAG], clone_dir, check=False)
 
-        with profile_step(log, "snapshot: checkout worktree"):
-            # Parallel checkout (checkout.workers=0 => one worker per core) to
-            # write the large working tree to disk faster.
-            subprocess.run(
-                [
-                    "git", "-C", snap_dir, "-c", "checkout.workers=0",
-                    "checkout", "-q", "--detach", "FETCH_HEAD",
-                ],
-                check=True,
-            )
+        # The depth-1 fetch above gave snap_dir a minimal, history-free .git, but
+        # with no worktree. Point its HEAD (detached) at the commit and load the
+        # index from the tree via plumbing — NO `git checkout`, so we never write
+        # the large working tree a second time. The worktree we archive comes from
+        # clone_dir, which already has this exact tree materialized (the merge, or
+        # the plain head checkout). This halves the snapshot's disk writes.
+        with profile_step(log, "snapshot: build minimal .git (no checkout)"):
+            _git(["update-ref", "--no-deref", "HEAD", snapshot_sha], snap_dir)
+            _git(["read-tree", snapshot_sha], snap_dir)
         snap_sha = _git_out(["rev-parse", "HEAD"], snap_dir)
         if snap_sha != snapshot_sha:
             raise RuntimeError(
                 f"snapshot HEAD {snap_sha} != expected {snapshot_sha}"
             )
 
-        # Pack and hash in a single pass: stream tar|zstd to this process and
-        # tee each chunk into both the archive file and the sha256, so the
-        # content-addressed key needs no separate full-archive read (the archive
-        # is large for big trees). pipefail so a failing tar isn't masked by a
-        # succeeding zstd.
+        # Restore the exact pinned tree before packing. A fresh checkout +
+        # deterministic merge produce clean tracked files, but loading repo
+        # settings (read_repo_settings imports ci/settings/settings.py) runs
+        # project code before this point. A hard reset first undoes any import
+        # side effect that rewrote a TRACKED file — `git clean` only removes
+        # untracked/ignored files, it does NOT restore modified tracked ones, so
+        # without the reset those edits would be archived even though snapshot_sha
+        # holds the original bytes. The clean then drops untracked/ignored
+        # byproducts like ci/settings/__pycache__ (and, via -ffdx, ignored files
+        # and nested-repo dirs). Together they make the archived top-level entries
+        # equal snapshot_sha exactly.
+        with profile_step(log, "snapshot: restore + clean to pinned tree"):
+            _git(["reset", "--hard", snapshot_sha], clone_dir)
+            _git(["clean", "-ffdx"], clone_dir)
+
+        # Pack and hash in a single pass: one tar invocation pulls the minimal
+        # .git from snap_dir and the worktree entries (everything but .git) from
+        # clone_dir, piped to zstd; we tee each chunk into both the archive file
+        # and the sha256, so the content-addressed key needs no separate
+        # full-archive read. clone_dir is clean (tracked tree only) after the
+        # clean above, so its top-level entries are exactly the tree. zstd at
+        # SNAPSHOT_ZSTD_LEVEL (fast, not max ratio) and -T0 (all cores).
+        #
+        # `--` terminates tar option parsing: worktree_entries are PR-controlled
+        # top-level names, and a file like `--exclude=ci` would otherwise be read
+        # as an option (silently truncating the snapshot, or invoking checkpoint
+        # actions).
+        worktree_entries = sorted(
+            e for e in os.listdir(clone_dir) if e != ".git"
+        )
         with profile_step(log, "snapshot: pack + hash (tar|zstd)"):
-            proc = subprocess.Popen(
-                f"set -o pipefail; tar -C {shlex.quote(snap_dir)} -cf - . | zstd -c -T0 -q",
-                shell=True,
-                executable="/bin/bash",
+            tar_proc = subprocess.Popen(
+                [
+                    "tar", "-cf", "-",
+                    "-C", snap_dir, ".git",
+                    "-C", str(clone_dir), "--", *worktree_entries,
+                ],
                 stdout=subprocess.PIPE,
             )
+            zstd_proc = subprocess.Popen(
+                ["zstd", "-c", "-T0", "-q", f"-{SNAPSHOT_ZSTD_LEVEL}"],
+                stdin=tar_proc.stdout,
+                stdout=subprocess.PIPE,
+            )
+            # Let tar receive SIGPIPE if zstd dies, and avoid holding the fd here.
+            assert tar_proc.stdout is not None
+            tar_proc.stdout.close()
             h = hashlib.sha256()
-            assert proc.stdout is not None
+            assert zstd_proc.stdout is not None
             with open(archive_path, "wb") as out:
-                for chunk in iter(lambda: proc.stdout.read(1024 * 1024), b""):
+                for chunk in iter(lambda: zstd_proc.stdout.read(1024 * 1024), b""):
                     out.write(chunk)
                     h.update(chunk)
-            rc = proc.wait()
-            if rc != 0:
+            zrc = zstd_proc.wait()
+            trc = tar_proc.wait()
+            if trc != 0 or zrc != 0:
                 raise RuntimeError(
-                    f"Failed to pack repo snapshot archive (tar|zstd exited {rc})"
+                    f"Failed to pack repo snapshot archive (tar exited {trc}, "
+                    f"zstd exited {zrc})"
                 )
             content_hash = h.hexdigest()
         log.info("[profile] snapshot: archive size %.1f MiB", os.path.getsize(archive_path) / 1048576)
@@ -422,9 +565,9 @@ def _build_and_publish_snapshot(clone_dir, snapshot_sha, is_pr, artifact_bucket,
                         bucket,
                         key,
                         Config=TransferConfig(
-                            multipart_threshold=8 * 1024 * 1024,
-                            multipart_chunksize=16 * 1024 * 1024,
-                            max_concurrency=16,
+                            multipart_threshold=MULTIPART_THRESHOLD,
+                            multipart_chunksize=MULTIPART_CHUNKSIZE,
+                            max_concurrency=MULTIPART_MAX_CONCURRENCY,
                             use_threads=True,
                         ),
                     )

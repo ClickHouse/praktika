@@ -1650,10 +1650,11 @@ class _ResultS3:
             # when multiple concurrent jobs attempt to update the workflow report
             time.sleep(random.uniform(0, 2))
 
-        print(f"Workflow status changed: [{prev_status}] -> [{new_status}]")
         if prev_status != new_status:
+            print(f"Workflow status changed: [{prev_status}] -> [{new_status}]")
             return new_status
         else:
+            print(f"Workflow status unchanged: [{new_status}]")
             return None
 
 
