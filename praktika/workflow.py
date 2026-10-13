@@ -57,6 +57,18 @@ class Workflow:
             # allow_failure job like "Code Review"). They still appear in the
             # advisor's full-DAG context, just never as a trigger.
             exclude_jobs: List[str] = field(default_factory=list)
+            # Extra project-specific guidance appended to the advisor's system
+            # prompt on every consult. Use it to steer when/how to act — e.g.
+            # "if a test job fails because the test is outdated and the fix is
+            # clear, cancel_and_patch to fix the test". Empty adds nothing.
+            extra_prompt: str = ""
+            # Repo-relative path to a file whose contents are appended to the
+            # system prompt the same way as ``extra_prompt`` — lets the guidance
+            # live as a versioned file in the repo instead of inline. Read
+            # best-effort from the checkout; a missing/unreadable file is
+            # ignored. When both are set, ``extra_prompt`` comes first, then the
+            # file contents.
+            extra_prompt_file: str = ""
 
     @dataclass
     class Config:

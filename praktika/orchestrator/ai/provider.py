@@ -199,6 +199,32 @@ class AIProvider(ABC):
         self.turns = []         # (observation, turn) pairs, as turns come back
         self._check_updater = None  # fn(status, summary_md); status in-progress|neutral
         self._check_open = False    # True between track_observation and track_turn
+        # Project-specific guidance appended to the system prompt (see
+        # Workflow.OrchestratorAI.Config.extra_prompt). Empty adds nothing.
+        self._extra_guidance = ""
+
+    def set_extra_guidance(self, text):
+        """Store project-specific guidance to append to the system prompt.
+
+        Wired from ``Workflow.OrchestratorAI.Config.extra_prompt`` by the advisor
+        at construction time. A provider folds it into its system prompt via
+        ``system_prompt``; providers that don't build a prompt simply ignore it.
+        """
+        self._extra_guidance = (text or "").strip()
+
+    def system_prompt(self, base):
+        """Return ``base`` with the configured extra guidance appended.
+
+        Keeps the base/system prompt a module constant while letting a workflow
+        steer the advisor (when to act, which failures to fix) without a code
+        change. Returns ``base`` unchanged when no guidance is set."""
+        if not self._extra_guidance:
+            return base
+        return (
+            f"{base}\n\n"
+            "Additional project-specific guidance (follow it when it applies):\n"
+            f"{self._extra_guidance}"
+        )
 
     def complete(
         self,

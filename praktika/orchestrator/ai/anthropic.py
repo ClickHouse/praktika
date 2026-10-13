@@ -533,7 +533,7 @@ class AnthropicProvider(AIProvider):
             tools.append(_FETCH_LOG_TOOL)
 
         turn = self.complete(
-            system=_SYSTEM,
+            system=self.system_prompt(_SYSTEM),
             user_content=json.dumps(observation.to_dict(), indent=2),
             tools=tools,
             tool_executor=lambda name, tool_input: _execute_tool(

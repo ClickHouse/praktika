@@ -106,6 +106,9 @@ should use it.
 | `enabled` | `False` | Master switch. When off, `maybe_create` returns `None` and the loop is unchanged. |
 | `provider` | `"mock"` | Registered provider name. If it can't be resolved or instantiated by the running runtime (an older orchestrator that predates the provider, or a provider whose SDK isn't installed), `maybe_create` logs and returns `None` — the advisor is disabled, never a crash. |
 | `model` | `""` | Provider-specific model id; empty = provider default. |
+| `exclude_jobs` | `[]` | Job names whose failure never triggers the advisor (e.g. an advisory `allow_failure` job). |
+| `extra_prompt` | `""` | Project-specific guidance appended to the advisor's system prompt on every consult — steer when/how to act (e.g. "if a test fails because it's outdated and the fix is clear, `cancel_and_patch` to fix the test"). |
+| `extra_prompt_file` | `""` | Repo-relative path to a file whose contents are appended the same way as `extra_prompt`, so the guidance can live as a versioned file in the repo. Read best-effort from the checkout (repo-root contained, capped); missing/unreadable is ignored. When both are set, `extra_prompt` comes first, then the file. |
 
 The advisor is advisory and best-effort: neither a disabled switch, an
 unresolvable provider, nor a session-setup error may break core orchestration.

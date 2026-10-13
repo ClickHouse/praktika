@@ -8,6 +8,7 @@ from praktika.orchestrator.ai import (
     OrchestratorAI,
     _apply_edits,
     _patch_commit_message,
+    _resolve_extra_prompt,
     build_observation,
 )
 from praktika.orchestrator.ai.anthropic import (
@@ -500,6 +501,83 @@ def test_on_job_failure_offers_fetch_log_when_links_present():
     p.on_job_failure(obs)
     tool_names = {t["name"] for t in p._client.calls[0].get("tools", [])}
     assert {"read_file", "grep_repo", "fetch_log"} <= tool_names
+
+
+# ------------------------------------------------------------- extra prompt
+
+
+def test_system_prompt_without_guidance_returns_base():
+    p = AnthropicProvider(model="claude-haiku-4-5")
+    assert p.system_prompt("BASE") == "BASE"
+
+
+def test_system_prompt_appends_guidance():
+    p = AnthropicProvider(model="claude-haiku-4-5")
+    p.set_extra_guidance("  fix outdated tests  ")
+    out = p.system_prompt("BASE")
+    assert out.startswith("BASE")
+    # whitespace stripped, guidance appended under a clear header
+    assert "fix outdated tests" in out
+    assert "BASE" != out
+
+
+def test_on_job_failure_sends_extra_guidance_in_system():
+    p = AnthropicProvider(model="claude-haiku-4-5")
+    p.set_extra_guidance("if a test is outdated, cancel_and_patch to fix it")
+    p._client = _FakeClient(_fake_resp('{"reasoning": "ok", "decision": []}'))
+    p.on_job_failure(Observation(changed=[{"name": "B", "status": "failure"}]))
+    system = p._client.calls[0]["system"]
+    assert "CI orchestration advisor" in system  # base prompt still present
+    assert "if a test is outdated, cancel_and_patch to fix it" in system
+
+
+def test_resolve_extra_prompt_inline_only():
+    cfg = _workflow_ai(extra_prompt="  inline guidance  ")
+    assert _resolve_extra_prompt(cfg) == "inline guidance"
+
+
+def test_resolve_extra_prompt_file_only(tmp_path, monkeypatch):
+    (tmp_path / "ai_guidance.md").write_text("file guidance\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    cfg = _workflow_ai(extra_prompt_file="ai_guidance.md")
+    assert _resolve_extra_prompt(cfg) == "file guidance"
+
+
+def test_resolve_extra_prompt_inline_then_file(tmp_path, monkeypatch):
+    (tmp_path / "g.md").write_text("from file", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    cfg = _workflow_ai(extra_prompt="from inline", extra_prompt_file="g.md")
+    assert _resolve_extra_prompt(cfg) == "from inline\n\nfrom file"
+
+
+def test_resolve_extra_prompt_missing_file_ignored(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    cfg = _workflow_ai(extra_prompt="keep this", extra_prompt_file="nope.md")
+    assert _resolve_extra_prompt(cfg) == "keep this"
+
+
+def test_resolve_extra_prompt_file_escape_ignored(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    cfg = _workflow_ai(extra_prompt_file="../../etc/passwd")
+    assert _resolve_extra_prompt(cfg) == ""
+
+
+def test_maybe_create_wires_extra_prompt(tmp_path, monkeypatch):
+    (tmp_path / "g.md").write_text("fix flaky tests", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    advisor = OrchestratorAI.maybe_create(
+        run_id="r1",
+        local_mode=True,
+        workflow_config=SimpleNamespace(
+            ai_orchestrator=_workflow_ai(
+                enabled=True,
+                provider="mock",
+                extra_prompt="inline",
+                extra_prompt_file="g.md",
+            )
+        ),
+    )
+    assert advisor._provider._extra_guidance == "inline\n\nfix flaky tests"
 
 
 # --------------------------------------------------------------- log fetch tool

@@ -24,6 +24,14 @@ workflow = Workflow.Config(
         # The Code Review job is advisory (allow_failure) — its failure is never a
         # real CI problem, so the advisor must not investigate it.
         exclude_jobs=["Code Review"],
+        # Project-specific guidance steering when the advisor should act.
+        extra_prompt=(
+            "When a test job fails because the test itself is outdated (e.g. it "
+            "asserts a value the PR intentionally changed) and the fix is small "
+            "and unambiguous, use cancel_and_patch to update the test. Only do "
+            "this when the test is clearly the stale side — if the production "
+            "code looks wrong, prefer continue/cancel_run and leave it for a human."
+        ),
     ),
     jobs=[
         # Verify the Praktika actually executing the job is the head version.

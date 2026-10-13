@@ -65,6 +65,46 @@ def _get_ai_config(workflow_config):
     return getattr(workflow_config, "ai_orchestrator", None)
 
 
+# Cap on how much guidance a prompt file may contribute, so a huge or runaway
+# file can't blow up every consult's token bill.
+_MAX_EXTRA_PROMPT_CHARS = 20_000
+
+
+def _resolve_extra_prompt(ai_config):
+    """Build the system-prompt guidance from ``extra_prompt`` + ``extra_prompt_file``.
+
+    The inline ``extra_prompt`` comes first; then, if ``extra_prompt_file`` is
+    set, its contents (read from the checkout, repo-root contained, capped) are
+    appended. Reading is best-effort — the advisor must never break orchestration,
+    so a missing/unreadable/escaping path is logged and ignored, not raised.
+    """
+    parts = []
+    inline = (getattr(ai_config, "extra_prompt", "") or "").strip()
+    if inline:
+        parts.append(inline)
+    rel = (getattr(ai_config, "extra_prompt_file", "") or "").strip()
+    if rel:
+        target = _safe_join(os.getcwd(), rel)
+        if target is None:
+            print(f"[AI   ] extra_prompt_file ignored: path escapes repo: {rel!r}")
+        elif not os.path.isfile(target):
+            print(f"[AI   ] extra_prompt_file ignored: no such file: {rel!r}")
+        else:
+            try:
+                with open(target, "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read(_MAX_EXTRA_PROMPT_CHARS + 1).strip()
+                if len(text) > _MAX_EXTRA_PROMPT_CHARS:
+                    text = text[:_MAX_EXTRA_PROMPT_CHARS] + " …"
+                if text:
+                    parts.append(text)
+            except Exception as e:
+                print(
+                    f"[AI   ] extra_prompt_file ignored: cannot read {rel!r}: "
+                    f"{type(e).__name__}: {e}"
+                )
+    return "\n\n".join(parts)
+
+
 def _clean_links(links):
     """Return up to _MAX_LINKS http(s) URLs from a Result node's `links`.
 
@@ -342,6 +382,7 @@ class OrchestratorAI:
             )
             return None
         provider.attach_check_updater(ai_check)
+        provider.set_extra_guidance(_resolve_extra_prompt(ai_config))
         console = TraceLogger(run_id=run_id)
         print(
             f"[AI   ] advisor enabled: provider={provider.name} "
