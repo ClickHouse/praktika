@@ -376,3 +376,87 @@ def test_review_skips_when_not_a_pr(monkeypatch, pr_number):
     args = SimpleNamespace(provider="mock", model="", prompt="", bot_login="", dry_run=False)
     result = ai_review.review(args)
     assert result.status == result.Status.SKIPPED
+
+
+# -------------------------------------------------- blocking verdict / ext
+
+
+def _blocking_review_json():
+    return {
+        "change_summary": "Adds a widget.",
+        "verdict": "blocking_issues",
+        "summary_md": "#### Findings\nnull deref",
+        "inline_findings": [
+            {"path": "a.py", "line": 3, "body": "this can deref None"}
+        ],
+        "thread_actions": [],
+    }
+
+
+def _wire_posts_ok(monkeypatch):
+    monkeypatch.setattr(
+        GH, "post_updateable_comment",
+        classmethod(lambda cls, comment_tags_and_bodies, **k: True),
+    )
+    monkeypatch.setattr(
+        GH, "post_pr_review",
+        classmethod(lambda cls, commit_id, comments, **k: True),
+    )
+
+
+def test_review_ext_carries_structured_outcome(monkeypatch):
+    _wire_common(monkeypatch, _blocking_review_json(), [])
+    _wire_posts_ok(monkeypatch)
+    args = SimpleNamespace(provider="stub", model="", prompt="", dry_run=False)
+    result = ai_review.review(args)
+
+    ext = result.ext["ai_review"]
+    assert ext["verdict"] == "blocking_issues"
+    assert ext["change_summary"] == "Adds a widget."
+    assert ext["findings"] == [
+        {"path": "a.py", "line": 3, "body": "this can deref None"}
+    ]
+
+
+def test_blocking_verdict_stays_ok_without_flag(monkeypatch):
+    _wire_common(monkeypatch, _blocking_review_json(), [])
+    _wire_posts_ok(monkeypatch)
+    # No fail_on_blocking attribute at all — must default to advisory (OK).
+    args = SimpleNamespace(provider="stub", model="", prompt="", dry_run=False)
+    result = ai_review.review(args)
+    assert result.is_ok()
+    assert result.ext["ai_review"]["verdict"] == "blocking_issues"
+
+
+def test_blocking_verdict_fails_with_flag(monkeypatch):
+    _wire_common(monkeypatch, _blocking_review_json(), [])
+    _wire_posts_ok(monkeypatch)
+    args = SimpleNamespace(
+        provider="stub", model="", prompt="", dry_run=False, fail_on_blocking=True
+    )
+    result = ai_review.review(args)
+    assert result.status == result.Status.FAIL
+    assert result.ext["ai_review"]["verdict"] == "blocking_issues"
+
+
+def test_non_blocking_verdict_ok_even_with_flag(monkeypatch):
+    review_json = dict(_blocking_review_json(), verdict="issues_found")
+    _wire_common(monkeypatch, review_json, [])
+    _wire_posts_ok(monkeypatch)
+    args = SimpleNamespace(
+        provider="stub", model="", prompt="", dry_run=False, fail_on_blocking=True
+    )
+    result = ai_review.review(args)
+    assert result.is_ok()
+
+
+def test_review_ext_caps_findings(monkeypatch):
+    many = [{"path": f"f{i}.py", "line": i, "body": "x"} for i in range(40)]
+    review_json = dict(_blocking_review_json(), inline_findings=many)
+    _wire_common(monkeypatch, review_json, [])
+    _wire_posts_ok(monkeypatch)
+    args = SimpleNamespace(provider="stub", model="", prompt="", dry_run=False)
+    result = ai_review.review(args)
+    ext = result.ext["ai_review"]
+    assert len(ext["findings"]) == ai_review._EXT_MAX_FINDINGS
+    assert ext["findings_overflow"] == 40 - ai_review._EXT_MAX_FINDINGS

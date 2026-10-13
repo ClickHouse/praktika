@@ -32,6 +32,14 @@ guidance, appended to the fixed review protocol. ``--fail-for-draft-pr`` makes
 the job fail (without consulting the model) while the PR is a draft — unless the
 job was manually re-run (``Info().run_attempt > 1``), which is taken as an
 explicit "review it anyway" request and lets the review run on the draft.
+
+The model's ``verdict`` is advisory by default (it only renders as a label in the
+PR comment). ``--fail-on-blocking`` opts the job into failing when the verdict is
+``blocking_issues``, so the orchestrator AI (if enabled, and with "Code Review"
+not in ``exclude_jobs``) sees the failure and tries to address the findings. The
+structured outcome is always recorded on ``Result.ext['ai_review']`` (verdict +
+findings) so the advisor can read what the reviewer flagged — the findings are
+otherwise only posted to GitHub.
 """
 import json
 import os
@@ -388,6 +396,47 @@ def _investigation_footer(usage):
     return f"_Investigation: {used}/{total} rounds, {calls} tool calls._"
 
 
+# Bounds so a verbose review can't bloat the Result that gets uploaded and later
+# folded into the advisor's prompt.
+_EXT_MAX_FINDINGS = 30
+_EXT_MAX_BODY_CHARS = 1000
+
+
+def _review_ext(review_data):
+    """Compact, machine-readable review outcome for ``Result.ext['ai_review']``.
+
+    Carries the verdict, the change/summary text, and the inline findings
+    (path/line/body, capped) so the orchestrator advisor can read what the
+    reviewer flagged and try to address it — the findings are otherwise only
+    posted to GitHub, out of the advisor's reach.
+    """
+    def _trunc(s):
+        s = str(s or "")
+        return s if len(s) <= _EXT_MAX_BODY_CHARS else s[:_EXT_MAX_BODY_CHARS] + " …"
+
+    findings = []
+    for f in review_data.get("inline_findings") or []:
+        if not isinstance(f, dict):
+            continue
+        findings.append(
+            {
+                "path": f.get("path", ""),
+                "line": f.get("line"),
+                "body": _trunc(f.get("body")),
+            }
+        )
+    ext = {
+        "verdict": review_data.get("verdict") or "",
+        "change_summary": _trunc(review_data.get("change_summary")),
+        "summary_md": _trunc(review_data.get("summary_md")),
+        "findings": findings[:_EXT_MAX_FINDINGS],
+    }
+    overflow = len(findings) - _EXT_MAX_FINDINGS
+    if overflow > 0:
+        ext["findings_overflow"] = overflow
+    return ext
+
+
 def _render_review_body(review_data, footer=""):
     """Compose the review comment: a heading, the overall result, a plain
     change summary, the findings detail, then an investigation footer. Always
@@ -627,8 +676,19 @@ def review(args):
     if errors:
         info_line += "\nWrite failures:\n- " + "\n- ".join(errors)
     print(info_line)
-    status = Result.Status.FAIL if errors else Result.Status.OK
-    return Result.create_from(status=status, info=info_line)
+    verdict = review_data.get("verdict") or ""
+    # A blocking verdict fails the job only when asked (--fail-on-blocking), so
+    # the orchestrator AI picks it up as a failure and tries to address the
+    # findings; otherwise the verdict stays advisory (OK) as before. A write
+    # failure always fails regardless.
+    blocking = verdict == "blocking_issues" and getattr(args, "fail_on_blocking", False)
+    status = Result.Status.FAIL if (errors or blocking) else Result.Status.OK
+    result = Result.create_from(status=status, info=info_line)
+    # Surface the structured review outcome on the Result so a downstream
+    # consumer (the orchestrator advisor) can read the findings to act on —
+    # they are otherwise only posted to GitHub, which the advisor can't reach.
+    result.ext["ai_review"] = _review_ext(review_data)
+    return result
 
 
 def main(args):

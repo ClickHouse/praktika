@@ -185,6 +185,31 @@ def test_failed_change_carries_result_digest():
     assert digest["errors"] == ["segfault in server log"]
 
 
+def test_failed_change_carries_ai_review_digest():
+    """A failed Code Review job surfaces its structured ai_review outcome so the
+    advisor can act on the reviewer's findings."""
+    job = _job("Code Review", "failure")
+    ai_review = {
+        "verdict": "blocking_issues",
+        "change_summary": "adds a widget",
+        "summary_md": "null deref",
+        "findings": [{"path": "a.py", "line": 3, "body": "derefs None"}],
+    }
+    job.result = {
+        "name": "Code Review",
+        "status": "FAIL",
+        "info": "verdict=blocking_issues findings=1",
+        "ext": {"ai_review": ai_review},
+    }
+    state = _state([job])
+
+    obs = build_observation(
+        state, EVENT, changed=[{"name": "Code Review", "status": "failure"}]
+    )
+
+    assert obs.changed[0]["result"]["ai_review"] == ai_review
+
+
 def test_successful_change_carries_no_result_digest():
     """Green jobs add no Result detail to the prompt, even if a Result exists."""
     job = _job("Build", "success")

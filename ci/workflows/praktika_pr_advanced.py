@@ -21,16 +21,20 @@ workflow = Workflow.Config(
         enabled=True,
         provider="bedrock-anthropic",
         model="global.anthropic.claude-sonnet-5",
-        # The Code Review job is advisory (allow_failure) — its failure is never a
-        # real CI problem, so the advisor must not investigate it.
-        exclude_jobs=["Code Review"],
         # Project-specific guidance steering when the advisor should act.
         extra_prompt=(
             "When a test job fails because the test itself is outdated (e.g. it "
             "asserts a value the PR intentionally changed) and the fix is small "
             "and unambiguous, use cancel_and_patch to update the test. Only do "
             "this when the test is clearly the stale side — if the production "
-            "code looks wrong, prefer continue/cancel_run and leave it for a human."
+            "code looks wrong, prefer continue/cancel_run and leave it for a human.\n\n"
+            "When the Code Review job fails with a blocking verdict, its digest "
+            "carries an `ai_review` object listing the reviewer's findings "
+            "(path/line/body). Read each cited file with read_file to confirm the "
+            "finding is a real defect, and when the fix is clear and unambiguous "
+            "use cancel_and_patch to address it. If a finding is subjective, "
+            "ambiguous, or the reviewer looks wrong, continue and leave it for the "
+            "author."
         ),
     ),
     jobs=[
@@ -161,7 +165,8 @@ workflow = Workflow.Config(
             command=(
                 "python3 -m praktika review --provider bedrock-openai "
                 "--model global.openai.gpt-5.6-sol --reasoning-effort high "
-                "--prompt ./ci/prompts/code_review.md --fail-for-draft-pr"
+                "--prompt ./ci/prompts/code_review.md --fail-for-draft-pr "
+                "--fail-on-blocking"
             ),
             allow_failure=True,
             enable_gh_auth=True,

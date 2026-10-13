@@ -175,6 +175,11 @@ def _result_digest(result):
     ext = result.get("ext")
     if isinstance(ext, dict) and ext.get("errors"):
         digest["errors"] = [_trunc(e) for e in ext["errors"]][:_MAX_FAILED_SUBRESULTS]
+    # The AI code-review job records its structured outcome here (verdict +
+    # findings). Carry it through so the advisor can read what the reviewer
+    # flagged and act on it — the findings are otherwise only on GitHub.
+    if isinstance(ext, dict) and isinstance(ext.get("ai_review"), dict):
+        digest["ai_review"] = ext["ai_review"]
     return digest
 
 

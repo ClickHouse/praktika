@@ -335,6 +335,17 @@ def create_parser():
         default=False,
         help="Fail the job without running the review when the PR is a draft",
     )
+    review_parser.add_argument(
+        "--fail-on-blocking",
+        dest="fail_on_blocking",
+        action="store_true",
+        default=False,
+        help=(
+            "Fail the job when the review verdict is `blocking_issues`, so the "
+            "orchestrator AI (if enabled) picks the findings up and tries to "
+            "address them. Default off (verdict stays advisory)."
+        ),
+    )
     return parser
 
 
