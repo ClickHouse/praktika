@@ -135,6 +135,18 @@ class Info:
     def commit_authors(self):
         return self.env.COMMIT_AUTHORS or []
 
+    def base_git_history(self):
+        """Base-branch commit SHAs from this PR's merge-base back, newest first
+        (capped at a fixed depth). For a push/dispatch run, the history from HEAD.
+
+        Resolved once by the controller from the repo's real git history and the
+        same for every job of the run — works whether or not the S3 repo snapshot
+        and ephemeral PR merge are enabled (jobs restore a history-free snapshot, so
+        they cannot compute it locally). Returns an empty list when it could not be
+        determined.
+        """
+        return self.env.BASE_GIT_HISTORY or []
+
     @property
     def run_url(self):
         return self.env.RUN_URL

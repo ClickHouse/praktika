@@ -161,6 +161,10 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
     # real head values. Empty when snapshots/merge are disabled -> keep git HEAD.
     commit_message = task.get("commit_message") or commit_message
     commit_authors = task.get("commit_authors") or commit_authors
+    # Base-branch history (PR merge-base back, newest first) computed by the
+    # controller; empty when unavailable (e.g. a push with no base). Jobs read it
+    # via Info.base_git_history.
+    base_git_history = task.get("base_git_history") or []
 
     # For push and merge-queue events there is no PR_NUMBER, but workflow hooks
     # may need the number of the PR this ref corresponds to. Mirror
@@ -248,6 +252,17 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
         # swap in this runner's per-invocation fields.
         env_dict = dict(carried)
         env_dict.update(per_runner)
+        # A fresh-base rerun puts newly-computed run-wide metadata on the task that
+        # differs from the original run's serialized env; prefer the task's value
+        # when present, else keep the carried (upstream hand-off) value. Guard on
+        # task presence: a normal hand-off carries none of these, and an
+        # unconditional override would wipe the correct carried values with [].
+        if task.get("base_git_history"):
+            env_dict["BASE_GIT_HISTORY"] = base_git_history
+        if task.get("commit_authors"):
+            env_dict["COMMIT_AUTHORS"] = commit_authors
+        if task.get("commit_message"):
+            env_dict["COMMIT_MESSAGE"] = commit_message
         env = _Environment.from_dict(env_dict)
     else:
         env = _Environment(
@@ -296,12 +311,13 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
             SNAPSHOT_SHA=task.get("snapshot_sha", ""),
             REPO_SNAPSHOT_KEY=task.get("repo_snapshot_key", ""),
             CI_CONFIG=task.get("ci_config") or {},
+            BASE_GIT_HISTORY=base_git_history,
         )
     env.dump()
     return env
 
 
-def run_job(task, gh_token=None, local=False):
+def run_job(task, gh_token=None, local=False, timestamp=False):
     """Resolve the praktika Workflow + Job from ``task`` and invoke
     ``Runner.run``. Returns the job exit code (0 = success).
 
@@ -312,6 +328,9 @@ def run_job(task, gh_token=None, local=False):
     ``local=True`` runs the job in dev-sandbox mode (``local_run=True``,
     hooks off). In EC2 polling mode the runner calls with ``local=False``
     so jobs go through the full CI setup/post-run steps.
+
+    ``timestamp=True`` prefixes every job.log line with a wall-clock timestamp
+    (the controller passes it so CI job logs carry per-line timing).
     """
     workflow_name = task.get("workflow_name", "")
     job_name = task.get("job_name", "")
@@ -388,6 +407,7 @@ def run_job(task, gh_token=None, local=False):
         # writes them to WORKFLOW_INPUTS_FILE. None for events without inputs, so
         # the runner clears any stale file instead.
         "workflow_input": task.get("inputs") or None,
+        "timestamp": timestamp,
     }
 
     # Runner.run prints results and sys.exit(1) on failure; a clean return

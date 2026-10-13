@@ -52,6 +52,11 @@ class Workflow:
             # Optional cap on how many CI runs one AI round may span. 0 disables
             # the cap.
             max_rounds: int = 0
+            # Job names the advisor must never evaluate: a failure in one of these
+            # never opens a round or consults the model (e.g. an advisory
+            # allow_failure job like "Code Review"). They still appear in the
+            # advisor's full-DAG context, just never as a trigger.
+            exclude_jobs: List[str] = field(default_factory=list)
 
     @dataclass
     class Config:

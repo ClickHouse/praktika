@@ -84,6 +84,13 @@ class _Environment(MetaClasses.Serializable):
     # change mid-run). Empty when no config parameter is set. Job code reads it via
     # Info().ci_config. See praktika/docs/ci-config.md.
     CI_CONFIG: Dict[str, Any] = dataclasses.field(default_factory=dict)
+    # Base-branch commit SHAs from the PR merge-base back (newest first), capped at
+    # merge.BASE_GIT_HISTORY_DEPTH; for a push/dispatch run, the history from HEAD.
+    # Resolved ONCE by the controller from its real git history (every job restores
+    # a history-free snapshot, so it cannot derive this itself) and threaded through
+    # the job task. Empty when it could not be computed. Read via
+    # Info().base_git_history().
+    BASE_GIT_HISTORY: List[str] = dataclasses.field(default_factory=list)
     name = "environment"
 
     @classmethod

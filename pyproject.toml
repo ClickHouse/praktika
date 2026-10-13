@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "praktika"
-version = "0.1.14"
+version = "0.1.15"
 description = "CI Infrastructure Toolbox"
 requires-python = ">=3.8"
 license = "Apache-2.0"
@@ -99,6 +99,7 @@ praktika = [
     "infrastructure/native/cidb_schema.sql",
     "infrastructure/native/s3_proxy_user_data.sh",
     "infrastructure/native/s3_proxy_signer.py",
+    "infrastructure/native/docker_proxy_user_data.sh",
 ]
 
 [tool.black]

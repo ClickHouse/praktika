@@ -164,9 +164,9 @@ its praktika runtime from that frozen value (via
 `praktika_runtime_source` tag). All jobs of a run agree on one version regardless
 of what changes in SSM afterward. In S3-snapshot mode a repo-sourced praktika is
 already content-pinned by the snapshot; this closes the gap for the URL / version
-forms. Installed into the base-venv overlay with `--no-deps`, so the base venv must
-already carry praktika's runtime dependencies (a new dependency needs an AMI
-rebake, as today).
+forms. Installed straight into the base venv with `--force-reinstall --no-deps`, so
+the base venv must already carry praktika's runtime dependencies (a new dependency
+needs an AMI rebake, as today).
 
 #### `praktika_controller_version` (per-run controller pin, self-upgrade)
 
@@ -174,12 +174,27 @@ The controller is the `praktika-controller` wheel installed into the system
 `python3.12` and run by systemd (`Restart=always`). When the frozen
 `praktika_controller_version` differs from the source the controller last
 installed, the controller **self-upgrades**: at the idle boundary (a message is
-received but not yet processed), it `pip install --force-reinstall`s the pinned
-source into system python, persists the new source, releases the message back to
-the queue un-processed, and exits — the `Restart=always` unit relaunches into the
-new code, which re-receives the message and proceeds. No run is interrupted
-mid-flight. Mechanism lives in `praktika_controller.self_update.maybe_self_update`,
-wired into `controller.poll()`.
+received but not yet processed), it **releases the message back to the queue
+un-processed first** (`change_message_visibility` to 0), *then*
+`pip install --force-reinstall`s the pinned source into system python, persists
+the new source, and exits — the `Restart=always` unit relaunches into the new code
+and resumes normal polling. No run is interrupted mid-flight. Mechanism lives in
+`praktika_controller.self_update` (`update_pending` decides, `maybe_self_update`
+installs), wired into `controller.poll()`.
+
+> **Release before install, don't reclaim the same task.** The decision
+> (`update_pending`) is made *before* the install so the message is freed
+> immediately — a controller already on the pinned version can pick it up right
+> away instead of waiting out our (possibly slow) download + pip + restart, and a
+> crash mid-install can't strand the task until the visibility timeout lapses. The
+> restarted controller does **not** try to reclaim that specific task; it just
+> polls. This matters most for **job runners**: the SQS queue's `maxReceiveCount`
+> is 3 (`sqs_queue.py`), and a runner that self-updates burns one receive on the
+> task it released. Holding the task through the install (the old behavior) blocked
+> it for the whole install and, with several freshly-booted stale runners each
+> receive-then-self-updating the same task, could push it past `maxReceiveCount`
+> into the DLQ — i.e. a dropped job and a hung run. Releasing first lets a
+> converged runner absorb it before that happens.
 
 This is a **dev-mode** mechanism, kept deliberately simple:
 
@@ -208,6 +223,55 @@ This is a **dev-mode** mechanism, kept deliberately simple:
 > **Caveat — moving sources.** Persistence is keyed on the source *string*, so a
 > mutable `…/latest/…whl` URL is not detected as "changed". Pin to an immutable
 > exact version or versioned URL.
+
+### `repo` + `warm_branches` (warm clone, default off)
+
+Enables and configures **warm clone**: an idle reserved orchestrator pre-fetches
+the repo's branches while waiting for a task, so the per-task clone only transfers
+the PR delta — no full head download, no `--unshallow`, and (because a branch is
+pre-checked-out) a delta checkout. On ClickHouse this took the clone+base-prep from
+~60s to ~7s.
+
+```json
+{ "repo": "ClickHouse/ClickHouse", "warm_branches": ["master", "release/2*"] }
+```
+
+- **Both keys are required and together enable warm** — omit either (or an empty
+  list) to disable (the default).
+- `repo` is the `owner/name` of the repo to warm. It lives in ci_config
+  because the controller has **no reliable owner/name source at boot** (the warm
+  starts before any event; `Settings.PROJECT_NAME` is only the bare name, and
+  `ext["allowed_repositories"]` is optional/experimental webhook-gating config, not
+  a repo-of-record). Keeping it here also makes the whole feature SSM-tunable with
+  no pool redeploy.
+- `warm_branches` entries are concrete branch names or globs (e.g. `release/2*`).
+  They are resolved against the repo's actual heads (`ls-remote` + fnmatch), so
+  globs expand and names that don't exist are **skipped, not errored** — it's safe
+  to list PR base and push branches together even if some don't exist yet.
+- The **first** entry's branch is checked out as the warm worktree, so put the
+  common base (e.g. `master`) first.
+
+**When it pays off — reserved capacity.** The warm runs in the background only
+while the instance is idle (after `try_scale_in_if_idle` decides to keep it), so it
+helps only instances that idle long enough to finish warming before their task —
+i.e. pools with `capacity_reserve > 0`. A cold scale-from-zero instance that gets a
+task immediately falls back to the normal cold clone (no regression).
+Orchestrator-only (job runners restore the snapshot from S3 and don't clone).
+
+**Read timing differs from the other keys.** `warm_branches` is consumed at
+controller **boot** (the warm must start before any event), not per run. A change
+takes effect on **newly-booted** instances; an already-warmed reserved instance
+keeps its set until it recycles. (The per-run read still freezes `ci_config` into
+run metadata as usual for the other keys.)
+
+**Mechanism** (`praktika_controller.common.warm_branches` + `clone_repo` adopt):
+into a sibling of the clone dir — a `--depth=1` fetch of each resolved branch tip
+(its tree+blobs), an `--unshallow --filter=tree:0` for full history treeless, and a
+checkout of the first branch; a ready sentinel is written last. The next task's
+clone adopts it (moves it into place, re-auths origin, fetches the authorized
+`head_sha` as a delta, then `checkout -f` + `clean` to exactly that tree). The same
+path serves PR and push events (push has no merge, so only the head-fetch dedup
+applies).
 
 ## Setting / clearing the parameter
 

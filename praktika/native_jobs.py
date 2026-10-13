@@ -6,6 +6,7 @@ import platform
 import sys
 import traceback
 from pathlib import Path
+from typing import Optional
 
 from . import Job, Workflow
 from ._environment import _Environment
@@ -220,7 +221,7 @@ def _submodule_auth_env(workflow) -> dict:
     return env
 
 
-def _prepare_submodule_cache(workflow, workflow_config: RunConfig) -> Result:
+def _prepare_submodule_cache(workflow, workflow_config: RunConfig) -> Optional[Result]:
     """Compute a content-addressed hash of submodule SHAs and ensure a cache
     archive exists in S3.  Stores the hash in workflow_config so that downstream
     jobs with needs_submodules=True can restore it."""
@@ -230,12 +231,7 @@ def _prepare_submodule_cache(workflow, workflow_config: RunConfig) -> Result:
         submodule_shas = Digest.get_submodule_shas()
         if not submodule_shas:
             print("WARNING: No submodules found, skipping submodule cache")
-            return Result.create_from(
-                name="Submodule Cache",
-                status=Result.Status.OK,
-                stopwatch=stop_watch,
-                info="No submodules",
-            )
+            return None
 
         cache_hash = hashlib.sha256(submodule_shas.encode()).hexdigest()[:16]
         s3_path = f"{Settings.CACHE_S3_PATH}/submodules/{cache_hash}.tar.zst"
@@ -833,9 +829,15 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
 
     if results[-1].is_ok() and workflow.enable_cache and Settings.ENABLE_SUBMODULE_CACHE:
         result = _prepare_submodule_cache(workflow, workflow_config)
-        results.append(result)
+        if result is not None:
+            results.append(result)
 
-    if workflow.enable_slack_feed:
+    # commit_authors for the Slack feed. On the native engine the controller has
+    # already resolved these from the repo's real git history and threaded them
+    # onto the run (see merge.compute_run_git_metadata) — recomputing here is
+    # redundant and, with the history-free repo snapshot, would fail or diverge.
+    # Only the GH Actions engine, which has no controller, computes them here.
+    if workflow.enable_slack_feed and not Workflow.Engine.is_native(workflow.engine):
         if env.PR_NUMBER:
             commit_authors = set()
             try:

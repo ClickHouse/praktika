@@ -8,7 +8,7 @@ from praktika import Artifact, Docker, Job, Secret, Workflow
 from ci.settings.settings import RunnerLabels
 from praktika.settings import Settings
 
-_HEAD_PRAKTIKA_VERSION = "0.1.14"
+_HEAD_PRAKTIKA_VERSION = "0.1.15"
 
 artifact = Artifact.Config(name="greet", type=Artifact.Type.S3, path="./artifact.txt")
 
@@ -21,16 +21,26 @@ workflow = Workflow.Config(
         enabled=True,
         provider="bedrock-anthropic",
         model="global.anthropic.claude-sonnet-5",
+        # The Code Review job is advisory (allow_failure) — its failure is never a
+        # real CI problem, so the advisor must not investigate it.
+        exclude_jobs=["Code Review"],
     ),
     jobs=[
+        # Verify the Praktika actually executing the job is the head version.
+        # This repo runs Praktika straight from the checkout via PYTHONPATH (no
+        # per-task install — see controller._resolve_runtime), so the installed
+        # wheel metadata (importlib.metadata) is the stale baked AMI version, not
+        # what runs. current_praktika_version() reads the pyproject next to the
+        # imported package: head when run from the checkout, the baked version
+        # otherwise — so this also guards that the run-from-checkout path works.
         Job.Config(
             name="Version Check",
             runs_on=[RunnerLabels.SMALL_AMD_UBUNTU],
             command=(
-                "python3 -c \"import importlib.metadata as m; "
-                f"praktika=m.version('praktika'); "
-                "print('praktika=', praktika); "
-                f"assert praktika == '{_HEAD_PRAKTIKA_VERSION}', praktika\""
+                "python3 -c \"from praktika.version import "
+                "current_praktika_version as v; "
+                "print('praktika=', v()); "
+                f"assert v() == '{_HEAD_PRAKTIKA_VERSION}', v()\""
             ),
         ),
         # Require a version bump whenever praktika / praktika-controller source
@@ -61,6 +71,20 @@ workflow = Workflow.Config(
                     "./ci/tests",
                     "./praktika",
                     "./pyproject.toml",
+                ],
+            ),
+        ),
+        # Assert the controller-resolved run metadata (base_git_history,
+        # commit_authors, …) is present and correct inside a job, with the S3
+        # repo snapshot + ephemeral merge enabled project-wide.
+        Job.Config(
+            name="Check CI Runtime",
+            runs_on=[RunnerLabels.SMALL_ARM],
+            command="python3 ./ci/scripts/check_ci_runtime.py",
+            digest_config=Job.CacheDigestConfig(
+                include_paths=[
+                    "./ci/scripts/check_ci_runtime.py",
+                    "./praktika",
                 ],
             ),
         ),

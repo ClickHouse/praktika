@@ -258,6 +258,35 @@ def test_skipped_and_cancelled_do_not_fire(monkeypatch):
     assert advisor._ledger.turns == 0
 
 
+def test_excluded_job_failure_does_not_fire():
+    # A job listed in ai_orchestrator.exclude_jobs never triggers the advisor,
+    # even when it fails; a non-excluded failure still does.
+    advisor = OrchestratorAI.maybe_create(
+        run_id="r1",
+        local_mode=True,
+        workflow_config=SimpleNamespace(
+            ai_orchestrator=_workflow_ai(
+                enabled=True, provider="mock", exclude_jobs=["Code Review"]
+            )
+        ),
+    )
+
+    review = _job("Code Review", "running")
+    build = _job("Build", "running")
+    state = _state([review, build])
+
+    # The excluded job failing -> no turn, no cost.
+    review.status = SimpleNamespace(value="failure")
+    assert advisor.on_workflow_update(state, EVENT) is None
+    assert advisor._ledger.turns == 0
+
+    # A non-excluded job failing still fires exactly one turn.
+    build.status = SimpleNamespace(value="failure")
+    turn = advisor.on_workflow_update(state, EVENT)
+    assert turn is not None
+    assert advisor._ledger.turns == 1
+
+
 def test_advisory_only_no_mutation_and_zero_cost(monkeypatch):
     advisor = OrchestratorAI.maybe_create(
         run_id="r1",

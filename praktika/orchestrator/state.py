@@ -2016,6 +2016,18 @@ class WorkflowState:
         snapshot_sha = self._snapshot_sha
         repo_snapshot_key = self._repo_snapshot_key
 
+        # A rerun's Lambda event carries neither of these, but seed_from_snapshot
+        # restored the original run's environment — fall back to it so rerun jobs see
+        # the same authors/history as the original run instead of empty. Fresh runs
+        # carry them on the event, which wins.
+        restored_env = self._environment if isinstance(self._environment, dict) else {}
+        commit_authors = self._event.get("commit_authors") or restored_env.get(
+            "COMMIT_AUTHORS", []
+        )
+        base_git_history = self._event.get("base_git_history") or restored_env.get(
+            "BASE_GIT_HISTORY", []
+        )
+
         task = {
             "type": "job_task",
             "event_type": self._event.get("type", ""),
@@ -2042,7 +2054,11 @@ class WorkflowState:
             # before the ephemeral merge. Carried so a job restoring the history-free
             # merge snapshot still reports the branch head, not the merge commit.
             "commit_message": self._event.get("commit_message", ""),
-            "commit_authors": self._event.get("commit_authors", []),
+            "commit_authors": commit_authors,
+            # Base-branch commit SHAs from the PR merge-base back (newest first),
+            # computed by the controller from its real history so jobs restoring the
+            # history-free snapshot can still read them via Info.base_git_history.
+            "base_git_history": base_git_history,
             "sender": self._event.get("sender", ""),
             "title": self._event.get("title", ""),
             "labels": self._event.get("labels", []),

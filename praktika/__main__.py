@@ -278,6 +278,12 @@ def create_parser():
     job_parser.add_argument("task_file", help="Path to task JSON file")
     job_parser.add_argument("--ci", action="store_true", default=False,
         help="CI mode: authenticate to GitHub and post check run updates")
+    job_parser.add_argument(
+        "--timestamp",
+        action="store_true",
+        default=False,
+        help="Prefix each job.log line with a [YYYY-MM-DD HH:MM:SS] timestamp",
+    )
 
     subparsers.add_parser(
         "yaml",
@@ -420,7 +426,7 @@ def main(argv=None):
             from .orchestrator.job_runner import run_job
             with open(args.task_file) as f:
                 task = _json.load(f)
-            sys.exit(run_job(task, local=not args.ci))
+            sys.exit(run_job(task, local=not args.ci, timestamp=args.timestamp))
         else:
             args._command_parser.print_help()
             sys.exit(1)

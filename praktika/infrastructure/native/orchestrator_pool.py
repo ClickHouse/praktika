@@ -77,10 +77,19 @@ class OrchestratorPool:
     `ext["runtime_source"]` (str) makes the orchestrator install Praktika at
     runtime instead of using the version baked into the AMI. It is surfaced as
     the `praktika_runtime_source` instance tag; on every task the controller
-    reinstalls `<source>` into an overlay of the prebaked base venv, so it always
-    runs the current checkout. The value is a filesystem path: an absolute path
-    on the instance, or a path relative to the cloned repo. Off by default (AMI
-    base venv is used as-is).
+    reinstalls `<source>` into the prebaked base venv (force-reinstall), so it
+    always runs the current checkout. The value is a filesystem path: an absolute
+    path on the instance, or a path relative to the cloned repo. Off by default
+    (AMI base venv is used as-is).
+
+    Warm-clone: an idle reserved orchestrator can pre-fetch the repo's branches
+    while waiting for a task, so the per-task clone only applies the PR delta (no
+    full head fetch, no unshallow; see praktika_controller.common.warm_branches).
+    It is configured entirely in SSM via `ci_config["repo"]` (owner/name) +
+    `ci_config["warm_branches"]` (concrete names or globs like release/2*) — this
+    pool doesn't participate beyond keeping a reserved idle instance around to do
+    the warming, so it only pays off with `capacity_reserve > 0`. See
+    praktika/docs/ci-config.md.
 
     Registered into CloudInfrastructure.Config automatically via its
     orchestrator_pool field.

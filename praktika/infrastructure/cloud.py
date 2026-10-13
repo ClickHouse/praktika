@@ -57,7 +57,14 @@ _CI_CONFIG_TEMPLATE = """\
   // "praktika_version": "praktika==0.1.14",
 
   // Pin controller wheel: version spec / wheel URL / absolute host path.
-  // "praktika_controller_version": "praktika-controller==0.1.8"
+  // "praktika_controller_version": "praktika-controller==0.1.8",
+
+  // Warm clone: an idle reserved orchestrator pre-fetches the repo's branches so
+  // the per-task clone only applies the PR delta (needs capacity_reserve > 0).
+  // Both keys required. "repo" is this project's repo (owner/name); branches are
+  // concrete names or globs (release/2*), non-existent names skipped.
+  // "repo": "owner/name",
+  // "warm_branches": ["master"]
 }
 """
 
@@ -1594,6 +1601,26 @@ class CloudInfrastructure:
                     print(f"Deploying Secret Parameter: {secret_config.name}")
                     print("=" * 60)
                     secret_config.deploy()
+
+            # Ensure the GitHub App secret exists (before the minter Lambda).
+            # Non-destructive: creates an empty-valued secret if absent so a
+            # human can fill in the credentials; never overwrites an existing one.
+            if _wants(
+                "GitHubTokenMinter",
+                "GitHubTokenMinters",
+                "github-token-minter",
+                "githubtokenminter",
+                "gh-token",
+            ):
+                for token_minter in self.github_token_minters:
+                    if not token_minter.region:
+                        token_minter.region = self._settings.AWS_REGION
+                    print("\n" + "=" * 60)
+                    print(
+                        f"Deploying GitHub App secret: {token_minter.secret_name}"
+                    )
+                    print("=" * 60)
+                    token_minter.deploy_secret()
 
             # Deploy CI DB cluster: authorizes SG ingress for ClickHouse ports
             # and launches each replica EC2. Runs after SecretParameter so the

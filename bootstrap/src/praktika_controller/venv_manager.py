@@ -52,10 +52,10 @@ def ensure_praktika_venv(
             # Mutable local-path source (e.g. "." / a checkout): the SAME path can
             # hold different content across runs (a different restored snapshot),
             # so the source string can't prove the cached venv is current.
-            # Reinstall from source on every task — matching the base-venv overlay
-            # (_install_runtime_over_base_venv) — so a run never executes stale
-            # Praktika. --no-deps keeps the venv's baked deps (add a new runtime
-            # dependency => rebuild the venv).
+            # Reinstall from source on every task — matching the base-venv path in
+            # ensure_praktika_runtime — so a run never executes stale Praktika.
+            # --no-deps keeps the venv's baked deps (add a new runtime dependency
+            # => rebuild the venv).
             if log is not None:
                 log.info("Reinstalling Praktika from %s into %s", source, venv_dir)
             subprocess.run(
@@ -90,17 +90,34 @@ def ensure_praktika_runtime(
         base_dir = _resolve_base_venv(base_venv, base_venv_root)
 
         # An explicit source is a deliberate override (a pool's
-        # `praktika_runtime_source` tag): install it into an overlay of the
-        # prebaked base venv on EVERY task, so the pool always runs the current
-        # checkout, even when the base venv already ships praktika.
+        # `praktika_runtime_source` tag / a ci_config version pin): (re)install it
+        # straight into the prebaked base venv on EVERY task with --force-reinstall,
+        # so the pool always runs the current checkout even when the base venv
+        # already ships praktika. --no-deps keeps the baked deps (add a new runtime
+        # dependency => rebake the base venv).
+        #
+        # No overlay copy: a runtime_source pool reinstalls every task and never
+        # runs a baked-mode task on the same instance, so the base venv needs no
+        # pristine copy to protect; and each instance has its own AMI copy, so the
+        # mutation can't leak across instances. This drops the ~20s one-time
+        # copytree. (The controller processes one task at a time, but take the lock
+        # anyway so a stray concurrent call can't corrupt the install.)
         if source:
-            return _install_runtime_over_base_venv(
-                source,
-                base_dir=base_dir,
-                base_name=base_venv,
-                cache_root=cache_root,
-                log=log,
-            )
+            with _file_lock(base_dir.parent / f"{base_dir.name}.lock"):
+                if log is not None:
+                    log.info(
+                        "Installing Praktika from %s into base venv %s", source, base_dir
+                    )
+                subprocess.run(
+                    _pip_install_cmd(
+                        base_dir / "bin" / "python",
+                        "--force-reinstall",
+                        "--no-deps",
+                        source,
+                    ),
+                    check=True,
+                )
+            return base_dir
 
         if _venv_has_praktika(base_dir):
             if log is not None:
@@ -121,6 +138,56 @@ def ensure_praktika_runtime(
         python_executable=python_executable,
         log=log,
     )
+
+
+def resolve_praktika_runtime(
+    source: str | None,
+    *,
+    base_venv: str = "",
+    cache_root: str | os.PathLike[str] | None = None,
+    base_venv_root: str | os.PathLike[str] | None = None,
+    python_executable: str | os.PathLike[str] | None = None,
+    log=None,
+) -> tuple[Path, str | None]:
+    """Resolve how to run Praktika for one task: returns ``(venv_dir, pythonpath)``.
+
+    ``pythonpath`` is non-None only for the local-checkout case below; the caller
+    puts it on ``PYTHONPATH`` so ``python -P -m praktika`` imports Praktika straight
+    from the checkout (``-P`` drops cwd from ``sys.path`` but still honors
+    ``PYTHONPATH``).
+
+    - **Local checkout source** (a filesystem path, e.g. a pool's ``./ci`` tag) with
+      a base venv: PYTHONPATH mode. Praktika is pure Python and its runtime deps are
+      baked into the base venv, so there is nothing to compile — run it directly from
+      the checkout via ``PYTHONPATH=<source>`` instead of pip-installing it into the
+      venv on every task. This removes the per-task wheel build + install and writes
+      NOTHING into the checkout (no ``build/``, no ``*.egg-info`` — so no dirty-repo
+      noise), while giving a STRONGER freshness guarantee than ``--force-reinstall``:
+      the exact checked-out tree is imported, by construction. No base-venv mutation,
+      so no file lock is needed. Returns ``(base_venv_dir, <source>)``.
+
+    - **URL / version-pin source, or no source** (or no base venv): delegate to
+      ``ensure_praktika_runtime`` (install the pinned wheel into / reuse the base
+      venv, use the baked base venv, or build a standalone venv) and return
+      ``(venv_dir, None)`` — these are immutable or prebaked, so they stay installed,
+      not path-imported.
+    """
+    normalized = _normalize_source(source) if source else ""
+    if normalized and base_venv and not is_passthrough(normalized):
+        base_dir = _resolve_base_venv(base_venv, base_venv_root)
+        if log is not None:
+            log.info("Running Praktika from checkout %s via PYTHONPATH", normalized)
+        return base_dir, normalized
+
+    venv_dir = ensure_praktika_runtime(
+        source,
+        base_venv=base_venv,
+        cache_root=cache_root,
+        base_venv_root=base_venv_root,
+        python_executable=python_executable,
+        log=log,
+    )
+    return venv_dir, None
 
 
 def praktika_command(venv_dir: str | os.PathLike[str], *args: str) -> list[str]:
@@ -248,69 +315,3 @@ def _venv_has_praktika(venv_dir: Path) -> bool:
     )
     return result.returncode == 0
 
-
-def _install_runtime_over_base_venv(
-    source: str,
-    *,
-    base_dir: Path,
-    base_name: str,
-    cache_root: str | os.PathLike[str] | None,
-    log=None,
-) -> Path:
-    """Install ``source`` (a filesystem path, e.g. the checkout ``.``) into a
-    per-instance overlay of the prebaked base venv and return it.
-
-    The overlay is a copy of the base venv, created once. Praktika is
-    (re)installed from ``source`` on EVERY call with ``--force-reinstall`` so the
-    pool always runs the current checkout even when the version string is
-    unchanged, and ``--no-deps`` so the base venv's baked dependencies are kept
-    rather than re-fetched each task (add a new runtime dependency => rebake the
-    base venv). The base venv itself is never mutated, so base pools stay pinned.
-    """
-    source = _normalize_source(source)
-    cache_root = Path(cache_root or DEFAULT_VENV_ROOT)
-    cache_root.mkdir(parents=True, exist_ok=True)
-
-    py_tag = f"py{sys.version_info.major}.{sys.version_info.minor}"
-    env_name = f"praktika-{_slugify(base_name)}-{py_tag}"
-    venv_dir = cache_root / env_name
-    lock_path = cache_root / f"{env_name}.lock"
-
-    with _file_lock(lock_path):
-        if not (venv_dir / "bin" / "python").exists():
-            if log is not None:
-                log.info("Creating Praktika runtime overlay %s from %s", venv_dir, base_dir)
-            _copy_base_venv(venv_dir, base_dir)
-        if log is not None:
-            log.info("Installing Praktika from %s into %s", source, venv_dir)
-        subprocess.run(
-            _pip_install_cmd(
-                venv_dir / "bin" / "python",
-                "--force-reinstall",
-                "--no-deps",
-                source,
-            ),
-            check=True,
-        )
-        return venv_dir
-
-
-def _copy_base_venv(venv_dir: Path, base_dir: Path) -> None:
-    temp_parent = venv_dir.parent
-    with tempfile.TemporaryDirectory(prefix=f"{venv_dir.name}.tmp.", dir=temp_parent) as temp_dir:
-        temp_path = Path(temp_dir)
-        shutil.copytree(base_dir, temp_path, symlinks=True, dirs_exist_ok=True)
-
-        if venv_dir.exists():
-            shutil.rmtree(venv_dir)
-        os.replace(temp_path, venv_dir)
-
-
-def _slugify(value: str) -> str:
-    allowed = []
-    for ch in value:
-        if ch.isalnum() or ch in {"-", "_"}:
-            allowed.append(ch)
-        else:
-            allowed.append("-")
-    return "".join(allowed).strip("-") or "base"

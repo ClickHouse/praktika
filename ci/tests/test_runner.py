@@ -63,6 +63,13 @@ def test_job_python_env_prefers_runtime_paths_before_repo_paths(monkeypatch, tmp
     pythonpath = env["PYTHONPATH"].split(os.pathsep)
 
     assert env["PYTHONSAFEPATH"] == "1"
+    # The native-job subprocess must import the SAME praktika that is running now
+    # (the checkout, under the PYTHONPATH runtime model), not a stale installed
+    # copy — so the executing package's root is first on the path.
+    import praktika
+
+    runtime_root = os.path.dirname(os.path.dirname(os.path.abspath(praktika.__file__)))
+    assert pythonpath[0] == runtime_root
     assert "." in pythonpath
     # "./ci" must NOT be on the path: it would let a bare `import praktika`
     # resolve to the repo's vendored ci/praktika instead of the installed one.
