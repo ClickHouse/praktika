@@ -55,8 +55,11 @@ class OrchestratorPool:
     is required.
 
     `ext["allowed_push_branches"]` controls which GitHub push branch refs the
-    webhook Lambda accepts for this pool. The default is the project's
-    configured default branch, `[Settings.MAIN_BRANCH]`.
+    webhook Lambda accepts for this pool. Unset (the default) means this pool runs
+    no push workflow, so the Lambda rejects every push event for it — a pool that
+    only has PR workflows (e.g. a reserved `-base` pool) then never receives a main
+    push it can't match and can't post a spurious "No workflow matched" check. List
+    the branch(es) explicitly on the pool that runs Main CI.
     `ext["allowed_pr_base_branches"]` controls which PR target (base) branches the
     webhook Lambda accepts; entries are exact names or regex patterns, matching
     the orchestrator's workflow `base_branches`. The default is the project's
@@ -180,9 +183,13 @@ class OrchestratorPool:
         assert (
             self.capacity_reserve >= 0
         ), f"capacity_reserve={self.capacity_reserve} must be >= 0"
-        allowed_push_branches = self.ext.get(
-            "allowed_push_branches", [Settings.MAIN_BRANCH]
-        )
+        # Default: no push workflow. A pool accepts push events only if it
+        # explicitly lists the branches; unset means the Lambda rejects all pushes
+        # for this pool (see the class docstring). This keeps a PR-only pool from
+        # receiving a main push it has no workflow for.
+        allowed_push_branches = self.ext.get("allowed_push_branches")
+        if allowed_push_branches is None:
+            allowed_push_branches = []
         assert isinstance(
             allowed_push_branches, list
         ), "ext['allowed_push_branches'] must be a list of branch names"
