@@ -322,6 +322,20 @@ class OrchestratorPool:
                             "Resource": iam_scope.autoscaling_group_arns(),
                         },
                         {
+                            # At the idle boundary the controller compares its own
+                            # AMI to the ASG's current launch template and recycles
+                            # itself when the image was rebaked (see
+                            # common.should_recycle_for_ami). Both describes are
+                            # read-only and do not support resource-level scoping.
+                            "Sid": "AmiDriftRecycleDescribe",
+                            "Effect": "Allow",
+                            "Action": [
+                                "autoscaling:DescribeAutoScalingGroups",
+                                "ec2:DescribeLaunchTemplateVersions",
+                            ],
+                            "Resource": "*",
+                        },
+                        {
                             "Sid": "CloudWatchLogs",
                             "Effect": "Allow",
                             "Action": [

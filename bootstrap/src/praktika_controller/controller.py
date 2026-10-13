@@ -28,6 +28,7 @@ from praktika_controller.common import (
     profile_step,
     resolve_praktika_base_venv,
     restore_repo_snapshot,
+    should_recycle_for_ami,
     TaskLogCapture,
     terminate_if_auto_scaled,
     terminate_instance_for_replacement,
@@ -1058,6 +1059,22 @@ def poll():
                 log=log,
             ):
                 return
+            # Still here = a reserved idle instance (try_scale_in_if_idle preserves
+            # it). Idle boundary = no message in flight, so it's safe to recycle a
+            # box whose AMI the pool has since rebaked: terminate WITHOUT
+            # decrementing desired, so the ASG relaunches it on the new AMI's
+            # launch-template version. This is the only way a never-worked reserved
+            # instance leaves the stale image — it would otherwise live forever.
+            if should_recycle_for_ami(
+                region=REGION, instance_id=INSTANCE_ID, log=log
+            ):
+                terminate_instance_for_replacement(
+                    region=REGION,
+                    instance_id=INSTANCE_ID,
+                    log=log,
+                    reason="AMI updated; recycling idle instance onto new image",
+                )
+                _await_termination(log)
             # Still here = a reserved idle instance. Warm the base branch once (in
             # the background) so the first task's clone only applies the PR delta.
             if warm_cfg and not warmed:

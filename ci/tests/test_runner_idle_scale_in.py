@@ -224,3 +224,122 @@ def test_try_scale_in_if_idle_throttles_capacity_reserve_preserve_log(monkeypatc
         is False
     )
     assert len(log.messages) == 2
+
+
+class _RecycleLog:
+    def info(self, *args, **kwargs):
+        return None
+
+    def exception(self, *args, **kwargs):
+        raise AssertionError("exception log should not be called")
+
+
+def _patch_ami_drift(monkeypatch, *, running_ami, target_ami, scaling="auto"):
+    monkeypatch.setattr(common, "imds_token", lambda: "token")
+    tags = {"praktika_scaling": scaling, "praktika_asg": "arm-2xsmall"}
+    monkeypatch.setattr(
+        common, "instance_tag", lambda name, token=None: tags.get(name, "")
+    )
+    monkeypatch.setattr(common, "instance_ami_id", lambda token=None: running_ami)
+
+    class _ASG:
+        def describe_auto_scaling_groups(self, AutoScalingGroupNames):
+            assert AutoScalingGroupNames == ["arm-2xsmall"]
+            return {
+                "AutoScalingGroups": [
+                    {
+                        "LaunchTemplate": {
+                            "LaunchTemplateId": "lt-abc",
+                            "Version": "$Default",
+                        }
+                    }
+                ]
+            }
+
+    class _EC2:
+        def describe_launch_template_versions(self, **kwargs):
+            assert kwargs["LaunchTemplateId"] == "lt-abc"
+            assert kwargs["Versions"] == ["$Default"]
+            return {
+                "LaunchTemplateVersions": [
+                    {"LaunchTemplateData": {"ImageId": target_ami}}
+                ]
+            }
+
+    clients = {"autoscaling": _ASG(), "ec2": _EC2()}
+    monkeypatch.setattr(
+        "boto3.client", lambda service_name, region_name=None: clients[service_name]
+    )
+
+
+def test_should_recycle_for_ami_detects_drift(monkeypatch):
+    _patch_ami_drift(
+        monkeypatch, running_ami="ami-old", target_ami="ami-new"
+    )
+    assert (
+        common.should_recycle_for_ami(
+            region="eu-north-1", instance_id="i-123", log=_RecycleLog()
+        )
+        is True
+    )
+
+
+def test_should_recycle_for_ami_no_drift(monkeypatch):
+    _patch_ami_drift(
+        monkeypatch, running_ami="ami-same", target_ami="ami-same"
+    )
+    assert (
+        common.should_recycle_for_ami(
+            region="eu-north-1", instance_id="i-123", log=_RecycleLog()
+        )
+        is False
+    )
+
+
+def test_should_recycle_for_ami_skips_non_auto(monkeypatch):
+    monkeypatch.setattr(common, "imds_token", lambda: "token")
+    monkeypatch.setattr(common, "instance_tag", lambda name, token=None: "")
+    monkeypatch.setattr(
+        "boto3.client",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("boto3 client should not be created")
+        ),
+    )
+    assert (
+        common.should_recycle_for_ami(
+            region="eu-north-1", instance_id="i-123", log=_RecycleLog()
+        )
+        is False
+    )
+
+
+def test_should_recycle_for_ami_fails_safe_on_error(monkeypatch):
+    monkeypatch.setattr(common, "imds_token", lambda: "token")
+    tags = {"praktika_scaling": "auto", "praktika_asg": "arm-2xsmall"}
+    monkeypatch.setattr(
+        common, "instance_tag", lambda name, token=None: tags.get(name, "")
+    )
+
+    def _boom(token=None):
+        raise RuntimeError("IMDS down")
+
+    monkeypatch.setattr(common, "instance_ami_id", _boom)
+
+    class _Log:
+        def __init__(self):
+            self.exceptions = 0
+
+        def info(self, *args, **kwargs):
+            return None
+
+        def exception(self, *args, **kwargs):
+            self.exceptions += 1
+
+    log = _Log()
+    assert (
+        common.should_recycle_for_ami(
+            region="eu-north-1", instance_id="i-123", log=log
+        )
+        is False
+    )
+    assert log.exceptions == 1
