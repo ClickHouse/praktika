@@ -188,6 +188,59 @@ def _build_check_output(result, rc, instance_id="", report_url="", pool="", reru
         return None
 
 
+def _result_dict_from_completion(payload, job_name, started_at=None):
+    """Extract a job's Result from a ``final.json`` completion payload as a
+    plain dict.
+
+    A normal completion carries the runner's serialized Result under
+    ``result``. An *infra failure* — the controller died before the job ran
+    (e.g. a bad controller-wheel pin that 404s on self-update) — is itself
+    reported with a real ERROR ``result`` by current controllers
+    (``_write_infra_failure_final``), so it flows through the ``result`` branch
+    below like any other completion.
+
+    The ``infra_error`` branch is a **compat shim**: controllers self-update
+    from the wheel independently of the orchestrator, so during a rollout (and
+    for payloads already written to S3) an older controller may ship
+    ``infra_error`` + ``error`` + ``check_output`` with no ``result``. Synthesize
+    the same ERROR Result from those fields so ``publish_report`` still emits a
+    red report row and ``_build_check_output`` renders the cause — otherwise the
+    job has no ``js.result``, its row stays PENDING, and its check completes
+    ``failure`` with a stale "QUEUED: dispatched to pool…" body. Can be dropped
+    once no pre-``result`` controller remains. Returns a dict, or None when there
+    is nothing usable.
+    """
+    result_dict = payload.get("result")
+    if isinstance(result_dict, dict):
+        return result_dict
+    if payload.get("infra_error"):
+        try:
+            from ..result import Result
+
+            check_output = payload.get("check_output")
+            summary = (
+                check_output.get("summary")
+                if isinstance(check_output, dict)
+                else None
+            )
+            info = (
+                summary
+                or payload.get("error")
+                or "Runner infrastructure failed before the job started."
+            )
+            res = Result.create_new(job_name, Result.Status.ERROR, info=info)
+            if started_at:
+                res.start_time = started_at
+            res.duration = 0
+            return Result.to_dict(res)
+        except Exception as e:
+            print(
+                f"  [warn] could not synthesize infra-error Result for "
+                f"{job_name!r}: {type(e).__name__}: {e}"
+            )
+    return None
+
+
 def _is_missing_s3_key_error(exc):
     """Best-effort check for a missing S3 object without importing botocore."""
     if isinstance(exc, KeyError):
@@ -1465,8 +1518,7 @@ class WorkflowState:
             payload = json.loads(obj["Body"].read())
         except Exception:
             return None
-        result_dict = payload.get("result")
-        return result_dict if isinstance(result_dict, dict) else None
+        return _result_dict_from_completion(payload, name)
 
     def seed_from_snapshot(self, snap):
         """Rehydrate job statuses / check handles / environment from a snapshot.
@@ -1808,13 +1860,16 @@ class WorkflowState:
             instance_id = payload.get("instance_id")
             if isinstance(instance_id, str) and instance_id.strip():
                 js.runner_instance_id = instance_id.strip()
-            # The runner ships the raw job Result in the payload. Stash it on
-            # the JobState for AI observation, then render it into the
-            # check-run output here (the orchestrator owns the check
-            # lifecycle).
+            # The runner ships the raw job Result in the payload (or, on an
+            # infra failure before the job ran, an infra-error payload we
+            # synthesize an ERROR Result from). Stash it on the JobState for AI
+            # observation, then render it into the check-run output here (the
+            # orchestrator owns the check lifecycle).
             output = None
             non_blocking = False
-            result_dict = payload.get("result")
+            result_dict = _result_dict_from_completion(
+                payload, js.name, started_at=js.started_at
+            )
             if isinstance(result_dict, dict):
                 # Stash the runner's raw Result. The orchestrator-authoritative
                 # rerun_count is projected into ext at report time by

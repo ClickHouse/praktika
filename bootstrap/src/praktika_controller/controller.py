@@ -380,9 +380,33 @@ def _write_infra_failure_final(task, exc: Exception, log) -> bool:
         return False
     try:
         s3 = _s3_client()
+        job_name = task.get("job_name")
+        summary = (
+            f"Runner infrastructure failed before job start on `{INSTANCE_ID}`: "
+            f"{type(exc).__name__}: {str(exc)[:300]}"
+        )
+        # Ship a real serialized Result (``praktika.Result.to_dict`` shape) so the
+        # orchestrator renders a red report row + check body straight from the
+        # ``result`` key — same path a normal completion takes — and any other
+        # consumer (CIDB, AI observation) sees a proper ERROR Result rather than a
+        # bare rc. Built by hand, not via ``praktika.Result``: this failure can
+        # predate praktika being installed (the self-update pip install itself is a
+        # common cause), so the controller must not import it. The ``infra`` label
+        # mirrors ``Result.Label.INFRA`` so the report tags it as an infra error.
+        result = {
+            "name": job_name,
+            "status": "ERROR",
+            "start_time": None,
+            "duration": 0,
+            "results": [],
+            "files": [],
+            "links": [],
+            "info": summary,
+            "ext": {"labels": [{"name": "infra", "hint": "Infrastructure error"}]},
+        }
         body = {
             "type": "job_completion",
-            "job_name": task.get("job_name"),
+            "job_name": job_name,
             "rc": 1,
             "ts": time.time(),
             "repo": task.get("repo"),
@@ -393,13 +417,8 @@ def _write_infra_failure_final(task, exc: Exception, log) -> bool:
             "infra_error": True,
             "error_type": type(exc).__name__,
             "error": str(exc)[:1000],
-            "check_output": {
-                "title": "INFRA_ERROR",
-                "summary": (
-                    f"Runner infrastructure failed before job start on `{INSTANCE_ID}`: "
-                    f"{type(exc).__name__}: {str(exc)[:300]}"
-                ),
-            },
+            "result": result,
+            "check_output": {"title": "INFRA_ERROR", "summary": summary},
         }
         s3.put_object(
             Bucket=final_bucket,
