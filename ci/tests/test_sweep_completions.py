@@ -176,6 +176,9 @@ def _put_final(
     result=None,
     details_url=None,
     instance_id=None,
+    infra_error=None,
+    error=None,
+    check_output=None,
 ):
     key = f"runs/{run_id}/{_normalize_job_name_for_s3(job_name)}/final.json"
     payload = {"type": "job_completion", "job_name": job_name, "rc": rc, "ts": time.time()}
@@ -187,6 +190,12 @@ def _put_final(
         payload["details_url"] = details_url
     if instance_id is not None:
         payload["instance_id"] = instance_id
+    if infra_error is not None:
+        payload["infra_error"] = infra_error
+    if error is not None:
+        payload["error"] = error
+    if check_output is not None:
+        payload["check_output"] = check_output
     fake_s3.put("test-bucket", key, json.dumps(payload).encode())
 
 
@@ -270,6 +279,69 @@ def test_final_state_without_result_completes_bodyless():
     assert check.completed == [
         {"conclusion": "success", "output": None, "details_url": None}
     ]
+
+
+def test_infra_error_payload_synthesizes_error_result_and_renders_check():
+    """A controller that dies before the job runs (e.g. a bad controller-wheel
+    pin) ships an infra-error payload with no Result. The orchestrator must
+    synthesize an ERROR Result (so publish_report emits a red row instead of
+    leaving the job PENDING) and complete the check with the reason (not a
+    bodyless failure that keeps the stale 'QUEUED: dispatched…' text)."""
+    s3 = _FakeS3()
+    state = _make_state(["A"], s3)
+    check = _FakeCheck()
+    state.jobs["A"].check = check
+    summary = "Runner infrastructure failed before job start on `i-runner`: CalledProcessError: pip install ... exit 1"
+    _put_final(
+        s3,
+        "run42",
+        "A",
+        rc=1,
+        infra_error=True,
+        error="Command '[... pip install ...]' returned non-zero exit status 1.",
+        check_output={"title": "INFRA_ERROR", "summary": summary},
+        instance_id="i-runner",
+    )
+
+    state.sweep_completions()
+
+    js = state.jobs["A"]
+    assert js.status == JobStatus.FAILURE
+    assert js.rc == 1
+    # A synthesized ERROR Result is stashed so the report row is no longer PENDING.
+    assert isinstance(js.result, dict)
+    assert js.result["status"] == "ERROR"
+    assert summary in js.result["info"]
+    assert js.published_result()["status"] == "ERROR"
+    # Infra failures are hard blockers — dependents must not be promoted.
+    assert js.non_blocking is False
+    # The check completes with a rendered body carrying the cause, not bodyless.
+    assert len(check.completed) == 1
+    completed = check.completed[0]
+    assert completed["conclusion"] == "failure"
+    assert completed["output"] is not None
+    assert completed["output"]["title"] == "ERROR"
+
+
+def test_infra_error_result_reloaded_on_resume():
+    """On resume, a terminal infra-failed job's row must be restored too —
+    _load_job_result_from_s3 synthesizes the same ERROR Result so the resumed
+    orchestrator re-asserts a red row rather than leaving it PENDING."""
+    s3 = _FakeS3()
+    state = _make_state(["A"], s3)
+    _put_final(
+        s3,
+        "run42",
+        "A",
+        rc=1,
+        infra_error=True,
+        error="bad pin 404",
+        check_output={"title": "INFRA_ERROR", "summary": "boom"},
+    )
+    loaded = state._load_job_result_from_s3("A")
+    assert isinstance(loaded, dict)
+    assert loaded["status"] == "ERROR"
+    assert "boom" in loaded["info"]
 
 
 def test_final_state_advances_running_to_success():
