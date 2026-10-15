@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from .interactive import UserPrompt
-from .version import current_praktika_controller_version, current_praktika_version
+from .version import current_praktika_version
 
 
 PRAKTIKA_MARKERS = {
@@ -641,8 +641,12 @@ def _infrastructure_template(answers: InitAnswers) -> str:
             "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages"
         )
         _PRAKTIKA_WHL = f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/praktika-{current_praktika_version()}-py3-none-any.whl"
+        # The controller wheel uses the fixed, version-less "latest" S3 location
+        # so a new project always gets the newest controller (the controller
+        # version isn't resolvable at `praktika init` time — it may not be
+        # installed).
         _PRAKTIKA_CONTROLLER_WHL = (
-            f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/praktika_controller-0.1.10-py3-none-any.whl"
+            f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/latest/praktika_controller-0.0.0-py3-none-any.whl"
         )
 
 

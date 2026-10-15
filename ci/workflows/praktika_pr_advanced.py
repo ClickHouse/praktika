@@ -119,11 +119,12 @@ workflow = Workflow.Config(
             ),
         ),
         # Ruff style check (ruff is baked into the runner image venv, see
-        # ci/infrastructure/projects.py::_runtime_prebuilt_venvs).
+        # ci/infrastructure/projects.py::_runtime_prebuilt_venvs). Wrapped so the
+        # job emits a Result with ruff's findings in a `ruff` sub-result's info.
         Job.Config(
             name="Style Check",
             runs_on=[RunnerLabels.SMALL_ARM],
-            command="ruff check .",
+            command="python3 ./ci/scripts/run_ruff.py",
             digest_config=Job.CacheDigestConfig(
                 include_paths=[
                     "./praktika",
