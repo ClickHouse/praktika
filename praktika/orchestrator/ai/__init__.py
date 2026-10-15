@@ -51,6 +51,21 @@ def _has_inflight(state):
     )
 
 
+def _result_skips_ai(js):
+    """True if the job's Result opted out of AI assistance.
+
+    A job marks its failure as not-for-the-advisor via
+    ``Result.complete_job(skip_ai_assist=True)`` (stored as
+    ``ext['skip_ai_assist']``), e.g. a deliberate draft-PR gate. Such a failure
+    is never a trigger and is omitted from the failure context entirely.
+    """
+    result = getattr(js, "result", None) if js is not None else None
+    if not isinstance(result, dict):
+        return False
+    ext = result.get("ext")
+    return bool(isinstance(ext, dict) and ext.get("skip_ai_assist"))
+
+
 def _all_failures(state):
     """[{name, status, ...}] for every job currently in a failure state.
 
@@ -60,7 +75,7 @@ def _all_failures(state):
     """
     out = []
     for name, js in state.jobs.items():
-        if _status_value(js) != "failure":
+        if _status_value(js) != "failure" or _result_skips_ai(js):
             continue
         entry = {"name": name, "status": "failure"}
         reason = getattr(js, "filter_reason", None)
@@ -476,6 +491,14 @@ class OrchestratorAI:
         ai_orchestrator.exclude_jobs."""
         return name in self._excluded
 
+    def _triggers_advisor(self, state, name):
+        """True if a failure in job ``name`` should trigger the advisor: not
+        listed in exclude_jobs and not opted out by the job's Result
+        (skip_ai_assist)."""
+        return not self._is_excluded(name) and not _result_skips_ai(
+            state.jobs.get(name)
+        )
+
     def _consult(self, event, observation, state):
         """Dispatch a lifecycle ``event`` to the provider and, if it produced a
         turn, record + dispatch it.
@@ -525,15 +548,16 @@ class OrchestratorAI:
         """Consult the moment a (non-excluded) job fails, one tick at a time."""
         if not changed:
             return None
-        # Jobs the workflow listed in ai_orchestrator.exclude_jobs are never
-        # investigated: their failure carries no problem for the advisor to act on
-        # (e.g. an advisory Code Review job), so skip them as a trigger — no round,
-        # no consult, no tokens. They still appear in build_observation's full-DAG
+        # Jobs listed in ai_orchestrator.exclude_jobs, or whose Result opted out
+        # via skip_ai_assist, are never investigated: their failure carries no
+        # problem for the advisor to act on (an advisory Code Review job, a
+        # draft-PR gate), so skip them as a trigger — no round, no consult, no
+        # tokens. Excluded jobs still appear in build_observation's full-DAG
         # context.
         failures = [
             c
             for c in changed
-            if c.get("status") == "failure" and not self._is_excluded(c.get("name"))
+            if c.get("status") == "failure" and self._triggers_advisor(state, c.get("name"))
         ]
         successes = [c for c in changed if c.get("status") == "success"]
         turn = None
@@ -558,7 +582,7 @@ class OrchestratorAI:
         cancelled it. A later wave can arm another consolidated consult.
         """
         armed = any(
-            c.get("status") == "failure" and not self._is_excluded(c.get("name"))
+            c.get("status") == "failure" and self._triggers_advisor(state, c.get("name"))
             for c in changed
         )
         if armed:

@@ -617,10 +617,14 @@ def review(args):
         and info.run_attempt <= 1
     ):
         print("PR is a draft — failing without running the review (re-run to override)")
-        return Result.create_from(
+        draft_result = Result.create_from(
             status=Result.Status.FAIL,
             info="PR is a draft — mark it ready for review, or re-run this job to review anyway",
         )
+        # This failure is a deliberate gate, not a defect — don't let the
+        # orchestrator AI advisor investigate or try to patch it.
+        draft_result.ext["skip_ai_assist"] = True
+        return draft_result
 
     project_prompt = ""
     if args.prompt:

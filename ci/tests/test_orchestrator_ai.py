@@ -412,6 +412,44 @@ def test_consolidated_keeps_hold_when_decision_cancels():
     assert state.hold_dispatch is True  # not released — the run is torn down
 
 
+def test_skip_ai_assist_failure_does_not_trigger_eager():
+    # A failure whose Result set skip_ai_assist never consults the model.
+    advisor = OrchestratorAI.maybe_create(
+        run_id="r1",
+        local_mode=True,
+        workflow_config=SimpleNamespace(
+            ai_orchestrator=_workflow_ai(enabled=True, provider="mock")
+        ),
+    )
+    a = _job("A", "failure")
+    a.result = {"name": "A", "status": "FAIL", "ext": {"skip_ai_assist": True}}
+    assert advisor.on_workflow_update(_state([a]), EVENT) is None
+    assert advisor._ledger.turns == 0
+
+
+def test_skip_ai_assist_only_failure_no_consult_consolidated():
+    prov = _RecordingProvider()
+    advisor = _consolidated_advisor(prov)
+    a = _job("A", "failure")
+    a.result = {"name": "A", "status": "FAIL", "ext": {"skip_ai_assist": True}}
+    assert advisor.on_workflow_update(_state([a]), EVENT) is None
+    assert prov.failure_obs == []
+
+
+def test_skip_ai_assist_failure_omitted_from_consolidated_context():
+    # A skip_ai_assist failure is dropped entirely (trigger and context); a real
+    # failure alongside it still drives one consult over just the real failure.
+    prov = _RecordingProvider()
+    advisor = _consolidated_advisor(prov)
+    a = _job("A", "failure")
+    a.result = {"name": "A", "status": "FAIL", "ext": {"skip_ai_assist": True}}
+    b = _job("B", "failure")
+    b.result = {"name": "B", "status": "FAIL", "info": "real"}
+    turn = advisor.on_workflow_update(_state([a, b]), EVENT)
+    assert turn is not None
+    assert {c["name"] for c in prov.failure_obs[0].changed} == {"B"}
+
+
 def test_eager_mode_does_not_hold_dispatch():
     prov = _RecordingProvider()
     advisor = OrchestratorAI.maybe_create(
