@@ -8,7 +8,7 @@ from praktika import Artifact, Docker, Job, Secret, Workflow
 from ci.settings.settings import RunnerLabels
 from praktika.settings import Settings
 
-_HEAD_PRAKTIKA_VERSION = "0.1.15"
+_HEAD_PRAKTIKA_VERSION = "0.1.16"
 
 artifact = Artifact.Config(name="greet", type=Artifact.Type.S3, path="./artifact.txt")
 
@@ -44,7 +44,15 @@ workflow = Workflow.Config(
             "finding is a real defect, and when the fix is clear and unambiguous "
             "use cancel_and_patch to address it. If a finding is subjective, "
             "ambiguous, or the reviewer looks wrong, continue and leave it for the "
-            "author."
+            "author.\n\n"
+            "The canonical praktika version is `version` in pyproject.toml. The "
+            "`_HEAD_PRAKTIKA_VERSION` constant in a workflow and the praktika wheel "
+            "the project_init scaffold pins must track it. If a job (e.g. Version "
+            "Check or a scaffold test) fails because one of these is older than "
+            "pyproject.toml, that constant is stale: cancel_and_patch to bring it "
+            "up to the pyproject version. Never edit pyproject.toml to match a "
+            "stale constant, and leave `_BASE_*` version constants alone (they are "
+            "the prior release on purpose)."
         ),
     ),
     jobs=[

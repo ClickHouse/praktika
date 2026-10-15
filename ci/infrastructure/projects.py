@@ -185,6 +185,7 @@ def _runner_pool(
     instance_type: str,
     image_builder: str,
     max_size: int = 10,
+    capacity_reserve: int = 1,
     user_data: str = "",
     ext=None,
     untrusted: bool = False,
@@ -213,6 +214,7 @@ def _runner_pool(
         scaling=Components.RunnerPool.Scaling.Auto,
         size=0,
         max_size=max_size,
+        capacity_reserve=capacity_reserve,
         image_builder=_IMAGE_BUILDERS_BY_NAME[image_builder],
         allowed_ssm_parameters=list(_RUNNER_ALLOWED_SSM_PARAMETERS),
         allowed_secrets=list(_RUNNER_ALLOWED_SECRETS),
@@ -244,7 +246,7 @@ _CODE_REVIEW_BEDROCK_IAM_STATEMENT = {
 _runner_pools = [
     _runner_pool(
         name="arm-2xsmall",
-        instance_type="t4g.small",
+        instance_type="c7g.medium",
         image_builder="ci-arm64-image",
         user_data=_runner_user_data(
             "# Update the controller if changed (to test new version w/o image rebuild)\n"
@@ -253,7 +255,7 @@ _runner_pools = [
     ),
     _runner_pool(
         name="arm-2xsmall-base",
-        instance_type="t4g.small",
+        instance_type="c7g.medium",
         image_builder="ci-arm64-image",
         # Runs praktika_pr_simple, a pull_request workflow (untrusted), despite the
         # non-"pr-" name — so it must be untrusted: allowed the PRs/ snapshot tier,
@@ -265,7 +267,7 @@ _runner_pools = [
     ),
     _runner_pool(
         name="amd-2xsmall",
-        instance_type="t3.small",
+        instance_type="c7i.large",
         image_builder="ci-x86_64-image",
         user_data=_runner_user_data(
             "# Update the controller if changed (to test new version w/o image rebuild)\n"
@@ -274,7 +276,7 @@ _runner_pools = [
     ),
     _runner_pool(
         name="amd-2xsmall-ubuntu",
-        instance_type="t3.small",
+        instance_type="c7i.large",
         image_builder="ci-ubuntu-x86_64-image",
         user_data=_runner_user_data(
             "# Update the controller if changed (to test new version w/o image rebuild)\n"
@@ -283,7 +285,7 @@ _runner_pools = [
     ),
     _runner_pool(
         name="pr-arm-2xsmall",
-        instance_type="t4g.small",
+        instance_type="c7g.medium",
         image_builder="ci-arm64-image",
         untrusted=True,
         user_data=_runner_user_data(
@@ -293,7 +295,7 @@ _runner_pools = [
     ),
     _runner_pool(
         name="pr-amd-2xsmall",
-        instance_type="t3.small",
+        instance_type="c7i.large",
         image_builder="ci-x86_64-image",
         untrusted=True,
         user_data=_runner_user_data(
@@ -303,7 +305,7 @@ _runner_pools = [
     ),
     _runner_pool(
         name="pr-amd-2xsmall-ubuntu",
-        instance_type="t3.small",
+        instance_type="c7i.large",
         image_builder="ci-ubuntu-x86_64-image",
         untrusted=True,
         user_data=_runner_user_data(
@@ -316,7 +318,7 @@ _runner_pools = [
     # pool's role can call the Bedrock model API.
     _runner_pool(
         name="pr-arm-2xsmall-bedrock",
-        instance_type="t4g.small",
+        instance_type="c7g.medium",
         image_builder="ci-arm64-image",
         untrusted=True,
         ext={"iam_statements": [_CODE_REVIEW_BEDROCK_IAM_STATEMENT]},

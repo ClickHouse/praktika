@@ -640,7 +640,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
         _PRAKTIKA_PACKAGE_BASE_URL = (
             "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages"
         )
-        _PRAKTIKA_WHL = f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/praktika-0.1.15-py3-none-any.whl"
+        _PRAKTIKA_WHL = f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/praktika-{current_praktika_version()}-py3-none-any.whl"
         _PRAKTIKA_CONTROLLER_WHL = (
             f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/praktika_controller-0.1.10-py3-none-any.whl"
         )
