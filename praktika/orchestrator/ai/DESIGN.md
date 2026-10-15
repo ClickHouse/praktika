@@ -46,7 +46,7 @@ cascade cancel would just burn tokens.
 | `provider.py` | The stable contract: `AIProvider` ABC (event hooks) + `Observation` / `Turn` / `Usage` dataclasses + a name→class registry (`register`, `resolve`). |
 | `mock.py` | `MockProvider` — implements `on_job_failure` with a no-op `Turn`, zero usage, no network. |
 | `trace.py` | `TraceLogger` (stdout + `TEMP_DIR/ai/turns.jsonl`) and `UsageLedger` (run totals — the cost seam). |
-| `__init__.py` | `OrchestratorAI` (delta detection, event routing, records turns) + `build_observation` + `OrchestratorAI.maybe_create` factory. |
+| `__init__.py` | `AIAssist` (delta detection, event routing, records turns) + `build_observation` + `AIAssist.maybe_create` factory. |
 
 ## The provider contract
 
@@ -74,7 +74,7 @@ A hook that consults a model:
 
 None of that touches `praktika/orchestrator/__init__.py`. The advisor never
 calls a hook directly — it goes through `AIProvider.consult(event, obs)`, which
-brackets the hook with observation/turn tracking (feeding the **AI Advisor**
+brackets the hook with observation/turn tracking (feeding the **AI Assist**
 GitHub check: in-progress while an observation is out, neutral once the turn
 lands) and turns a provider exception into an error `Turn`, so a provider bug
 never crashes the run. Hooks stay pure model logic; an unimplemented hook is a
@@ -94,12 +94,12 @@ class AnthropicProvider(AIProvider):
 ```
 
 Register it in `provider.py` (next to the mock) and set
-`Workflow.Config.ai_orchestrator.provider = "anthropic"` on the workflow that
+`Workflow.Config.ai_assist.provider = "anthropic"` on the workflow that
 should use it.
 
 ## Configuration
 
-`praktika/workflow.py` (`Workflow.OrchestratorAI.Config`, defaults shown below):
+`praktika/workflow.py` (`Workflow.AIAssist.Config`, defaults shown below):
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -114,7 +114,7 @@ should use it.
 The advisor is advisory and best-effort: neither a disabled switch, an
 unresolvable provider, nor a session-setup error may break core orchestration.
 
-This repo enables AI per workflow via `Workflow.Config.ai_orchestrator`. Because the
+This repo enables AI per workflow via `Workflow.Config.ai_assist`. Because the
 orchestrator runs the *published* runtime wheel (not the PR's praktika code), a
 runtime that predates a provider just disables the advisor for that run rather
 than failing CI — publish a runtime that registers the provider before relying
@@ -170,7 +170,7 @@ folded into `Turn.reasoning` for the trace.
 
 ## Action dispatch
 
-`OrchestratorAI._dispatch` applies the first actionable decision after a turn is
+`AIAssist._dispatch` applies the first actionable decision after a turn is
 recorded. An error `Turn` never dispatches, and the provider's decision is
 authoritative — there is no separate enable flag. Wired today:
 

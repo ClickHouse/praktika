@@ -545,7 +545,7 @@ class AnthropicProvider(AIProvider):
         """Run the investigation tool-loop over ``observation`` with ``system``
         and parse the reply into a decision Turn.
 
-        Observation/turn tracking and the AI Advisor check are handled by
+        Observation/turn tracking and the AI Assist check are handled by
         ``AIProvider.consult``, which brackets the hook that calls this.
 
         The repo-read tools are always offered; fetch_log is added only when the

@@ -33,7 +33,7 @@ class Workflow:
             reporting, and the S3 repo snapshot."""
             return engine in (cls.PRAKTIKA, cls.GH_IGNITION)
 
-    class OrchestratorAI:
+    class AIAssist:
         class DriveMode:
             # Consult the advisor the moment a job fails (fast, per-failure, sees
             # each failure in isolation).
@@ -79,7 +79,7 @@ class Workflow:
             # ignored. When both are set, ``extra_prompt`` comes first, then the
             # file contents.
             extra_prompt_file: str = ""
-            # When the advisor consults on failures — see OrchestratorAI.DriveMode.
+            # When the advisor consults on failures — see AIAssist.DriveMode.
             # "eager" (default) consults per failure as it lands; "consolidated"
             # holds dispatch of not-yet-started jobs on a failure, drains the
             # in-flight wave, then consults once over the whole failure set.
@@ -136,7 +136,7 @@ class Workflow:
         # If enabled, CI events will be accumulated and stored, allowing users to subscribe to notifications via the Slack Praktika app
         enable_slack_feed: bool = False
         # Per-workflow orchestrator AI configuration. ``None`` disables it.
-        ai_orchestrator: Optional["Workflow.OrchestratorAI.Config"] = None
+        ai_assist: Optional["Workflow.AIAssist.Config"] = None
         # Optional orchestrator routing tag. Empty means the default/non-base
         # orchestrator pool. Workflows tagged "base" are only picked up by the
         # base orchestrator pool.

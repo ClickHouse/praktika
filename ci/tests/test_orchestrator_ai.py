@@ -5,7 +5,7 @@ import pytest
 from praktika import Workflow
 from praktika.orchestrator import ai
 from praktika.orchestrator.ai import (
-    OrchestratorAI,
+    AIAssist,
     _apply_edits,
     _patch_commit_message,
     _resolve_extra_prompt,
@@ -62,7 +62,7 @@ EVENT = {
 
 
 def _workflow_ai(**kwargs):
-    return Workflow.OrchestratorAI.Config(**kwargs)
+    return Workflow.AIAssist.Config(**kwargs)
 
 
 # --------------------------------------------------------------- registry
@@ -81,21 +81,21 @@ def test_registry_unknown_raises():
 
 
 def test_maybe_create_disabled_returns_none(monkeypatch):
-    assert OrchestratorAI.maybe_create(
+    assert AIAssist.maybe_create(
         run_id="r1",
-        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=False)),
+        workflow_config=SimpleNamespace(ai_assist=_workflow_ai(enabled=False)),
     ) is None
 
 
 def test_maybe_create_enabled_returns_advisor(monkeypatch):
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
         workflow_config=SimpleNamespace(
-            ai_orchestrator=_workflow_ai(enabled=True, provider="mock")
+            ai_assist=_workflow_ai(enabled=True, provider="mock")
         ),
     )
-    assert isinstance(advisor, OrchestratorAI)
+    assert isinstance(advisor, AIAssist)
     assert isinstance(advisor._provider, MockProvider)
 
 
@@ -103,11 +103,11 @@ def test_maybe_create_unknown_provider_disables(monkeypatch):
     # An older runtime that doesn't register the configured provider must
     # disable the advisor, not crash orchestration (see PR #130 hang).
     assert (
-        OrchestratorAI.maybe_create(
+        AIAssist.maybe_create(
             run_id="r1",
             local_mode=True,
             workflow_config=SimpleNamespace(
-                ai_orchestrator=_workflow_ai(
+                ai_assist=_workflow_ai(
                     enabled=True, provider="bedrock-from-the-future"
                 )
             ),
@@ -241,10 +241,10 @@ def test_build_observation_does_not_mutate_changed():
 
 
 def test_turn_fires_only_on_new_failure(monkeypatch):
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(ai_assist=_workflow_ai(enabled=True, provider="mock")),
     )
 
     a = _job("A", "running")
@@ -273,10 +273,10 @@ def test_turn_fires_only_on_new_failure(monkeypatch):
 def test_skipped_and_cancelled_do_not_fire(monkeypatch):
     # Skipped/cancelled are terminal but route to no hook — they carry no
     # problem to act on, so they never consult the model.
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(ai_assist=_workflow_ai(enabled=True, provider="mock")),
     )
 
     a = _job("A", "skipped")
@@ -287,13 +287,13 @@ def test_skipped_and_cancelled_do_not_fire(monkeypatch):
 
 
 def test_excluded_job_failure_does_not_fire():
-    # A job listed in ai_orchestrator.exclude_jobs never triggers the advisor,
+    # A job listed in ai_assist.exclude_jobs never triggers the advisor,
     # even when it fails; a non-excluded failure still does.
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
         workflow_config=SimpleNamespace(
-            ai_orchestrator=_workflow_ai(
+            ai_assist=_workflow_ai(
                 enabled=True, provider="mock", exclude_jobs=["Code Review"]
             )
         ),
@@ -334,11 +334,11 @@ class _RecordingProvider(AIProvider):
 
 
 def _consolidated_advisor(prov, exclude_jobs=None):
-    return OrchestratorAI.maybe_create(
+    return AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
         workflow_config=SimpleNamespace(
-            ai_orchestrator=_workflow_ai(
+            ai_assist=_workflow_ai(
                 enabled=True,
                 provider=prov,
                 drive_mode="consolidated",
@@ -414,11 +414,11 @@ def test_consolidated_keeps_hold_when_decision_cancels():
 
 def test_skip_ai_assist_failure_does_not_trigger_eager():
     # A failure whose Result set skip_ai_assist never consults the model.
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
         workflow_config=SimpleNamespace(
-            ai_orchestrator=_workflow_ai(enabled=True, provider="mock")
+            ai_assist=_workflow_ai(enabled=True, provider="mock")
         ),
     )
     a = _job("A", "failure")
@@ -452,11 +452,11 @@ def test_skip_ai_assist_failure_omitted_from_consolidated_context():
 
 def test_eager_mode_does_not_hold_dispatch():
     prov = _RecordingProvider()
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
         workflow_config=SimpleNamespace(
-            ai_orchestrator=_workflow_ai(enabled=True, provider=prov)  # default eager
+            ai_assist=_workflow_ai(enabled=True, provider=prov)  # default eager
         ),
     )
     state = _state([_job("A", "failure"), _job("B", "running")])
@@ -466,10 +466,10 @@ def test_eager_mode_does_not_hold_dispatch():
 
 
 def test_advisory_only_no_mutation_and_zero_cost(monkeypatch):
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(ai_assist=_workflow_ai(enabled=True, provider="mock")),
     )
 
     a = _job("A", "failure", started_at=1.0, finished_at=2.0)
@@ -483,10 +483,10 @@ def test_advisory_only_no_mutation_and_zero_cost(monkeypatch):
 
 
 def test_provider_error_does_not_raise(monkeypatch):
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(ai_assist=_workflow_ai(enabled=True, provider="mock")),
     )
 
     def boom(observation):
@@ -761,11 +761,11 @@ def test_resolve_extra_prompt_file_escape_ignored(tmp_path, monkeypatch):
 def test_maybe_create_wires_extra_prompt(tmp_path, monkeypatch):
     (tmp_path / "g.md").write_text("fix flaky tests", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
         workflow_config=SimpleNamespace(
-            ai_orchestrator=_workflow_ai(
+            ai_assist=_workflow_ai(
                 enabled=True,
                 provider="mock",
                 extra_prompt="inline",
@@ -988,10 +988,10 @@ def test_parse_empty_root_cause_left_out():
 
 
 def test_cancel_run_decision_cancels_the_run(monkeypatch):
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(ai_assist=_workflow_ai(enabled=True, provider="mock")),
     )
 
     state = _state([_job("Build", "failure")])
@@ -1006,10 +1006,10 @@ def test_cancel_run_decision_cancels_the_run(monkeypatch):
 
 
 def test_non_cancel_decision_leaves_run_alone(monkeypatch):
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(ai_assist=_workflow_ai(enabled=True, provider="mock")),
     )
 
     state = _state([_job("Build", "failure")])
@@ -1024,10 +1024,10 @@ def test_non_cancel_decision_leaves_run_alone(monkeypatch):
 
 
 def test_error_turn_does_not_cancel(monkeypatch):
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(ai_assist=_workflow_ai(enabled=True, provider="mock")),
     )
 
     state = _state([_job("Build", "failure")])
@@ -1071,10 +1071,10 @@ def test_bedrock_decide_costs_with_prefixed_model():
 
 def test_error_turn_stamps_resolved_model(monkeypatch):
     # A provider that fails before a call still names the model it would use.
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="bedrock-anthropic")),
+        workflow_config=SimpleNamespace(ai_assist=_workflow_ai(enabled=True, provider="bedrock-anthropic")),
     )
 
     def boom(observation):
@@ -1204,10 +1204,10 @@ class _FakeSession:
 
 
 def _patch_advisor(monkeypatch, patcher, session):
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(ai_assist=_workflow_ai(enabled=True, provider="mock")),
     )
     advisor._patcher = patcher
     advisor._session = session

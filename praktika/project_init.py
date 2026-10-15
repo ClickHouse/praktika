@@ -493,12 +493,12 @@ def _settings_template(answers: InitAnswers) -> str:
 
 def _pull_request_workflow_template(answers: InitAnswers) -> str:
     command = 'python3 -c \'print("hello from praktika")\''
-    ai_orchestrator = ""
+    ai_assist = ""
     if answers.enable_ai_capabilities:
-        ai_orchestrator = textwrap.indent(
+        ai_assist = textwrap.indent(
             textwrap.dedent(
                 """\
-                ai_orchestrator=Workflow.OrchestratorAI.Config(
+                ai_assist=Workflow.AIAssist.Config(
                     enabled=True,
                     provider="bedrock-anthropic",
                     model="global.anthropic.claude-sonnet-5",
@@ -518,7 +518,7 @@ def _pull_request_workflow_template(answers: InitAnswers) -> str:
                 name="Pull Request CI",
                 event=Workflow.Event.PULL_REQUEST,
                 base_branches=["{answers.main_branch}"],
-{ai_orchestrator if ai_orchestrator else ""}
+{ai_assist if ai_assist else ""}
                 jobs=[
                     Job.Config(
                         name="Smoke Test",

@@ -316,7 +316,7 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
         "Main CI",
     }
     workflows_by_name = {workflow.name: workflow for workflow in workflows}
-    assert workflows_by_name["Pull Request CI"].ai_orchestrator is None
+    assert workflows_by_name["Pull Request CI"].ai_assist is None
     assert all(workflow.enable_cache for workflow in workflows)
     assert (
         workflows_by_name["Pull Request CI"].jobs[0].command
@@ -597,7 +597,7 @@ def test_run_init_interactive_supports_oss_storage_and_ubuntu_images(
     assert "Components.create_image_test_component(" in infra_text
     assert "Components.create_awslinux_image_builder_config(" not in infra_text
     assert 'name="artifacts-eu-north-1"' in infra_text
-    assert "ai_orchestrator=Workflow.OrchestratorAI.Config(" in (
+    assert "ai_assist=Workflow.AIAssist.Config(" in (
         tmp_path / "ci/workflows/pull_request.py"
     ).read_text(encoding="utf8")
     assert '"anthropic[bedrock]"' in infra_text

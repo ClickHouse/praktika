@@ -1,6 +1,6 @@
 """AI advisor for the orchestrator (skeleton).
 
-The orchestrator drives an ``OrchestratorAI`` through the run's lifecycle. As the
+The orchestrator drives an ``AIAssist`` through the run's lifecycle. As the
 workflow state advances (job results land), the advisor classifies what changed
 and routes it to the matching **provider hook** — ``on_job_failure`` when a job
 fails, ``on_job_success`` when one passes, plus ``on_run_start`` /
@@ -15,7 +15,7 @@ flags the run cancelled and the orchestrator loop tears it down;
 ``cancel_and_patch`` applies the model's edits, commits + pushes them via the
 injected patcher (triggering a fresh run), and cancels the superseded run.
 The default provider is ``mock``, which does nothing. Disabled by default
-(``Workflow.Config.ai_orchestrator.enabled``).
+(``Workflow.Config.ai_assist.enabled``).
 
 Real providers (``anthropic`` / ``bedrock-anthropic``) implement ``on_job_failure`` only,
 running a tool-use loop so the model can investigate the failure before deciding
@@ -38,7 +38,7 @@ _TERMINAL_STATUSES = {"success", "failure", "skipped", "cancelled"}
 # consolidated drive mode waits for these to drain before consulting.
 _INFLIGHT_STATUSES = {"queued", "running"}
 
-# Drive-mode values (mirror Workflow.OrchestratorAI.DriveMode). Plain strings so
+# Drive-mode values (mirror Workflow.AIAssist.DriveMode). Plain strings so
 # the advisor stays decoupled from the workflow config classes.
 _DRIVE_EAGER = "eager"
 _DRIVE_CONSOLIDATED = "consolidated"
@@ -112,7 +112,7 @@ _MAX_LINKS = 10
 def _get_ai_config(workflow_config):
     if workflow_config is None:
         return None
-    return getattr(workflow_config, "ai_orchestrator", None)
+    return getattr(workflow_config, "ai_assist", None)
 
 
 # Cap on how much guidance a prompt file may contribute, so a huge or runaway
@@ -375,7 +375,7 @@ def _patch_commit_message(detail, round_id=""):
     return "\n".join(lines)
 
 
-class OrchestratorAI:
+class AIAssist:
     """Routes workflow lifecycle events to the provider's hooks and records turns."""
 
     def __init__(
@@ -387,7 +387,7 @@ class OrchestratorAI:
         self._session = session
         self._event = event or {}
         # Job names the workflow configured as never-evaluate
-        # (ai_orchestrator.exclude_jobs). Their failures never trigger the advisor.
+        # (ai_assist.exclude_jobs). Their failures never trigger the advisor.
         self._excluded = set(exclude_jobs or ())
         # When to consult on failures: "eager" (per failure, as it lands) or
         # "consolidated" (hold dispatch of not-yet-started jobs on a failure, let
@@ -411,7 +411,7 @@ class OrchestratorAI:
         cls, event=None, run_id=None, local_mode=False, patcher=None, ai_check=None,
         workflow_config=None
     ):
-        """Build an OrchestratorAI from workflow AI config, or return None if disabled.
+        """Build an AIAssist from workflow AI config, or return None if disabled.
 
         Also opens (or rejoins) the durable per-PR AI session and registers
         this CI run with it. Session setup is best-effort: if it fails the
@@ -419,7 +419,7 @@ class OrchestratorAI:
 
         ``patcher`` is the orchestrator-supplied commit+push callback used to
         apply a ``cancel_and_patch`` decision; when None (local mode / fork PR /
-        no token) such a decision stays advisory. ``ai_check`` is the AI Advisor
+        no token) such a decision stays advisory. ``ai_check`` is the AI Assist
         check updater the provider mirrors observations/turns to (None disables
         the check).
 
@@ -488,7 +488,7 @@ class OrchestratorAI:
 
     def _is_excluded(self, name):
         """True if the workflow configured this job name as never-evaluate via
-        ai_orchestrator.exclude_jobs."""
+        ai_assist.exclude_jobs."""
         return name in self._excluded
 
     def _triggers_advisor(self, state, name):
@@ -504,7 +504,7 @@ class OrchestratorAI:
         turn, record + dispatch it.
 
         ``provider.consult`` owns the model call plus its bracketing (observation
-        /turn tracking, the AI Advisor check, and turning a provider exception
+        /turn tracking, the AI Assist check, and turning a provider exception
         into an error ``Turn``). Returns the recorded ``Turn``, or ``None`` when
         the hook opted out (no model call, no ledger entry, no persisted turn).
         """
@@ -548,7 +548,7 @@ class OrchestratorAI:
         """Consult the moment a (non-excluded) job fails, one tick at a time."""
         if not changed:
             return None
-        # Jobs listed in ai_orchestrator.exclude_jobs, or whose Result opted out
+        # Jobs listed in ai_assist.exclude_jobs, or whose Result opted out
         # via skip_ai_assist, are never investigated: their failure carries no
         # problem for the advisor to act on (an advisory Code Review job, a
         # draft-PR gate), so skip them as a trigger — no round, no consult, no
@@ -689,7 +689,7 @@ class OrchestratorAI:
             self._consult(
                 "run_finish", build_observation(state, self._event, []), state
             )
-        # Don't leave the AI Advisor check spinning if a round-trip died mid-flight.
+        # Don't leave the AI Assist check spinning if a round-trip died mid-flight.
         self._provider.finalize_check()
         self._console.summary(self._ledger)
         if self._session is not None:
