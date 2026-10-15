@@ -5,9 +5,10 @@ import pytest
 from praktika import Workflow
 from praktika.orchestrator import ai
 from praktika.orchestrator.ai import (
-    OrchestratorAI,
+    AIAssist,
     _apply_edits,
     _patch_commit_message,
+    _resolve_extra_prompt,
     build_observation,
 )
 from praktika.orchestrator.ai.anthropic import (
@@ -24,8 +25,10 @@ from praktika.orchestrator.ai.anthropic import (
 )
 from praktika.orchestrator.ai.mock import MockProvider
 from praktika.orchestrator.ai.provider import (
+    AIProvider,
     Observation,
     Turn,
+    Usage,
     _decision_cell,
     resolve,
     resolve_provider,
@@ -59,7 +62,7 @@ EVENT = {
 
 
 def _workflow_ai(**kwargs):
-    return Workflow.OrchestratorAI.Config(**kwargs)
+    return Workflow.AIAssist.Config(**kwargs)
 
 
 # --------------------------------------------------------------- registry
@@ -78,21 +81,21 @@ def test_registry_unknown_raises():
 
 
 def test_maybe_create_disabled_returns_none(monkeypatch):
-    assert OrchestratorAI.maybe_create(
+    assert AIAssist.maybe_create(
         run_id="r1",
-        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=False)),
+        workflow_config=SimpleNamespace(ai_assist=_workflow_ai(enabled=False)),
     ) is None
 
 
 def test_maybe_create_enabled_returns_advisor(monkeypatch):
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
         workflow_config=SimpleNamespace(
-            ai_orchestrator=_workflow_ai(enabled=True, provider="mock")
+            ai_assist=_workflow_ai(enabled=True, provider="mock")
         ),
     )
-    assert isinstance(advisor, OrchestratorAI)
+    assert isinstance(advisor, AIAssist)
     assert isinstance(advisor._provider, MockProvider)
 
 
@@ -100,11 +103,11 @@ def test_maybe_create_unknown_provider_disables(monkeypatch):
     # An older runtime that doesn't register the configured provider must
     # disable the advisor, not crash orchestration (see PR #130 hang).
     assert (
-        OrchestratorAI.maybe_create(
+        AIAssist.maybe_create(
             run_id="r1",
             local_mode=True,
             workflow_config=SimpleNamespace(
-                ai_orchestrator=_workflow_ai(
+                ai_assist=_workflow_ai(
                     enabled=True, provider="bedrock-from-the-future"
                 )
             ),
@@ -184,6 +187,31 @@ def test_failed_change_carries_result_digest():
     assert digest["errors"] == ["segfault in server log"]
 
 
+def test_failed_change_carries_ai_review_digest():
+    """A failed Code Review job surfaces its structured ai_review outcome so the
+    advisor can act on the reviewer's findings."""
+    job = _job("Code Review", "failure")
+    ai_review = {
+        "verdict": "blocking_issues",
+        "change_summary": "adds a widget",
+        "summary_md": "null deref",
+        "findings": [{"path": "a.py", "line": 3, "body": "derefs None"}],
+    }
+    job.result = {
+        "name": "Code Review",
+        "status": "FAIL",
+        "info": "verdict=blocking_issues findings=1",
+        "ext": {"ai_review": ai_review},
+    }
+    state = _state([job])
+
+    obs = build_observation(
+        state, EVENT, changed=[{"name": "Code Review", "status": "failure"}]
+    )
+
+    assert obs.changed[0]["result"]["ai_review"] == ai_review
+
+
 def test_successful_change_carries_no_result_digest():
     """Green jobs add no Result detail to the prompt, even if a Result exists."""
     job = _job("Build", "success")
@@ -213,10 +241,10 @@ def test_build_observation_does_not_mutate_changed():
 
 
 def test_turn_fires_only_on_new_failure(monkeypatch):
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(ai_assist=_workflow_ai(enabled=True, provider="mock")),
     )
 
     a = _job("A", "running")
@@ -245,10 +273,10 @@ def test_turn_fires_only_on_new_failure(monkeypatch):
 def test_skipped_and_cancelled_do_not_fire(monkeypatch):
     # Skipped/cancelled are terminal but route to no hook — they carry no
     # problem to act on, so they never consult the model.
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(ai_assist=_workflow_ai(enabled=True, provider="mock")),
     )
 
     a = _job("A", "skipped")
@@ -259,13 +287,13 @@ def test_skipped_and_cancelled_do_not_fire(monkeypatch):
 
 
 def test_excluded_job_failure_does_not_fire():
-    # A job listed in ai_orchestrator.exclude_jobs never triggers the advisor,
+    # A job listed in ai_assist.exclude_jobs never triggers the advisor,
     # even when it fails; a non-excluded failure still does.
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
         workflow_config=SimpleNamespace(
-            ai_orchestrator=_workflow_ai(
+            ai_assist=_workflow_ai(
                 enabled=True, provider="mock", exclude_jobs=["Code Review"]
             )
         ),
@@ -287,11 +315,183 @@ def test_excluded_job_failure_does_not_fire():
     assert advisor._ledger.turns == 1
 
 
-def test_advisory_only_no_mutation_and_zero_cost(monkeypatch):
-    advisor = OrchestratorAI.maybe_create(
+class _RecordingProvider(AIProvider):
+    """Records the observations routed to on_job_failure and returns a
+    configurable decision so dispatch can be exercised."""
+
+    name = "recording"
+
+    def __init__(self, model="", decision=None):
+        super().__init__(model=model)
+        self.failure_obs = []
+        self._decision = decision or []
+
+    def on_job_failure(self, observation):
+        self.failure_obs.append(observation)
+        return Turn(
+            reasoning="r", decision=list(self._decision), usage=Usage(provider=self.name)
+        )
+
+
+def _consolidated_advisor(prov, exclude_jobs=None):
+    return AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(
+            ai_assist=_workflow_ai(
+                enabled=True,
+                provider=prov,
+                drive_mode="consolidated",
+                exclude_jobs=exclude_jobs or [],
+            )
+        ),
+    )
+
+
+def test_consolidated_holds_dispatch_and_waits_for_wave_to_drain():
+    # On a failure, consolidated arms + holds dispatch but does NOT consult
+    # while other jobs are still in flight.
+    prov = _RecordingProvider()
+    advisor = _consolidated_advisor(prov)
+    a = _job("A", "failure")
+    a.result = {"name": "A", "status": "FAIL", "info": "boom"}
+    b = _job("B", "running")
+    state = _state([a, b])
+
+    assert advisor.on_workflow_update(state, EVENT) is None
+    assert state.hold_dispatch is True
+    assert prov.failure_obs == []  # B still running -> no consult yet
+
+
+def test_consolidated_consults_once_when_wave_drains():
+    prov = _RecordingProvider()
+    advisor = _consolidated_advisor(prov)
+    a = _job("A", "failure")
+    a.result = {"name": "A", "status": "FAIL", "info": "boom"}
+    b = _job("B", "running")
+    state = _state([a, b])
+    advisor.on_workflow_update(state, EVENT)  # arm + hold
+
+    b.status = SimpleNamespace(value="success")  # wave drains
+    turn = advisor.on_workflow_update(state, EVENT)
+
+    assert turn is not None
+    assert len(prov.failure_obs) == 1
+    obs = prov.failure_obs[0]
+    assert obs.consolidated is True
+    assert {c["name"] for c in obs.changed} == {"A"}
+    assert state.hold_dispatch is False  # released after a continue
+
+
+def test_consolidated_excluded_failure_does_not_arm_but_is_context():
+    # An excluded job's failure never arms consolidation, but once a non-excluded
+    # job fails the excluded one still appears in the batched observation.
+    prov = _RecordingProvider()
+    advisor = _consolidated_advisor(prov, exclude_jobs=["Code Review"])
+    review = _job("Code Review", "failure")
+    review.result = {"name": "Code Review", "status": "FAIL", "info": "blocking"}
+    build = _job("Build", "running")
+    state = _state([review, build])
+
+    assert advisor.on_workflow_update(state, EVENT) is None
+    # excluded failure alone doesn't arm (hold never set)
+    assert getattr(state, "hold_dispatch", False) is False
+
+    build.status = SimpleNamespace(value="failure")
+    turn = advisor.on_workflow_update(state, EVENT)
+    assert turn is not None
+    assert {c["name"] for c in prov.failure_obs[0].changed} == {"Code Review", "Build"}
+
+
+def test_consolidated_keeps_hold_when_decision_cancels():
+    prov = _RecordingProvider(decision=[{"type": "cancel_run", "detail": "x"}])
+    advisor = _consolidated_advisor(prov)
+    state = _state([_job("A", "failure")])  # nothing else in flight
+    advisor.on_workflow_update(state, EVENT)
+    assert state.cancelled is True
+    assert state.hold_dispatch is True  # not released — the run is torn down
+
+
+def test_skip_ai_assist_failure_does_not_trigger_eager():
+    # A failure whose Result set skip_ai_assist never consults the model.
+    advisor = AIAssist.maybe_create(
+        run_id="r1",
+        local_mode=True,
+        workflow_config=SimpleNamespace(
+            ai_assist=_workflow_ai(enabled=True, provider="mock")
+        ),
+    )
+    a = _job("A", "failure")
+    a.result = {"name": "A", "status": "FAIL", "ext": {"skip_ai_assist": True}}
+    assert advisor.on_workflow_update(_state([a]), EVENT) is None
+    assert advisor._ledger.turns == 0
+
+
+def test_skip_ai_assist_only_failure_no_consult_consolidated():
+    prov = _RecordingProvider()
+    advisor = _consolidated_advisor(prov)
+    a = _job("A", "failure")
+    a.result = {"name": "A", "status": "FAIL", "ext": {"skip_ai_assist": True}}
+    assert advisor.on_workflow_update(_state([a]), EVENT) is None
+    assert prov.failure_obs == []
+
+
+def test_skip_ai_assist_failure_omitted_from_consolidated_context():
+    # A skip_ai_assist failure is dropped entirely (trigger and context); a real
+    # failure alongside it still drives one consult over just the real failure.
+    prov = _RecordingProvider()
+    advisor = _consolidated_advisor(prov)
+    a = _job("A", "failure")
+    a.result = {"name": "A", "status": "FAIL", "ext": {"skip_ai_assist": True}}
+    b = _job("B", "failure")
+    b.result = {"name": "B", "status": "FAIL", "info": "real"}
+    turn = advisor.on_workflow_update(_state([a, b]), EVENT)
+    assert turn is not None
+    assert {c["name"] for c in prov.failure_obs[0].changed} == {"B"}
+
+
+def test_consolidated_does_not_re_present_earlier_wave_failures():
+    # Wave A fails -> consulted (continue) -> an independent wave B fails later.
+    # The second consult must carry only B, not re-investigate the dismissed A.
+    prov = _RecordingProvider()
+    advisor = _consolidated_advisor(prov)
+    a = _job("A", "failure")
+    b = _job("B", "running")
+    state = _state([a, b])
+    advisor.on_workflow_update(state, EVENT)  # arm (A failed, B in flight)
+    b.status = SimpleNamespace(value="success")
+    advisor.on_workflow_update(state, EVENT)  # wave A drains -> consult over {A}
+    assert {c["name"] for c in prov.failure_obs[-1].changed} == {"A"}
+
+    # A new job C starts and fails (wave B).
+    c = _job("C", "failure")
+    state.jobs["C"] = c
+    turn = advisor.on_workflow_update(state, EVENT)
+    assert turn is not None
+    # Only C — A was already consulted and must not reappear.
+    assert {x["name"] for x in prov.failure_obs[-1].changed} == {"C"}
+
+
+def test_eager_mode_does_not_hold_dispatch():
+    prov = _RecordingProvider()
+    advisor = AIAssist.maybe_create(
+        run_id="r1",
+        local_mode=True,
+        workflow_config=SimpleNamespace(
+            ai_assist=_workflow_ai(enabled=True, provider=prov)  # default eager
+        ),
+    )
+    state = _state([_job("A", "failure"), _job("B", "running")])
+    turn = advisor.on_workflow_update(state, EVENT)
+    assert turn is not None  # consulted immediately, mid-wave
+    assert getattr(state, "hold_dispatch", False) is False
+
+
+def test_advisory_only_no_mutation_and_zero_cost(monkeypatch):
+    advisor = AIAssist.maybe_create(
+        run_id="r1",
+        local_mode=True,
+        workflow_config=SimpleNamespace(ai_assist=_workflow_ai(enabled=True, provider="mock")),
     )
 
     a = _job("A", "failure", started_at=1.0, finished_at=2.0)
@@ -305,10 +505,10 @@ def test_advisory_only_no_mutation_and_zero_cost(monkeypatch):
 
 
 def test_provider_error_does_not_raise(monkeypatch):
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(ai_assist=_workflow_ai(enabled=True, provider="mock")),
     )
 
     def boom(observation):
@@ -473,6 +673,25 @@ def test_on_job_failure_does_not_send_output_config():
     assert "output_config" not in p._client.calls[0]
 
 
+def test_consolidated_observation_appends_suffix():
+    p = AnthropicProvider(model="claude-haiku-4-5")
+    p._client = _FakeClient(_fake_resp('{"reasoning": "ok", "decision": []}'))
+    obs = Observation(changed=[{"name": "A", "status": "failure"}])
+    obs.consolidated = True
+    p.on_job_failure(obs)
+    system = p._client.calls[0]["system"]
+    assert "CI orchestration advisor" in system  # base prompt present
+    assert "batches EVERY job that failed" in system  # consolidated framing
+
+
+def test_non_consolidated_observation_has_no_suffix():
+    p = AnthropicProvider(model="claude-haiku-4-5")
+    p._client = _FakeClient(_fake_resp('{"reasoning": "ok", "decision": []}'))
+    p.on_job_failure(Observation(changed=[{"name": "A", "status": "failure"}]))
+    system = p._client.calls[0]["system"]
+    assert "batches EVERY job that failed" not in system
+
+
 def test_on_job_failure_offers_repo_tools_without_links():
     # A failure with no log links still gets the repo-read tools, but not
     # fetch_log (nothing to fetch).
@@ -500,6 +719,83 @@ def test_on_job_failure_offers_fetch_log_when_links_present():
     p.on_job_failure(obs)
     tool_names = {t["name"] for t in p._client.calls[0].get("tools", [])}
     assert {"read_file", "grep_repo", "fetch_log"} <= tool_names
+
+
+# ------------------------------------------------------------- extra prompt
+
+
+def test_system_prompt_without_guidance_returns_base():
+    p = AnthropicProvider(model="claude-haiku-4-5")
+    assert p.system_prompt("BASE") == "BASE"
+
+
+def test_system_prompt_appends_guidance():
+    p = AnthropicProvider(model="claude-haiku-4-5")
+    p.set_extra_guidance("  fix outdated tests  ")
+    out = p.system_prompt("BASE")
+    assert out.startswith("BASE")
+    # whitespace stripped, guidance appended under a clear header
+    assert "fix outdated tests" in out
+    assert "BASE" != out
+
+
+def test_on_job_failure_sends_extra_guidance_in_system():
+    p = AnthropicProvider(model="claude-haiku-4-5")
+    p.set_extra_guidance("if a test is outdated, cancel_and_patch to fix it")
+    p._client = _FakeClient(_fake_resp('{"reasoning": "ok", "decision": []}'))
+    p.on_job_failure(Observation(changed=[{"name": "B", "status": "failure"}]))
+    system = p._client.calls[0]["system"]
+    assert "CI orchestration advisor" in system  # base prompt still present
+    assert "if a test is outdated, cancel_and_patch to fix it" in system
+
+
+def test_resolve_extra_prompt_inline_only():
+    cfg = _workflow_ai(extra_prompt="  inline guidance  ")
+    assert _resolve_extra_prompt(cfg) == "inline guidance"
+
+
+def test_resolve_extra_prompt_file_only(tmp_path, monkeypatch):
+    (tmp_path / "ai_guidance.md").write_text("file guidance\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    cfg = _workflow_ai(extra_prompt_file="ai_guidance.md")
+    assert _resolve_extra_prompt(cfg) == "file guidance"
+
+
+def test_resolve_extra_prompt_inline_then_file(tmp_path, monkeypatch):
+    (tmp_path / "g.md").write_text("from file", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    cfg = _workflow_ai(extra_prompt="from inline", extra_prompt_file="g.md")
+    assert _resolve_extra_prompt(cfg) == "from inline\n\nfrom file"
+
+
+def test_resolve_extra_prompt_missing_file_ignored(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    cfg = _workflow_ai(extra_prompt="keep this", extra_prompt_file="nope.md")
+    assert _resolve_extra_prompt(cfg) == "keep this"
+
+
+def test_resolve_extra_prompt_file_escape_ignored(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    cfg = _workflow_ai(extra_prompt_file="../../etc/passwd")
+    assert _resolve_extra_prompt(cfg) == ""
+
+
+def test_maybe_create_wires_extra_prompt(tmp_path, monkeypatch):
+    (tmp_path / "g.md").write_text("fix flaky tests", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    advisor = AIAssist.maybe_create(
+        run_id="r1",
+        local_mode=True,
+        workflow_config=SimpleNamespace(
+            ai_assist=_workflow_ai(
+                enabled=True,
+                provider="mock",
+                extra_prompt="inline",
+                extra_prompt_file="g.md",
+            )
+        ),
+    )
+    assert advisor._provider._extra_guidance == "inline\n\nfix flaky tests"
 
 
 # --------------------------------------------------------------- log fetch tool
@@ -714,10 +1010,10 @@ def test_parse_empty_root_cause_left_out():
 
 
 def test_cancel_run_decision_cancels_the_run(monkeypatch):
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(ai_assist=_workflow_ai(enabled=True, provider="mock")),
     )
 
     state = _state([_job("Build", "failure")])
@@ -732,10 +1028,10 @@ def test_cancel_run_decision_cancels_the_run(monkeypatch):
 
 
 def test_non_cancel_decision_leaves_run_alone(monkeypatch):
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(ai_assist=_workflow_ai(enabled=True, provider="mock")),
     )
 
     state = _state([_job("Build", "failure")])
@@ -750,10 +1046,10 @@ def test_non_cancel_decision_leaves_run_alone(monkeypatch):
 
 
 def test_error_turn_does_not_cancel(monkeypatch):
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(ai_assist=_workflow_ai(enabled=True, provider="mock")),
     )
 
     state = _state([_job("Build", "failure")])
@@ -797,10 +1093,10 @@ def test_bedrock_decide_costs_with_prefixed_model():
 
 def test_error_turn_stamps_resolved_model(monkeypatch):
     # A provider that fails before a call still names the model it would use.
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="bedrock-anthropic")),
+        workflow_config=SimpleNamespace(ai_assist=_workflow_ai(enabled=True, provider="bedrock-anthropic")),
     )
 
     def boom(observation):
@@ -930,10 +1226,10 @@ class _FakeSession:
 
 
 def _patch_advisor(monkeypatch, patcher, session):
-    advisor = OrchestratorAI.maybe_create(
+    advisor = AIAssist.maybe_create(
         run_id="r1",
         local_mode=True,
-        workflow_config=SimpleNamespace(ai_orchestrator=_workflow_ai(enabled=True, provider="mock")),
+        workflow_config=SimpleNamespace(ai_assist=_workflow_ai(enabled=True, provider="mock")),
     )
     advisor._patcher = patcher
     advisor._session = session

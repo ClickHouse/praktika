@@ -8,7 +8,7 @@ from praktika import Artifact, Docker, Job, Secret, Workflow
 from ci.settings.settings import RunnerLabels
 from praktika.settings import Settings
 
-_HEAD_PRAKTIKA_VERSION = "0.1.15"
+_HEAD_PRAKTIKA_VERSION = "0.1.16"
 
 artifact = Artifact.Config(name="greet", type=Artifact.Type.S3, path="./artifact.txt")
 
@@ -17,13 +17,43 @@ workflow = Workflow.Config(
     event=Workflow.Event.PULL_REQUEST,
     base_branches=["main"],
     runs_on_label_prefix="pr-",
-    ai_orchestrator=Workflow.OrchestratorAI.Config(
+    ai_assist=Workflow.AIAssist.Config(
         enabled=True,
         provider="bedrock-anthropic",
         model="global.anthropic.claude-sonnet-5",
-        # The Code Review job is advisory (allow_failure) — its failure is never a
-        # real CI problem, so the advisor must not investigate it.
-        exclude_jobs=["Code Review"],
+        # Consolidated drive mode: on a failure, hold dispatch of not-yet-started
+        # jobs, let the in-flight wave drain, then consult once over the whole
+        # failure set — so correlated failures (one root cause surfacing in
+        # several jobs) are fixed in a single patch.
+        drive_mode=Workflow.AIAssist.DriveMode.CONSOLIDATED,
+        # Code Review is advisory (allow_failure): don't consult the advisor the
+        # moment it fails. Its blocking findings are still weighed in the
+        # consolidated consult (the whole failure set is shown there, excluded
+        # jobs included), with the ai_review digest in context.
+        # exclude_jobs=["Code Review"],
+        # Project-specific guidance steering when the advisor should act.
+        extra_prompt=(
+            "When a test job fails because the test itself is outdated (e.g. it "
+            "asserts a value the PR intentionally changed) and the fix is small "
+            "and unambiguous, use cancel_and_patch to update the test. Only do "
+            "this when the test is clearly the stale side — if the production "
+            "code looks wrong, prefer continue/cancel_run and leave it for a human.\n\n"
+            "When the Code Review job fails with a blocking verdict, its digest "
+            "carries an `ai_review` object listing the reviewer's findings "
+            "(path/line/body). Read each cited file with read_file to confirm the "
+            "finding is a real defect, and when the fix is clear and unambiguous "
+            "use cancel_and_patch to address it. If a finding is subjective, "
+            "ambiguous, or the reviewer looks wrong, continue and leave it for the "
+            "author.\n\n"
+            "The canonical praktika version is `version` in pyproject.toml. The "
+            "`_HEAD_PRAKTIKA_VERSION` constant in a workflow and the praktika wheel "
+            "the project_init scaffold pins must track it. If a job (e.g. Version "
+            "Check or a scaffold test) fails because one of these is older than "
+            "pyproject.toml, that constant is stale: cancel_and_patch to bring it "
+            "up to the pyproject version. Never edit pyproject.toml to match a "
+            "stale constant, and leave `_BASE_*` version constants alone (they are "
+            "the prior release on purpose)."
+        ),
     ),
     jobs=[
         # Verify the Praktika actually executing the job is the head version.
@@ -89,11 +119,12 @@ workflow = Workflow.Config(
             ),
         ),
         # Ruff style check (ruff is baked into the runner image venv, see
-        # ci/infrastructure/projects.py::_runtime_prebuilt_venvs).
+        # ci/infrastructure/projects.py::_runtime_prebuilt_venvs). Wrapped so the
+        # job emits a Result with ruff's findings in a `ruff` sub-result's info.
         Job.Config(
             name="Style Check",
             runs_on=[RunnerLabels.SMALL_ARM],
-            command="ruff check .",
+            command="python3 ./ci/scripts/run_ruff.py",
             digest_config=Job.CacheDigestConfig(
                 include_paths=[
                     "./praktika",
@@ -153,7 +184,8 @@ workflow = Workflow.Config(
             command=(
                 "python3 -m praktika review --provider bedrock-openai "
                 "--model global.openai.gpt-5.6-sol --reasoning-effort high "
-                "--prompt ./ci/prompts/code_review.md --fail-for-draft-pr"
+                "--prompt ./ci/prompts/code_review.md --fail-for-draft-pr "
+                "--fail-on-blocking"
             ),
             allow_failure=True,
             enable_gh_auth=True,

@@ -493,12 +493,12 @@ def _settings_template(answers: InitAnswers) -> str:
 
 def _pull_request_workflow_template(answers: InitAnswers) -> str:
     command = 'python3 -c \'print("hello from praktika")\''
-    ai_orchestrator = ""
+    ai_assist = ""
     if answers.enable_ai_capabilities:
-        ai_orchestrator = textwrap.indent(
+        ai_assist = textwrap.indent(
             textwrap.dedent(
                 """\
-                ai_orchestrator=Workflow.OrchestratorAI.Config(
+                ai_assist=Workflow.AIAssist.Config(
                     enabled=True,
                     provider="bedrock-anthropic",
                     model="global.anthropic.claude-sonnet-5",
@@ -518,7 +518,7 @@ def _pull_request_workflow_template(answers: InitAnswers) -> str:
                 name="Pull Request CI",
                 event=Workflow.Event.PULL_REQUEST,
                 base_branches=["{answers.main_branch}"],
-{ai_orchestrator if ai_orchestrator else ""}
+{ai_assist if ai_assist else ""}
                 jobs=[
                     Job.Config(
                         name="Smoke Test",
@@ -640,9 +640,13 @@ def _infrastructure_template(answers: InitAnswers) -> str:
         _PRAKTIKA_PACKAGE_BASE_URL = (
             "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages"
         )
-        _PRAKTIKA_WHL = f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/praktika-0.1.15-py3-none-any.whl"
+        _PRAKTIKA_WHL = f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/praktika-{current_praktika_version()}-py3-none-any.whl"
+        # The controller wheel uses the fixed, version-less "latest" S3 location
+        # so a new project always gets the newest controller (the controller
+        # version isn't resolvable at `praktika init` time — it may not be
+        # installed).
         _PRAKTIKA_CONTROLLER_WHL = (
-            f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/praktika_controller-0.1.10-py3-none-any.whl"
+            f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/latest/praktika_controller-0.0.0-py3-none-any.whl"
         )
 
 

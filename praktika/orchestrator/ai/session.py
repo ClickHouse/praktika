@@ -248,7 +248,7 @@ class SessionManager:
     def observe_turn(self, observation, turn):
         """Record one advisor turn: implicit round open, append, roll up cost.
 
-        This is the single entry point the OrchestratorAI calls per workflow update.
+        This is the single entry point the AIAssist calls per workflow update.
         """
         failing = [c for c in observation.changed if c.get("status") in ("failure", "cancelled")]
         if failing and self._round is None and self.session.open_round_id is None:

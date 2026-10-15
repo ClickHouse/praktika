@@ -539,8 +539,13 @@ def _drive_dag(state, check, workflow, event, advisor, report_url, is_rerun):
             if state.cancelled and not cancel_handled:
                 state.cancel_unfinished_jobs()
                 cancel_handled = True
-            for job in state.get_ready():
-                job.kick()
+            # The AI advisor (consolidated drive mode) can hold dispatch after a
+            # failure so the in-flight wave drains to a single consult point;
+            # jobs already running continue, but no new ones start until it
+            # clears the hold. No effect when the advisor is off.
+            if not getattr(state, "hold_dispatch", False):
+                for job in state.get_ready():
+                    job.kick()
             state.wait()
             state.save_snapshot()
             # Re-assert completed jobs into the workflow report summary so a
@@ -611,7 +616,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
 
     print(f"Matched workflow [{workflow.name}] with {len(workflow.jobs)} jobs")
 
-    from .ai import OrchestratorAI
+    from .ai import AIAssist
     from .state import WorkflowState
 
     # The top-level check body is rendered from `state.md_status()` (a live
@@ -658,7 +663,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
                     )
                 else:
                     patcher = None
-                # The "AI Orchestrator [Workflow]" check mirrors the
+                # The "AI Assist [Workflow]" check mirrors the
                 # orchestrator AI observations and decisions
                 # decisions (CI only; created lazily on the first consultation).
                 ai_check = (
@@ -666,7 +671,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
                     if not local_mode
                     else None
                 )
-                advisor = OrchestratorAI.maybe_create(
+                advisor = AIAssist.maybe_create(
                     event=event, run_id=run_id, local_mode=local_mode,
                     patcher=patcher, ai_check=ai_check, workflow_config=workflow,
                 )
@@ -949,7 +954,7 @@ def _make_ai_check_updater(gh_token, repo, head_sha, workflow_name):
     """Build the ``updater(status, summary_md)`` the AI advisor mirrors to.
 
     Returns a callable that maintains a dedicated
-    **AI Orchestrator [Workflow Name]** GitHub check: ``status="in_progress"``
+    **AI Assist [Workflow Name]** GitHub check: ``status="in_progress"``
     while an observation is out to the model, ``"neutral"`` once the turn
     lands. The check run is created **lazily on first use** (the first model
     consultation), so green runs never show one. Returns None when there's
@@ -960,7 +965,7 @@ def _make_ai_check_updater(gh_token, repo, head_sha, workflow_name):
     from .check_run import CheckRun
 
     state = {"check": None}
-    title = f"AI Orchestrator [{workflow_name}]"
+    title = f"AI Assist [{workflow_name}]"
 
     def update(status, summary):
         out = {"title": title, "summary": summary}

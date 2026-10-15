@@ -1,6 +1,6 @@
 """AI advisor for the orchestrator (skeleton).
 
-The orchestrator drives an ``OrchestratorAI`` through the run's lifecycle. As the
+The orchestrator drives an ``AIAssist`` through the run's lifecycle. As the
 workflow state advances (job results land), the advisor classifies what changed
 and routes it to the matching **provider hook** — ``on_job_failure`` when a job
 fails, ``on_job_success`` when one passes, plus ``on_run_start`` /
@@ -15,7 +15,7 @@ flags the run cancelled and the orchestrator loop tears it down;
 ``cancel_and_patch`` applies the model's edits, commits + pushes them via the
 injected patcher (triggering a fresh run), and cancels the superseded run.
 The default provider is ``mock``, which does nothing. Disabled by default
-(``Workflow.Config.ai_orchestrator.enabled``).
+(``Workflow.Config.ai_assist.enabled``).
 
 Real providers (``anthropic`` / ``bedrock-anthropic``) implement ``on_job_failure`` only,
 running a tool-use loop so the model can investigate the failure before deciding
@@ -33,6 +33,56 @@ from .trace import TraceLogger, UsageLedger
 # landed. Kept as plain strings so the advisor stays decoupled from the
 # JobStatus enum and is trivial to drive with stubs in tests.
 _TERMINAL_STATUSES = {"success", "failure", "skipped", "cancelled"}
+
+# JobStatus values for a job that has been dispatched but hasn't finished. The
+# consolidated drive mode waits for these to drain before consulting.
+_INFLIGHT_STATUSES = {"queued", "running"}
+
+# Drive-mode values (mirror Workflow.AIAssist.DriveMode). Plain strings so
+# the advisor stays decoupled from the workflow config classes.
+_DRIVE_EAGER = "eager"
+_DRIVE_CONSOLIDATED = "consolidated"
+
+
+def _has_inflight(state):
+    """True while any job is still dispatched-but-unfinished (queued/running)."""
+    return any(
+        _status_value(js) in _INFLIGHT_STATUSES for js in state.jobs.values()
+    )
+
+
+def _result_skips_ai(js):
+    """True if the job's Result opted out of AI assistance.
+
+    A job marks its failure as not-for-the-advisor via
+    ``Result.complete_job(skip_ai_assist=True)`` (stored as
+    ``ext['skip_ai_assist']``), e.g. a deliberate draft-PR gate. Such a failure
+    is never a trigger and is omitted from the failure context entirely.
+    """
+    result = getattr(js, "result", None) if js is not None else None
+    if not isinstance(result, dict):
+        return False
+    ext = result.get("ext")
+    return bool(isinstance(ext, dict) and ext.get("skip_ai_assist"))
+
+
+def _all_failures(state):
+    """[{name, status, ...}] for every job currently in a failure state.
+
+    Used by the consolidated consult to present the whole failure wave at once
+    (excluded jobs included — exclusion gates *triggering*, not context); each
+    entry is enriched with its Result digest by build_observation.
+    """
+    out = []
+    for name, js in state.jobs.items():
+        if _status_value(js) != "failure" or _result_skips_ai(js):
+            continue
+        entry = {"name": name, "status": "failure"}
+        reason = getattr(js, "filter_reason", None)
+        if reason:
+            entry["reason"] = reason
+        out.append(entry)
+    return out
 
 
 def _status_value(job_state):
@@ -62,7 +112,47 @@ _MAX_LINKS = 10
 def _get_ai_config(workflow_config):
     if workflow_config is None:
         return None
-    return getattr(workflow_config, "ai_orchestrator", None)
+    return getattr(workflow_config, "ai_assist", None)
+
+
+# Cap on how much guidance a prompt file may contribute, so a huge or runaway
+# file can't blow up every consult's token bill.
+_MAX_EXTRA_PROMPT_CHARS = 20_000
+
+
+def _resolve_extra_prompt(ai_config):
+    """Build the system-prompt guidance from ``extra_prompt`` + ``extra_prompt_file``.
+
+    The inline ``extra_prompt`` comes first; then, if ``extra_prompt_file`` is
+    set, its contents (read from the checkout, repo-root contained, capped) are
+    appended. Reading is best-effort — the advisor must never break orchestration,
+    so a missing/unreadable/escaping path is logged and ignored, not raised.
+    """
+    parts = []
+    inline = (getattr(ai_config, "extra_prompt", "") or "").strip()
+    if inline:
+        parts.append(inline)
+    rel = (getattr(ai_config, "extra_prompt_file", "") or "").strip()
+    if rel:
+        target = _safe_join(os.getcwd(), rel)
+        if target is None:
+            print(f"[AI   ] extra_prompt_file ignored: path escapes repo: {rel!r}")
+        elif not os.path.isfile(target):
+            print(f"[AI   ] extra_prompt_file ignored: no such file: {rel!r}")
+        else:
+            try:
+                with open(target, "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read(_MAX_EXTRA_PROMPT_CHARS + 1).strip()
+                if len(text) > _MAX_EXTRA_PROMPT_CHARS:
+                    text = text[:_MAX_EXTRA_PROMPT_CHARS] + " …"
+                if text:
+                    parts.append(text)
+            except Exception as e:
+                print(
+                    f"[AI   ] extra_prompt_file ignored: cannot read {rel!r}: "
+                    f"{type(e).__name__}: {e}"
+                )
+    return "\n\n".join(parts)
 
 
 def _clean_links(links):
@@ -135,6 +225,11 @@ def _result_digest(result):
     ext = result.get("ext")
     if isinstance(ext, dict) and ext.get("errors"):
         digest["errors"] = [_trunc(e) for e in ext["errors"]][:_MAX_FAILED_SUBRESULTS]
+    # The AI code-review job records its structured outcome here (verdict +
+    # findings). Carry it through so the advisor can read what the reviewer
+    # flagged and act on it — the findings are otherwise only on GitHub.
+    if isinstance(ext, dict) and isinstance(ext.get("ai_review"), dict):
+        digest["ai_review"] = ext["ai_review"]
     return digest
 
 
@@ -280,20 +375,31 @@ def _patch_commit_message(detail, round_id=""):
     return "\n".join(lines)
 
 
-class OrchestratorAI:
+class AIAssist:
     """Routes workflow lifecycle events to the provider's hooks and records turns."""
 
     def __init__(
         self, provider, console, session=None, event=None, patcher=None,
-        exclude_jobs=None,
+        exclude_jobs=None, drive_mode=_DRIVE_EAGER,
     ):
         self._provider = provider
         self._console = console
         self._session = session
         self._event = event or {}
         # Job names the workflow configured as never-evaluate
-        # (ai_orchestrator.exclude_jobs). Their failures never trigger the advisor.
+        # (ai_assist.exclude_jobs). Their failures never trigger the advisor.
         self._excluded = set(exclude_jobs or ())
+        # When to consult on failures: "eager" (per failure, as it lands) or
+        # "consolidated" (hold dispatch of not-yet-started jobs on a failure, let
+        # the in-flight wave drain, then consult once over the whole failure set).
+        self._drive_mode = drive_mode or _DRIVE_EAGER
+        # consolidated bookkeeping: armed once a non-excluded failure appears,
+        # cleared after the batched consult fires when the wave has drained.
+        self._consolidating = False
+        # Names of failed jobs already shown in a prior consolidated consult, so a
+        # later wave doesn't re-present (and re-investigate) failures the model
+        # already judged.
+        self._consolidated_seen = set()
         # Injected by the orchestrator: patcher(files, message) -> commit_sha,
         # commits the working-tree edits to the PR branch and pushes. None when
         # pushing isn't possible (local mode / fork PR / no token) — then a
@@ -309,7 +415,7 @@ class OrchestratorAI:
         cls, event=None, run_id=None, local_mode=False, patcher=None, ai_check=None,
         workflow_config=None
     ):
-        """Build an OrchestratorAI from workflow AI config, or return None if disabled.
+        """Build an AIAssist from workflow AI config, or return None if disabled.
 
         Also opens (or rejoins) the durable per-PR AI session and registers
         this CI run with it. Session setup is best-effort: if it fails the
@@ -317,7 +423,7 @@ class OrchestratorAI:
 
         ``patcher`` is the orchestrator-supplied commit+push callback used to
         apply a ``cancel_and_patch`` decision; when None (local mode / fork PR /
-        no token) such a decision stays advisory. ``ai_check`` is the AI Advisor
+        no token) such a decision stays advisory. ``ai_check`` is the AI Assist
         check updater the provider mirrors observations/turns to (None disables
         the check).
 
@@ -342,6 +448,7 @@ class OrchestratorAI:
             )
             return None
         provider.attach_check_updater(ai_check)
+        provider.set_extra_guidance(_resolve_extra_prompt(ai_config))
         console = TraceLogger(run_id=run_id)
         print(
             f"[AI   ] advisor enabled: provider={provider.name} "
@@ -364,6 +471,7 @@ class OrchestratorAI:
         return cls(
             provider, console, session=session, event=event, patcher=patcher,
             exclude_jobs=getattr(ai_config, "exclude_jobs", None) or (),
+            drive_mode=getattr(ai_config, "drive_mode", _DRIVE_EAGER) or _DRIVE_EAGER,
         )
 
     def _delta(self, state):
@@ -384,15 +492,23 @@ class OrchestratorAI:
 
     def _is_excluded(self, name):
         """True if the workflow configured this job name as never-evaluate via
-        ai_orchestrator.exclude_jobs."""
+        ai_assist.exclude_jobs."""
         return name in self._excluded
+
+    def _triggers_advisor(self, state, name):
+        """True if a failure in job ``name`` should trigger the advisor: not
+        listed in exclude_jobs and not opted out by the job's Result
+        (skip_ai_assist)."""
+        return not self._is_excluded(name) and not _result_skips_ai(
+            state.jobs.get(name)
+        )
 
     def _consult(self, event, observation, state):
         """Dispatch a lifecycle ``event`` to the provider and, if it produced a
         turn, record + dispatch it.
 
         ``provider.consult`` owns the model call plus its bracketing (observation
-        /turn tracking, the AI Advisor check, and turning a provider exception
+        /turn tracking, the AI Assist check, and turning a provider exception
         into an error ``Turn``). Returns the recorded ``Turn``, or ``None`` when
         the hook opted out (no model call, no ledger entry, no persisted turn).
         """
@@ -420,25 +536,32 @@ class OrchestratorAI:
     def on_workflow_update(self, state, event):
         """Hook called from the orchestrator loop after each ``state.wait()``.
 
-        Routes the jobs that newly reached a terminal state to the matching
-        provider hook: failures → ``on_job_failure``, successes →
-        ``on_job_success``. Skipped/cancelled transitions are tracked (so they
-        don't re-fire) but routed nowhere — they carry no problem to act on, and
-        re-consulting on a cascade cancel just burns tokens. Idle poll ticks
-        (nothing changed) do nothing. Returns the failure turn if one fired.
+        Tracks the jobs that newly reached a terminal state (so each fires at
+        most once) and routes failures to the model per the configured drive
+        mode — ``eager`` consults the moment a job fails; ``consolidated`` holds
+        dispatch and batches the whole failure wave into one consult. Successes,
+        skips, and cancels never reach the model. Returns the failure turn if one
+        fired this tick.
         """
         changed = self._delta(state)
+        if self._drive_mode == _DRIVE_CONSOLIDATED:
+            return self._consolidated_update(state, event, changed)
+        return self._eager_update(state, event, changed)
+
+    def _eager_update(self, state, event, changed):
+        """Consult the moment a (non-excluded) job fails, one tick at a time."""
         if not changed:
             return None
-        # Jobs the workflow listed in ai_orchestrator.exclude_jobs are never
-        # investigated: their failure carries no problem for the advisor to act on
-        # (e.g. an advisory Code Review job), so skip them as a trigger — no round,
-        # no consult, no tokens. They still appear in build_observation's full-DAG
+        # Jobs listed in ai_assist.exclude_jobs, or whose Result opted out
+        # via skip_ai_assist, are never investigated: their failure carries no
+        # problem for the advisor to act on (an advisory Code Review job, a
+        # draft-PR gate), so skip them as a trigger — no round, no consult, no
+        # tokens. Excluded jobs still appear in build_observation's full-DAG
         # context.
         failures = [
             c
             for c in changed
-            if c.get("status") == "failure" and not self._is_excluded(c.get("name"))
+            if c.get("status") == "failure" and self._triggers_advisor(state, c.get("name"))
         ]
         successes = [c for c in changed if c.get("status") == "success"]
         turn = None
@@ -450,6 +573,49 @@ class OrchestratorAI:
             self._consult(
                 "job_success", build_observation(state, event, successes), state
             )
+        return turn
+
+    def _consolidated_update(self, state, event, changed):
+        """Batch a whole wave of failures into a single consult.
+
+        A new non-excluded failure arms consolidation and holds dispatch of
+        not-yet-started jobs (``state.hold_dispatch``) so no fresh work starts
+        while the in-flight wave drains. Once nothing is queued/running, consult
+        once over this wave's failures (excluded jobs included as context), then
+        release the hold so the run continues — unless a decision cancelled it.
+        Failures already shown in a prior consolidated consult are excluded, so a
+        later independent wave doesn't re-present a failure the model already
+        judged; only genuinely new failures drive the next consult.
+        """
+        armed = any(
+            c.get("status") == "failure" and self._triggers_advisor(state, c.get("name"))
+            for c in changed
+        )
+        if armed:
+            self._consolidating = True
+            state.hold_dispatch = True
+        if not self._consolidating:
+            return None
+        # Hold the consult until every dispatched job has finished.
+        if _has_inflight(state):
+            return None
+        self._consolidating = False
+        # Only failures not already consulted in an earlier wave; record this
+        # batch so the next wave doesn't re-investigate them.
+        failures = [
+            f for f in _all_failures(state)
+            if f["name"] not in self._consolidated_seen
+        ]
+        turn = None
+        if failures:
+            self._consolidated_seen.update(f["name"] for f in failures)
+            observation = build_observation(state, event, failures)
+            observation.consolidated = True
+            turn = self._consult("job_failure", observation, state)
+        # Release the hold so the remaining jobs run — unless a decision tore the
+        # run down (then cancel_unfinished_jobs handles the rest).
+        if not getattr(state, "cancelled", False):
+            state.hold_dispatch = False
         return turn
 
     def _dispatch(self, state, turn):
@@ -535,7 +701,7 @@ class OrchestratorAI:
             self._consult(
                 "run_finish", build_observation(state, self._event, []), state
             )
-        # Don't leave the AI Advisor check spinning if a round-trip died mid-flight.
+        # Don't leave the AI Assist check spinning if a round-trip died mid-flight.
         self._provider.finalize_check()
         self._console.summary(self._ledger)
         if self._session is not None:

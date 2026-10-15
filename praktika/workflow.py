@@ -33,7 +33,17 @@ class Workflow:
             reporting, and the S3 repo snapshot."""
             return engine in (cls.PRAKTIKA, cls.GH_IGNITION)
 
-    class OrchestratorAI:
+    class AIAssist:
+        class DriveMode:
+            # Consult the advisor the moment a job fails (fast, per-failure, sees
+            # each failure in isolation).
+            EAGER = "eager"
+            # On a failure, stop dispatching not-yet-started jobs, let the
+            # in-flight wave drain, then consult once over the whole failure set
+            # (holistic — the model can correlate failures with a shared root
+            # cause and fix them in a single patch).
+            CONSOLIDATED = "consolidated"
+
         @dataclass
         class Config:
             # Master switch. False means the orchestrator behaves exactly as if
@@ -57,6 +67,23 @@ class Workflow:
             # allow_failure job like "Code Review"). They still appear in the
             # advisor's full-DAG context, just never as a trigger.
             exclude_jobs: List[str] = field(default_factory=list)
+            # Extra project-specific guidance appended to the advisor's system
+            # prompt on every consult. Use it to steer when/how to act — e.g.
+            # "if a test job fails because the test is outdated and the fix is
+            # clear, cancel_and_patch to fix the test". Empty adds nothing.
+            extra_prompt: str = ""
+            # Repo-relative path to a file whose contents are appended to the
+            # system prompt the same way as ``extra_prompt`` — lets the guidance
+            # live as a versioned file in the repo instead of inline. Read
+            # best-effort from the checkout; a missing/unreadable file is
+            # ignored. When both are set, ``extra_prompt`` comes first, then the
+            # file contents.
+            extra_prompt_file: str = ""
+            # When the advisor consults on failures — see AIAssist.DriveMode.
+            # "eager" (default) consults per failure as it lands; "consolidated"
+            # holds dispatch of not-yet-started jobs on a failure, drains the
+            # in-flight wave, then consults once over the whole failure set.
+            drive_mode: str = "eager"
 
     @dataclass
     class Config:
@@ -109,7 +136,7 @@ class Workflow:
         # If enabled, CI events will be accumulated and stored, allowing users to subscribe to notifications via the Slack Praktika app
         enable_slack_feed: bool = False
         # Per-workflow orchestrator AI configuration. ``None`` disables it.
-        ai_orchestrator: Optional["Workflow.OrchestratorAI.Config"] = None
+        ai_assist: Optional["Workflow.AIAssist.Config"] = None
         # Optional orchestrator routing tag. Empty means the default/non-base
         # orchestrator pool. Workflows tagged "base" are only picked up by the
         # base orchestrator pool.
@@ -117,6 +144,10 @@ class Workflow:
         # Optional runner label override for Praktika-native jobs such as
         # Config Workflow and Finish Workflow.
         native_job_runs_on: List[str] = field(default_factory=list)
+        # Optional timeout (seconds) override for the Praktika-native Config
+        # Workflow job, for a workflow whose .pre_hooks legitimately wait longer
+        # than the default allows. 0 keeps the default.
+        config_job_timeout: int = 0
         # Simple mode: the job is not required to dump a Result and praktika
         # derives the job outcome purely from the script exit code
         # (0 -> OK, non-zero -> FAIL). Setup-env / pre-run failures and
@@ -132,7 +163,7 @@ class Workflow:
         # If set, every runs_on label across user-defined and Praktika-injected
         # jobs is prefixed with this string, except "self-hosted".
         runs_on_label_prefix: str = ""
-        # Override the dispatch `concurrency.group`; empty keeps `${{ github.workflow }}`.
+        # Override the dispatch and schedule `concurrency.group`; empty keeps `${{ github.workflow }}`.
         concurrency_group: str = ""
         # If set, GHAuth mints the GitHub token for this workflow's jobs by
         # invoking this AWS Lambda instead of Settings.GH_AUTH_LAMBDA_NAME. Lets

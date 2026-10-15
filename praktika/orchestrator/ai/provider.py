@@ -9,7 +9,7 @@ the observation into a prompt + tool specs, running the SDK's tool-use loop, and
 filling in ``Usage`` / ``Turn`` from the response — without touching
 ``praktika/orchestrator/__init__.py``.
 
-The contract is **event-typed**: the orchestrator (via the ``OrchestratorAI``) calls a
+The contract is **event-typed**: the orchestrator (via the ``AIAssist``) calls a
 hook named for the lifecycle event that fired — ``on_job_failure`` when a job
 fails, ``on_job_success`` when one passes, ``on_run_start`` / ``on_run_finish``
 around the run. Every hook is a **no-op by default** (returns ``None`` → no
@@ -80,6 +80,10 @@ class Observation:
     # Result digest under `result` ({status, info?, failed[], errors?}).
     changed: List[dict] = field(default_factory=list)
     summary: str = ""  # state.md_status_summary()
+    # True when this observation batches a whole wave of failures (consolidated
+    # drive mode) rather than a single tick's change. A framing hint for the
+    # provider's prompt; not part of the serialized content.
+    consolidated: bool = False
 
     def to_dict(self):
         return {
@@ -194,11 +198,37 @@ class AIProvider(ABC):
     def __init__(self, model=""):
         self.model = model or ""
         # History of everything the provider exchanged with the model this run,
-        # and the live "AI Advisor" GitHub check it mirrors to (optional).
+        # and the live "AI Assist" GitHub check it mirrors to (optional).
         self.observations = []  # observations sent, in order
         self.turns = []         # (observation, turn) pairs, as turns come back
         self._check_updater = None  # fn(status, summary_md); status in-progress|neutral
         self._check_open = False    # True between track_observation and track_turn
+        # Project-specific guidance appended to the system prompt (see
+        # Workflow.AIAssist.Config.extra_prompt). Empty adds nothing.
+        self._extra_guidance = ""
+
+    def set_extra_guidance(self, text):
+        """Store project-specific guidance to append to the system prompt.
+
+        Wired from ``Workflow.AIAssist.Config.extra_prompt`` by the advisor
+        at construction time. A provider folds it into its system prompt via
+        ``system_prompt``; providers that don't build a prompt simply ignore it.
+        """
+        self._extra_guidance = (text or "").strip()
+
+    def system_prompt(self, base):
+        """Return ``base`` with the configured extra guidance appended.
+
+        Keeps the base/system prompt a module constant while letting a workflow
+        steer the advisor (when to act, which failures to fix) without a code
+        change. Returns ``base`` unchanged when no guidance is set."""
+        if not self._extra_guidance:
+            return base
+        return (
+            f"{base}\n\n"
+            "Additional project-specific guidance (follow it when it applies):\n"
+            f"{self._extra_guidance}"
+        )
 
     def complete(
         self,
@@ -254,7 +284,7 @@ class AIProvider(ABC):
     # override either to change what is tracked or how the check is rendered.
 
     def attach_check_updater(self, updater):
-        """Wire the AI Advisor check updater: ``fn(status, summary_md)`` where
+        """Wire the AI Assist check updater: ``fn(status, summary_md)`` where
         status is ``"in_progress"`` or ``"neutral"``. Best-effort — the updater
         swallows its own errors; passing None disables check reporting."""
         self._check_updater = updater
@@ -267,7 +297,7 @@ class AIProvider(ABC):
         self._push_check("in_progress", active=observation)
 
     def track_turn(self, observation, turn):
-        """Record the turn the model returned and flip the AI Advisor check to
+        """Record the turn the model returned and flip the AI Assist check to
         *neutral*, refreshing the decision table."""
         self.turns.append((observation, turn))
         self._check_open = False
@@ -288,11 +318,11 @@ class AIProvider(ABC):
             print(f"[AI   ] advisor check update failed: {type(e).__name__}: {e}")
 
     def _render_check_table(self, active=None):
-        """Concise markdown for the AI Advisor check: one row per decision with
+        """Concise markdown for the AI Assist check: one row per decision with
         the event that triggered it, plus an in-progress row while investigating."""
         cost = sum((t.usage.cost_usd or 0.0) for _, t in self.turns)
         head = (
-            f"**AI Advisor** — provider `{self.name}`, model "
+            f"**AI Assist** — provider `{self.name}`, model "
             f"`{self.resolved_model()}` · {len(self.turns)} decision(s) · "
             f"${cost:.4f}"
         )
@@ -307,7 +337,7 @@ class AIProvider(ABC):
         """Dispatch a lifecycle ``event`` to its hook, with tracking built in.
 
         This is the entry point the advisor calls (not the hooks directly). It
-        gives **every** provider observation/turn history and the AI Advisor
+        gives **every** provider observation/turn history and the AI Assist
         check for free — the hooks stay pure model logic:
 
         * an unimplemented hook (still the base no-op) returns ``None`` with no
@@ -394,7 +424,7 @@ def resolve_provider(spec, model="") -> "AIProvider":
 
     The instance/subclass paths are how a workflow plugs in a custom provider
     without touching this package — assign the object (or class) to
-    ``Workflow.Config.ai_orchestrator.provider``.
+    ``Workflow.Config.ai_assist.provider``.
     """
     if isinstance(spec, AIProvider):
         return spec

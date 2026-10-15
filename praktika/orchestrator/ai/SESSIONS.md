@@ -92,7 +92,7 @@ SessionManager.from_event(event, run_id, local_mode)  # pick store, load/create 
   .cost_summary()                       # per-PR + per-round
 ```
 
-`OrchestratorAI` (per run) calls `begin_run` once at creation, `observe_turn` for each
+`AIAssist` (per run) calls `begin_run` once at creation, `observe_turn` for each
 recorded turn (today, on a job failure), and `finalize_run` at the end. The advisor never touches the
 store or the index directly.
 

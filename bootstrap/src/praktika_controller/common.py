@@ -332,6 +332,22 @@ def instance_tag(tag_name: str, token: str | None = None) -> str:
     return resp.text.strip()
 
 
+def instance_ami_id(token: str | None = None) -> str:
+    """The AMI id this instance booted from, via IMDS. "" if unavailable."""
+    import requests
+
+    token = token or imds_token()
+    resp = requests.get(
+        "http://169.254.169.254/latest/meta-data/ami-id",
+        headers={"X-aws-ec2-metadata-token": token},
+        timeout=2,
+    )
+    if resp.status_code == 404:
+        return ""
+    resp.raise_for_status()
+    return resp.text.strip()
+
+
 def terminate_if_auto_scaled(*, region: str, instance_id: str, log) -> bool:
     """Terminate this box and decrement ASG desired capacity when it is
     auto-scaled (``praktika_scaling`` == "auto"). Returns True if termination was
@@ -451,6 +467,86 @@ def terminate_instance_for_replacement(
             log.exception("Failed to request ASG replacement termination")
 
     subprocess.Popen(["/sbin/shutdown", "-h", "now"])
+
+
+def _asg_launch_template_spec(group: dict) -> dict:
+    """The LaunchTemplateSpecification an ASG currently launches with, whether it
+    uses a plain LaunchTemplate or a MixedInstancesPolicy. {} if neither is set."""
+    spec = group.get("LaunchTemplate")
+    if spec:
+        return spec
+    return (
+        group.get("MixedInstancesPolicy", {})
+        .get("LaunchTemplate", {})
+        .get("LaunchTemplateSpecification", {})
+    )
+
+
+def should_recycle_for_ami(*, region: str, instance_id: str, log) -> bool:
+    """True iff this auto-scaled box booted from an AMI that no longer matches its
+    ASG's current launch template (e.g. the image was rebaked and the launch
+    template's $Default version advanced). Used at the idle boundary so a reserved
+    instance — which otherwise never self-terminates — recycles onto the new AMI.
+
+    Fail-safe: any missing tag/region or AWS error returns False (never recycle on
+    uncertainty), so a transient IMDS/describe hiccup can't churn the pool. Only
+    the call site guarantees the box is idle; this function just detects drift."""
+    if not region or not instance_id or instance_id == "local-dev":
+        return False
+    try:
+        token = imds_token()
+        if instance_tag("praktika_scaling", token=token) != "auto":
+            return False
+        asg_name = instance_tag("praktika_asg", token=token)
+        if not asg_name:
+            return False
+        running_ami = instance_ami_id(token=token)
+        if not running_ami:
+            return False
+
+        import boto3
+
+        groups = boto3.client(
+            "autoscaling", region_name=region
+        ).describe_auto_scaling_groups(AutoScalingGroupNames=[asg_name])[
+            "AutoScalingGroups"
+        ]
+        if not groups:
+            return False
+        spec = _asg_launch_template_spec(groups[0])
+        lt_id = spec.get("LaunchTemplateId")
+        lt_name = spec.get("LaunchTemplateName")
+        version = spec.get("Version") or "$Default"
+        if not lt_id and not lt_name:
+            return False
+
+        kwargs = {"Versions": [version]}
+        if lt_id:
+            kwargs["LaunchTemplateId"] = lt_id
+        else:
+            kwargs["LaunchTemplateName"] = lt_name
+        versions = boto3.client(
+            "ec2", region_name=region
+        ).describe_launch_template_versions(**kwargs)["LaunchTemplateVersions"]
+        if not versions:
+            return False
+        target_ami = versions[0].get("LaunchTemplateData", {}).get("ImageId", "")
+        if not target_ami:
+            return False
+
+        if target_ami != running_ami:
+            log.info(
+                "AMI drift: instance %s runs %s, ASG %s launch template now %s",
+                instance_id,
+                running_ami,
+                asg_name,
+                target_ami,
+            )
+            return True
+        return False
+    except Exception:
+        log.exception("AMI-drift recycle check failed")
+        return False
 
 
 def _remove_path(path: Path) -> None:

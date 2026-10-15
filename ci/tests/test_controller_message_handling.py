@@ -767,6 +767,46 @@ class _NullLog:
         pass
 
 
+def test_write_infra_failure_final_ships_real_error_result(monkeypatch):
+    """The infra-failure final.json must carry a serialized ERROR Result (not
+    just rc + check_output) so the orchestrator renders a red report row from
+    the normal ``result`` path and other consumers see a proper Result."""
+    captured = {}
+
+    class _S3:
+        def put_object(self, Bucket, Key, Body, **_kwargs):  # noqa: N803
+            captured["bucket"] = Bucket
+            captured["key"] = Key
+            captured["body"] = json.loads(Body)
+
+    monkeypatch.setattr(controller, "_s3_client", lambda: _S3())
+    monkeypatch.setattr(controller, "INSTANCE_ID", "i-runner")
+
+    task = {
+        "final_state_s3_bucket": "b",
+        "final_state_s3_key": "runs/1/Style_Check/final.json",
+        "job_name": "Style Check",
+        "repo": "ClickHouse/praktika",
+        "pr_number": 154,
+        "head_sha": "abc123",
+        "workflow_name": "Praktika CI Advanced",
+    }
+    exc = RuntimeError("pip install returned non-zero exit status 1")
+
+    assert controller._write_infra_failure_final(task, exc, _Log()) is True
+
+    body = captured["body"]
+    assert body["rc"] == 1
+    assert body["infra_error"] is True
+    result = body["result"]
+    assert result["name"] == "Style Check"
+    assert result["status"] == "ERROR"
+    assert "pip install" in result["info"]
+    assert result["ext"]["labels"] == [{"name": "infra", "hint": "Infrastructure error"}]
+    # The result's info and the check summary agree on the reason.
+    assert body["check_output"]["summary"] == result["info"]
+
+
 def test_run_is_finalized_true_false_and_failopen():
     key = ("b", "runs/1/state.json")
     log = _NullLog()

@@ -1112,11 +1112,17 @@ class Result(MetaClasses.Serializable):
         do_not_block_pipeline_on_failure=False,
         disable_attached_files_sorting=False,
         do_not_cache=False,
+        skip_ai_assist=False,
     ):
         if with_job_summary_in_info:
             self._add_job_summary_to_info()
         if do_not_block_pipeline_on_failure and not self.is_ok():
             self.ext["do_not_block_pipeline_on_failure"] = True
+        # A job sets this when its failure is not something the orchestrator AI
+        # advisor should investigate (e.g. a deliberate draft-PR gate): the
+        # advisor skips it as a trigger and omits it from the failure context.
+        if skip_ai_assist:
+            self.ext["skip_ai_assist"] = True
         # A job sets this flag when its verdict depends on run-time state no digest input
         # captures, so a later commit with the same digest must not reuse its success record.
         if do_not_cache:

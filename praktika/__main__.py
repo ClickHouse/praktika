@@ -268,7 +268,7 @@ def create_parser():
             "Override a Settings value for this run (repeatable). KEY is the "
             "Settings attribute name as in the config, e.g. --settings "
             "AWS_REGION=eu-north-1. Workflow-level AI configuration lives on "
-            "Workflow.Config.ai_orchestrator rather than Settings."
+            "Workflow.Config.ai_assist rather than Settings."
         ),
     )
 
@@ -334,6 +334,17 @@ def create_parser():
         action="store_true",
         default=False,
         help="Fail the job without running the review when the PR is a draft",
+    )
+    review_parser.add_argument(
+        "--fail-on-blocking",
+        dest="fail_on_blocking",
+        action="store_true",
+        default=False,
+        help=(
+            "Fail the job when the review verdict is `blocking_issues`, so the "
+            "orchestrator AI (if enabled) picks the findings up and tries to "
+            "address them. Default off (verdict stays advisory)."
+        ),
     )
     return parser
 
