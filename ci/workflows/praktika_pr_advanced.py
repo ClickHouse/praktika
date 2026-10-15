@@ -21,6 +21,16 @@ workflow = Workflow.Config(
         enabled=True,
         provider="bedrock-anthropic",
         model="global.anthropic.claude-sonnet-5",
+        # Consolidated drive mode: on a failure, hold dispatch of not-yet-started
+        # jobs, let the in-flight wave drain, then consult once over the whole
+        # failure set — so correlated failures (one root cause surfacing in
+        # several jobs) are fixed in a single patch.
+        drive_mode=Workflow.OrchestratorAI.DriveMode.CONSOLIDATED,
+        # Code Review is advisory (allow_failure): don't consult the advisor the
+        # moment it fails. Its blocking findings are still weighed in the
+        # consolidated consult (the whole failure set is shown there, excluded
+        # jobs included), with the ai_review digest in context.
+        exclude_jobs=["Code Review"],
         # Project-specific guidance steering when the advisor should act.
         extra_prompt=(
             "When a test job fails because the test itself is outdated (e.g. it "

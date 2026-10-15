@@ -80,6 +80,10 @@ class Observation:
     # Result digest under `result` ({status, info?, failed[], errors?}).
     changed: List[dict] = field(default_factory=list)
     summary: str = ""  # state.md_status_summary()
+    # True when this observation batches a whole wave of failures (consolidated
+    # drive mode) rather than a single tick's change. A framing hint for the
+    # provider's prompt; not part of the serialized content.
+    consolidated: bool = False
 
     def to_dict(self):
         return {

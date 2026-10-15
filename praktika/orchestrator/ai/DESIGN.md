@@ -109,6 +109,7 @@ should use it.
 | `exclude_jobs` | `[]` | Job names whose failure never triggers the advisor (e.g. an advisory `allow_failure` job). |
 | `extra_prompt` | `""` | Project-specific guidance appended to the advisor's system prompt on every consult — steer when/how to act (e.g. "if a test fails because it's outdated and the fix is clear, `cancel_and_patch` to fix the test"). |
 | `extra_prompt_file` | `""` | Repo-relative path to a file whose contents are appended the same way as `extra_prompt`, so the guidance can live as a versioned file in the repo. Read best-effort from the checkout (repo-root contained, capped); missing/unreadable is ignored. When both are set, `extra_prompt` comes first, then the file. |
+| `drive_mode` | `"eager"` | When the advisor consults on failures. `"eager"`: consult the moment a job fails (per-failure, sees each in isolation). `"consolidated"`: on a failure, set `state.hold_dispatch` so the DAG driver stops starting new jobs, let the in-flight wave drain, then consult **once** over the whole failure set (`Observation.consolidated=True`, excluded jobs included as context) — so correlated failures are fixed in a single patch; the hold is released after a `continue`. |
 
 The advisor is advisory and best-effort: neither a disabled switch, an
 unresolvable provider, nor a session-setup error may break core orchestration.

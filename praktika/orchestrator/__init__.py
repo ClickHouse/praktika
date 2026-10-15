@@ -539,8 +539,13 @@ def _drive_dag(state, check, workflow, event, advisor, report_url, is_rerun):
             if state.cancelled and not cancel_handled:
                 state.cancel_unfinished_jobs()
                 cancel_handled = True
-            for job in state.get_ready():
-                job.kick()
+            # The AI advisor (consolidated drive mode) can hold dispatch after a
+            # failure so the in-flight wave drains to a single consult point;
+            # jobs already running continue, but no new ones start until it
+            # clears the hold. No effect when the advisor is off.
+            if not getattr(state, "hold_dispatch", False):
+                for job in state.get_ready():
+                    job.kick()
             state.wait()
             state.save_snapshot()
             # Re-assert completed jobs into the workflow report summary so a

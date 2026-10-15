@@ -72,7 +72,11 @@ _SYSTEM = (
     "as exact text replacements. Cancel the run and apply the fix, which is "
     "committed and pushed to the PR branch, triggering a fresh run. Include an "
     "\"edits\" array on this decision item (see below). Only choose this when you "
-    "are confident the edits fully fix the failure.\n\n"
+    "are confident the edits fully fix the failure. This explicitly includes "
+    "mechanical, low-risk fixes — a required version bump the PR forgot, a stale "
+    "expected/golden value a test asserts, an import or typo fix: when the fix "
+    "is deterministic and obvious, investigate the file and apply it rather than "
+    "deferring. A fix being small is a reason to make it, not to skip it.\n\n"
     "For \"cancel_and_patch\", read every file you edit with `read_file` first so "
     "each \"search\" string matches the file byte-for-byte, and give edits as:\n"
     '    "edits": [{"path": "<repo-relative file>", '
@@ -85,8 +89,23 @@ _SYSTEM = (
     '"root_cause": "<root cause, or empty if none/unknown>", '
     '"decision": [{"type": "<action>", "detail": "<what and why>", '
     '"edits": [ ... only for cancel_and_patch ... ]}]}\n'
-    'Use type "continue" when there is nothing to act on. If you are unsure, '
-    'choose "continue" and explain why.'
+    'Use type "continue" when there is nothing to act on. Choosing "continue" '
+    "is right for a flaky, expected, or unrelated failure, or one whose fix is "
+    "ambiguous or risky — but do not treat uncertainty as a default escape: when "
+    "a failure has a clear, deterministic, low-risk fix, investigate it and "
+    'cancel_and_patch rather than deferring.'
+)
+
+# When consolidated drive mode batches a whole wave of failures into one consult,
+# this is appended to _SYSTEM so the model knows it is looking at every failure
+# together and should correlate a shared root cause into a single patch.
+_CONSOLIDATED_SUFFIX = (
+    "\n\nThis observation batches EVERY job that failed in the current wave, not "
+    "just one. Look across all the failures for a shared root cause (for example "
+    "the same version mismatch surfacing in several jobs) and, when there is a "
+    "clear mechanical fix, address every affected file together in a SINGLE "
+    "cancel_and_patch whose \"edits\" cover them all. If nothing is cleanly "
+    "fixable, choose continue."
 )
 
 # `decision` items keep the {type, detail} shape the mock and the (future)
@@ -522,20 +541,23 @@ class AnthropicProvider(AIProvider):
         )
         return Turn(reasoning=text, usage=usage)
 
-    def on_job_failure(self, observation) -> Turn:
-        # Pure model logic — observation/turn tracking and the AI Advisor check
-        # are handled by AIProvider.consult, which brackets this call.
+    def _investigate(self, observation, system, label) -> Turn:
+        """Run the investigation tool-loop over ``observation`` with ``system``
+        and parse the reply into a decision Turn.
 
-        # Investigation toolset for this turn. This hook only fires on a
-        # failure, so the repo-read tools are always offered; fetch_log is added
-        # only when the observation carries log links (its allowlist).
+        Observation/turn tracking and the AI Advisor check are handled by
+        ``AIProvider.consult``, which brackets the hook that calls this.
+
+        The repo-read tools are always offered; fetch_log is added only when the
+        observation carries log links (its allowlist).
+        """
         allowed_urls = _collect_log_urls(observation)
         tools = list(_REPO_TOOLS)
         if allowed_urls:
             tools.append(_FETCH_LOG_TOOL)
 
         turn = self.complete(
-            system=self.system_prompt(_SYSTEM),
+            system=self.system_prompt(system),
             user_content=json.dumps(observation.to_dict(), indent=2),
             tools=tools,
             tool_executor=lambda name, tool_input: _execute_tool(
@@ -544,10 +566,19 @@ class AnthropicProvider(AIProvider):
         )
         reasoning, decision = _parse(turn.reasoning)
         print(
-            f"[AI {self.name}] on_job_failure: model={self.resolved_model()} "
+            f"[AI {self.name}] {label}: model={self.resolved_model()} "
             f"decision={[d.get('type') for d in decision if isinstance(d, dict)]}"
         )
         return Turn(reasoning=reasoning, decision=decision, usage=turn.usage)
+
+    def on_job_failure(self, observation) -> Turn:
+        # The consolidated drive mode batches a whole wave of failures into one
+        # observation (observation.consolidated); tell the model so it correlates
+        # them into a single patch instead of treating one job in isolation.
+        system = _SYSTEM
+        if getattr(observation, "consolidated", False):
+            system = _SYSTEM + _CONSOLIDATED_SUFFIX
+        return self._investigate(observation, system, "on_job_failure")
 
     def _usage(self, model, totals, latency_ms) -> Usage:
         inp = totals["input"]

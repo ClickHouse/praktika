@@ -34,6 +34,16 @@ class Workflow:
             return engine in (cls.PRAKTIKA, cls.GH_IGNITION)
 
     class OrchestratorAI:
+        class DriveMode:
+            # Consult the advisor the moment a job fails (fast, per-failure, sees
+            # each failure in isolation).
+            EAGER = "eager"
+            # On a failure, stop dispatching not-yet-started jobs, let the
+            # in-flight wave drain, then consult once over the whole failure set
+            # (holistic — the model can correlate failures with a shared root
+            # cause and fix them in a single patch).
+            CONSOLIDATED = "consolidated"
+
         @dataclass
         class Config:
             # Master switch. False means the orchestrator behaves exactly as if
@@ -69,6 +79,11 @@ class Workflow:
             # ignored. When both are set, ``extra_prompt`` comes first, then the
             # file contents.
             extra_prompt_file: str = ""
+            # When the advisor consults on failures — see OrchestratorAI.DriveMode.
+            # "eager" (default) consults per failure as it lands; "consolidated"
+            # holds dispatch of not-yet-started jobs on a failure, drains the
+            # in-flight wave, then consults once over the whole failure set.
+            drive_mode: str = "eager"
 
     @dataclass
     class Config:

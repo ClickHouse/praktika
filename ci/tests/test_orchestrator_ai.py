@@ -25,8 +25,10 @@ from praktika.orchestrator.ai.anthropic import (
 )
 from praktika.orchestrator.ai.mock import MockProvider
 from praktika.orchestrator.ai.provider import (
+    AIProvider,
     Observation,
     Turn,
+    Usage,
     _decision_cell,
     resolve,
     resolve_provider,
@@ -313,6 +315,118 @@ def test_excluded_job_failure_does_not_fire():
     assert advisor._ledger.turns == 1
 
 
+class _RecordingProvider(AIProvider):
+    """Records the observations routed to on_job_failure and returns a
+    configurable decision so dispatch can be exercised."""
+
+    name = "recording"
+
+    def __init__(self, model="", decision=None):
+        super().__init__(model=model)
+        self.failure_obs = []
+        self._decision = decision or []
+
+    def on_job_failure(self, observation):
+        self.failure_obs.append(observation)
+        return Turn(
+            reasoning="r", decision=list(self._decision), usage=Usage(provider=self.name)
+        )
+
+
+def _consolidated_advisor(prov, exclude_jobs=None):
+    return OrchestratorAI.maybe_create(
+        run_id="r1",
+        local_mode=True,
+        workflow_config=SimpleNamespace(
+            ai_orchestrator=_workflow_ai(
+                enabled=True,
+                provider=prov,
+                drive_mode="consolidated",
+                exclude_jobs=exclude_jobs or [],
+            )
+        ),
+    )
+
+
+def test_consolidated_holds_dispatch_and_waits_for_wave_to_drain():
+    # On a failure, consolidated arms + holds dispatch but does NOT consult
+    # while other jobs are still in flight.
+    prov = _RecordingProvider()
+    advisor = _consolidated_advisor(prov)
+    a = _job("A", "failure")
+    a.result = {"name": "A", "status": "FAIL", "info": "boom"}
+    b = _job("B", "running")
+    state = _state([a, b])
+
+    assert advisor.on_workflow_update(state, EVENT) is None
+    assert state.hold_dispatch is True
+    assert prov.failure_obs == []  # B still running -> no consult yet
+
+
+def test_consolidated_consults_once_when_wave_drains():
+    prov = _RecordingProvider()
+    advisor = _consolidated_advisor(prov)
+    a = _job("A", "failure")
+    a.result = {"name": "A", "status": "FAIL", "info": "boom"}
+    b = _job("B", "running")
+    state = _state([a, b])
+    advisor.on_workflow_update(state, EVENT)  # arm + hold
+
+    b.status = SimpleNamespace(value="success")  # wave drains
+    turn = advisor.on_workflow_update(state, EVENT)
+
+    assert turn is not None
+    assert len(prov.failure_obs) == 1
+    obs = prov.failure_obs[0]
+    assert obs.consolidated is True
+    assert {c["name"] for c in obs.changed} == {"A"}
+    assert state.hold_dispatch is False  # released after a continue
+
+
+def test_consolidated_excluded_failure_does_not_arm_but_is_context():
+    # An excluded job's failure never arms consolidation, but once a non-excluded
+    # job fails the excluded one still appears in the batched observation.
+    prov = _RecordingProvider()
+    advisor = _consolidated_advisor(prov, exclude_jobs=["Code Review"])
+    review = _job("Code Review", "failure")
+    review.result = {"name": "Code Review", "status": "FAIL", "info": "blocking"}
+    build = _job("Build", "running")
+    state = _state([review, build])
+
+    assert advisor.on_workflow_update(state, EVENT) is None
+    # excluded failure alone doesn't arm (hold never set)
+    assert getattr(state, "hold_dispatch", False) is False
+
+    build.status = SimpleNamespace(value="failure")
+    turn = advisor.on_workflow_update(state, EVENT)
+    assert turn is not None
+    assert {c["name"] for c in prov.failure_obs[0].changed} == {"Code Review", "Build"}
+
+
+def test_consolidated_keeps_hold_when_decision_cancels():
+    prov = _RecordingProvider(decision=[{"type": "cancel_run", "detail": "x"}])
+    advisor = _consolidated_advisor(prov)
+    state = _state([_job("A", "failure")])  # nothing else in flight
+    advisor.on_workflow_update(state, EVENT)
+    assert state.cancelled is True
+    assert state.hold_dispatch is True  # not released — the run is torn down
+
+
+def test_eager_mode_does_not_hold_dispatch():
+    prov = _RecordingProvider()
+    advisor = OrchestratorAI.maybe_create(
+        run_id="r1",
+        local_mode=True,
+        workflow_config=SimpleNamespace(
+            ai_orchestrator=_workflow_ai(enabled=True, provider=prov)  # default eager
+        ),
+    )
+    state = _state([_job("A", "failure"), _job("B", "running")])
+    turn = advisor.on_workflow_update(state, EVENT)
+    assert turn is not None  # consulted immediately, mid-wave
+    assert getattr(state, "hold_dispatch", False) is False
+
+
 def test_advisory_only_no_mutation_and_zero_cost(monkeypatch):
     advisor = OrchestratorAI.maybe_create(
         run_id="r1",
@@ -497,6 +611,25 @@ def test_on_job_failure_does_not_send_output_config():
     p._client = _FakeClient(_fake_resp('{"reasoning": "ok", "decision": []}'))
     p.on_job_failure(Observation(changed=[{"name": "B", "status": "failure"}]))
     assert "output_config" not in p._client.calls[0]
+
+
+def test_consolidated_observation_appends_suffix():
+    p = AnthropicProvider(model="claude-haiku-4-5")
+    p._client = _FakeClient(_fake_resp('{"reasoning": "ok", "decision": []}'))
+    obs = Observation(changed=[{"name": "A", "status": "failure"}])
+    obs.consolidated = True
+    p.on_job_failure(obs)
+    system = p._client.calls[0]["system"]
+    assert "CI orchestration advisor" in system  # base prompt present
+    assert "batches EVERY job that failed" in system  # consolidated framing
+
+
+def test_non_consolidated_observation_has_no_suffix():
+    p = AnthropicProvider(model="claude-haiku-4-5")
+    p._client = _FakeClient(_fake_resp('{"reasoning": "ok", "decision": []}'))
+    p.on_job_failure(Observation(changed=[{"name": "A", "status": "failure"}]))
+    system = p._client.calls[0]["system"]
+    assert "batches EVERY job that failed" not in system
 
 
 def test_on_job_failure_offers_repo_tools_without_links():

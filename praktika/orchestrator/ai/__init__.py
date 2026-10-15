@@ -34,6 +34,41 @@ from .trace import TraceLogger, UsageLedger
 # JobStatus enum and is trivial to drive with stubs in tests.
 _TERMINAL_STATUSES = {"success", "failure", "skipped", "cancelled"}
 
+# JobStatus values for a job that has been dispatched but hasn't finished. The
+# consolidated drive mode waits for these to drain before consulting.
+_INFLIGHT_STATUSES = {"queued", "running"}
+
+# Drive-mode values (mirror Workflow.OrchestratorAI.DriveMode). Plain strings so
+# the advisor stays decoupled from the workflow config classes.
+_DRIVE_EAGER = "eager"
+_DRIVE_CONSOLIDATED = "consolidated"
+
+
+def _has_inflight(state):
+    """True while any job is still dispatched-but-unfinished (queued/running)."""
+    return any(
+        _status_value(js) in _INFLIGHT_STATUSES for js in state.jobs.values()
+    )
+
+
+def _all_failures(state):
+    """[{name, status, ...}] for every job currently in a failure state.
+
+    Used by the consolidated consult to present the whole failure wave at once
+    (excluded jobs included — exclusion gates *triggering*, not context); each
+    entry is enriched with its Result digest by build_observation.
+    """
+    out = []
+    for name, js in state.jobs.items():
+        if _status_value(js) != "failure":
+            continue
+        entry = {"name": name, "status": "failure"}
+        reason = getattr(js, "filter_reason", None)
+        if reason:
+            entry["reason"] = reason
+        out.append(entry)
+    return out
+
 
 def _status_value(job_state):
     """Best-effort read of a JobState's status as a plain string."""
@@ -330,7 +365,7 @@ class OrchestratorAI:
 
     def __init__(
         self, provider, console, session=None, event=None, patcher=None,
-        exclude_jobs=None,
+        exclude_jobs=None, drive_mode=_DRIVE_EAGER,
     ):
         self._provider = provider
         self._console = console
@@ -339,6 +374,13 @@ class OrchestratorAI:
         # Job names the workflow configured as never-evaluate
         # (ai_orchestrator.exclude_jobs). Their failures never trigger the advisor.
         self._excluded = set(exclude_jobs or ())
+        # When to consult on failures: "eager" (per failure, as it lands) or
+        # "consolidated" (hold dispatch of not-yet-started jobs on a failure, let
+        # the in-flight wave drain, then consult once over the whole failure set).
+        self._drive_mode = drive_mode or _DRIVE_EAGER
+        # consolidated bookkeeping: armed once a non-excluded failure appears,
+        # cleared after the batched consult fires when the wave has drained.
+        self._consolidating = False
         # Injected by the orchestrator: patcher(files, message) -> commit_sha,
         # commits the working-tree edits to the PR branch and pushes. None when
         # pushing isn't possible (local mode / fork PR / no token) — then a
@@ -410,6 +452,7 @@ class OrchestratorAI:
         return cls(
             provider, console, session=session, event=event, patcher=patcher,
             exclude_jobs=getattr(ai_config, "exclude_jobs", None) or (),
+            drive_mode=getattr(ai_config, "drive_mode", _DRIVE_EAGER) or _DRIVE_EAGER,
         )
 
     def _delta(self, state):
@@ -466,14 +509,20 @@ class OrchestratorAI:
     def on_workflow_update(self, state, event):
         """Hook called from the orchestrator loop after each ``state.wait()``.
 
-        Routes the jobs that newly reached a terminal state to the matching
-        provider hook: failures → ``on_job_failure``, successes →
-        ``on_job_success``. Skipped/cancelled transitions are tracked (so they
-        don't re-fire) but routed nowhere — they carry no problem to act on, and
-        re-consulting on a cascade cancel just burns tokens. Idle poll ticks
-        (nothing changed) do nothing. Returns the failure turn if one fired.
+        Tracks the jobs that newly reached a terminal state (so each fires at
+        most once) and routes failures to the model per the configured drive
+        mode — ``eager`` consults the moment a job fails; ``consolidated`` holds
+        dispatch and batches the whole failure wave into one consult. Successes,
+        skips, and cancels never reach the model. Returns the failure turn if one
+        fired this tick.
         """
         changed = self._delta(state)
+        if self._drive_mode == _DRIVE_CONSOLIDATED:
+            return self._consolidated_update(state, event, changed)
+        return self._eager_update(state, event, changed)
+
+    def _eager_update(self, state, event, changed):
+        """Consult the moment a (non-excluded) job fails, one tick at a time."""
         if not changed:
             return None
         # Jobs the workflow listed in ai_orchestrator.exclude_jobs are never
@@ -496,6 +545,41 @@ class OrchestratorAI:
             self._consult(
                 "job_success", build_observation(state, event, successes), state
             )
+        return turn
+
+    def _consolidated_update(self, state, event, changed):
+        """Batch a whole wave of failures into a single consult.
+
+        A new non-excluded failure arms consolidation and holds dispatch of
+        not-yet-started jobs (``state.hold_dispatch``) so no fresh work starts
+        while the in-flight wave drains. Once nothing is queued/running, consult
+        once over the whole current failure set (excluded jobs included as
+        context), then release the hold so the run continues — unless a decision
+        cancelled it. A later wave can arm another consolidated consult.
+        """
+        armed = any(
+            c.get("status") == "failure" and not self._is_excluded(c.get("name"))
+            for c in changed
+        )
+        if armed:
+            self._consolidating = True
+            state.hold_dispatch = True
+        if not self._consolidating:
+            return None
+        # Hold the consult until every dispatched job has finished.
+        if _has_inflight(state):
+            return None
+        self._consolidating = False
+        failures = _all_failures(state)
+        turn = None
+        if failures:
+            observation = build_observation(state, event, failures)
+            observation.consolidated = True
+            turn = self._consult("job_failure", observation, state)
+        # Release the hold so the remaining jobs run — unless a decision tore the
+        # run down (then cancel_unfinished_jobs handles the rest).
+        if not getattr(state, "cancelled", False):
+            state.hold_dispatch = False
         return turn
 
     def _dispatch(self, state, turn):

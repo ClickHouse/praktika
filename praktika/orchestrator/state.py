@@ -842,6 +842,11 @@ class WorkflowState:
         self.cancelled = (
             False  # set by sweep_cancel() on cancel-request / cancel-before
         )
+        # When True, the DAG driver stops dispatching not-yet-started jobs (jobs
+        # already in flight keep running). Set by the orchestrator AI advisor in
+        # consolidated drive mode so the in-flight wave drains to a single
+        # consult point, then cleared; no effect when the advisor is off.
+        self.hold_dispatch = False
 
         # S3 client used by sweep_liveness, sweep_completions, sweep_cancel,
         # and the orchestrator → runners kill flag. Only created in CI mode;
