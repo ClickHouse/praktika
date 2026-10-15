@@ -67,7 +67,7 @@
             <a id="nextFileLink" class="nav" href="z_afa9a1916045452d_store_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.2">coverage.py v7.16.2</a>,
-            created at 2026-10-13 15:18 +0000
+            created at 2026-10-15 13:57 +0000
         </p>
         <aside class="hidden">
             <button type="button" class="button_next_chunk" data-shortcut="j"></button>
@@ -332,7 +332,7 @@
     <p class="run"><span class="n"><a id="t248" href="#t248">248</a></span><span class="t">    <span class="key">def</span> <span class="nam">observe_turn</span><span class="op">(</span><span class="nam">self</span><span class="op">,</span> <span class="nam">observation</span><span class="op">,</span> <span class="nam">turn</span><span class="op">)</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t249" href="#t249">249</a></span><span class="t">        <span class="str">&quot;&quot;&quot;Record one advisor turn: implicit round open, append, roll up cost.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t250" href="#t250">250</a></span><span class="t">&nbsp;</span><span class="r"></span></p>
-    <p class="pln"><span class="n"><a id="t251" href="#t251">251</a></span><span class="t"><span class="str">        This is the single entry point the OrchestratorAI calls per workflow update.</span>&nbsp;</span><span class="r"></span></p>
+    <p class="pln"><span class="n"><a id="t251" href="#t251">251</a></span><span class="t"><span class="str">        This is the single entry point the AIAssist calls per workflow update.</span>&nbsp;</span><span class="r"></span></p>
     <p class="pln"><span class="n"><a id="t252" href="#t252">252</a></span><span class="t"><span class="str">        &quot;&quot;&quot;</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t253" href="#t253">253</a></span><span class="t">        <span class="nam">failing</span> <span class="op">=</span> <span class="op">[</span><span class="nam">c</span> <span class="key">for</span> <span class="nam">c</span> <span class="key">in</span> <span class="nam">observation</span><span class="op">.</span><span class="nam">changed</span> <span class="key">if</span> <span class="nam">c</span><span class="op">.</span><span class="nam">get</span><span class="op">(</span><span class="str">&quot;status&quot;</span><span class="op">)</span> <span class="key">in</span> <span class="op">(</span><span class="str">&quot;failure&quot;</span><span class="op">,</span> <span class="str">&quot;cancelled&quot;</span><span class="op">)</span><span class="op">]</span>&nbsp;</span><span class="r"></span></p>
     <p class="run"><span class="n"><a id="t254" href="#t254">254</a></span><span class="t">        <span class="key">if</span> <span class="nam">failing</span> <span class="key">and</span> <span class="nam">self</span><span class="op">.</span><span class="nam">_round</span> <span class="key">is</span> <span class="key">None</span> <span class="key">and</span> <span class="nam">self</span><span class="op">.</span><span class="nam">session</span><span class="op">.</span><span class="nam">open_round_id</span> <span class="key">is</span> <span class="key">None</span><span class="op">:</span>&nbsp;</span><span class="r"></span></p>
@@ -528,7 +528,7 @@
             <a class="nav" href="z_afa9a1916045452d_store_py.html">&#xbb; next</a>
             &nbsp; &nbsp; &nbsp;
             <a class="nav" href="https://coverage.readthedocs.io/en/7.16.2">coverage.py v7.16.2</a>,
-            created at 2026-10-13 15:18 +0000
+            created at 2026-10-15 13:57 +0000
         </p>
     </div>
 </footer>
