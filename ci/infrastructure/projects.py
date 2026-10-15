@@ -78,7 +78,7 @@ def _image_builders():
     #
     # Bump on any change to the baked venv contents (_runtime_prebuilt_venvs) or
     # the baked controller component (_praktika_controller_component).
-    recipe_version = "1.0.19"
+    recipe_version = "1.0.20"
 
     return [
         Components.create_awslinux_image_builder_config(

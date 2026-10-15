@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from .interactive import UserPrompt
-from .version import current_praktika_version
+from .version import current_praktika_controller_version, current_praktika_version
 
 
 PRAKTIKA_MARKERS = {

@@ -396,6 +396,10 @@ class AIAssist:
         # consolidated bookkeeping: armed once a non-excluded failure appears,
         # cleared after the batched consult fires when the wave has drained.
         self._consolidating = False
+        # Names of failed jobs already shown in a prior consolidated consult, so a
+        # later wave doesn't re-present (and re-investigate) failures the model
+        # already judged.
+        self._consolidated_seen = set()
         # Injected by the orchestrator: patcher(files, message) -> commit_sha,
         # commits the working-tree edits to the PR branch and pushes. None when
         # pushing isn't possible (local mode / fork PR / no token) — then a
@@ -577,9 +581,11 @@ class AIAssist:
         A new non-excluded failure arms consolidation and holds dispatch of
         not-yet-started jobs (``state.hold_dispatch``) so no fresh work starts
         while the in-flight wave drains. Once nothing is queued/running, consult
-        once over the whole current failure set (excluded jobs included as
-        context), then release the hold so the run continues — unless a decision
-        cancelled it. A later wave can arm another consolidated consult.
+        once over this wave's failures (excluded jobs included as context), then
+        release the hold so the run continues — unless a decision cancelled it.
+        Failures already shown in a prior consolidated consult are excluded, so a
+        later independent wave doesn't re-present a failure the model already
+        judged; only genuinely new failures drive the next consult.
         """
         armed = any(
             c.get("status") == "failure" and self._triggers_advisor(state, c.get("name"))
@@ -594,9 +600,15 @@ class AIAssist:
         if _has_inflight(state):
             return None
         self._consolidating = False
-        failures = _all_failures(state)
+        # Only failures not already consulted in an earlier wave; record this
+        # batch so the next wave doesn't re-investigate them.
+        failures = [
+            f for f in _all_failures(state)
+            if f["name"] not in self._consolidated_seen
+        ]
         turn = None
         if failures:
+            self._consolidated_seen.update(f["name"] for f in failures)
             observation = build_observation(state, event, failures)
             observation.consolidated = True
             turn = self._consult("job_failure", observation, state)

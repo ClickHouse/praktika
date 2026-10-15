@@ -450,6 +450,28 @@ def test_skip_ai_assist_failure_omitted_from_consolidated_context():
     assert {c["name"] for c in prov.failure_obs[0].changed} == {"B"}
 
 
+def test_consolidated_does_not_re_present_earlier_wave_failures():
+    # Wave A fails -> consulted (continue) -> an independent wave B fails later.
+    # The second consult must carry only B, not re-investigate the dismissed A.
+    prov = _RecordingProvider()
+    advisor = _consolidated_advisor(prov)
+    a = _job("A", "failure")
+    b = _job("B", "running")
+    state = _state([a, b])
+    advisor.on_workflow_update(state, EVENT)  # arm (A failed, B in flight)
+    b.status = SimpleNamespace(value="success")
+    advisor.on_workflow_update(state, EVENT)  # wave A drains -> consult over {A}
+    assert {c["name"] for c in prov.failure_obs[-1].changed} == {"A"}
+
+    # A new job C starts and fails (wave B).
+    c = _job("C", "failure")
+    state.jobs["C"] = c
+    turn = advisor.on_workflow_update(state, EVENT)
+    assert turn is not None
+    # Only C — A was already consulted and must not reappear.
+    assert {x["name"] for x in prov.failure_obs[-1].changed} == {"C"}
+
+
 def test_eager_mode_does_not_hold_dispatch():
     prov = _RecordingProvider()
     advisor = AIAssist.maybe_create(
