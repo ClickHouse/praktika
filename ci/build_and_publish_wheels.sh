@@ -60,8 +60,10 @@ if [[ "${PUBLISH_CONTROLLER}" != "1" ]]; then
   exit 0
 fi
 
+# The controller version is kept in lockstep with praktika (single source of
+# truth: `version` in the root pyproject.toml), so this resolves to that version.
 CONTROLLER_VERSION="$(
-  "${BUILD_VENV}/bin/python" -c 'from pathlib import Path; from praktika.version import current_praktika_controller_version; print(current_praktika_controller_version(Path("bootstrap/pyproject.toml")))'
+  "${BUILD_VENV}/bin/python" -c 'from praktika.version import current_praktika_controller_version; print(current_praktika_controller_version())'
 )"
 CONTROLLER_WHEEL="praktika_controller-${CONTROLLER_VERSION}-py3-none-any.whl"
 

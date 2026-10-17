@@ -640,13 +640,12 @@ def _infrastructure_template(answers: InitAnswers) -> str:
         _PRAKTIKA_PACKAGE_BASE_URL = (
             "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages"
         )
-        _PRAKTIKA_WHL = f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/praktika-{current_praktika_version()}-py3-none-any.whl"
-        # The controller wheel uses the fixed, version-less "latest" S3 location
-        # so a new project always gets the newest controller (the controller
-        # version isn't resolvable at `praktika init` time — it may not be
-        # installed).
+        # praktika and praktika-controller are versioned in lockstep (single
+        # source of truth), so one pinned version drives both wheels.
+        _PRAKTIKA_VERSION = "{current_praktika_version()}"
+        _PRAKTIKA_WHL = f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/praktika-{{_PRAKTIKA_VERSION}}-py3-none-any.whl"
         _PRAKTIKA_CONTROLLER_WHL = (
-            f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/latest/praktika_controller-0.0.0-py3-none-any.whl"
+            f"{{_PRAKTIKA_PACKAGE_BASE_URL}}/praktika_controller-{{_PRAKTIKA_VERSION}}-py3-none-any.whl"
         )
 
 
