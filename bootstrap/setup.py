@@ -8,7 +8,9 @@ def _version_from_pyproject() -> str:
     # The controller version is kept in lockstep with praktika: read `version`
     # from the ROOT pyproject.toml (the single source of truth), not this package's
     # own bootstrap/pyproject.toml (which declares `dynamic = ["version"]`). The
-    # root pyproject is the parent of this bootstrap/ directory.
+    # root pyproject is the parent of this bootstrap/ directory. The controller
+    # wheel is always built from the worktree via ci/build_and_publish_wheels.sh
+    # (`python -m build --wheel --no-isolation bootstrap`), so the root is present.
     pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
     in_project = False
     for raw_line in pyproject.read_text(encoding="utf-8").splitlines():

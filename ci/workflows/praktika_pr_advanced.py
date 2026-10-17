@@ -88,6 +88,7 @@ workflow = Workflow.Config(
                     "./pyproject.toml",
                     "./bootstrap/src",
                     "./bootstrap/pyproject.toml",
+                    "./bootstrap/setup.py",
                 ],
             ),
         ),

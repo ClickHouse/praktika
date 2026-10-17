@@ -35,7 +35,7 @@ PACKAGES = {
     },
     "praktika-controller": {
         "pyproject": "pyproject.toml",
-        "watch": ["bootstrap/src/", "bootstrap/pyproject.toml"],
+        "watch": ["bootstrap/src/", "bootstrap/pyproject.toml", "bootstrap/setup.py"],
     },
 }
 
