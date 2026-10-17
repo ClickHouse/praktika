@@ -6,16 +6,19 @@ from ci.settings.settings import SECRET_CI_DB_CONNECTION, SECRET_DOCKER_REGISTRY
 _PRAKTIKA_PACKAGE_BASE_URL = (
     "https://praktika-artifacts-eu-north-1.s3.amazonaws.com/packages"
 )
-_PRAKTIKA_BASE_VERSION = "0.1.15"
-# The baked AMI venv pins an exact Praktika version so image builds are
-# reproducible and a version bump forces a fresh AMI (see _image_builders).
+# The praktika and praktika-controller wheels are versioned in lockstep (single
+# source of truth: `version` in the root pyproject.toml), so one frozen base
+# version pins BOTH baked AMI wheels. The baked AMI venv pins this exact version
+# so image builds are reproducible and a bump forces a fresh AMI (see
+# _image_builders). This is deliberately frozen (it lags head) and only moves on
+# an AMI rebake — don't auto-track the head pyproject version.
+_PRAKTIKA_BASE_VERSION = "0.1.17"
 _PRAKTIKA_BASE_WHL = (
     f"{_PRAKTIKA_PACKAGE_BASE_URL}/praktika-{_PRAKTIKA_BASE_VERSION}-py3-none-any.whl"
 )
-_PRAKTIKA_CONTROLLER_BASE_VERSION = "0.1.10"
 _PRAKTIKA_CONTROLLER_BASE_WHL = (
     f"{_PRAKTIKA_PACKAGE_BASE_URL}/"
-    f"praktika_controller-{_PRAKTIKA_CONTROLLER_BASE_VERSION}-py3-none-any.whl"
+    f"praktika_controller-{_PRAKTIKA_BASE_VERSION}-py3-none-any.whl"
 )
 # The latest controller wheel uses the same fixed, version-less "latest" S3
 # location as praktika. MainCI publish scripts also mirror it to a major.minor
@@ -78,7 +81,7 @@ def _image_builders():
     #
     # Bump on any change to the baked venv contents (_runtime_prebuilt_venvs) or
     # the baked controller component (_praktika_controller_component).
-    recipe_version = "1.0.20"
+    recipe_version = "1.0.21"
 
     return [
         Components.create_awslinux_image_builder_config(

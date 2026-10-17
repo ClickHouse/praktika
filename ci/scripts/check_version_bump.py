@@ -24,13 +24,17 @@ from praktika.version import _version_from_pyproject, version_key
 # name -> (pyproject path, watched source paths). A trailing "/" is a directory
 # prefix; anything else is matched exactly. A change to any watched path
 # requires the pyproject version to be bumped.
+#
+# Both packages point at the ROOT pyproject.toml: the controller version is kept
+# in lockstep with praktika (single source of truth), so a change under either
+# package's source requires bumping that one root `version`.
 PACKAGES = {
     "praktika": {
         "pyproject": "pyproject.toml",
         "watch": ["praktika/", "pyproject.toml"],
     },
     "praktika-controller": {
-        "pyproject": "bootstrap/pyproject.toml",
+        "pyproject": "pyproject.toml",
         "watch": ["bootstrap/src/", "bootstrap/pyproject.toml"],
     },
 }

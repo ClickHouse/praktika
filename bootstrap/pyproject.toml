@@ -4,7 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "praktika-controller"
-version = "0.1.11"
+# Version is kept in lockstep with praktika (single source of truth: `version` in
+# the root pyproject.toml). It is supplied at build time by setup.py, which reads
+# that root version — hence `dynamic` here rather than a hardcoded string.
+dynamic = ["version"]
 description = "Thin controller for launching versioned Praktika workloads"
 requires-python = ">=3.10"
 dependencies = [
