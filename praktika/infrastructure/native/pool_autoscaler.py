@@ -5,8 +5,10 @@ from typing import Any, Dict, List
 
 from praktika.infrastructure.iam_role import IAMRole
 from praktika.infrastructure.lambda_function import Lambda
+from praktika.settings import Settings
 
 from . import iam_scope
+from .lambda_pool_autoscaler import CAPACITY_S3_KEY
 
 
 def _rate_expression_for_seconds(interval_seconds: int) -> str:
@@ -68,6 +70,54 @@ class PoolAutoscaler:
             }
         )
 
+        statements = [
+            {
+                # Describe does not support resource-level scoping.
+                "Effect": "Allow",
+                "Action": ["autoscaling:DescribeAutoScalingGroups"],
+                "Resource": "*",
+            },
+            {
+                # Scale-out is limited to this project's ASGs.
+                "Effect": "Allow",
+                "Action": ["autoscaling:UpdateAutoScalingGroup"],
+                "Resource": iam_scope.autoscaling_group_arns(),
+            },
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "sqs:GetQueueUrl",
+                    "sqs:GetQueueAttributes",
+                ],
+                "Resource": queue_arns,
+            },
+        ]
+        environments = {
+            "POOLS_CONFIG_JSON": pool_config_json,
+            "POLL_INTERVAL_SECONDS": str(max(60, int(self.interval_seconds))),
+        }
+
+        # Wire the pool-capacity snapshot (which powers the orchestrator's CI
+        # throttle) to the project's artifact bucket. Read from the global
+        # Settings singleton — like the iam_scope.* calls above — because it is
+        # populated at import, before this Config is constructed. (Cloud.Config's
+        # per-project _settings isn't attached until after __post_init__, so it
+        # can't be used here.)
+        capacity_bucket = (getattr(Settings, "S3_ARTIFACT_BUCKET", "") or "").strip()
+        if capacity_bucket:
+            environments["S3_BUCKET"] = capacity_bucket
+            bucket_name, _, prefix = capacity_bucket.partition("/")
+            snapshot_key = (
+                f"{prefix.rstrip('/')}/{CAPACITY_S3_KEY}" if prefix else CAPACITY_S3_KEY
+            )
+            statements.append(
+                {
+                    "Effect": "Allow",
+                    "Action": ["s3:PutObject"],
+                    "Resource": f"arn:aws:s3:::{bucket_name}/{snapshot_key}",
+                }
+            )
+
         self.lambda_role = IAMRole.Config(
             name=self.lambda_role_name,
             trust_service="lambda.amazonaws.com",
@@ -77,28 +127,7 @@ class PoolAutoscaler:
             inline_policies={
                 "PoolAutoscalerAccess": {
                     "Version": "2012-10-17",
-                    "Statement": [
-                        {
-                            # Describe does not support resource-level scoping.
-                            "Effect": "Allow",
-                            "Action": ["autoscaling:DescribeAutoScalingGroups"],
-                            "Resource": "*",
-                        },
-                        {
-                            # Scale-out is limited to this project's ASGs.
-                            "Effect": "Allow",
-                            "Action": ["autoscaling:UpdateAutoScalingGroup"],
-                            "Resource": iam_scope.autoscaling_group_arns(),
-                        },
-                        {
-                            "Effect": "Allow",
-                            "Action": [
-                                "sqs:GetQueueUrl",
-                                "sqs:GetQueueAttributes",
-                            ],
-                            "Resource": queue_arns,
-                        },
-                    ],
+                    "Statement": statements,
                 }
             },
         )
@@ -107,10 +136,7 @@ class PoolAutoscaler:
             path=os.path.join(os.path.dirname(__file__), "lambda_pool_autoscaler.py"),
             handler="lambda_pool_autoscaler.lambda_handler",
             role_name=self.lambda_role_name,
-            environments={
-                "POOLS_CONFIG_JSON": pool_config_json,
-                "POLL_INTERVAL_SECONDS": str(max(60, int(self.interval_seconds))),
-            },
+            environments=environments,
             timeout_ms=self.timeout_ms,
             memory_size_mb=self.memory_size_mb,
             schedule_expression=_rate_expression_for_seconds(self.interval_seconds),

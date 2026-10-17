@@ -329,6 +329,7 @@ _runner_pools = [
             "# Update the controller if changed (to test new version w/o image rebuild)\n"
             f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages"
         ),
+        capacity_reserve=0,
     ),
 ]
 
