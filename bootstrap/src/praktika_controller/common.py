@@ -469,17 +469,11 @@ def terminate_instance_for_replacement(
     subprocess.Popen(["/sbin/shutdown", "-h", "now"])
 
 
-def _asg_launch_template_spec(group: dict) -> dict:
-    """The LaunchTemplateSpecification an ASG currently launches with, whether it
-    uses a plain LaunchTemplate or a MixedInstancesPolicy. {} if neither is set."""
-    spec = group.get("LaunchTemplate")
-    if spec:
-        return spec
-    return (
-        group.get("MixedInstancesPolicy", {})
-        .get("LaunchTemplate", {})
-        .get("LaunchTemplateSpecification", {})
-    )
+# S3 key prefix (under the project artifact bucket) where the pool autoscaler
+# publishes each ASG's current target AMI. Must match the producer side in
+# praktika/infrastructure/native/lambda_pool_autoscaler.py. Hardcoded by
+# convention — it is a fixed location, not something to configure per project.
+AMI_TARGET_S3_PREFIX = "ami-targets"
 
 
 def should_recycle_for_ami(*, region: str, instance_id: str, log) -> bool:
@@ -488,9 +482,18 @@ def should_recycle_for_ami(*, region: str, instance_id: str, log) -> bool:
     template's $Default version advanced). Used at the idle boundary so a reserved
     instance — which otherwise never self-terminates — recycles onto the new AMI.
 
-    Fail-safe: any missing tag/region or AWS error returns False (never recycle on
-    uncertainty), so a transient IMDS/describe hiccup can't churn the pool. Only
-    the call site guarantees the box is idle; this function just detects drift."""
+    The target AMI is read from a small S3 object the pool autoscaler publishes
+    per ASG (``{bucket}/ami-targets/{asg}.json``), NOT by describing the ASG /
+    launch template from here. With thousands of runners crossing the idle
+    boundary together, per-instance ``DescribeAutoScalingGroups`` blew the
+    account-wide request-rate limit (thundering herd); S3 reads scale to any
+    number of callers. The autoscaler already describes every ASG once per tick,
+    so publishing from there adds no new describe volume.
+
+    Fail-safe: any missing tag/region, a missing/unreadable target object, or any
+    AWS error returns False (never recycle on uncertainty), so a transient IMDS/S3
+    hiccup — or an autoscaler that hasn't published yet — can't churn the pool.
+    Only the call site guarantees the box is idle; this function detects drift."""
     if not region or not instance_id or instance_id == "local-dev":
         return False
     try:
@@ -503,34 +506,25 @@ def should_recycle_for_ami(*, region: str, instance_id: str, log) -> bool:
         running_ami = instance_ami_id(token=token)
         if not running_ami:
             return False
+        bucket = instance_tag("praktika_artifact_bucket", token=token)
+        if not bucket:
+            return False
 
         import boto3
 
-        groups = boto3.client(
-            "autoscaling", region_name=region
-        ).describe_auto_scaling_groups(AutoScalingGroupNames=[asg_name])[
-            "AutoScalingGroups"
-        ]
-        if not groups:
+        key = f"{AMI_TARGET_S3_PREFIX}/{asg_name}.json"
+        try:
+            body = (
+                boto3.client("s3", region_name=region)
+                .get_object(Bucket=bucket, Key=key)["Body"]
+                .read()
+            )
+        except Exception:
+            # No published target yet (fresh pool, or the autoscaler has not run)
+            # or a transient S3 error. Expected on first boot — stay quiet and
+            # fail-safe rather than log.exception on every idle poll.
             return False
-        spec = _asg_launch_template_spec(groups[0])
-        lt_id = spec.get("LaunchTemplateId")
-        lt_name = spec.get("LaunchTemplateName")
-        version = spec.get("Version") or "$Default"
-        if not lt_id and not lt_name:
-            return False
-
-        kwargs = {"Versions": [version]}
-        if lt_id:
-            kwargs["LaunchTemplateId"] = lt_id
-        else:
-            kwargs["LaunchTemplateName"] = lt_name
-        versions = boto3.client(
-            "ec2", region_name=region
-        ).describe_launch_template_versions(**kwargs)["LaunchTemplateVersions"]
-        if not versions:
-            return False
-        target_ami = versions[0].get("LaunchTemplateData", {}).get("ImageId", "")
+        target_ami = (json.loads(body) or {}).get("target_ami", "")
         if not target_ami:
             return False
 

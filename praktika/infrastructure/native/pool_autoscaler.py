@@ -5,8 +5,14 @@ from typing import Any, Dict, List
 
 from praktika.infrastructure.iam_role import IAMRole
 from praktika.infrastructure.lambda_function import Lambda
+from praktika.settings import Settings
 
 from . import iam_scope
+
+# S3 key prefix (under the project artifact bucket) where this autoscaler
+# publishes each ASG's target AMI for its runners to read. Must match
+# AMI_TARGET_S3_PREFIX in lambda_pool_autoscaler.py and the controller consumer.
+AMI_TARGET_S3_PREFIX = "ami-targets"
 
 
 def _rate_expression_for_seconds(interval_seconds: int) -> str:
@@ -68,6 +74,54 @@ class PoolAutoscaler:
             }
         )
 
+        # Bucket (name only; any configured prefix is dropped) the autoscaler
+        # publishes target-AMI objects into for runners to read. The IAM grant and
+        # the lambda env only materialize when a bucket is configured.
+        artifact_bucket = (getattr(Settings, "S3_ARTIFACT_BUCKET", "") or "").strip()
+        ami_target_bucket = artifact_bucket.split("/")[0]
+
+        autoscaler_statements = [
+            {
+                # Describe does not support resource-level scoping.
+                "Effect": "Allow",
+                "Action": ["autoscaling:DescribeAutoScalingGroups"],
+                "Resource": "*",
+            },
+            {
+                # Resolving an ASG's launch-template version to its AMI (to publish
+                # the target for runners) is read-only and does not support scoping.
+                "Effect": "Allow",
+                "Action": ["ec2:DescribeLaunchTemplateVersions"],
+                "Resource": "*",
+            },
+            {
+                # Scale-out is limited to this project's ASGs.
+                "Effect": "Allow",
+                "Action": ["autoscaling:UpdateAutoScalingGroup"],
+                "Resource": iam_scope.autoscaling_group_arns(),
+            },
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "sqs:GetQueueUrl",
+                    "sqs:GetQueueAttributes",
+                ],
+                "Resource": queue_arns,
+            },
+        ]
+        if ami_target_bucket:
+            autoscaler_statements.append(
+                {
+                    # Publish each ASG's target AMI so its runners read it from S3
+                    # instead of describing the ASG (avoids the describe herd).
+                    "Effect": "Allow",
+                    "Action": ["s3:PutObject"],
+                    "Resource": (
+                        f"arn:aws:s3:::{ami_target_bucket}/{AMI_TARGET_S3_PREFIX}/*"
+                    ),
+                }
+            )
+
         self.lambda_role = IAMRole.Config(
             name=self.lambda_role_name,
             trust_service="lambda.amazonaws.com",
@@ -77,28 +131,7 @@ class PoolAutoscaler:
             inline_policies={
                 "PoolAutoscalerAccess": {
                     "Version": "2012-10-17",
-                    "Statement": [
-                        {
-                            # Describe does not support resource-level scoping.
-                            "Effect": "Allow",
-                            "Action": ["autoscaling:DescribeAutoScalingGroups"],
-                            "Resource": "*",
-                        },
-                        {
-                            # Scale-out is limited to this project's ASGs.
-                            "Effect": "Allow",
-                            "Action": ["autoscaling:UpdateAutoScalingGroup"],
-                            "Resource": iam_scope.autoscaling_group_arns(),
-                        },
-                        {
-                            "Effect": "Allow",
-                            "Action": [
-                                "sqs:GetQueueUrl",
-                                "sqs:GetQueueAttributes",
-                            ],
-                            "Resource": queue_arns,
-                        },
-                    ],
+                    "Statement": autoscaler_statements,
                 }
             },
         )
@@ -110,6 +143,7 @@ class PoolAutoscaler:
             environments={
                 "POOLS_CONFIG_JSON": pool_config_json,
                 "POLL_INTERVAL_SECONDS": str(max(60, int(self.interval_seconds))),
+                "AMI_TARGET_BUCKET": ami_target_bucket,
             },
             timeout_ms=self.timeout_ms,
             memory_size_mb=self.memory_size_mb,

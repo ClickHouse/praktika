@@ -256,6 +256,10 @@ class OrchestratorPool:
         asg_name = self._asg_name()
 
         artifact_bucket = (Settings.S3_ARTIFACT_BUCKET or "").strip()
+        # Bucket (name only) under which the pool autoscaler publishes ASG target
+        # AMIs; the controller reads {bucket}/ami-targets/{asg}.json for its
+        # AMI-drift self-recycle check instead of describing the ASG.
+        ami_target_bucket = artifact_bucket.split("/")[0] or "*"
         # Scope the webhook role by *area prefix*, not per-key: it may Get/Put any
         # control object the lambda writes under runs/ (cancel-request,
         # rerun-request, resume.lock, state.json, …), pr/ (cancel-before) and
@@ -330,17 +334,18 @@ class OrchestratorPool:
                         },
                         {
                             # At the idle boundary the controller compares its own
-                            # AMI to the ASG's current launch template and recycles
-                            # itself when the image was rebaked (see
-                            # common.should_recycle_for_ami). Both describes are
-                            # read-only and do not support resource-level scoping.
-                            "Sid": "AmiDriftRecycleDescribe",
+                            # AMI to the ASG's target AMI and recycles itself when
+                            # the image was rebaked (see common.should_recycle_for_ami).
+                            # The target is read from a tiny S3 object the pool
+                            # autoscaler publishes — the controller NO LONGER
+                            # describes the ASG / launch template itself, which caused
+                            # account-wide DescribeAutoScalingGroups throttling.
+                            "Sid": "AmiDriftTargetRead",
                             "Effect": "Allow",
-                            "Action": [
-                                "autoscaling:DescribeAutoScalingGroups",
-                                "ec2:DescribeLaunchTemplateVersions",
-                            ],
-                            "Resource": "*",
+                            "Action": ["s3:GetObject"],
+                            "Resource": (
+                                f"arn:aws:s3:::{ami_target_bucket}/ami-targets/*"
+                            ),
                         },
                         {
                             "Sid": "CloudWatchLogs",
@@ -379,6 +384,10 @@ class OrchestratorPool:
             "praktika_scaling": self.scaling,
             "praktika_capacity_reserve": str(self.capacity_reserve),
         }
+        if artifact_bucket:
+            # Lets the controller read {bucket}/ami-targets/{asg}.json for the
+            # AMI-drift self-recycle check without a repo clone.
+            runtime_tags["praktika_artifact_bucket"] = artifact_bucket.split("/")[0]
         if self.ext.get("system_logs"):
             # Activates the baked praktika-system-logs streamer at boot so
             # kernel/OOM/systemd-kill evidence is shipped to CloudWatch.
