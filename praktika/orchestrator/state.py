@@ -2243,9 +2243,10 @@ class WorkflowState:
         on a runner. The orchestrator already owns the report summary and
         completes the top-level check as ``cancelled`` (see
         REPORT_OWNERSHIP.md), and running post_hooks / CIDB / merge-ready for
-        a cancelled run is unwanted. Dispatching Finish Workflow would only
-        put it on a runner to be killed by the cancel watchdog (or time out
-        on the heartbeat), so it is SKIPPED here instead.
+        a cancelled run is unwanted. On a cancelled run ``cancel_unfinished_jobs``
+        has already CANCELLED every unfinished job including Finish Workflow, so
+        it never reaches here PENDING; the SKIP below is a defensive fallback
+        for the narrow window before that sweep runs.
         """
         ready = []
         for name, js in self.jobs.items():
@@ -2283,27 +2284,36 @@ class WorkflowState:
         return ready
 
     def cancel_unfinished_jobs(self):
-        """When a cancel signal arrives mid-run, mark every PENDING or
-        in-flight job that isn't flagged ``always_run`` as
-        CANCELLED. ``always_run`` post-run jobs (Finish Workflow) are left
-        alone here, but on a cancelled run ``get_ready`` SKIPs them rather
-        than dispatching — there is nothing to finalize on a runner (see
-        ``get_ready``).
+        """When a cancel signal arrives mid-run, mark every unfinished job —
+        PENDING, QUEUED, or RUNNING — CANCELLED, **including** ``always_run``
+        post-run jobs (Finish Workflow).
+
+        On a cancelled run there is nothing to finalize on a runner: the
+        orchestrator owns the report summary and completes the top-level check
+        as ``cancelled`` (see REPORT_OWNERSHIP.md), so Finish Workflow / CIDB
+        writeback / merge-ready are all unwanted. Cancelling Finish Workflow
+        here — rather than relying on ``get_ready`` to SKIP it — keeps teardown
+        self-contained: the DAG reaches a terminal state and the drive loop
+        exits even while dispatch is held. That matters because an AI
+        ``cancel_and_patch`` / ``cancel_run`` decision sets ``state.cancelled``
+        but leaves ``hold_dispatch`` set (see ai/__init__.py), which gates
+        ``get_ready`` off entirely — so if finalizing Finish Workflow depended
+        on ``get_ready``, the run would spin forever with Finish Workflow stuck
+        PENDING (orphaned orchestrator holding its SQS message in-flight).
 
         In-flight jobs that are cancelled here had their task already
         dispatched to a runner. The cancel flag written to S3 signals those
         runners to tear down; the eventual final state (if it still arrives)
-        will be ignored because finish() only accepts in-flight states.
+        will be ignored because finish() only accepts in-flight states. The flag
+        is only written when a *real* runner job (not ``always_run``) was live —
+        Finish Workflow runs in-process on the orchestrator, never on a runner.
         """
         has_running = any(
             js.status in (JobStatus.QUEUED, JobStatus.RUNNING) and not js.job.always_run
             for js in self.jobs.values()
         )
         for js in self.jobs.values():
-            if (
-                js.status in (JobStatus.PENDING, JobStatus.QUEUED, JobStatus.RUNNING)
-                and not js.job.always_run
-            ):
+            if js.status in (JobStatus.PENDING, JobStatus.QUEUED, JobStatus.RUNNING):
                 js.cancel(reason="run cancelled")
         if has_running and self._s3 is not None:
             try:
