@@ -23,6 +23,7 @@ running a tool-use loop so the model can investigate the failure before deciding
 and the checked-out PR source (``grep_repo`` / ``read_file``, rooted at the repo).
 """
 import difflib
+import fnmatch
 import os
 
 from .provider import Observation, Turn as Turn, Usage as Usage, resolve_provider
@@ -121,19 +122,28 @@ _MAX_EXTRA_PROMPT_CHARS = 20_000
 
 
 def _resolve_extra_prompt(ai_config):
-    """Build the system-prompt guidance from ``extra_prompt`` + ``extra_prompt_file``.
+    """Build the guidance map from ``extra_prompt`` + ``extra_prompt_file``.
 
-    The inline ``extra_prompt`` comes first; then, if ``extra_prompt_file`` is
-    set, its contents (read from the checkout, repo-root contained, capped) are
-    appended. Reading is best-effort — the advisor must never break orchestration,
-    so a missing/unreadable/escaping path is logged and ignored, not raised.
+    Returns a ``{job_name_glob: text}`` map. ``extra_prompt`` may be that map
+    directly, or a plain string (treated as a single ``"*"`` entry). If
+    ``extra_prompt_file`` is set, its contents (read from the checkout, repo-root
+    contained, capped) are folded into the ``"*"`` (always-on) entry, after any
+    inline ``"*"`` text. Reading is best-effort — the advisor must never break
+    orchestration, so a missing/unreadable/escaping path is logged and ignored,
+    not raised. Empty/whitespace entries are dropped.
     """
-    parts = []
-    inline = (getattr(ai_config, "extra_prompt", "") or "").strip()
-    if inline:
-        parts.append(inline)
+    raw = getattr(ai_config, "extra_prompt", None)
+    if isinstance(raw, str):
+        raw = {"*": raw} if raw.strip() else {}
+    guidance = {
+        str(glob): text.strip()
+        for glob, text in (raw or {}).items()
+        if isinstance(text, str) and text.strip()
+    }
+
     rel = (getattr(ai_config, "extra_prompt_file", "") or "").strip()
     if rel:
+        file_text = ""
         target = _safe_join(os.getcwd(), rel)
         if target is None:
             print(f"[AI   ] extra_prompt_file ignored: path escapes repo: {rel!r}")
@@ -142,17 +152,19 @@ def _resolve_extra_prompt(ai_config):
         else:
             try:
                 with open(target, "r", encoding="utf-8", errors="replace") as f:
-                    text = f.read(_MAX_EXTRA_PROMPT_CHARS + 1).strip()
-                if len(text) > _MAX_EXTRA_PROMPT_CHARS:
-                    text = text[:_MAX_EXTRA_PROMPT_CHARS] + " …"
-                if text:
-                    parts.append(text)
+                    file_text = f.read(_MAX_EXTRA_PROMPT_CHARS + 1).strip()
+                if len(file_text) > _MAX_EXTRA_PROMPT_CHARS:
+                    file_text = file_text[:_MAX_EXTRA_PROMPT_CHARS] + " …"
             except Exception as e:
                 print(
                     f"[AI   ] extra_prompt_file ignored: cannot read {rel!r}: "
                     f"{type(e).__name__}: {e}"
                 )
-    return "\n\n".join(parts)
+                file_text = ""
+        if file_text:
+            star = guidance.get("*")
+            guidance["*"] = f"{star}\n\n{file_text}" if star else file_text
+    return guidance
 
 
 def _clean_links(links):
@@ -380,15 +392,20 @@ class AIAssist:
 
     def __init__(
         self, provider, console, session=None, event=None, patcher=None,
-        exclude_jobs=None, drive_mode=_DRIVE_EAGER,
+        exclude_jobs=None, allow_jobs=None, drive_mode=_DRIVE_EAGER,
     ):
         self._provider = provider
         self._console = console
         self._session = session
         self._event = event or {}
-        # Job names the workflow configured as never-evaluate
+        # Job names/globs the workflow configured as never-evaluate
         # (ai_assist.exclude_jobs). Their failures never trigger the advisor.
-        self._excluded = set(exclude_jobs or ())
+        # None means no exclusion filter.
+        self._excluded = list(exclude_jobs) if exclude_jobs is not None else None
+        # Job names/globs the advisor is allowed to evaluate (ai_assist.allow_jobs).
+        # None means no allow filter (every job eligible); an empty list means
+        # nothing is allowed.
+        self._allowed = list(allow_jobs) if allow_jobs is not None else None
         # When to consult on failures: "eager" (per failure, as it lands) or
         # "consolidated" (hold dispatch of not-yet-started jobs on a failure, let
         # the in-flight wave drain, then consult once over the whole failure set).
@@ -470,7 +487,8 @@ class AIAssist:
                 session = None
         return cls(
             provider, console, session=session, event=event, patcher=patcher,
-            exclude_jobs=getattr(ai_config, "exclude_jobs", None) or (),
+            exclude_jobs=getattr(ai_config, "exclude_jobs", None),
+            allow_jobs=getattr(ai_config, "allow_jobs", None),
             drive_mode=getattr(ai_config, "drive_mode", _DRIVE_EAGER) or _DRIVE_EAGER,
         )
 
@@ -490,17 +508,31 @@ class AIAssist:
                 changed.append(entry)
         return changed
 
+    @staticmethod
+    def _matches_any(name, patterns):
+        """True if ``name`` equals or glob-matches any entry in ``patterns``."""
+        return any(fnmatch.fnmatch(name, p) for p in patterns)
+
     def _is_excluded(self, name):
         """True if the workflow configured this job name as never-evaluate via
-        ai_assist.exclude_jobs."""
-        return name in self._excluded
+        ai_assist.exclude_jobs (exact name or glob). No filter -> never
+        excluded."""
+        return self._excluded is not None and self._matches_any(name, self._excluded)
+
+    def _is_allowed(self, name):
+        """True if ``name`` is eligible per ai_assist.allow_jobs (exact name or
+        glob). No filter (None) -> everything allowed; an empty list -> nothing
+        allowed."""
+        return self._allowed is None or self._matches_any(name, self._allowed)
 
     def _triggers_advisor(self, state, name):
-        """True if a failure in job ``name`` should trigger the advisor: not
-        listed in exclude_jobs and not opted out by the job's Result
-        (skip_ai_assist)."""
-        return not self._is_excluded(name) and not _result_skips_ai(
-            state.jobs.get(name)
+        """True if a failure in job ``name`` should trigger the advisor: allowed
+        by allow_jobs, not listed in exclude_jobs, and not opted out by the job's
+        Result (skip_ai_assist)."""
+        return (
+            self._is_allowed(name)
+            and not self._is_excluded(name)
+            and not _result_skips_ai(state.jobs.get(name))
         )
 
     def _consult(self, event, observation, state):
