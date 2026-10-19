@@ -1,3 +1,5 @@
+import json
+
 from praktika_controller import common
 from praktika.infrastructure.native.runner_pool import RunnerPool
 
@@ -234,39 +236,33 @@ class _RecycleLog:
         raise AssertionError("exception log should not be called")
 
 
-def _patch_ami_drift(monkeypatch, *, running_ami, target_ami, scaling="auto"):
+def _patch_ami_drift(
+    monkeypatch, *, running_ami, target_ami, scaling="auto", s3_error=None
+):
     monkeypatch.setattr(common, "imds_token", lambda: "token")
-    tags = {"praktika_scaling": scaling, "praktika_asg": "arm-2xsmall"}
+    tags = {
+        "praktika_scaling": scaling,
+        "praktika_asg": "arm-2xsmall",
+        "praktika_artifact_bucket": "my-bucket",
+    }
     monkeypatch.setattr(
         common, "instance_tag", lambda name, token=None: tags.get(name, "")
     )
     monkeypatch.setattr(common, "instance_ami_id", lambda token=None: running_ami)
 
-    class _ASG:
-        def describe_auto_scaling_groups(self, AutoScalingGroupNames):
-            assert AutoScalingGroupNames == ["arm-2xsmall"]
-            return {
-                "AutoScalingGroups": [
-                    {
-                        "LaunchTemplate": {
-                            "LaunchTemplateId": "lt-abc",
-                            "Version": "$Default",
-                        }
-                    }
-                ]
-            }
+    class _Body:
+        def read(self):
+            return json.dumps({"target_ami": target_ami}).encode("utf-8")
 
-    class _EC2:
-        def describe_launch_template_versions(self, **kwargs):
-            assert kwargs["LaunchTemplateId"] == "lt-abc"
-            assert kwargs["Versions"] == ["$Default"]
-            return {
-                "LaunchTemplateVersions": [
-                    {"LaunchTemplateData": {"ImageId": target_ami}}
-                ]
-            }
+    class _S3:
+        def get_object(self, Bucket, Key):
+            assert Bucket == "my-bucket"
+            assert Key == "ami-targets/arm-2xsmall.json"
+            if s3_error is not None:
+                raise s3_error
+            return {"Body": _Body()}
 
-    clients = {"autoscaling": _ASG(), "ec2": _EC2()}
+    clients = {"s3": _S3()}
     monkeypatch.setattr(
         "boto3.client", lambda service_name, region_name=None: clients[service_name]
     )
@@ -287,6 +283,23 @@ def test_should_recycle_for_ami_detects_drift(monkeypatch):
 def test_should_recycle_for_ami_no_drift(monkeypatch):
     _patch_ami_drift(
         monkeypatch, running_ami="ami-same", target_ami="ami-same"
+    )
+    assert (
+        common.should_recycle_for_ami(
+            region="eu-north-1", instance_id="i-123", log=_RecycleLog()
+        )
+        is False
+    )
+
+
+def test_should_recycle_for_ami_no_published_target(monkeypatch):
+    # A missing target object (fresh pool / autoscaler has not published yet) must
+    # fail-safe to False WITHOUT logging an exception on every idle poll.
+    _patch_ami_drift(
+        monkeypatch,
+        running_ami="ami-old",
+        target_ami="ignored",
+        s3_error=RuntimeError("NoSuchKey"),
     )
     assert (
         common.should_recycle_for_ami(

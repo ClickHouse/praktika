@@ -1,8 +1,64 @@
 import json
 import math
 import os
+import time
 
 import boto3
+
+# S3 key prefix (under the project artifact bucket) where this autoscaler
+# publishes each ASG's current target AMI. Must match the consumer side in
+# bootstrap/src/praktika_controller/common.py (AMI_TARGET_S3_PREFIX). Runners
+# read these objects to decide AMI-drift self-recycle instead of describing the
+# ASG themselves (which caused account-wide DescribeAutoScalingGroups
+# throttling when thousands crossed the idle boundary at once).
+AMI_TARGET_S3_PREFIX = "ami-targets"
+
+
+def _asg_launch_template_spec(group):
+    """The LaunchTemplateSpecification an ASG currently launches with, whether it
+    uses a plain LaunchTemplate or a MixedInstancesPolicy. {} if neither is set."""
+    spec = group.get("LaunchTemplate")
+    if spec:
+        return spec
+    return (
+        group.get("MixedInstancesPolicy", {})
+        .get("LaunchTemplate", {})
+        .get("LaunchTemplateSpecification", {})
+    )
+
+
+def _resolve_target_ami(ec2, group):
+    """Resolve the AMI the ASG's current launch-template version would launch.
+    Returns "" if the ASG has no launch template or the version has no ImageId."""
+    spec = _asg_launch_template_spec(group)
+    lt_id = spec.get("LaunchTemplateId")
+    lt_name = spec.get("LaunchTemplateName")
+    if not lt_id and not lt_name:
+        return ""
+    kwargs = {"Versions": [spec.get("Version") or "$Default"]}
+    if lt_id:
+        kwargs["LaunchTemplateId"] = lt_id
+    else:
+        kwargs["LaunchTemplateName"] = lt_name
+    versions = ec2.describe_launch_template_versions(**kwargs)["LaunchTemplateVersions"]
+    if not versions:
+        return ""
+    return versions[0].get("LaunchTemplateData", {}).get("ImageId", "")
+
+
+def _publish_target_ami(s3, bucket, asg_name, target_ami):
+    """Publish the ASG's target AMI so its runners can read it from S3 instead of
+    describing the ASG. Best-effort: never let a publish failure affect scaling."""
+    if not (bucket and asg_name and target_ami):
+        return
+    s3.put_object(
+        Bucket=bucket,
+        Key=f"{AMI_TARGET_S3_PREFIX}/{asg_name}.json",
+        Body=json.dumps(
+            {"target_ami": target_ami, "updated_at": int(time.time())}
+        ).encode("utf-8"),
+        ContentType="application/json",
+    )
 
 
 def _load_pool_configs():
@@ -59,6 +115,9 @@ def lambda_handler(event, context):
     )
     sqs = boto3.client("sqs", region_name=region)
     autoscaling = boto3.client("autoscaling", region_name=region)
+    ec2 = boto3.client("ec2", region_name=region)
+    s3 = boto3.client("s3", region_name=region)
+    ami_target_bucket = (os.environ.get("AMI_TARGET_BUCKET", "") or "").strip()
 
     results = []
     skipped = []
@@ -92,6 +151,21 @@ def lambda_handler(event, context):
             if not group:
                 raise RuntimeError(f"Auto Scaling Group '{asg_name}' was not found")
             group = group[0]
+
+            # Publish this ASG's target AMI so its runners read it from S3 at the
+            # idle boundary instead of each describing the ASG themselves. Isolated
+            # try: a publish failure must never skip this pool's scale-up.
+            if ami_target_bucket:
+                try:
+                    _publish_target_ami(
+                        s3, ami_target_bucket, asg_name, _resolve_target_ami(ec2, group)
+                    )
+                except Exception as ex:  # noqa: BLE001
+                    print(
+                        f"[WARN] could not publish target AMI for asg='{asg_name}': "
+                        f"{type(ex).__name__}: {ex}"
+                    )
+
             current_desired = int(group["DesiredCapacity"])
             max_size = int(group["MaxSize"])
 

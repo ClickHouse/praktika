@@ -209,6 +209,10 @@ def test_lambda_handler_updates_all_pools_that_need_scaling(monkeypatch):
             return _FakeSQS()
         if service_name == "autoscaling":
             return fake_autoscaling
+        if service_name in ("ec2", "s3"):
+            # Created at handler start but unused here: AMI_TARGET_BUCKET is unset,
+            # so the target-AMI publish path is skipped.
+            return object()
         raise AssertionError(f"Unexpected boto3 client: {service_name}")
 
     monkeypatch.setenv(
@@ -228,6 +232,90 @@ def test_lambda_handler_updates_all_pools_that_need_scaling(monkeypatch):
     assert result["pool_count"] == 3
     assert fake_autoscaling.updated == [("asg-a", 1), ("asg-b", 2), ("asg-c", 2)]
     assert result["results"][2]["capacity_reserve"] == 2
+
+
+def test_lambda_handler_publishes_target_ami(monkeypatch):
+    # With AMI_TARGET_BUCKET set, each pool's target AMI is resolved from its
+    # launch template and published to S3 for runners to read (so they don't
+    # describe the ASG themselves). A publish failure must not block scaling.
+    import json
+
+    class _FakeSQS:
+        def get_queue_url(self, QueueName):
+            return {"QueueUrl": f"https://example.invalid/{QueueName}"}
+
+        def get_queue_attributes(self, QueueUrl, AttributeNames):
+            return {
+                "Attributes": {
+                    "ApproximateNumberOfMessages": "1",
+                    "ApproximateNumberOfMessagesNotVisible": "0",
+                }
+            }
+
+    class _FakeAutoscaling:
+        def describe_auto_scaling_groups(self, AutoScalingGroupNames):
+            return {
+                "AutoScalingGroups": [
+                    {
+                        "DesiredCapacity": 0,
+                        "MaxSize": 10,
+                        "LaunchTemplate": {
+                            "LaunchTemplateId": "lt-abc",
+                            "Version": "$Default",
+                        },
+                    }
+                ]
+            }
+
+        def update_auto_scaling_group(self, AutoScalingGroupName, DesiredCapacity):
+            pass
+
+    class _FakeEC2:
+        def describe_launch_template_versions(self, **kwargs):
+            assert kwargs["LaunchTemplateId"] == "lt-abc"
+            assert kwargs["Versions"] == ["$Default"]
+            return {
+                "LaunchTemplateVersions": [
+                    {"LaunchTemplateData": {"ImageId": "ami-target"}}
+                ]
+            }
+
+    class _FakeS3:
+        def __init__(self):
+            self.puts = []
+
+        def put_object(self, Bucket, Key, Body, ContentType=None):
+            self.puts.append((Bucket, Key, json.loads(Body)))
+
+    fake_s3 = _FakeS3()
+
+    def _fake_boto3_client(service_name, region_name=None):
+        return {
+            "sqs": _FakeSQS(),
+            "autoscaling": _FakeAutoscaling(),
+            "ec2": _FakeEC2(),
+            "s3": fake_s3,
+        }[service_name]
+
+    monkeypatch.setenv(
+        "POOLS_CONFIG_JSON",
+        '[{"name":"pool-a","queue_name":"pool-a","asg_name":"asg-a"}]',
+    )
+    monkeypatch.setenv("AWS_REGION", "eu-north-1")
+    monkeypatch.setenv("AMI_TARGET_BUCKET", "my-bucket")
+    monkeypatch.setattr(
+        "praktika.infrastructure.native.lambda_pool_autoscaler.boto3.client",
+        _fake_boto3_client,
+    )
+
+    lambda_handler({}, None)
+
+    assert len(fake_s3.puts) == 1
+    bucket, key, body = fake_s3.puts[0]
+    assert bucket == "my-bucket"
+    assert key == "ami-targets/asg-a.json"
+    assert body["target_ami"] == "ami-target"
+    assert isinstance(body["updated_at"], int)
 
 
 def test_lambda_handler_skips_pool_with_missing_queue_and_scales_the_rest(monkeypatch):
@@ -270,6 +358,10 @@ def test_lambda_handler_skips_pool_with_missing_queue_and_scales_the_rest(monkey
             return _FakeSQS()
         if service_name == "autoscaling":
             return fake_autoscaling
+        if service_name in ("ec2", "s3"):
+            # Created at handler start but unused here: AMI_TARGET_BUCKET is unset,
+            # so the target-AMI publish path is skipped.
+            return object()
         raise AssertionError(f"Unexpected boto3 client: {service_name}")
 
     monkeypatch.setenv(
