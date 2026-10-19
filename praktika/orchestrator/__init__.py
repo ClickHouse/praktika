@@ -252,7 +252,7 @@ def _is_retry_attempt(attempt):
         return bool(attempt)
 
 
-def _check_output(workflow, state, error=None, report_url=None, phase=None, is_rerun=False):
+def _check_output(workflow, state, error=None, report_url=None, phase=None, is_rerun=False, throttle=None):
     """Assemble a Check API `output` dict (title, summary, text) from the
     live ``WorkflowState``. Called on every PATCH so the top-level check's
     Markdown body tracks the current per-job table.
@@ -292,6 +292,10 @@ def _check_output(workflow, state, error=None, report_url=None, phase=None, is_r
         summary = f"Cancelled — {state.md_status_summary()}"
     else:
         summary = state.md_status_summary()
+    # A capacity throttle is the headline state while a run is held before its
+    # first dispatch — lead with it so the PR shows *why* nothing has started.
+    if throttle:
+        summary = f"⏳ {throttle} — {summary}"
     if is_rerun:
         summary += " — 🔁 re-run"
     if report_url:
@@ -311,6 +315,8 @@ def _check_output(workflow, state, error=None, report_url=None, phase=None, is_r
         header_bits.append(f"**Phase:** `{phase}`")
     header = " — ".join(header_bits)
     text = state.md_status() if state is not None else ""
+    if throttle:
+        text = f"### ⏳ CI capacity throttle\n\n{throttle}" + (f"\n\n{text}" if text else "")
     if header:
         text = header + (f"\n\n{text}" if text else "")
     if error is not None:
@@ -322,7 +328,7 @@ def _check_output(workflow, state, error=None, report_url=None, phase=None, is_r
     return {"title": title, "summary": summary, "text": text}
 
 
-def _patch_top_check(check, workflow, state, error=None, details_url=None, phase=None, is_rerun=False):
+def _patch_top_check(check, workflow, state, error=None, details_url=None, phase=None, is_rerun=False, throttle=None):
     """PATCH the top-level workflow check with the current Markdown snapshot.
 
     Wrapped in try/except: a stuck GitHub API call must not kill the
@@ -333,7 +339,7 @@ def _patch_top_check(check, workflow, state, error=None, details_url=None, phase
     try:
         check.update(
             output=_check_output(
-                workflow, state, error=error, report_url=details_url, phase=phase, is_rerun=is_rerun
+                workflow, state, error=error, report_url=details_url, phase=phase, is_rerun=is_rerun, throttle=throttle
             ),
             details_url=details_url,
         )
@@ -733,6 +739,28 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
                     is_rerun=is_rerun,
                 )
                 time.sleep(min(2 ** attempt, 30))
+
+        # CI capacity throttle: before dispatching any job, hold the whole
+        # workflow while any runner pool it uses is at max capacity, so a
+        # saturated pool's queue doesn't grow an ever-longer backlog. Runs
+        # before dag_started (nothing dispatched yet, so a failure here is still
+        # a safe infra retry) and surfaces the held state on the top check.
+        # Skipped in local mode: a local run executes jobs itself (no runner
+        # pools), so a production snapshot must not block it.
+        if not local_mode:
+            phase = "throttled"
+            from .throttle import wait_for_capacity
+
+            def _on_throttle(message, _saturated):
+                _patch_top_check(
+                    check, workflow, state, phase=phase,
+                    details_url=report_url, is_rerun=is_rerun, throttle=message,
+                )
+
+            # Pass state so the hold observes cancellation (manual cancel / newer
+            # push): it sets state.cancelled, and _drive_dag then cancels the
+            # unfinished jobs before its first dispatch instead of kicking them.
+            wait_for_capacity(workflow, on_throttle=_on_throttle, state=state)
 
         phase = "running"
         dag_started = True

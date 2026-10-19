@@ -62,22 +62,34 @@ class Workflow:
             # Optional cap on how many CI runs one AI round may span. 0 disables
             # the cap.
             max_rounds: int = 0
-            # Job names the advisor must never evaluate: a failure in one of these
-            # never opens a round or consults the model (e.g. an advisory
-            # allow_failure job like "Code Review"). They still appear in the
-            # advisor's full-DAG context, just never as a trigger.
-            exclude_jobs: List[str] = field(default_factory=list)
+            # Job names (or globs) the advisor must never evaluate: a failure in
+            # one of these never opens a round or consults the model (e.g. an
+            # advisory allow_failure job like "Code Review"). They still appear
+            # in the advisor's full-DAG context, just never as a trigger.
+            # None (the default) means no exclusion filter.
+            exclude_jobs: Optional[List[str]] = None
+            # Job names (or globs) the advisor is allowed to evaluate: a failure
+            # only triggers the advisor when the job name matches one of these.
+            # None (the default) means no allow filter (every job is eligible).
+            # An empty list means nothing is allowed — the advisor never triggers.
+            # Applied together with exclude_jobs: a job must match allow_jobs AND
+            # not match exclude_jobs to trigger.
+            allow_jobs: Optional[List[str]] = None
             # Extra project-specific guidance appended to the advisor's system
-            # prompt on every consult. Use it to steer when/how to act — e.g.
-            # "if a test job fails because the test is outdated and the fix is
-            # clear, cancel_and_patch to fix the test". Empty adds nothing.
-            extra_prompt: str = ""
+            # prompt, keyed by job-name glob: {job_name_glob: guidance}. The
+            # "*" key applies to every consult; any other glob applies only when
+            # a job whose name matches it is part of the consult — so per-job
+            # steering (e.g. "Code Review": how to weigh review findings,
+            # "*Test*": when to patch an outdated test) only costs prompt budget
+            # on the consults it's relevant to. None/empty adds nothing. A plain
+            # string is accepted for back-compat and treated as {"*": text}.
+            extra_prompt: Optional[Dict[str, str]] = None
             # Repo-relative path to a file whose contents are appended to the
-            # system prompt the same way as ``extra_prompt`` — lets the guidance
+            # system prompt as always-on ("*") guidance — lets global guidance
             # live as a versioned file in the repo instead of inline. Read
             # best-effort from the checkout; a missing/unreadable file is
-            # ignored. When both are set, ``extra_prompt`` comes first, then the
-            # file contents.
+            # ignored. When both are set, the inline "*" entry comes first, then
+            # the file contents.
             extra_prompt_file: str = ""
             # When the advisor consults on failures — see AIAssist.DriveMode.
             # "eager" (default) consults per failure as it lands; "consolidated"

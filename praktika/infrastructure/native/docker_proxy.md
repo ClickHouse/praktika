@@ -220,6 +220,56 @@ when only the launch template changes. After a `dns_*`/user_data change on an
 already-running proxy, terminate the instance (or trigger an ASG instance refresh)
 so the replacement boots with the new user_data.
 
+## Health check
+
+`--verify` (see Deploy) is the quick automated check. To inspect a live proxy:
+
+1. **Find the host.** The instance is tagged `praktika_role=docker_proxy`:
+
+   ```bash
+   aws ec2 describe-instances --region <region> \
+     --filters Name=tag:praktika_role,Values=docker_proxy \
+               Name=instance-state-name,Values=running \
+     --query 'Reservations[].Instances[].{Id:InstanceId,Priv:PrivateIpAddress}'
+   ```
+
+2. **Log in.** The instance role does **not** include `AmazonSSMManagedInstanceCore`,
+   so it is not SSM-managed (`ssm send-command` → `InvalidInstanceId`). Reach it
+   over Tailscale SSH (the node joined with `tailscale up --ssh` when
+   `configure_tailscale(...)` is set): `ssh ec2-user@<tailscale-name-or-ip>` (use
+   `sudo` on the box; the tailnet policy may forbid logging in as `root`).
+
+3. **Service and port.** `sudo systemctl status zot`; `zot` should be `active` and
+   listening on `listen_port` (`sudo ss -ltnp | grep 5000`). Config is at
+   `/etc/zot/config.json` — confirm `storageDriver.name: "s3"`,
+   `redirectBlobURL: true`, `manifestCheckInterval` and `compat: ["docker2s2"]`.
+
+4. **Logs.** `sudo journalctl -u zot` (one JSON object per request). A healthy
+   proxy has no `"level":"error"` lines: `sudo journalctl -u zot | grep -c '"level":"error"'`.
+
+5. **Blobs served from S3, not through the host** — the property that keeps the
+   NIC out of the multi-GB layer path. A plain blob GET must `307`-redirect to a
+   presigned S3 URL:
+
+   ```bash
+   curl -s -o /dev/null -D - "http://localhost:5000/v2/<repo>/blobs/<sha256>?ns=docker.io"
+   # HTTP/1.1 307 Temporary Redirect
+   # Location: https://<s3_bucket>.s3.amazonaws.com/<s3_rootdirectory>/.../<sha256>?<signed>
+   ```
+
+   In the journal, blob-GET requests should be overwhelmingly `"statusCode":307`;
+   a `200` means zot streamed the bytes through itself (the fallback path — a
+   `Range` request or a driver with no redirect URL). Corroborate that storage
+   really lives in S3: the host's local `rootDirectory` (`/var/lib/zot`) holds only
+   a few MB of metadata (not GBs of blobs), `aws s3 ls s3://<s3_bucket>/<s3_rootdirectory>/
+   --recursive --summarize` shows the populated mirror, and the host NIC's
+   transmitted bytes stay modest (tens of GB over weeks, not multi-TB).
+
+6. **Web UI.** With `enable_ui=True` + `configure_tailscale(...)`, the repo/tag
+   browser is at `https://{hostname}.<tailnet>.ts.net/home`. For the current
+   `clickhouse-private` deployment that is
+   <https://dockerhub-proxy.tail983ac.ts.net/home>.
+
 ## Runner integration (baked into the image)
 
 Runner pools use the proxy via a `registry-mirror` baked into the runner AMI (not

@@ -72,6 +72,21 @@ class _Settings:
     HEARTBEAT_TIMEOUT_S = 900
 
     ######################################
+    #     CI capacity throttle (backpressure)   #
+    ######################################
+    # Before dispatching, the orchestrator holds a workflow until none of the
+    # runner pools it uses are at max capacity, instead of piling jobs onto a
+    # saturated pool's queue. Capacity is read from the pool-autoscaler's
+    # `pool_capacity.json` snapshot; if that snapshot is absent or unreadable the
+    # throttle fails open (dispatches immediately), so it is inert until the
+    # autoscaler is deployed with S3_BUCKET set.
+    #
+    # How long the throttle waits between capacity re-checks while a workflow is
+    # held. The autoscaler refreshes the snapshot once a minute, so polling
+    # faster only re-reads a stale object.
+    CI_CAPACITY_POLL_INTERVAL_S = 60
+
+    ######################################
     #   S3 (artifact storage) settings   #
     ######################################
     S3_ARTIFACT_BUCKET: str = ""

@@ -8,7 +8,7 @@ from praktika import Artifact, Docker, Job, Secret, Workflow
 from ci.settings.settings import RunnerLabels
 from praktika.settings import Settings
 
-_HEAD_PRAKTIKA_VERSION = "0.1.17"
+_HEAD_PRAKTIKA_VERSION = "0.1.18"
 
 artifact = Artifact.Config(name="greet", type=Artifact.Type.S3, path="./artifact.txt")
 
@@ -31,29 +31,44 @@ workflow = Workflow.Config(
         # consolidated consult (the whole failure set is shown there, excluded
         # jobs included), with the ai_review digest in context.
         # exclude_jobs=["Code Review"],
-        # Project-specific guidance steering when the advisor should act.
-        extra_prompt=(
-            "When a test job fails because the test itself is outdated (e.g. it "
-            "asserts a value the PR intentionally changed) and the fix is small "
-            "and unambiguous, use cancel_and_patch to update the test. Only do "
-            "this when the test is clearly the stale side — if the production "
-            "code looks wrong, prefer continue/cancel_run and leave it for a human.\n\n"
-            "When the Code Review job fails with a blocking verdict, its digest "
-            "carries an `ai_review` object listing the reviewer's findings "
-            "(path/line/body). Read each cited file with read_file to confirm the "
-            "finding is a real defect, and when the fix is clear and unambiguous "
-            "use cancel_and_patch to address it. If a finding is subjective, "
-            "ambiguous, or the reviewer looks wrong, continue and leave it for the "
-            "author.\n\n"
-            "The canonical praktika version is `version` in pyproject.toml. The "
-            "`_HEAD_PRAKTIKA_VERSION` constant in a workflow and the praktika wheel "
-            "the project_init scaffold pins must track it. If a job (e.g. Version "
-            "Check or a scaffold test) fails because one of these is older than "
-            "pyproject.toml, that constant is stale: cancel_and_patch to bring it "
-            "up to the pyproject version. Never edit pyproject.toml to match a "
-            "stale constant, and leave `_BASE_*` version constants alone (they are "
-            "the prior release on purpose)."
-        ),
+        # Optionally restrict the advisor to specific jobs (exact names or globs);
+        # a failure only triggers it when the name matches. None = no restriction.
+        # allow_jobs=["*Test*", "Build (*)"],
+        # Project-specific guidance steering when the advisor should act, keyed
+        # by job-name glob. "*" guidance is added on every consult; a glob entry
+        # only when a matching job is in the failure set.
+        extra_prompt={
+            # Any test job: patch a clearly-outdated test, else leave it.
+            "*Test*": (
+                "When a test job fails because the test itself is outdated (e.g. "
+                "it asserts a value the PR intentionally changed) and the fix is "
+                "small and unambiguous, use cancel_and_patch to update the test. "
+                "Only do this when the test is clearly the stale side — if the "
+                "production code looks wrong, prefer continue/cancel_run and leave "
+                "it for a human."
+            ),
+            # The Code Review job: weigh the reviewer's structured findings.
+            "Code Review": (
+                "When the Code Review job fails with a blocking verdict, its "
+                "digest carries an `ai_review` object listing the reviewer's "
+                "findings (path/line/body). Read each cited file with read_file "
+                "to confirm the finding is a real defect, and when the fix is "
+                "clear and unambiguous use cancel_and_patch to address it. If a "
+                "finding is subjective, ambiguous, or the reviewer looks wrong, "
+                "continue and leave it for the author."
+            ),
+            # Version-gate jobs: bump the stale constant, never pyproject.toml.
+            "Version Check": (
+                "The canonical praktika version is `version` in pyproject.toml. "
+                "The `_HEAD_PRAKTIKA_VERSION` constant in a workflow and the "
+                "praktika wheel the project_init scaffold pins must track it. If "
+                "a job fails because one of these is older than pyproject.toml, "
+                "that constant is stale: cancel_and_patch to bring it up to the "
+                "pyproject version. Never edit pyproject.toml to match a stale "
+                "constant, and leave `_BASE_*` version constants alone (they are "
+                "the prior release on purpose)."
+            ),
+        },
     ),
     jobs=[
         # Verify the Praktika actually executing the job is the head version.
@@ -88,6 +103,7 @@ workflow = Workflow.Config(
                     "./pyproject.toml",
                     "./bootstrap/src",
                     "./bootstrap/pyproject.toml",
+                    "./bootstrap/setup.py",
                 ],
             ),
         ),

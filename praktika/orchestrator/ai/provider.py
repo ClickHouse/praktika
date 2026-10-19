@@ -20,6 +20,7 @@ job never reaches the model.
 For the current skeleton the only registered provider beyond the real ones is
 ``mock`` (see ``mock.py``), which returns a no-op ``Turn`` on failure.
 """
+import fnmatch
 from abc import ABC
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -203,31 +204,68 @@ class AIProvider(ABC):
         self.turns = []         # (observation, turn) pairs, as turns come back
         self._check_updater = None  # fn(status, summary_md); status in-progress|neutral
         self._check_open = False    # True between track_observation and track_turn
-        # Project-specific guidance appended to the system prompt (see
-        # Workflow.AIAssist.Config.extra_prompt). Empty adds nothing.
-        self._extra_guidance = ""
+        # Project-specific guidance appended to the system prompt, keyed by a
+        # job-name glob (see Workflow.AIAssist.Config.extra_prompt). The "*"
+        # entry applies to every consult; other entries apply only when a job
+        # whose name matches the glob is part of the consult. Empty adds nothing.
+        self._extra_guidance = {}
 
-    def set_extra_guidance(self, text):
+    def set_extra_guidance(self, guidance):
         """Store project-specific guidance to append to the system prompt.
 
-        Wired from ``Workflow.AIAssist.Config.extra_prompt`` by the advisor
-        at construction time. A provider folds it into its system prompt via
-        ``system_prompt``; providers that don't build a prompt simply ignore it.
+        Wired from ``Workflow.AIAssist.Config.extra_prompt`` by the advisor at
+        construction time. ``guidance`` is a ``{job_name_glob: text}`` map — the
+        ``"*"`` key applies to every consult, a glob key only when a job matching
+        it is in the consult. A plain string is accepted too and treated as
+        ``{"*": text}`` (global guidance). A provider folds the applicable
+        entries into its system prompt via ``system_prompt``; providers that
+        don't build a prompt simply ignore it.
         """
-        self._extra_guidance = (text or "").strip()
+        if isinstance(guidance, str):
+            guidance = {"*": guidance} if guidance.strip() else {}
+        self._extra_guidance = {
+            str(glob): text.strip()
+            for glob, text in (guidance or {}).items()
+            if isinstance(text, str) and text.strip()
+        }
 
-    def system_prompt(self, base):
-        """Return ``base`` with the configured extra guidance appended.
+    def _applicable_guidance(self, observation=None):
+        """Return the guidance texts applicable to ``observation``, in order.
+
+        The ``"*"`` entry always applies; a glob entry applies when it matches
+        any job named in ``observation.changed`` (the jobs that triggered this
+        consult). ``"*"`` comes first, then the remaining matches in insertion
+        order. Without an observation (run_start/finish), only ``"*"`` applies.
+        """
+        names = [
+            c.get("name", "")
+            for c in getattr(observation, "changed", None) or []
+            if c.get("name")
+        ]
+        texts = []
+        for glob, text in self._extra_guidance.items():
+            if glob == "*":
+                continue
+            if any(fnmatch.fnmatch(name, glob) for name in names):
+                texts.append(text)
+        star = self._extra_guidance.get("*")
+        return ([star] if star else []) + texts
+
+    def system_prompt(self, base, observation=None):
+        """Return ``base`` with the applicable extra guidance appended.
 
         Keeps the base/system prompt a module constant while letting a workflow
         steer the advisor (when to act, which failures to fix) without a code
-        change. Returns ``base`` unchanged when no guidance is set."""
-        if not self._extra_guidance:
+        change. Only guidance whose job-name glob matches the jobs in this
+        consult is appended (plus the always-on ``"*"`` entry). Returns ``base``
+        unchanged when no guidance applies."""
+        texts = self._applicable_guidance(observation)
+        if not texts:
             return base
         return (
             f"{base}\n\n"
             "Additional project-specific guidance (follow it when it applies):\n"
-            f"{self._extra_guidance}"
+            + "\n\n".join(texts)
         )
 
     def complete(

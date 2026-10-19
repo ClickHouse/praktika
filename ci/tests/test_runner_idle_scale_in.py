@@ -51,15 +51,6 @@ def test_try_scale_in_if_idle_decrements_and_terminates(monkeypatch):
         common, "instance_tag", lambda name, token=None: tags.get(name, "")
     )
 
-    class _SQS:
-        def get_queue_attributes(self, QueueUrl, AttributeNames):
-            return {
-                "Attributes": {
-                    "ApproximateNumberOfMessages": "0",
-                    "ApproximateNumberOfMessagesNotVisible": "0",
-                }
-            }
-
     calls = {"terminate": 0, "shutdown": 0}
 
     class _ASG:
@@ -94,8 +85,6 @@ def test_try_scale_in_if_idle_decrements_and_terminates(monkeypatch):
 
     assert (
         common.try_scale_in_if_idle(
-            sqs=_SQS(),
-            queue_url="queue-url",
             queue_name="arm-2xsmall",
             region="eu-north-1",
             instance_id="i-123",
@@ -149,8 +138,6 @@ def test_try_scale_in_if_idle_preserves_new_capacity_reserve_instance(monkeypatc
 
     assert (
         common.try_scale_in_if_idle(
-            sqs=None,
-            queue_url="queue-url",
             queue_name="arm-2xsmall",
             region="eu-north-1",
             instance_id="i-123",
@@ -198,8 +185,6 @@ def test_try_scale_in_if_idle_throttles_capacity_reserve_preserve_log(monkeypatc
     for _ in range(2):
         assert (
             common.try_scale_in_if_idle(
-                sqs=None,
-                queue_url="queue-url",
                 queue_name="arm-2xsmall",
                 region="eu-north-1",
                 instance_id="i-123",
@@ -214,8 +199,6 @@ def test_try_scale_in_if_idle_throttles_capacity_reserve_preserve_log(monkeypatc
     now[0] += 60 * 60
     assert (
         common.try_scale_in_if_idle(
-            sqs=None,
-            queue_url="queue-url",
             queue_name="arm-2xsmall",
             region="eu-north-1",
             instance_id="i-123",

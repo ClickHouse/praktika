@@ -3,8 +3,10 @@
 # by the images and user-data bootstrap paths.
 set -euo pipefail
 
+# Controller version is kept in lockstep with praktika (single source of truth:
+# `version` in the root pyproject.toml), so this resolves to that version.
 VERSION="$(
-  python3 -c "from pathlib import Path; from praktika.version import current_praktika_controller_version; print(current_praktika_controller_version(Path('bootstrap/pyproject.toml')))"
+  python3 -c "from praktika.version import current_praktika_controller_version; print(current_praktika_controller_version())"
 )"
 PRAKTIKA_COMPAT_VERSION="$(
   python3 -c "from praktika.version import compat_version, current_praktika_version; print(compat_version(current_praktika_version()))"

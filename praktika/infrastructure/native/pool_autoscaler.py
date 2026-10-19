@@ -8,6 +8,7 @@ from praktika.infrastructure.lambda_function import Lambda
 from praktika.settings import Settings
 
 from . import iam_scope
+from .lambda_pool_autoscaler import CAPACITY_S3_KEY
 
 # S3 key prefix (under the project artifact bucket) where this autoscaler
 # publishes each ASG's target AMI for its runners to read. Must match
@@ -74,9 +75,11 @@ class PoolAutoscaler:
             }
         )
 
-        # Bucket (name only; any configured prefix is dropped) the autoscaler
-        # publishes target-AMI objects into for runners to read. The IAM grant and
-        # the lambda env only materialize when a bucket is configured.
+        # Project artifact bucket, shared by both grants below. Read from the
+        # global Settings singleton — like the iam_scope.* calls above — because it
+        # is populated at import, before this Config is constructed. (Cloud.Config's
+        # per-project _settings isn't attached until after __post_init__.)
+        # `ami_target_bucket` is the bare name (any configured prefix dropped).
         artifact_bucket = (getattr(Settings, "S3_ARTIFACT_BUCKET", "") or "").strip()
         ami_target_bucket = artifact_bucket.split("/")[0]
 
@@ -109,16 +112,38 @@ class PoolAutoscaler:
                 "Resource": queue_arns,
             },
         ]
+        environments = {
+            "POOLS_CONFIG_JSON": pool_config_json,
+            "POLL_INTERVAL_SECONDS": str(max(60, int(self.interval_seconds))),
+            "AMI_TARGET_BUCKET": ami_target_bucket,
+        }
+
+        # Publish each ASG's target AMI so its runners read it from S3 instead of
+        # describing the ASG (avoids the account-wide describe herd).
         if ami_target_bucket:
             autoscaler_statements.append(
                 {
-                    # Publish each ASG's target AMI so its runners read it from S3
-                    # instead of describing the ASG (avoids the describe herd).
                     "Effect": "Allow",
                     "Action": ["s3:PutObject"],
                     "Resource": (
                         f"arn:aws:s3:::{ami_target_bucket}/{AMI_TARGET_S3_PREFIX}/*"
                     ),
+                }
+            )
+
+        # Wire the pool-capacity snapshot (which powers the orchestrator's CI
+        # throttle) to the project's artifact bucket.
+        if artifact_bucket:
+            environments["S3_BUCKET"] = artifact_bucket
+            bucket_name, _, prefix = artifact_bucket.partition("/")
+            snapshot_key = (
+                f"{prefix.rstrip('/')}/{CAPACITY_S3_KEY}" if prefix else CAPACITY_S3_KEY
+            )
+            autoscaler_statements.append(
+                {
+                    "Effect": "Allow",
+                    "Action": ["s3:PutObject"],
+                    "Resource": f"arn:aws:s3:::{bucket_name}/{snapshot_key}",
                 }
             )
 
@@ -140,11 +165,7 @@ class PoolAutoscaler:
             path=os.path.join(os.path.dirname(__file__), "lambda_pool_autoscaler.py"),
             handler="lambda_pool_autoscaler.lambda_handler",
             role_name=self.lambda_role_name,
-            environments={
-                "POOLS_CONFIG_JSON": pool_config_json,
-                "POLL_INTERVAL_SECONDS": str(max(60, int(self.interval_seconds))),
-                "AMI_TARGET_BUCKET": ami_target_bucket,
-            },
+            environments=environments,
             timeout_ms=self.timeout_ms,
             memory_size_mb=self.memory_size_mb,
             schedule_expression=_rate_expression_for_seconds(self.interval_seconds),

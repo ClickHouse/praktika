@@ -30,9 +30,14 @@ def current_praktika_version() -> str:
 
 
 def current_praktika_controller_version(pyproject: Optional[Path] = None) -> str:
-    if pyproject is None:
-        pyproject = Path(__file__).resolve().parents[1] / "bootstrap" / "pyproject.toml"
-    return _version_from_pyproject(pyproject) or package_version("praktika-controller")
+    # The controller version is kept in lockstep with praktika: there is a single
+    # source of truth (``version`` in the root ``pyproject.toml``), so the
+    # controller wheel carries praktika's version. ``bootstrap/pyproject.toml``
+    # declares ``dynamic = ["version"]`` and ``bootstrap/setup.py`` reads this same
+    # root version at build time. The ``pyproject`` argument is accepted for
+    # backward compatibility but ignored. On an installed host with no source tree,
+    # fall back to the controller wheel's baked metadata.
+    return _version_from_pyproject() or package_version("praktika-controller")
 
 
 def version_key(value: str) -> Tuple[int, ...]:

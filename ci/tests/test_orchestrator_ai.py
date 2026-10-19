@@ -315,6 +315,108 @@ def test_excluded_job_failure_does_not_fire():
     assert advisor._ledger.turns == 1
 
 
+def test_exclude_jobs_glob_matches():
+    # exclude_jobs entries are matched as globs, not just exact names.
+    advisor = AIAssist.maybe_create(
+        run_id="r1",
+        local_mode=True,
+        workflow_config=SimpleNamespace(
+            ai_assist=_workflow_ai(
+                enabled=True, provider="mock", exclude_jobs=["Code *"]
+            )
+        ),
+    )
+
+    review = _job("Code Review", "running")
+    build = _job("Build", "running")
+    state = _state([review, build])
+
+    review.status = SimpleNamespace(value="failure")
+    assert advisor.on_workflow_update(state, EVENT) is None
+    assert advisor._ledger.turns == 0
+
+    build.status = SimpleNamespace(value="failure")
+    assert advisor.on_workflow_update(state, EVENT) is not None
+    assert advisor._ledger.turns == 1
+
+
+def test_allow_jobs_restricts_trigger():
+    # allow_jobs limits the advisor to matching jobs (exact name or glob):
+    # a failure outside the allow-list never fires.
+    advisor = AIAssist.maybe_create(
+        run_id="r1",
+        local_mode=True,
+        workflow_config=SimpleNamespace(
+            ai_assist=_workflow_ai(
+                enabled=True, provider="mock", allow_jobs=["*Test*"]
+            )
+        ),
+    )
+
+    build = _job("Build", "running")
+    test = _job("Unit Test", "running")
+    state = _state([build, test])
+
+    # Not allow-listed -> no turn.
+    build.status = SimpleNamespace(value="failure")
+    assert advisor.on_workflow_update(state, EVENT) is None
+    assert advisor._ledger.turns == 0
+
+    # Allow-listed -> fires.
+    test.status = SimpleNamespace(value="failure")
+    assert advisor.on_workflow_update(state, EVENT) is not None
+    assert advisor._ledger.turns == 1
+
+
+def test_allow_jobs_empty_blocks_all():
+    # An empty allow_jobs list means nothing is eligible: no failure ever fires.
+    advisor = AIAssist.maybe_create(
+        run_id="r1",
+        local_mode=True,
+        workflow_config=SimpleNamespace(
+            ai_assist=_workflow_ai(enabled=True, provider="mock", allow_jobs=[])
+        ),
+    )
+
+    build = _job("Build", "running")
+    state = _state([build])
+
+    build.status = SimpleNamespace(value="failure")
+    assert advisor.on_workflow_update(state, EVENT) is None
+    assert advisor._ledger.turns == 0
+
+
+def test_allow_and_exclude_combine():
+    # allow_jobs and exclude_jobs apply together: a job must match allow_jobs
+    # AND not match exclude_jobs to trigger.
+    advisor = AIAssist.maybe_create(
+        run_id="r1",
+        local_mode=True,
+        workflow_config=SimpleNamespace(
+            ai_assist=_workflow_ai(
+                enabled=True,
+                provider="mock",
+                allow_jobs=["*Test*"],
+                exclude_jobs=["Flaky Test"],
+            )
+        ),
+    )
+
+    flaky = _job("Flaky Test", "running")
+    unit = _job("Unit Test", "running")
+    state = _state([flaky, unit])
+
+    # Allowed but also excluded -> no turn.
+    flaky.status = SimpleNamespace(value="failure")
+    assert advisor.on_workflow_update(state, EVENT) is None
+    assert advisor._ledger.turns == 0
+
+    # Allowed and not excluded -> fires.
+    unit.status = SimpleNamespace(value="failure")
+    assert advisor.on_workflow_update(state, EVENT) is not None
+    assert advisor._ledger.turns == 1
+
+
 class _RecordingProvider(AIProvider):
     """Records the observations routed to on_job_failure and returns a
     configurable decision so dispatch can be exercised."""
@@ -731,12 +833,45 @@ def test_system_prompt_without_guidance_returns_base():
 
 def test_system_prompt_appends_guidance():
     p = AnthropicProvider(model="claude-haiku-4-5")
+    # A plain string is treated as always-on "*" guidance.
     p.set_extra_guidance("  fix outdated tests  ")
     out = p.system_prompt("BASE")
     assert out.startswith("BASE")
     # whitespace stripped, guidance appended under a clear header
     assert "fix outdated tests" in out
     assert "BASE" != out
+
+
+def test_system_prompt_star_always_applies():
+    p = AnthropicProvider(model="claude-haiku-4-5")
+    p.set_extra_guidance({"*": "global rule"})
+    # No observation (run_start/finish): only "*" applies.
+    assert "global rule" in p.system_prompt("BASE")
+
+
+def test_system_prompt_glob_applies_only_to_matching_job():
+    p = AnthropicProvider(model="claude-haiku-4-5")
+    p.set_extra_guidance({"*": "always", "*Test*": "test rule", "Build": "build rule"})
+
+    # A matching job pulls its entry in, alongside "*"; non-matching stays out.
+    out = p.system_prompt("BASE", Observation(changed=[{"name": "Unit Test"}]))
+    assert "always" in out
+    assert "test rule" in out
+    assert "build rule" not in out
+    # "*" is listed first.
+    assert out.index("always") < out.index("test rule")
+
+    # A different failing job pulls a different entry.
+    out = p.system_prompt("BASE", Observation(changed=[{"name": "Build"}]))
+    assert "build rule" in out
+    assert "test rule" not in out
+
+
+def test_system_prompt_no_matching_glob_returns_base():
+    p = AnthropicProvider(model="claude-haiku-4-5")
+    p.set_extra_guidance({"Build": "build rule"})
+    # No "*" and no matching job -> base unchanged.
+    assert p.system_prompt("BASE", Observation(changed=[{"name": "Lint"}])) == "BASE"
 
 
 def test_on_job_failure_sends_extra_guidance_in_system():
@@ -749,35 +884,71 @@ def test_on_job_failure_sends_extra_guidance_in_system():
     assert "if a test is outdated, cancel_and_patch to fix it" in system
 
 
+def test_on_job_failure_selects_guidance_by_job_name():
+    p = AnthropicProvider(model="claude-haiku-4-5")
+    p.set_extra_guidance({"Code Review": "weigh the review findings"})
+    p._client = _FakeClient(_fake_resp('{"reasoning": "ok", "decision": []}'))
+    # The failing job matches the glob -> its guidance is in the system prompt.
+    p.on_job_failure(Observation(changed=[{"name": "Code Review", "status": "failure"}]))
+    assert "weigh the review findings" in p._client.calls[0]["system"]
+    # A different failing job -> the entry is omitted.
+    p.on_job_failure(Observation(changed=[{"name": "Build", "status": "failure"}]))
+    assert "weigh the review findings" not in p._client.calls[1]["system"]
+
+
 def test_resolve_extra_prompt_inline_only():
+    # A plain string resolves to a single always-on "*" entry.
     cfg = _workflow_ai(extra_prompt="  inline guidance  ")
-    assert _resolve_extra_prompt(cfg) == "inline guidance"
+    assert _resolve_extra_prompt(cfg) == {"*": "inline guidance"}
+
+
+def test_resolve_extra_prompt_dict_passthrough():
+    cfg = _workflow_ai(
+        extra_prompt={"*": "  global  ", "Build": "build rule", "Lint": "  "}
+    )
+    # Entries are stripped; blank entries dropped.
+    assert _resolve_extra_prompt(cfg) == {"*": "global", "Build": "build rule"}
 
 
 def test_resolve_extra_prompt_file_only(tmp_path, monkeypatch):
     (tmp_path / "ai_guidance.md").write_text("file guidance\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     cfg = _workflow_ai(extra_prompt_file="ai_guidance.md")
-    assert _resolve_extra_prompt(cfg) == "file guidance"
+    # The file becomes the always-on "*" entry.
+    assert _resolve_extra_prompt(cfg) == {"*": "file guidance"}
 
 
 def test_resolve_extra_prompt_inline_then_file(tmp_path, monkeypatch):
     (tmp_path / "g.md").write_text("from file", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     cfg = _workflow_ai(extra_prompt="from inline", extra_prompt_file="g.md")
-    assert _resolve_extra_prompt(cfg) == "from inline\n\nfrom file"
+    # File content is folded into "*" after the inline "*" text.
+    assert _resolve_extra_prompt(cfg) == {"*": "from inline\n\nfrom file"}
+
+
+def test_resolve_extra_prompt_dict_plus_file(tmp_path, monkeypatch):
+    (tmp_path / "g.md").write_text("from file", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    cfg = _workflow_ai(
+        extra_prompt={"*": "global", "Build": "build rule"}, extra_prompt_file="g.md"
+    )
+    # File appends to "*" only; per-job entries are untouched.
+    assert _resolve_extra_prompt(cfg) == {
+        "*": "global\n\nfrom file",
+        "Build": "build rule",
+    }
 
 
 def test_resolve_extra_prompt_missing_file_ignored(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     cfg = _workflow_ai(extra_prompt="keep this", extra_prompt_file="nope.md")
-    assert _resolve_extra_prompt(cfg) == "keep this"
+    assert _resolve_extra_prompt(cfg) == {"*": "keep this"}
 
 
 def test_resolve_extra_prompt_file_escape_ignored(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     cfg = _workflow_ai(extra_prompt_file="../../etc/passwd")
-    assert _resolve_extra_prompt(cfg) == ""
+    assert _resolve_extra_prompt(cfg) == {}
 
 
 def test_maybe_create_wires_extra_prompt(tmp_path, monkeypatch):
@@ -790,12 +961,15 @@ def test_maybe_create_wires_extra_prompt(tmp_path, monkeypatch):
             ai_assist=_workflow_ai(
                 enabled=True,
                 provider="mock",
-                extra_prompt="inline",
+                extra_prompt={"*": "inline", "Build": "build rule"},
                 extra_prompt_file="g.md",
             )
         ),
     )
-    assert advisor._provider._extra_guidance == "inline\n\nfix flaky tests"
+    assert advisor._provider._extra_guidance == {
+        "*": "inline\n\nfix flaky tests",
+        "Build": "build rule",
+    }
 
 
 # --------------------------------------------------------------- log fetch tool

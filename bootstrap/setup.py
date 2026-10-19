@@ -5,11 +5,25 @@ from setuptools import find_packages, setup
 
 
 def _version_from_pyproject() -> str:
-    pyproject = Path(__file__).with_name("pyproject.toml")
+    # The controller version is kept in lockstep with praktika: read `version`
+    # from the ROOT pyproject.toml (the single source of truth), not this package's
+    # own bootstrap/pyproject.toml (which declares `dynamic = ["version"]`). The
+    # root pyproject is the parent of this bootstrap/ directory. The controller
+    # wheel is always built from the worktree via ci/build_and_publish_wheels.sh
+    # (`python -m build --wheel --no-isolation bootstrap`), so the root is present.
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    in_project = False
     for raw_line in pyproject.read_text(encoding="utf-8").splitlines():
-        match = re.match(r'version\s*=\s*["\']([^"\']+)["\']', raw_line.strip())
-        if match:
-            return match.group(1)
+        line = raw_line.strip()
+        if line == "[project]":
+            in_project = True
+            continue
+        if in_project and line.startswith("["):
+            break
+        if in_project:
+            match = re.match(r'version\s*=\s*["\']([^"\']+)["\']', line)
+            if match:
+                return match.group(1)
     raise RuntimeError(f"Could not find project version in {pyproject}")
 
 

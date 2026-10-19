@@ -5,6 +5,11 @@ import time
 
 import boto3
 
+# S3 key (under S3_BUCKET) of the pool-capacity snapshot this lambda
+# writes and the orchestrator reads for its CI capacity throttle. Hardcoded on
+# both sides (see praktika.orchestrator.throttle.CAPACITY_S3_KEY).
+CAPACITY_S3_KEY = "pool_capacity.json"
+
 # S3 key prefix (under the project artifact bucket) where this autoscaler
 # publishes each ASG's current target AMI. Must match the consumer side in
 # bootstrap/src/praktika_controller/common.py (AMI_TARGET_S3_PREFIX). Runners
@@ -210,11 +215,14 @@ def lambda_handler(event, context):
                 "visible_messages": visible_messages,
                 "in_flight_messages": in_flight_messages,
                 "current_desired": current_desired,
+                "max_size": max_size,
                 "capacity_reserve": capacity_reserve,
                 "new_desired": new_desired,
                 "scaled": scaled,
             }
         )
+
+    _publish_capacity_snapshot(region, results)
 
     return {
         "region": region,
@@ -223,3 +231,57 @@ def lambda_handler(event, context):
         "skipped_count": len(skipped),
         "skipped": skipped,
     }
+
+
+def _pool_saturated(visible_messages, in_flight_messages, max_size):
+    """A pool is at capacity when its backlog (queued + in-flight jobs) already
+    meets or exceeds the ASG ceiling, so no further runner can be launched to
+    drain a new job. A max of 0 (an ASG that can launch nothing) is therefore
+    always saturated — which also makes "set a pool's ASG MaxSize to 0" the
+    simplest way to force the throttle on in the field."""
+    backlog = max(0, int(visible_messages)) + max(0, int(in_flight_messages))
+    return backlog >= int(max_size)
+
+
+def _publish_capacity_snapshot(region, results):
+    """Write a per-pool capacity snapshot to S3 for the orchestrator's CI
+    throttle. Keyed by queue_name — the same identifier the orchestrator derives
+    from a job's ``runs_on`` — so the orchestrator never needs to know pool/ASG
+    names. Best-effort: a write failure must not fail the autoscaler run (its
+    primary job is scaling), and a missing snapshot just makes the throttle fail
+    open. Skipped pools are omitted (no data → orchestrator won't block on them).
+
+    Gated on S3_BUCKET: when unset (throttle not deployed) the autoscaler
+    behaves exactly as before and writes nothing."""
+    bucket = os.environ.get("S3_BUCKET", "").strip()
+    if not bucket:
+        return
+    pools = {
+        r["queue_name"]: {
+            "pool_name": r["pool_name"],
+            "visible": r["visible_messages"],
+            "in_flight": r["in_flight_messages"],
+            "desired": r["current_desired"],
+            "max": r["max_size"],
+            "saturated": _pool_saturated(
+                r["visible_messages"], r["in_flight_messages"], r["max_size"]
+            ),
+        }
+        for r in results
+    }
+    # A bucket may carry a key prefix ("bucket/prefix"); split it off so Bucket=
+    # is a bare name, mirroring the orchestrator reader.
+    bucket_name, _, prefix = bucket.partition("/")
+    key = f"{prefix.rstrip('/')}/{CAPACITY_S3_KEY}" if prefix else CAPACITY_S3_KEY
+    body = json.dumps(
+        {"region": region, "pools": pools}, separators=(",", ":"), sort_keys=True
+    )
+    try:
+        boto3.client("s3", region_name=region).put_object(
+            Bucket=bucket_name,
+            Key=key,
+            Body=body.encode("utf-8"),
+            ContentType="application/json",
+        )
+    except Exception as ex:
+        print(f"[WARN] could not write capacity snapshot to s3://{bucket}/{CAPACITY_S3_KEY}: {type(ex).__name__}: {ex}")
