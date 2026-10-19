@@ -379,8 +379,6 @@ def terminate_if_auto_scaled(*, region: str, instance_id: str, log) -> bool:
 
 def try_scale_in_if_idle(
     *,
-    sqs,
-    queue_url: str,
     queue_name: str,
     region: str,
     instance_id: str,
@@ -388,6 +386,14 @@ def try_scale_in_if_idle(
     reserved_capacity_log_limiter: LogRateLimiter | None = None,
     log,
 ) -> bool:
+    """Self-terminate an idle auto-scaled box. Called on an empty poll — the 20s
+    long-poll returned no message, i.e. no work was ready for this instance — so it
+    scales in right away instead of waiting for the whole shared queue to drain.
+    The old gate also required the queue's in-flight count to be zero, which let a
+    single still-working sibling pin every idle box so the fleet never shrank after
+    a burst (see scale_in_stuck_rca.md). A reserved instance is still preserved
+    until it has run its first job; after that it scales in like any other.
+    """
     if not region or not instance_id:
         return False
     try:
@@ -411,17 +417,6 @@ def try_scale_in_if_idle(
                     queue_name,
                     instance_id,
                 )
-            return False
-        attrs = sqs.get_queue_attributes(
-            QueueUrl=queue_url,
-            AttributeNames=[
-                "ApproximateNumberOfMessages",
-                "ApproximateNumberOfMessagesNotVisible",
-            ],
-        )["Attributes"]
-        visible = int(attrs.get("ApproximateNumberOfMessages", "0"))
-        in_flight = int(attrs.get("ApproximateNumberOfMessagesNotVisible", "0"))
-        if visible != 0 or in_flight != 0:
             return False
 
         import boto3

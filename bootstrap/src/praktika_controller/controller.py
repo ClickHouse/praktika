@@ -1068,8 +1068,6 @@ def poll():
         messages = resp.get("Messages", [])
         if not messages:
             if try_scale_in_if_idle(
-                sqs=sqs,
-                queue_url=queue_url,
                 queue_name=queue_name,
                 region=REGION,
                 instance_id=INSTANCE_ID,
