@@ -174,7 +174,7 @@ class Digest:
         )
 
     @staticmethod
-    @functools.cache
+    @functools.lru_cache(maxsize=None)
     def _get_submodules():
         """Returns the list of (sha, path) of all submodules"""
         return [
