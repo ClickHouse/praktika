@@ -10,6 +10,11 @@ from praktika.settings import Settings
 from . import iam_scope
 from .lambda_pool_autoscaler import CAPACITY_S3_KEY
 
+# S3 key prefix (under the project artifact bucket) where this autoscaler
+# publishes each ASG's target AMI for its runners to read. Must match
+# AMI_TARGET_S3_PREFIX in lambda_pool_autoscaler.py and the controller consumer.
+AMI_TARGET_S3_PREFIX = "ami-targets"
+
 
 def _rate_expression_for_seconds(interval_seconds: int) -> str:
     interval_seconds = max(60, int(interval_seconds))
@@ -70,11 +75,26 @@ class PoolAutoscaler:
             }
         )
 
-        statements = [
+        # Project artifact bucket, shared by both grants below. Read from the
+        # global Settings singleton — like the iam_scope.* calls above — because it
+        # is populated at import, before this Config is constructed. (Cloud.Config's
+        # per-project _settings isn't attached until after __post_init__.)
+        # `ami_target_bucket` is the bare name (any configured prefix dropped).
+        artifact_bucket = (getattr(Settings, "S3_ARTIFACT_BUCKET", "") or "").strip()
+        ami_target_bucket = artifact_bucket.split("/")[0]
+
+        autoscaler_statements = [
             {
                 # Describe does not support resource-level scoping.
                 "Effect": "Allow",
                 "Action": ["autoscaling:DescribeAutoScalingGroups"],
+                "Resource": "*",
+            },
+            {
+                # Resolving an ASG's launch-template version to its AMI (to publish
+                # the target for runners) is read-only and does not support scoping.
+                "Effect": "Allow",
+                "Action": ["ec2:DescribeLaunchTemplateVersions"],
                 "Resource": "*",
             },
             {
@@ -95,22 +115,31 @@ class PoolAutoscaler:
         environments = {
             "POOLS_CONFIG_JSON": pool_config_json,
             "POLL_INTERVAL_SECONDS": str(max(60, int(self.interval_seconds))),
+            "AMI_TARGET_BUCKET": ami_target_bucket,
         }
 
+        # Publish each ASG's target AMI so its runners read it from S3 instead of
+        # describing the ASG (avoids the account-wide describe herd).
+        if ami_target_bucket:
+            autoscaler_statements.append(
+                {
+                    "Effect": "Allow",
+                    "Action": ["s3:PutObject"],
+                    "Resource": (
+                        f"arn:aws:s3:::{ami_target_bucket}/{AMI_TARGET_S3_PREFIX}/*"
+                    ),
+                }
+            )
+
         # Wire the pool-capacity snapshot (which powers the orchestrator's CI
-        # throttle) to the project's artifact bucket. Read from the global
-        # Settings singleton — like the iam_scope.* calls above — because it is
-        # populated at import, before this Config is constructed. (Cloud.Config's
-        # per-project _settings isn't attached until after __post_init__, so it
-        # can't be used here.)
-        capacity_bucket = (getattr(Settings, "S3_ARTIFACT_BUCKET", "") or "").strip()
-        if capacity_bucket:
-            environments["S3_BUCKET"] = capacity_bucket
-            bucket_name, _, prefix = capacity_bucket.partition("/")
+        # throttle) to the project's artifact bucket.
+        if artifact_bucket:
+            environments["S3_BUCKET"] = artifact_bucket
+            bucket_name, _, prefix = artifact_bucket.partition("/")
             snapshot_key = (
                 f"{prefix.rstrip('/')}/{CAPACITY_S3_KEY}" if prefix else CAPACITY_S3_KEY
             )
-            statements.append(
+            autoscaler_statements.append(
                 {
                     "Effect": "Allow",
                     "Action": ["s3:PutObject"],
@@ -127,7 +156,7 @@ class PoolAutoscaler:
             inline_policies={
                 "PoolAutoscalerAccess": {
                     "Version": "2012-10-17",
-                    "Statement": statements,
+                    "Statement": autoscaler_statements,
                 }
             },
         )

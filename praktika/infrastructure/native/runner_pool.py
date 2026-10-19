@@ -7,8 +7,15 @@ from praktika.infrastructure.iam_instance_profile import IAMInstanceProfile
 from praktika.infrastructure.iam_role import IAMRole
 from praktika.infrastructure.launch_template import LaunchTemplate
 from praktika.infrastructure.sqs_queue import SQSQueue
+from praktika.settings import Settings
 
 from . import iam_scope
+
+# S3 key prefix (under the project artifact bucket) where the pool autoscaler
+# publishes each ASG's target AMI; runners read it at the idle boundary to decide
+# AMI-drift self-recycle. Must match AMI_TARGET_S3_PREFIX in the autoscaler and
+# the controller consumer (bootstrap/.../common.py).
+AMI_TARGET_S3_PREFIX = "ami-targets"
 
 # Lets the local SSM Agent register and report this EC2 instance as a managed
 # instance. This intentionally omits Parameter Store read actions from AWS's
@@ -466,20 +473,28 @@ class RunnerPool:
                     ],
                     "Resource": iam_scope.autoscaling_group_arns(),
                 },
-                {
-                    # At the idle boundary the controller compares its own AMI to
-                    # the ASG's current launch template and recycles itself when the
-                    # image was rebaked (see common.should_recycle_for_ami). Both
-                    # describes are read-only and don't support resource scoping.
-                    "Sid": "AmiDriftRecycleDescribe",
-                    "Effect": "Allow",
-                    "Action": [
-                        "autoscaling:DescribeAutoScalingGroups",
-                        "ec2:DescribeLaunchTemplateVersions",
-                    ],
-                    "Resource": "*",
-                },
             ]
+            # At the idle boundary the controller compares its own AMI to the
+            # ASG's target AMI and recycles itself when the image was rebaked (see
+            # common.should_recycle_for_ami). The target is read from a tiny S3
+            # object the pool autoscaler publishes — runners NO LONGER describe the
+            # ASG / launch template themselves, which caused account-wide
+            # DescribeAutoScalingGroups throttling when thousands crossed the idle
+            # boundary together. Grant read on just that object prefix.
+            ami_target_bucket = (
+                (getattr(Settings, "S3_ARTIFACT_BUCKET", "") or "").strip().split("/")[0]
+            )
+            if ami_target_bucket:
+                runner_statements.append(
+                    {
+                        "Sid": "AmiDriftTargetRead",
+                        "Effect": "Allow",
+                        "Action": ["s3:GetObject"],
+                        "Resource": (
+                            f"arn:aws:s3:::{ami_target_bucket}/{AMI_TARGET_S3_PREFIX}/*"
+                        ),
+                    }
+                )
             if self.allow_ssm_debug:
                 runner_statements = [
                     _SSM_MANAGED_INSTANCE_CORE_STATEMENT,
@@ -577,6 +592,14 @@ class RunnerPool:
             "praktika_scaling": self.scaling,
             "praktika_capacity_reserve": str(self.capacity_reserve),
         }
+        ami_target_bucket = (
+            (getattr(Settings, "S3_ARTIFACT_BUCKET", "") or "").strip().split("/")[0]
+        )
+        if ami_target_bucket:
+            # Lets the controller read {bucket}/ami-targets/{asg}.json for the
+            # AMI-drift self-recycle check without a repo clone (no clone exists at
+            # the idle boundary of a reserved, never-worked instance).
+            runtime_tags["praktika_artifact_bucket"] = ami_target_bucket
         if self.ext.get("system_logs"):
             # Activates the baked praktika-system-logs streamer at boot so
             # kernel/OOM/systemd-kill evidence is shipped to CloudWatch.
