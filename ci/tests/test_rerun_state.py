@@ -59,6 +59,10 @@ def _make_state(s3, statuses, always_run=()):
     state._ci_config = {}
     state._gh_token = None  # can_post_checks False -> no check API calls
     state.cancelled = False
+    # In-memory authoritative summary (seeded by create_initial_report in a real
+    # run). None here; the two publish_report tests seed it so the single-writer
+    # path doesn't try to lazy-load from S3.
+    state._summary_result = None
     state.jobs = {}
     for name, status in statuses.items():
         js = JobState.__new__(JobState)
@@ -398,10 +402,12 @@ def test_publish_report_aggregates_usage_idempotently(monkeypatch):
     from praktika.result import Result
 
     captured = {}
+    # publish_report now uses the single-writer in-memory path; capture its
+    # kwargs (workflow_result + version come positionally, so accept *a).
     monkeypatch.setattr(
         result_mod._ResultS3,
-        "update_workflow_results",
-        staticmethod(lambda **kw: captured.update(kw)),
+        "update_workflow_results_inmem",
+        staticmethod(lambda *a, **kw: captured.update(kw)),
     )
 
     s3 = _FakeS3()
@@ -410,6 +416,8 @@ def test_publish_report_aggregates_usage_idempotently(monkeypatch):
     )
     state.workflow = types.SimpleNamespace(name="PR", enable_report=True)
     state._report_env_ok = True  # short-circuit orchestrator report-env setup
+    # Seed the in-memory summary so publish_report skips the lazy S3 load.
+    state._summary_result = Result.create_new("PR", Result.Status.RUNNING)
 
     def _result_dict(name, duration, downloaded, uploaded):
         r = Result.create_new(name, Result.Status.OK)
@@ -456,8 +464,8 @@ def test_publish_report_authors_skipped_rows(monkeypatch):
     captured = {}
     monkeypatch.setattr(
         result_mod._ResultS3,
-        "update_workflow_results",
-        staticmethod(lambda **kw: captured.update(kw)),
+        "update_workflow_results_inmem",
+        staticmethod(lambda *a, **kw: captured.update(kw)),
     )
 
     s3 = _FakeS3()
@@ -466,6 +474,8 @@ def test_publish_report_authors_skipped_rows(monkeypatch):
     )
     state.workflow = types.SimpleNamespace(name="PR", enable_report=True)
     state._report_env_ok = True  # short-circuit orchestrator report-env setup
+    # Seed the in-memory summary so publish_report skips the lazy S3 load.
+    state._summary_result = Result.create_new("PR", Result.Status.RUNNING)
 
     a = Result.create_new("A", Result.Status.OK)
     a.duration = 10
@@ -490,6 +500,50 @@ def test_publish_report_authors_skipped_rows(monkeypatch):
     assert rows["C"].info == "not affected by this diff"
     # Only the job that actually ran (A) contributes compute usage.
     assert captured["compute_usage"].runners_usage["arm-small"] == 10
+
+
+def test_update_workflow_results_inmem_no_download_overwrite_on_change(monkeypatch):
+    """Single-writer path: applies updates to the in-memory summary and plain-
+    overwrites the object only when the content changed — never re-downloading and
+    never versioning (the whole point of orchestrator ownership)."""
+    import praktika.result as result_mod
+    from praktika.result import Result, _ResultS3
+
+    writes = []
+    monkeypatch.setattr(
+        result_mod._ResultS3,
+        "overwrite_result_to_s3",
+        staticmethod(lambda result: writes.append(result.name) or ""),
+    )
+
+    def _no_download(*a, **k):
+        raise AssertionError("in-memory path must not download the summary")
+
+    # Neither the versioned nor the plain download may be called.
+    monkeypatch.setattr(
+        result_mod._ResultS3, "copy_result_from_s3_with_version", staticmethod(_no_download)
+    )
+    monkeypatch.setattr(
+        result_mod._ResultS3, "copy_result_from_s3", staticmethod(_no_download)
+    )
+    # Isolate from the filesystem — _apply dumps the summary locally.
+    monkeypatch.setattr(Result, "dump", lambda self, *a, **k: None)
+
+    # A real summary always carries its job rows (seeded PENDING by
+    # create_initial_report); update_sub_result asserts non-empty results.
+    summary = Result.create_new(
+        "PR", Result.Status.RUNNING, results=[Result.create_new("A", Result.Status.PENDING)]
+    )
+    # A's row changes PENDING -> OK -> one overwrite.
+    _ResultS3.update_workflow_results_inmem(
+        summary, new_sub_results=[Result.create_new("A", Result.Status.OK)]
+    )
+    assert writes == ["PR"]
+    # Re-applying the identical row is a no-op -> no write.
+    _ResultS3.update_workflow_results_inmem(
+        summary, new_sub_results=[Result.create_new("A", Result.Status.OK)]
+    )
+    assert writes == ["PR"]
 
 
 def test_reset_posts_pending_check_at_reset_time(monkeypatch):

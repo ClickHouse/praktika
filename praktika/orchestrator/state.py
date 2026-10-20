@@ -848,6 +848,15 @@ class WorkflowState:
         # consult point, then cleared; no effect when the advisor is off.
         self.hold_dispatch = False
 
+        # Authoritative workflow summary held in memory. On the native path the
+        # orchestrator is the SOLE writer of the summary (runner pre_run/post_run
+        # and _finish_workflow no longer write it), so publish_report owns this
+        # copy and plain-overwrites the summary object without re-downloading or
+        # versioning it each loop. Seeded by create_initial_report (fresh run) or
+        # lazily loaded once on a resume (see publish_report). None until
+        # seeded/loaded.
+        self._summary_result = None
+
         # S3 client used by sweep_liveness, sweep_completions, sweep_cancel,
         # and the orchestrator → runners kill flag. Only created in CI mode;
         # local mode runs jobs synchronously inside `kick` (no S3 needed).
@@ -1213,8 +1222,13 @@ class WorkflowState:
                 "could not set up orchestrator report env for initial summary"
             )
         from ..hook_html import HtmlRunnerHooks
+        from ..result import Result
 
         HtmlRunnerHooks.create_initial_report(self.workflow)
+        # Seed the in-memory authoritative summary from what we just wrote (dumped
+        # locally by create_initial_report), so publish_report can re-assert and
+        # plain-overwrite it without re-downloading each loop.
+        self._summary_result = Result.from_fs(self.workflow.name)
 
     def publish_report(self):
         """Re-assert completed jobs' rows into the workflow report summary and
@@ -1259,7 +1273,18 @@ class WorkflowState:
             for name, js in self.jobs.items()
             if js.status == JobStatus.CANCELLED and not isinstance(js.result, dict)
         ]
-        if not terminal and not skipped and not cancelled:
+        # In-flight jobs (dispatched, no terminal Result yet). Under orchestrator
+        # ownership the runner's pre_run no longer writes a RUNNING row, so the
+        # orchestrator advances the report row PENDING -> RUNNING here. These are
+        # also report-message sources so a re-run's stale warnings/errors get
+        # cleared while it re-runs (what pre_run's clear_report_sources did).
+        inflight = [
+            (name, js)
+            for name, js in self.jobs.items()
+            if js.status in (JobStatus.QUEUED, JobStatus.RUNNING)
+            and not isinstance(js.result, dict)
+        ]
+        if not terminal and not skipped and not cancelled and not inflight:
             return
         if not self._ensure_report_env():
             return
@@ -1344,6 +1369,17 @@ class WorkflowState:
                 for name, js in cancelled
             ]
 
+            # RUNNING rows for in-flight jobs. create_new leaves duration None and
+            # start_time is the fixed kick time, so the serialized row is stable
+            # across loops (no churn / no version bump while the job runs). When
+            # the job finishes it moves into `rows` and overwrites this.
+            running_rows = []
+            for name, js in inflight:
+                _r = Result.create_new(name, Result.Status.RUNNING)
+                if js.started_at:
+                    _r.start_time = js.started_at
+                running_rows.append(_r)
+
             top_ext = {}
             # Point the top-level "Run" link at this workflow's own GitHub check
             # run. self._run_id IS the top-level check-run id whenever checks are
@@ -1365,9 +1401,54 @@ class WorkflowState:
             if self.cancelled:
                 top_ext["is_cancelled"] = True
 
-            _ResultS3.update_workflow_results(
-                workflow_name=self.workflow.name,
-                new_sub_results=rows + skipped_rows + cancelled_rows,
+            # Aggregate the workflow-level report messages (warnings / errors /
+            # notes) from every finished job's Result ext and re-assert them onto
+            # the TOP summary. The runner's post_run no longer writes these under
+            # ORCHESTRATOR_OWNS_REPORT — the orchestrator owns them, read from each
+            # job's final.json (published_result carries the ext). Re-building from
+            # the live job set every loop is idempotent; clear_report_sources drops
+            # each source's prior top-level entries first so a re-publish (or a
+            # job's re-run) can't duplicate them. Messages also remain on each
+            # job's own row via its ext, matching Info.add_workflow_warning's
+            # "visible at both levels" contract.
+            _EXT_KEY_TO_KIND = {"warnings": "warning", "errors": "error", "notes": "note"}
+            report_messages = []
+            report_sources = set()
+            for _name, _js, _pub in published:
+                _ext = _pub.get("ext") or {}
+                for _ext_key, _kind in _EXT_KEY_TO_KIND.items():
+                    for _entry in _ext.get(_ext_key) or []:
+                        if not isinstance(_entry, dict):
+                            continue
+                        _frm = _entry.get("from") or _name
+                        report_messages.append(
+                            {"message": _entry.get("message", ""), "kind": _kind, "from": _frm}
+                        )
+                        report_sources.add(_frm)
+            # Clear any stale top-level messages left by a re-run job while it is
+            # back in flight (pre_run used to do this). First-run jobs have none,
+            # so this is a no-op for them.
+            for _name, _js in inflight:
+                report_sources.add(_name)
+
+            # Ensure the authoritative summary is in memory. A fresh run seeded it
+            # in create_initial_report; a resume (which does not call that) loads
+            # it from S3 ONCE here, then owns it in memory from then on.
+            if self._summary_result is None:
+                _ResultS3.copy_result_from_s3(
+                    Result.file_name_static(self.workflow.name)
+                )
+                self._summary_result = Result.from_fs(self.workflow.name)
+
+            # Single-writer in-memory publish: apply this loop's rows / usage /
+            # messages to the in-memory summary and plain-overwrite the summary
+            # object only when it changed — no per-loop download, no versioning
+            # (the orchestrator is the sole writer on the native path).
+            _ResultS3.update_workflow_results_inmem(
+                self._summary_result,
+                new_sub_results=rows + skipped_rows + cancelled_rows + running_rows,
+                report_messages=report_messages or None,
+                clear_report_sources=sorted(report_sources) or None,
                 # Only SET usage when a job actually finished this run; passing
                 # zeroed aggregates with replace_usage would wipe existing totals
                 # (skipped jobs can be published before any real job completes).

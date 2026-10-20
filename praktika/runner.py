@@ -993,6 +993,13 @@ class Runner:
 
         is_final_job = job.name == Settings.FINISH_WORKFLOW_JOB_NAME
         is_initial_job = job.name == Settings.CI_CONFIG_JOB_NAME
+        # On the native path the orchestrator owns the workflow summary and the
+        # runner is no longer a writer of it; post_run does not download it
+        # either (see HtmlRunnerHooks.post_run). The summary is materialized
+        # locally only for the final job (by _finish_workflow), so the
+        # summary-consuming steps below run only for the final job here. Off the
+        # native path (GHA) they keep their original per-job behavior.
+        native_report = env.ORCHESTRATOR_OWNS_REPORT
 
         if run_exit_code == 0 or result.do_not_block_pipeline_on_failure():
             providing_artifacts = []
@@ -1211,7 +1218,12 @@ class Runner:
                         url=Info().get_report_url(latest=False),
                     )
 
-            workflow_result = Result.from_fs(workflow.name)
+            # Read the local summary only when a consumer below will use it.
+            # Under native_report it exists locally for the final job only;
+            # reading it for a non-final job would raise FileNotFoundError.
+            workflow_result = None
+            if is_final_job or not native_report:
+                workflow_result = Result.from_fs(workflow.name)
             if is_final_job and ci_db:
                 # run after HtmlRunnerHooks.post_run(), when the workflow Result
                 # has up-to-date storage/compute/pipeline-utilization data. All
@@ -1246,7 +1258,7 @@ class Runner:
                 )
 
         if workflow.enable_gh_summary_comment and (
-            job.name == Settings.FINISH_WORKFLOW_JOB_NAME or not result.is_ok()
+            is_final_job or (not result.is_ok() and not native_report)
         ) and GHAuth.auth(workflow, no_strict=True):
             workflow_result = Result.from_fs(workflow.name)
             try:
@@ -1297,7 +1309,8 @@ class Runner:
 
         # Send Slack notifications after workflow status is finalized by HtmlRunnerHooks.post_run()
         if workflow.enable_slack_feed and (
-            is_final_job or is_initial_job or not result.is_ok()
+            is_final_job
+            or ((is_initial_job or not result.is_ok()) and not native_report)
         ):
             updated_emails = []
             commit_authors = info.get_kv_data("commit_authors")
