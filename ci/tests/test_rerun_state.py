@@ -582,6 +582,36 @@ def test_update_workflow_results_inmem_retries_after_failed_overwrite(monkeypatc
     assert attempts == ["PR", "PR"]
 
 
+def test_publish_report_overwrites_stale_is_cancelled(monkeypatch):
+    """A non-cancelled run publishes is_cancelled=False so a resume of a
+    cancelled run overwrites the stale True its summary carried."""
+    import dataclasses as dc
+
+    import praktika.result as result_mod
+    from praktika.result import Result
+
+    captured = {}
+    monkeypatch.setattr(
+        result_mod._ResultS3,
+        "update_workflow_results_inmem",
+        staticmethod(lambda *a, **kw: captured.update(kw)),
+    )
+
+    s3 = _FakeS3()
+    state = _make_state(s3, {"A": JobStatus.SUCCESS, "B": JobStatus.SUCCESS, "C": JobStatus.SUCCESS})
+    state.workflow = types.SimpleNamespace(name="PR", enable_report=True)
+    state._report_env_ok = True
+    state._summary_result = Result.create_new("PR", Result.Status.RUNNING)
+    state.cancelled = False
+    a = Result.create_new("A", Result.Status.OK)
+    a.duration = 1
+    state.jobs["A"].result = dc.asdict(a)
+    state.jobs["A"].job.runs_on = ["x"]
+
+    state.publish_report()
+    assert captured["top_ext"]["is_cancelled"] is False
+
+
 def test_flush_report_retries_terminal_dirty(monkeypatch):
     """The terminal flush retries a failed final overwrite (no next loop to carry
     the dirty flag) until the summary lands."""

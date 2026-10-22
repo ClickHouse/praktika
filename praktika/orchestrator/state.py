@@ -1402,8 +1402,14 @@ class WorkflowState:
             # jobs; on a cancelled run it no longer runs (get_ready skips it),
             # so the orchestrator marks the report cancelled so the Slack feed
             # and report render it as cancelled rather than merely finished.
-            if self.cancelled:
-                top_ext["is_cancelled"] = True
+            # Set it UNCONDITIONALLY (not only when cancelled): a resume of a
+            # cancelled run clears self.cancelled, but the summary loaded from S3
+            # still carries is_cancelled=True from the cancelled generation; since
+            # top_ext is applied via ext.update(), omitting the key would preserve
+            # that stale True and mislabel a now-successful resumed run as
+            # cancelled. Writing False overwrites it (False and absent read the
+            # same to consumers).
+            top_ext["is_cancelled"] = bool(self.cancelled)
 
             # Aggregate the workflow-level report messages (warnings / errors /
             # notes) from every finished job's Result ext and re-assert them onto
