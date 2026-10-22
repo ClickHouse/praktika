@@ -526,8 +526,13 @@ class JobState:
         except Exception as e:
             print(f"  [warn] check update for {self.name!r}: {type(e).__name__}: {e}")
 
-    def _create_check(self):
+    def _create_check(self, force=False):
         """Queue the GitHub check run (status=queued) — called at kick time.
+
+        ``force`` overrides minimal mode's suppression: a re-run of a job that
+        previously posted a (failure) check must go through the full
+        queued -> ... -> final lifecycle so its now-possibly-passing outcome
+        supersedes the lingering red check for this name (see ``_reset_job``).
 
         Shows up in the PR as a pending check the moment the orchestrator
         decides to run the job, not back at workflow-start time. The check
@@ -540,7 +545,7 @@ class JobState:
         ws = self._workflow_state
         if ws is None or not ws.can_post_checks:
             return
-        if self._minimal_checks:
+        if self._minimal_checks and not force:
             # Minimal mode: no queued/in-progress check-run — a per-job check is
             # posted only if the job ends in failure (see finish/fail_dead).
             return
@@ -1981,6 +1986,14 @@ class WorkflowState:
         # goes queued -> in_progress -> final, and GitHub surfaces the latest
         # check per name (the previous same-name check collapses). The next
         # snapshot records the new check_id.
+        # In minimal mode a job normally posts no check unless it fails, but a
+        # re-run of a job that already has a check (i.e. a prior attempt failed
+        # and left a red check for this name) MUST drive a fresh full-lifecycle
+        # check — otherwise a now-passing re-run posts nothing and the old
+        # failure stays the latest check for this name. In verbose mode a
+        # finished job always has a check, so this simply preserves today's
+        # behavior.
+        had_check = js.check is not None
         js.check = None
         # Post the fresh QUEUED check now, not at kick() time. The target job is
         # kicked immediately, but a reset *downstream* job isn't kicked until its
@@ -1988,7 +2001,7 @@ class WorkflowState:
         # linger for the whole re-run. Posting here (same path kick() uses) shows
         # every reset job as pending the moment the re-run is applied; each flips
         # to in_progress when it actually runs. No-op without a GH token.
-        js._create_check()
+        js._create_check(force=had_check)
         return True
 
     def _delete_run_key(self, key):
