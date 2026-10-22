@@ -582,6 +582,29 @@ def test_update_workflow_results_inmem_retries_after_failed_overwrite(monkeypatc
     assert attempts == ["PR", "PR"]
 
 
+def test_flush_report_retries_terminal_dirty(monkeypatch):
+    """The terminal flush retries a failed final overwrite (no next loop to carry
+    the dirty flag) until the summary lands."""
+    import praktika.orchestrator.state as state_mod
+
+    s3 = _FakeS3()
+    state = _make_state(s3, {"A": JobStatus.SUCCESS})
+    state._summary_dirty = True
+    calls = {"n": 0}
+
+    def _publish():
+        calls["n"] += 1
+        if calls["n"] >= 2:  # succeeds on the second attempt
+            state._summary_dirty = False
+
+    monkeypatch.setattr(state, "publish_report", _publish)
+    monkeypatch.setattr(state_mod.time, "sleep", lambda *a, **k: None)
+
+    state.flush_report()
+    assert state._summary_dirty is False
+    assert calls["n"] == 2
+
+
 def test_run_native_finalizers_comment_and_cancel(monkeypatch):
     """Orchestrator-side finalizers post the GH summary comment when enabled, and
     skip every side effect on a cancelled run."""

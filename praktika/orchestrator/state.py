@@ -1475,6 +1475,30 @@ class WorkflowState:
         except Exception as e:
             print(f"  [warn] could not re-publish workflow report: {e}")
 
+    def flush_report(self, attempts=5):
+        """Terminal flush of the workflow summary before the driver exits.
+
+        The per-loop dirty flag (``_summary_dirty``) only retries a failed
+        overwrite on the *next* publish — but the final publication, once the DAG
+        has drained, has no next loop. So if its overwrite failed, retry here a
+        bounded number of times; otherwise a transient failure on the terminal
+        write would leave S3 stale with no retry. No-op when the last publish
+        already landed (the common case) or off the native path. Best-effort.
+        """
+        if self._s3 is None or self.local_mode:
+            return
+        for i in range(attempts):
+            if not self._summary_dirty:
+                return
+            self.publish_report()
+            if self._summary_dirty:
+                time.sleep(min(2**i, 10))
+        if self._summary_dirty:
+            print(
+                "  [warn] workflow summary still dirty after terminal flush retries; "
+                "S3 may be stale"
+            )
+
     def attach_debug_logs(self):
         """When praktika_debug is set, upload the orchestrator instance's two logs
         and link them from the TOP-LEVEL workflow result: the bootstrap controller

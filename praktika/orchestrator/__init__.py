@@ -563,7 +563,12 @@ def _drive_dag(state, check, workflow, event, advisor, report_url, is_rerun):
             if advisor is not None:
                 advisor.on_workflow_update(state, event)
             _patch_top_check(check, workflow, state, phase="running", details_url=report_url, is_rerun=is_rerun)
-        # DAG drained. Finalize handshake (closes the P2 finish race): publish
+        # DAG drained — there is no next loop to carry a pending overwrite, so flush
+        # the summary now (bounded retry if the last publish's overwrite failed)
+        # before marking the snapshot finalized. Otherwise a failed terminal write
+        # would leave S3 stale with no retry.
+        state.flush_report()
+        # Finalize handshake (closes the P2 finish race): publish
         # finalized=true FIRST, then recheck for a re-run request. The lambda
         # writes its rerun-request BEFORE reading finalized, so any request this
         # sweep can't see must have been written after a lambda read of
@@ -940,6 +945,10 @@ def _orchestrate_resume(event, gh_token=None, ci=True):
     try:
         _drive_dag(state, check, workflow, event, advisor, report_url, is_rerun=True)
         state.print_summary()
+        # Same report-derived side effects as a fresh run — the native runner
+        # paths are gated off, so a resume must refresh the summary comment / CIDB
+        # / Slack and re-attempt automerge from the corrected terminal result too.
+        state.run_native_finalizers()
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
         print(f"\n\nError: {error}")
