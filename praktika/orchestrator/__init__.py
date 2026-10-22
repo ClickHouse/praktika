@@ -568,6 +568,14 @@ def _drive_dag(state, check, workflow, event, advisor, report_url, is_rerun):
         # before marking the snapshot finalized. Otherwise a failed terminal write
         # would leave S3 stale with no retry.
         state.flush_report()
+        # Report-derived side effects (GH summary comment, CIDB workflow-usage,
+        # automerge, Slack) run HERE — while the run is still live, before
+        # finalized=true is written — so automerge etc. cannot execute
+        # concurrently with a newly accepted resume (the lambda only spawns a
+        # resume once it reads finalized=true). This mirrors the pre-change flow,
+        # where these ran inside the Finish Workflow job before the orchestrator
+        # marked the run finalized. Shared by fresh runs and resumes.
+        state.run_native_finalizers()
         # Finalize handshake (closes the P2 finish race): publish
         # finalized=true FIRST, then recheck for a re-run request. The lambda
         # writes its rerun-request BEFORE reading finalized, so any request this
@@ -775,11 +783,6 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
 
         _drive_dag(state, check, workflow, event, advisor, report_url, is_rerun)
         state.print_summary()
-        # Report-derived side effects (GH summary comment, CIDB workflow-usage,
-        # automerge, Slack) — the orchestrator runs these now that the runner's
-        # Finish Workflow job no longer reads the summary. The DAG is terminal
-        # here, so the in-memory summary is finalized. Best-effort.
-        state.run_native_finalizers()
     except Exception as e:
         error = f"[phase: {phase}] {type(e).__name__}: {e}"
         print(f"\n\nError: {error}")
@@ -945,10 +948,6 @@ def _orchestrate_resume(event, gh_token=None, ci=True):
     try:
         _drive_dag(state, check, workflow, event, advisor, report_url, is_rerun=True)
         state.print_summary()
-        # Same report-derived side effects as a fresh run — the native runner
-        # paths are gated off, so a resume must refresh the summary comment / CIDB
-        # / Slack and re-attempt automerge from the corrected terminal result too.
-        state.run_native_finalizers()
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
         print(f"\n\nError: {error}")
