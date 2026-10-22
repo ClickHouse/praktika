@@ -6,9 +6,11 @@ The behaviour is baked into two DAG rules instead of a special helper:
    as soon as every dep reaches *any* terminal state — SUCCESS, FAILURE,
    SKIPPED, or CANCELLED. Normal jobs still require deps to succeed
    (SUCCESS or SKIPPED).
-2. ``cancel_unfinished_jobs`` marks PENDING and RUNNING jobs as
-   CANCELLED on a cancel signal, but leaves ``always_run``
-   jobs alone so they can still fire via rule 1 once their deps settle.
+2. ``cancel_unfinished_jobs`` marks *every* unfinished job CANCELLED on a
+   cancel signal — PENDING and RUNNING regular jobs and ``always_run`` ones
+   (Finish Workflow). A cancelled run has nothing to finalize on a runner, and
+   cancelling Finish Workflow here (instead of leaving it for rule 1) keeps the
+   drive loop from wedging when dispatch is held.
 
 Run with:
     pytest ci/tests/test_finish_workflow_always_runs.py
@@ -119,10 +121,15 @@ def test_normal_job_cancelled_when_upstream_cancelled():
     assert state.jobs["Tests"].status == JobStatus.CANCELLED
 
 
-def test_cancel_unfinished_jobs_leaves_always_run_alone():
-    """A cancel signal mid-run cancels PENDING and RUNNING regular jobs
-    but leaves ``always_run`` ones so Finish Workflow still
-    runs once its deps settle (via the subsequent get_ready call)."""
+def test_cancel_unfinished_jobs_cancels_always_run_too():
+    """A cancel signal mid-run cancels every unfinished job — PENDING and
+    RUNNING regular jobs *and* ``always_run`` ones (Finish Workflow). On a
+    cancelled run there is nothing to finalize on a runner (the orchestrator
+    owns the report summary), so Finish Workflow is CANCELLED here rather than
+    left PENDING for ``get_ready`` to skip. Leaving it PENDING would wedge the
+    drive loop forever when dispatch is held — e.g. after an AI
+    ``cancel_and_patch`` decision leaves ``hold_dispatch`` set, gating
+    ``get_ready`` off entirely."""
     state = _make_state(
         ("Build", JobStatus.RUNNING),
         ("Tests", JobStatus.PENDING, ["Build"]),
@@ -131,7 +138,7 @@ def test_cancel_unfinished_jobs_leaves_always_run_alone():
     state.cancel_unfinished_jobs()
     assert state.jobs["Build"].status == JobStatus.CANCELLED
     assert state.jobs["Tests"].status == JobStatus.CANCELLED
-    assert state.jobs["Finish"].status == JobStatus.PENDING
+    assert state.jobs["Finish"].status == JobStatus.CANCELLED
 
 
 def test_skipped_is_success_equivalent_for_dep_resolution():

@@ -993,6 +993,13 @@ class Runner:
 
         is_final_job = job.name == Settings.FINISH_WORKFLOW_JOB_NAME
         is_initial_job = job.name == Settings.CI_CONFIG_JOB_NAME
+        # On the native path the orchestrator owns the workflow summary and the
+        # runner is no longer a writer of it; post_run does not download it
+        # either (see HtmlRunnerHooks.post_run). The summary is materialized
+        # locally only for the final job (by _finish_workflow), so the
+        # summary-consuming steps below run only for the final job here. Off the
+        # native path (GHA) they keep their original per-job behavior.
+        native_report = env.ORCHESTRATOR_OWNS_REPORT
 
         if run_exit_code == 0 or result.do_not_block_pipeline_on_failure():
             providing_artifacts = []
@@ -1165,11 +1172,15 @@ class Runner:
             # should be done before HtmlRunnerHooks.post_run(workflow, job)
             #   to upload updated job and workflow results to S3
             try:
-                if is_final_job:
-                    # re-check entire workflow in the final job as some new issues may appear
+                if is_final_job and not native_report:
+                    # Non-native: re-check the whole workflow in the final job as
+                    # some new issues may appear.
                     workflow_result = Result.from_fs(workflow.name)
                     _check_and_link_open_issues(workflow_result, job_name="")
-                else:
+                elif not is_final_job:
+                    # Per-job check — issues live in real jobs. On the native path
+                    # this is the only open-issues path: the orchestrator owns the
+                    # summary and does not need a final-job workflow re-check.
                     _check_and_link_open_issues(result, job_name=job.name)
             except Exception as e:
                 print(f"ERROR: failed to check open issues: {e}")
@@ -1211,8 +1222,15 @@ class Runner:
                         url=Info().get_report_url(latest=False),
                     )
 
-            workflow_result = Result.from_fs(workflow.name)
-            if is_final_job and ci_db:
+            # Off the native path the final job inserts the workflow-usage row and
+            # the consumers below read the summary for it. On the native path the
+            # orchestrator does all of this (run_native_finalizers), so the runner
+            # neither reads nor consumes the summary — reading it for a non-final
+            # job would also raise FileNotFoundError (it is never downloaded).
+            workflow_result = None
+            if not native_report:
+                workflow_result = Result.from_fs(workflow.name)
+            if is_final_job and ci_db and not native_report:
                 # run after HtmlRunnerHooks.post_run(), when the workflow Result
                 # has up-to-date storage/compute/pipeline-utilization data. All
                 # three are written as a single workflow-level summary row into
@@ -1245,8 +1263,11 @@ class Runner:
                     run_attempt=max_run_attempt,
                 )
 
-        if workflow.enable_gh_summary_comment and (
-            job.name == Settings.FINISH_WORKFLOW_JOB_NAME or not result.is_ok()
+        # On the native path the orchestrator posts the summary comment
+        # (run_native_finalizers); off it, the runner does, per the original
+        # per-job / final-job triggers.
+        if workflow.enable_gh_summary_comment and not native_report and (
+            is_final_job or not result.is_ok()
         ) and GHAuth.auth(workflow, no_strict=True):
             workflow_result = Result.from_fs(workflow.name)
             try:
@@ -1269,6 +1290,7 @@ class Runner:
         if (
             workflow.enable_automerge
             and is_final_job
+            and not native_report
             and workflow.is_event_pull_request()
         ):
             try:
@@ -1295,8 +1317,10 @@ class Runner:
                     file=f,
                 )
 
-        # Send Slack notifications after workflow status is finalized by HtmlRunnerHooks.post_run()
-        if workflow.enable_slack_feed and (
+        # Send Slack notifications after workflow status is finalized by
+        # HtmlRunnerHooks.post_run(). On the native path the orchestrator owns the
+        # feed (run_native_finalizers); off it, the runner does.
+        if workflow.enable_slack_feed and not native_report and (
             is_final_job or is_initial_job or not result.is_ok()
         ):
             updated_emails = []

@@ -86,6 +86,12 @@ class _FakeState:
     def print_summary(self):
         pass
 
+    def flush_report(self, attempts=5):
+        pass
+
+    def run_native_finalizers(self):
+        pass
+
     def cleanup(self):
         pass
 

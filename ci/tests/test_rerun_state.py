@@ -59,6 +59,11 @@ def _make_state(s3, statuses, always_run=()):
     state._ci_config = {}
     state._gh_token = None  # can_post_checks False -> no check API calls
     state.cancelled = False
+    # In-memory authoritative summary (seeded by create_initial_report in a real
+    # run). None here; the two publish_report tests seed it so the single-writer
+    # path doesn't try to lazy-load from S3.
+    state._summary_result = None
+    state._summary_dirty = False
     state.jobs = {}
     for name, status in statuses.items():
         js = JobState.__new__(JobState)
@@ -398,10 +403,12 @@ def test_publish_report_aggregates_usage_idempotently(monkeypatch):
     from praktika.result import Result
 
     captured = {}
+    # publish_report now uses the single-writer in-memory path; capture its
+    # kwargs (workflow_result + version come positionally, so accept *a).
     monkeypatch.setattr(
         result_mod._ResultS3,
-        "update_workflow_results",
-        staticmethod(lambda **kw: captured.update(kw)),
+        "update_workflow_results_inmem",
+        staticmethod(lambda *a, **kw: captured.update(kw)),
     )
 
     s3 = _FakeS3()
@@ -410,6 +417,8 @@ def test_publish_report_aggregates_usage_idempotently(monkeypatch):
     )
     state.workflow = types.SimpleNamespace(name="PR", enable_report=True)
     state._report_env_ok = True  # short-circuit orchestrator report-env setup
+    # Seed the in-memory summary so publish_report skips the lazy S3 load.
+    state._summary_result = Result.create_new("PR", Result.Status.RUNNING)
 
     def _result_dict(name, duration, downloaded, uploaded):
         r = Result.create_new(name, Result.Status.OK)
@@ -456,8 +465,8 @@ def test_publish_report_authors_skipped_rows(monkeypatch):
     captured = {}
     monkeypatch.setattr(
         result_mod._ResultS3,
-        "update_workflow_results",
-        staticmethod(lambda **kw: captured.update(kw)),
+        "update_workflow_results_inmem",
+        staticmethod(lambda *a, **kw: captured.update(kw)),
     )
 
     s3 = _FakeS3()
@@ -466,6 +475,8 @@ def test_publish_report_authors_skipped_rows(monkeypatch):
     )
     state.workflow = types.SimpleNamespace(name="PR", enable_report=True)
     state._report_env_ok = True  # short-circuit orchestrator report-env setup
+    # Seed the in-memory summary so publish_report skips the lazy S3 load.
+    state._summary_result = Result.create_new("PR", Result.Status.RUNNING)
 
     a = Result.create_new("A", Result.Status.OK)
     a.duration = 10
@@ -490,6 +501,186 @@ def test_publish_report_authors_skipped_rows(monkeypatch):
     assert rows["C"].info == "not affected by this diff"
     # Only the job that actually ran (A) contributes compute usage.
     assert captured["compute_usage"].runners_usage["arm-small"] == 10
+
+
+def test_update_workflow_results_inmem_no_download_overwrite_on_change(monkeypatch):
+    """Single-writer path: applies updates to the in-memory summary and plain-
+    overwrites the object only when the content changed — never re-downloading and
+    never versioning (the whole point of orchestrator ownership)."""
+    import praktika.result as result_mod
+    from praktika.result import Result, _ResultS3
+
+    writes = []
+    monkeypatch.setattr(
+        result_mod._ResultS3,
+        "overwrite_result_to_s3",
+        staticmethod(lambda result: writes.append(result.name) or True),
+    )
+
+    def _no_download(*a, **k):
+        raise AssertionError("in-memory path must not download the summary")
+
+    # Neither the versioned nor the plain download may be called.
+    monkeypatch.setattr(
+        result_mod._ResultS3, "copy_result_from_s3_with_version", staticmethod(_no_download)
+    )
+    monkeypatch.setattr(
+        result_mod._ResultS3, "copy_result_from_s3", staticmethod(_no_download)
+    )
+    # Isolate from the filesystem — _apply dumps the summary locally.
+    monkeypatch.setattr(Result, "dump", lambda self, *a, **k: None)
+
+    # A real summary always carries its job rows (seeded PENDING by
+    # create_initial_report); update_sub_result asserts non-empty results.
+    summary = Result.create_new(
+        "PR", Result.Status.RUNNING, results=[Result.create_new("A", Result.Status.PENDING)]
+    )
+    # A's row changes PENDING -> OK -> one overwrite.
+    _ResultS3.update_workflow_results_inmem(
+        summary, new_sub_results=[Result.create_new("A", Result.Status.OK)]
+    )
+    assert writes == ["PR"]
+    # Re-applying the identical row is a no-op -> no write.
+    _ResultS3.update_workflow_results_inmem(
+        summary, new_sub_results=[Result.create_new("A", Result.Status.OK)]
+    )
+    assert writes == ["PR"]
+
+
+def test_update_workflow_results_inmem_retries_after_failed_overwrite(monkeypatch):
+    """A failed overwrite sets dirty; the next publish retries even though the
+    in-memory diff now reads 'unchanged' — otherwise S3 would stay stale forever
+    (the in-memory copy is already mutated)."""
+    import praktika.result as result_mod
+    from praktika.result import Result, _ResultS3
+
+    attempts = []
+
+    def _flaky(result):
+        attempts.append(result.name)
+        if len(attempts) == 1:
+            raise RuntimeError("transient S3 error")
+        return True
+
+    monkeypatch.setattr(
+        result_mod._ResultS3, "overwrite_result_to_s3", staticmethod(_flaky)
+    )
+    monkeypatch.setattr(Result, "dump", lambda self, *a, **k: None)
+
+    summary = Result.create_new(
+        "PR", Result.Status.RUNNING, results=[Result.create_new("A", Result.Status.PENDING)]
+    )
+    rows = [Result.create_new("A", Result.Status.OK)]
+    # First publish: content changed, but the overwrite raises -> dirty.
+    dirty = _ResultS3.update_workflow_results_inmem(summary, False, new_sub_results=rows)
+    assert dirty is True
+    assert attempts == ["PR"]
+    # Second publish: identical content (diff reads unchanged), but dirty forces
+    # the retry, which now succeeds and clears dirty.
+    dirty = _ResultS3.update_workflow_results_inmem(summary, dirty, new_sub_results=rows)
+    assert dirty is False
+    assert attempts == ["PR", "PR"]
+
+
+def test_publish_report_overwrites_stale_is_cancelled(monkeypatch):
+    """A non-cancelled run publishes is_cancelled=False so a resume of a
+    cancelled run overwrites the stale True its summary carried."""
+    import dataclasses as dc
+
+    import praktika.result as result_mod
+    from praktika.result import Result
+
+    captured = {}
+    monkeypatch.setattr(
+        result_mod._ResultS3,
+        "update_workflow_results_inmem",
+        staticmethod(lambda *a, **kw: captured.update(kw)),
+    )
+
+    s3 = _FakeS3()
+    state = _make_state(s3, {"A": JobStatus.SUCCESS, "B": JobStatus.SUCCESS, "C": JobStatus.SUCCESS})
+    state.workflow = types.SimpleNamespace(name="PR", enable_report=True)
+    state._report_env_ok = True
+    state._summary_result = Result.create_new("PR", Result.Status.RUNNING)
+    state.cancelled = False
+    a = Result.create_new("A", Result.Status.OK)
+    a.duration = 1
+    state.jobs["A"].result = dc.asdict(a)
+    state.jobs["A"].job.runs_on = ["x"]
+
+    state.publish_report()
+    assert captured["top_ext"]["is_cancelled"] is False
+
+
+def test_flush_report_retries_terminal_dirty(monkeypatch):
+    """The terminal flush retries a failed final overwrite (no next loop to carry
+    the dirty flag) until the summary lands."""
+    import praktika.orchestrator.state as state_mod
+
+    s3 = _FakeS3()
+    state = _make_state(s3, {"A": JobStatus.SUCCESS})
+    state._summary_dirty = True
+    calls = {"n": 0}
+
+    def _publish():
+        calls["n"] += 1
+        if calls["n"] >= 2:  # succeeds on the second attempt
+            state._summary_dirty = False
+
+    monkeypatch.setattr(state, "publish_report", _publish)
+    monkeypatch.setattr(state_mod.time, "sleep", lambda *a, **k: None)
+
+    state.flush_report()
+    assert state._summary_dirty is False
+    assert calls["n"] == 2
+
+
+def test_run_native_finalizers_comment_and_cancel(monkeypatch):
+    """Orchestrator-side finalizers post the GH summary comment when enabled, and
+    skip every side effect on a cancelled run."""
+    import praktika.gh as gh_mod
+    import praktika.gh_auth as gh_auth_mod
+    from praktika.result import Result
+
+    posted = []
+
+    class _FakeSummaryForGH:
+        def to_markdown(self, *a, **k):
+            return "BODY"
+
+    monkeypatch.setattr(gh_auth_mod.GHAuth, "auth", staticmethod(lambda *a, **k: True))
+    monkeypatch.setattr(
+        gh_mod.GH.ResultSummaryForGH,
+        "from_result",
+        classmethod(lambda cls, r, sha="": _FakeSummaryForGH()),
+    )
+    monkeypatch.setattr(
+        gh_mod.GH,
+        "post_updateable_comment",
+        staticmethod(lambda **k: posted.append(k) or True),
+    )
+
+    s3 = _FakeS3()
+    state = _make_state(s3, {"A": JobStatus.SUCCESS})
+    state.workflow = types.SimpleNamespace(
+        name="PR",
+        enable_report=True,
+        enable_gh_summary_comment=True,
+        enable_cidb=False,
+        enable_automerge=False,
+        enable_slack_feed=False,
+    )
+    state._report_env_ok = True
+    state._summary_result = Result.create_new("PR", Result.Status.OK)
+
+    state.run_native_finalizers()
+    assert len(posted) == 1
+
+    # Cancelled run: nothing to finalize on a runner, so no side effects.
+    posted.clear()
+    state.cancelled = True
+    state.run_native_finalizers()
+    assert posted == []
 
 
 def test_reset_posts_pending_check_at_reset_time(monkeypatch):

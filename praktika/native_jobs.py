@@ -1152,7 +1152,18 @@ def _finish_workflow(workflow, job_name):
             print("ERROR: failed to set ReadyForMerge status")
             env.add_workflow_error(ResultInfo.GH_STATUS_ERROR)
 
-    if update_final_report:
+    if update_final_report and not env.ORCHESTRATOR_OWNS_REPORT:
+        # Native path: the orchestrator is the sole writer of the workflow
+        # summary — it re-asserts every row each drive loop (including this job's
+        # own result, with any Post Hooks nested in it, carried out via
+        # final.json) and owns is_cancelled. The NOT_FINALIZED / DROPPED / OK
+        # stamping above is a GitHub-Actions fallback for still-PENDING jobs; on
+        # the native path the orchestrator already drove every job to a terminal
+        # state, so there is nothing left to stamp here. Writing the summary from
+        # this runner would be the last concurrent writer and force the
+        # orchestrator to keep re-downloading it, so skip it off-GHA. The
+        # merge-ready status and open-issues check above are GH API calls (not
+        # summary writes) and still run.
         _ResultS3.copy_result_to_s3_with_version(workflow_result, version + 1)
 
     if results:

@@ -228,6 +228,13 @@ class HtmlRunnerHooks:
 
     @classmethod
     def pre_run(cls, _workflow, _job):
+        if _Environment.get().ORCHESTRATOR_OWNS_REPORT:
+            # Native path: the orchestrator owns the workflow summary. It emits
+            # this job's RUNNING row and clears a re-run job's stale workflow-level
+            # messages itself (see WorkflowState.publish_report), so the runner
+            # must not write the summary here — doing so would race the
+            # orchestrator's version-CAS.
+            return
         result = Result.from_fs(_job.name)
         # Clear stale workflow-level report messages from this job's previous
         # run so that resolved warnings/errors don't persist after a rerun.
@@ -264,6 +271,19 @@ class HtmlRunnerHooks:
         report_messages = env.REPORT_MESSAGES
         _ResultS3.append_report_messages(result, report_messages)
         _ResultS3.copy_result_to_s3(result)
+
+        if env.ORCHESTRATOR_OWNS_REPORT:
+            # Native path: the orchestrator is the sole writer of the workflow
+            # summary — each drive loop it re-asserts every job row, the
+            # dependee-DROPPED cascade, usage, and the workflow-level report
+            # messages (read from this job's final.json, which carries the ext
+            # warnings/errors/notes appended just above). The runner contributes
+            # nothing to the summary and does not read it: the report-derived side
+            # effects (GH summary comment, CIDB workflow-usage, automerge, Slack)
+            # run in the orchestrator after the DAG is terminal (see
+            # WorkflowState.run_native_finalizers), so nothing on the runner needs
+            # a finalized local summary.
+            return None
 
         new_sub_results = [result]
 
@@ -302,14 +322,6 @@ class HtmlRunnerHooks:
             duration=result.duration,
             job_name=_job.name,
         )
-        if env.ORCHESTRATOR_OWNS_REPORT:
-            # The native orchestrator aggregates usage from each job's Result
-            # (result.ext still carries storage_usage/metrics, set above), so the
-            # runner must NOT also contribute it here or the workflow totals would
-            # double-count. Rows and report messages still flow from the runner.
-            storage_usage = None
-            compute_usage = None
-            pipeline_utilization = None
         updated_status = _ResultS3.update_workflow_results(
             new_sub_results=new_sub_results,
             workflow_name=_workflow.name,

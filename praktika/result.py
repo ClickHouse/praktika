@@ -1668,105 +1668,23 @@ class _ResultS3:
             version = cls.copy_result_from_s3_with_version(Result.file_name_static(workflow_name))
             workflow_result = Result.from_fs(workflow_name)
             prev_status = workflow_result.status
-            # Snapshot the report as read so we can (a) skip the version-bumping
-            # upload when applying our update is a no-op, and (b) log exactly which
-            # rows changed. The orchestrator's publish_report re-asserts every loop
-            # (a few seconds apart for the whole run), so without this an idle run
-            # accumulates hundreds of identical report versions.
-            before_full = json.dumps(Result.to_dict(workflow_result), sort_keys=True)
-            before_rows = {
-                r.name: json.dumps(Result.to_dict(r), sort_keys=True)
-                for r in (workflow_result.results or [])
-            }
-            before_status = {r.name: r.status for r in (workflow_result.results or [])}
-            if new_sub_results:
-                if isinstance(new_sub_results, Result):
-                    new_sub_results = [new_sub_results]
-                for result_ in new_sub_results:
-                    workflow_result.update_sub_result(result_, drop_nested_results=True).dump()
-            # replace_usage=True overwrites (orchestrator recomputes the full
-            # aggregate each loop); otherwise merge/accumulate (per-job runner
-            # contributions). Merge double-counts on a rerun — acceptable for the
-            # per-job path; the orchestrator path avoids it by recomputing+setting.
-            if storage_usage:
-                workflow_result.ext["storage_usage"] = (
-                    storage_usage
-                    if replace_usage
-                    else StorageUsage.from_dict(workflow_result.ext.get("storage_usage", {})).merge_with(storage_usage)
-                )
-
-            if compute_usage:
-                workflow_result.ext["compute_usage"] = (
-                    compute_usage
-                    if replace_usage
-                    else ComputeUsage.from_dict(workflow_result.ext.get("compute_usage", {})).merge_with(compute_usage)
-                )
-
-            if pipeline_utilization:
-                workflow_result.ext["pipeline_utilization"] = (
-                    pipeline_utilization
-                    if replace_usage
-                    else PipelineUtilization.from_dict(workflow_result.ext.get("pipeline_utilization", {})).merge_with(pipeline_utilization)
-                )
-
-            if clear_report_sources:
-                for key in cls._REPORT_MESSAGE_KIND_TO_EXT_KEY.values():
-                    if key in workflow_result.ext:
-                        workflow_result.ext[key] = [e for e in workflow_result.ext[key] if e.get("from") not in clear_report_sources]
-
-            if report_messages:
-                cls.append_report_messages(workflow_result, report_messages)
-
-            if top_links:
-                for _lnk in top_links:
-                    if _lnk and _lnk not in workflow_result.links:
-                        workflow_result.links.append(_lnk)
-
-            if top_ext:
-                workflow_result.ext.update(top_ext)
-
+            changed, change_log = cls._apply_workflow_update(
+                workflow_result,
+                new_sub_results=new_sub_results,
+                storage_usage=storage_usage,
+                compute_usage=compute_usage,
+                pipeline_utilization=pipeline_utilization,
+                report_messages=report_messages,
+                clear_report_sources=clear_report_sources,
+                replace_usage=replace_usage,
+                top_links=top_links,
+                top_ext=top_ext,
+            )
             new_status = workflow_result.status
-
-            # Applying our update changed nothing that is already in S3 — skip the
-            # upload so we don't burn a report version on identical content. This
-            # is the common case for the orchestrator's per-loop re-assert once the
-            # DAG is steady. A destructive Config reset (rows wiped to PENDING)
-            # still differs from our terminal rows, so the repair upload happens.
-            after_full = json.dumps(Result.to_dict(workflow_result), sort_keys=True)
-            if after_full == before_full:
+            if not changed:
                 print("Workflow report unchanged - skip upload")
                 return None
-
-            # Log which rows drove this upload (status transition where it applies)
-            # so the log stream shows *what* changed, not just a version bump.
-            after_rows = {
-                r.name: json.dumps(Result.to_dict(r), sort_keys=True)
-                for r in (workflow_result.results or [])
-            }
-            after_status = {r.name: r.status for r in (workflow_result.results or [])}
-            changed = []
-            for name, blob in after_rows.items():
-                if before_rows.get(name) == blob:
-                    continue
-                old = before_status.get(name)
-                new = after_status.get(name)
-                if name not in before_rows:
-                    changed.append(f"{name} [new:{new}]")
-                elif old != new:
-                    changed.append(f"{name} [{old}->{new}]")
-                else:
-                    changed.append(f"{name} [{new}]")
-            removed = [n for n in before_rows if n not in after_rows]
-            if not changed and not removed:
-                # Only ext/links/usage differed (no per-row change).
-                changed = ["<workflow metadata>"]
-            change_desc = ", ".join(changed[:20])
-            if len(changed) > 20:
-                change_desc += f", (+{len(changed) - 20} more)"
-            if removed:
-                change_desc += f"; removed: {', '.join(removed[:20])}"
-            print(f"Workflow report changed ({len(changed)}): {change_desc}")
-
+            print(change_log)
             if cls.copy_result_to_s3_with_version(
                 workflow_result,
                 version=version + 1,
@@ -1785,6 +1703,199 @@ class _ResultS3:
         else:
             print(f"Workflow status unchanged: [{new_status}]")
             return None
+
+    @classmethod
+    def _apply_workflow_update(
+        cls,
+        workflow_result,
+        new_sub_results=None,
+        storage_usage=None,
+        compute_usage=None,
+        pipeline_utilization=None,
+        report_messages=None,
+        clear_report_sources=None,
+        replace_usage=False,
+        top_links=None,
+        top_ext=None,
+    ):
+        """Apply a workflow-report update to an in-memory ``workflow_result`` and
+        report whether it changed. Mutates ``workflow_result`` in place.
+
+        Returns ``(changed: bool, change_log: str)`` where ``change_log`` is a
+        ready-to-print description of the rows that drove the change (empty string
+        when nothing changed). Shared by the download+CAS path
+        (``update_workflow_results``) and the orchestrator single-writer path
+        (``update_workflow_results_inmem``) so both apply updates identically.
+        """
+        # Snapshot the report as read so we can (a) skip the version-bumping
+        # upload when applying our update is a no-op, and (b) log exactly which
+        # rows changed. The orchestrator's publish_report re-asserts every loop
+        # (a few seconds apart for the whole run), so without this an idle run
+        # accumulates hundreds of identical report versions.
+        before_full = json.dumps(Result.to_dict(workflow_result), sort_keys=True)
+        before_rows = {
+            r.name: json.dumps(Result.to_dict(r), sort_keys=True)
+            for r in (workflow_result.results or [])
+        }
+        before_status = {r.name: r.status for r in (workflow_result.results or [])}
+        if new_sub_results:
+            if isinstance(new_sub_results, Result):
+                new_sub_results = [new_sub_results]
+            for result_ in new_sub_results:
+                workflow_result.update_sub_result(result_, drop_nested_results=True).dump()
+        # replace_usage=True overwrites (orchestrator recomputes the full
+        # aggregate each loop); otherwise merge/accumulate (per-job runner
+        # contributions). Merge double-counts on a rerun — acceptable for the
+        # per-job path; the orchestrator path avoids it by recomputing+setting.
+        if storage_usage:
+            workflow_result.ext["storage_usage"] = (
+                storage_usage
+                if replace_usage
+                else StorageUsage.from_dict(workflow_result.ext.get("storage_usage", {})).merge_with(storage_usage)
+            )
+
+        if compute_usage:
+            workflow_result.ext["compute_usage"] = (
+                compute_usage
+                if replace_usage
+                else ComputeUsage.from_dict(workflow_result.ext.get("compute_usage", {})).merge_with(compute_usage)
+            )
+
+        if pipeline_utilization:
+            workflow_result.ext["pipeline_utilization"] = (
+                pipeline_utilization
+                if replace_usage
+                else PipelineUtilization.from_dict(workflow_result.ext.get("pipeline_utilization", {})).merge_with(pipeline_utilization)
+            )
+
+        if clear_report_sources:
+            for key in cls._REPORT_MESSAGE_KIND_TO_EXT_KEY.values():
+                if key in workflow_result.ext:
+                    workflow_result.ext[key] = [e for e in workflow_result.ext[key] if e.get("from") not in clear_report_sources]
+
+        if report_messages:
+            cls.append_report_messages(workflow_result, report_messages)
+
+        if top_links:
+            for _lnk in top_links:
+                if _lnk and _lnk not in workflow_result.links:
+                    workflow_result.links.append(_lnk)
+
+        if top_ext:
+            workflow_result.ext.update(top_ext)
+
+        # Applying our update changed nothing — skip the version-bumping upload so
+        # we don't burn a report version on identical content. This is the common
+        # case for the orchestrator's per-loop re-assert once the DAG is steady.
+        after_full = json.dumps(Result.to_dict(workflow_result), sort_keys=True)
+        if after_full == before_full:
+            return False, ""
+
+        # Log which rows drove this upload (status transition where it applies)
+        # so the log stream shows *what* changed, not just a version bump.
+        after_rows = {
+            r.name: json.dumps(Result.to_dict(r), sort_keys=True)
+            for r in (workflow_result.results or [])
+        }
+        after_status = {r.name: r.status for r in (workflow_result.results or [])}
+        changed = []
+        for name, blob in after_rows.items():
+            if before_rows.get(name) == blob:
+                continue
+            old = before_status.get(name)
+            new = after_status.get(name)
+            if name not in before_rows:
+                changed.append(f"{name} [new:{new}]")
+            elif old != new:
+                changed.append(f"{name} [{old}->{new}]")
+            else:
+                changed.append(f"{name} [{new}]")
+        removed = [n for n in before_rows if n not in after_rows]
+        if not changed and not removed:
+            # Only ext/links/usage differed (no per-row change).
+            changed = ["<workflow metadata>"]
+        change_desc = ", ".join(changed[:20])
+        if len(changed) > 20:
+            change_desc += f", (+{len(changed) - 20} more)"
+        if removed:
+            change_desc += f"; removed: {', '.join(removed[:20])}"
+        return True, f"Workflow report changed ({len(changed)}): {change_desc}"
+
+    @classmethod
+    def overwrite_result_to_s3(cls, result):
+        """Plain overwrite of a result at its canonical key — no gzip, no version
+        metadata, no optimistic-concurrency check.
+
+        Safe ONLY for a sole writer: the native-path orchestrator owns the
+        workflow summary (runner pre_run/post_run and _finish_workflow no longer
+        write it), so there is no concurrent writer to guard against and the
+        versioned read-modify-write is unnecessary. Matches the versioned path's
+        plain-text encoding (text=True, no ContentEncoding) so the report frontend
+        and any reader are unaffected.
+        """
+        result.dump()
+        env = _Environment.get()
+        s3_path = f"{Settings.S3_REPORT_BUCKET}/{env.get_s3_prefix()}/{Path(result.file_name()).name}"
+        return S3.copy_file_to_s3(
+            s3_path=s3_path, local_path=result.file_name(), text=True, with_rename=True
+        )
+
+    @classmethod
+    def update_workflow_results_inmem(
+        cls,
+        workflow_result,
+        dirty=False,
+        new_sub_results=None,
+        storage_usage=None,
+        compute_usage=None,
+        pipeline_utilization=None,
+        report_messages=None,
+        clear_report_sources=None,
+        replace_usage=False,
+        top_links=None,
+        top_ext=None,
+    ):
+        """Single-writer (orchestrator) update path — no download, no versioning.
+
+        On the native path (ORCHESTRATOR_OWNS_REPORT) the orchestrator holds the
+        authoritative workflow summary in memory and is its SOLE writer, so there
+        is no concurrent writer to guard against: apply the update to the in-memory
+        ``workflow_result`` and PLAIN-OVERWRITE the summary object (same key) only
+        when the content changed. No per-loop download, and no version /
+        optimistic-concurrency CAS — that is only needed on the GitHub-Actions path
+        where concurrent per-job writers still race the summary (see
+        ``update_workflow_results``). ``workflow_result`` is mutated in place.
+
+        ``dirty`` carries forward a *previously failed* overwrite: ``_apply`` has
+        already mutated the in-memory summary, so a later loop's diff would read
+        "unchanged" and never repair S3 — the ``dirty`` flag forces a retry until
+        the overwrite lands. Returns the new dirty state (True = overwrite failed
+        this loop, retry next time). Never raises — report upkeep must not crash
+        the run.
+        """
+        changed, change_log = cls._apply_workflow_update(
+            workflow_result,
+            new_sub_results=new_sub_results,
+            storage_usage=storage_usage,
+            compute_usage=compute_usage,
+            pipeline_utilization=pipeline_utilization,
+            report_messages=report_messages,
+            clear_report_sources=clear_report_sources,
+            replace_usage=replace_usage,
+            top_links=top_links,
+            top_ext=top_ext,
+        )
+        if not changed and not dirty:
+            print("Workflow report unchanged - skip upload")
+            return False
+        print(change_log if changed else "Workflow report retrying previous failed upload")
+        try:
+            if cls.overwrite_result_to_s3(workflow_result):
+                return False
+            print("  [warn] workflow summary overwrite failed; will retry next publish")
+        except Exception as e:
+            print(f"  [warn] workflow summary overwrite raised: {type(e).__name__}: {e}; will retry")
+        return True
 
 
 class ResultTranslator:

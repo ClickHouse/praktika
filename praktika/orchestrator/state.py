@@ -848,6 +848,19 @@ class WorkflowState:
         # consult point, then cleared; no effect when the advisor is off.
         self.hold_dispatch = False
 
+        # Authoritative workflow summary held in memory. On the native path the
+        # orchestrator is the SOLE writer of the summary (runner pre_run/post_run
+        # and _finish_workflow no longer write it), so publish_report owns this
+        # copy and plain-overwrites the summary object without re-downloading or
+        # versioning it each loop. Seeded by create_initial_report (fresh run) or
+        # lazily loaded once on a resume (see publish_report). None until
+        # seeded/loaded.
+        self._summary_result = None
+        # Set when an overwrite of the summary failed (the in-memory copy is
+        # already mutated, so the next loop's diff would read "unchanged" and
+        # never repair S3) — forces publish_report to retry the overwrite.
+        self._summary_dirty = False
+
         # S3 client used by sweep_liveness, sweep_completions, sweep_cancel,
         # and the orchestrator → runners kill flag. Only created in CI mode;
         # local mode runs jobs synchronously inside `kick` (no S3 needed).
@@ -1213,8 +1226,13 @@ class WorkflowState:
                 "could not set up orchestrator report env for initial summary"
             )
         from ..hook_html import HtmlRunnerHooks
+        from ..result import Result
 
         HtmlRunnerHooks.create_initial_report(self.workflow)
+        # Seed the in-memory authoritative summary from what we just wrote (dumped
+        # locally by create_initial_report), so publish_report can re-assert and
+        # plain-overwrite it without re-downloading each loop.
+        self._summary_result = Result.from_fs(self.workflow.name)
 
     def publish_report(self):
         """Re-assert completed jobs' rows into the workflow report summary and
@@ -1259,7 +1277,18 @@ class WorkflowState:
             for name, js in self.jobs.items()
             if js.status == JobStatus.CANCELLED and not isinstance(js.result, dict)
         ]
-        if not terminal and not skipped and not cancelled:
+        # In-flight jobs (dispatched, no terminal Result yet). Under orchestrator
+        # ownership the runner's pre_run no longer writes a RUNNING row, so the
+        # orchestrator advances the report row PENDING -> RUNNING here. These are
+        # also report-message sources so a re-run's stale warnings/errors get
+        # cleared while it re-runs (what pre_run's clear_report_sources did).
+        inflight = [
+            (name, js)
+            for name, js in self.jobs.items()
+            if js.status in (JobStatus.QUEUED, JobStatus.RUNNING)
+            and not isinstance(js.result, dict)
+        ]
+        if not terminal and not skipped and not cancelled and not inflight:
             return
         if not self._ensure_report_env():
             return
@@ -1344,6 +1373,17 @@ class WorkflowState:
                 for name, js in cancelled
             ]
 
+            # RUNNING rows for in-flight jobs. create_new leaves duration None and
+            # start_time is the fixed kick time, so the serialized row is stable
+            # across loops (no churn / no version bump while the job runs). When
+            # the job finishes it moves into `rows` and overwrites this.
+            running_rows = []
+            for name, js in inflight:
+                _r = Result.create_new(name, Result.Status.RUNNING)
+                if js.started_at:
+                    _r.start_time = js.started_at
+                running_rows.append(_r)
+
             top_ext = {}
             # Point the top-level "Run" link at this workflow's own GitHub check
             # run. self._run_id IS the top-level check-run id whenever checks are
@@ -1362,12 +1402,71 @@ class WorkflowState:
             # jobs; on a cancelled run it no longer runs (get_ready skips it),
             # so the orchestrator marks the report cancelled so the Slack feed
             # and report render it as cancelled rather than merely finished.
-            if self.cancelled:
-                top_ext["is_cancelled"] = True
+            # Set it UNCONDITIONALLY (not only when cancelled): a resume of a
+            # cancelled run clears self.cancelled, but the summary loaded from S3
+            # still carries is_cancelled=True from the cancelled generation; since
+            # top_ext is applied via ext.update(), omitting the key would preserve
+            # that stale True and mislabel a now-successful resumed run as
+            # cancelled. Writing False overwrites it (False and absent read the
+            # same to consumers).
+            top_ext["is_cancelled"] = bool(self.cancelled)
 
-            _ResultS3.update_workflow_results(
-                workflow_name=self.workflow.name,
-                new_sub_results=rows + skipped_rows + cancelled_rows,
+            # Aggregate the workflow-level report messages (warnings / errors /
+            # notes) from every finished job's Result ext and re-assert them onto
+            # the TOP summary. The runner's post_run no longer writes these under
+            # ORCHESTRATOR_OWNS_REPORT — the orchestrator owns them, read from each
+            # job's final.json (published_result carries the ext). Re-building from
+            # the live job set every loop is idempotent; clear_report_sources drops
+            # each source's prior top-level entries first so a re-publish (or a
+            # job's re-run) can't duplicate them. Messages also remain on each
+            # job's own row via its ext, matching Info.add_workflow_warning's
+            # "visible at both levels" contract.
+            _EXT_KEY_TO_KIND = {"warnings": "warning", "errors": "error", "notes": "note"}
+            report_messages = []
+            report_sources = set()
+            for _name, _js, _pub in published:
+                # Clear this job's prior top-level entries unconditionally, even
+                # when its current result carries no messages — otherwise a job
+                # that emitted a warning on a previous run but now completes clean
+                # (and is terminal before any loop sees it as inflight) would leave
+                # its stale message on the summary forever. pre_run used to clear
+                # the job source unconditionally at job start.
+                report_sources.add(_name)
+                _ext = _pub.get("ext") or {}
+                for _ext_key, _kind in _EXT_KEY_TO_KIND.items():
+                    for _entry in _ext.get(_ext_key) or []:
+                        if not isinstance(_entry, dict):
+                            continue
+                        _frm = _entry.get("from") or _name
+                        report_messages.append(
+                            {"message": _entry.get("message", ""), "kind": _kind, "from": _frm}
+                        )
+                        report_sources.add(_frm)
+            # Clear any stale top-level messages left by a re-run job while it is
+            # back in flight (pre_run used to do this). First-run jobs have none,
+            # so this is a no-op for them.
+            for _name, _js in inflight:
+                report_sources.add(_name)
+
+            # Ensure the authoritative summary is in memory. A fresh run seeded it
+            # in create_initial_report; a resume (which does not call that) loads
+            # it from S3 ONCE here, then owns it in memory from then on.
+            if self._summary_result is None:
+                _ResultS3.copy_result_from_s3(
+                    Result.file_name_static(self.workflow.name)
+                )
+                self._summary_result = Result.from_fs(self.workflow.name)
+
+            # Single-writer in-memory publish: apply this loop's rows / usage /
+            # messages to the in-memory summary and plain-overwrite the summary
+            # object only when it changed — no per-loop download, no versioning
+            # (the orchestrator is the sole writer on the native path).
+            self._summary_dirty = _ResultS3.update_workflow_results_inmem(
+                self._summary_result,
+                self._summary_dirty,
+                new_sub_results=rows + skipped_rows + cancelled_rows + running_rows,
+                report_messages=report_messages or None,
+                clear_report_sources=sorted(report_sources) or None,
                 # Only SET usage when a job actually finished this run; passing
                 # zeroed aggregates with replace_usage would wipe existing totals
                 # (skipped jobs can be published before any real job completes).
@@ -1381,6 +1480,30 @@ class WorkflowState:
             )
         except Exception as e:
             print(f"  [warn] could not re-publish workflow report: {e}")
+
+    def flush_report(self, attempts=5):
+        """Terminal flush of the workflow summary before the driver exits.
+
+        The per-loop dirty flag (``_summary_dirty``) only retries a failed
+        overwrite on the *next* publish — but the final publication, once the DAG
+        has drained, has no next loop. So if its overwrite failed, retry here a
+        bounded number of times; otherwise a transient failure on the terminal
+        write would leave S3 stale with no retry. No-op when the last publish
+        already landed (the common case) or off the native path. Best-effort.
+        """
+        if self._s3 is None or self.local_mode:
+            return
+        for i in range(attempts):
+            if not self._summary_dirty:
+                return
+            self.publish_report()
+            if self._summary_dirty:
+                time.sleep(min(2**i, 10))
+        if self._summary_dirty:
+            print(
+                "  [warn] workflow summary still dirty after terminal flush retries; "
+                "S3 may be stale"
+            )
 
     def attach_debug_logs(self):
         """When praktika_debug is set, upload the orchestrator instance's two logs
@@ -1420,6 +1543,136 @@ class WorkflowState:
                 print(f"Attached orchestrator debug logs: {links}")
         except Exception as e:
             print(f"  [warn] could not attach orchestrator debug logs: {e}")
+
+    @staticmethod
+    def _pipeline_job_counts(job_results):
+        """Break the pipeline's jobs down by status for CIDB attributes (mirrors
+        Runner._pipeline_job_counts). ``run`` = jobs that actually ran."""
+        return {
+            "total": len(job_results),
+            "run": sum(1 for j in job_results if not (j.is_skipped() or j.is_dropped())),
+            "success": sum(1 for j in job_results if j.is_success()),
+            "failed": sum(1 for j in job_results if j.is_failure() or j.is_error()),
+            "skipped": sum(1 for j in job_results if j.is_skipped()),
+            "dropped": sum(1 for j in job_results if j.is_dropped()),
+        }
+
+    def run_native_finalizers(self):
+        """Run the report-derived side effects that the Finish Workflow runner job
+        used to run — GH summary comment, CIDB workflow-usage row, automerge, and
+        the Slack feed — from the orchestrator instead.
+
+        On the native path (ORCHESTRATOR_OWNS_REPORT) the runner no longer reads
+        the workflow summary for these (its local copy is stale: _finish_workflow
+        downloads the summary before producing its own result). The orchestrator
+        owns the authoritative summary and, by the time this runs (after the DAG
+        incl. Finish Workflow is terminal), holds the finalized report in memory —
+        so it is the correct and timely place. Best-effort: a failure here never
+        fails the run. No-op off the native path, on a cancelled run, or before
+        the summary is seeded.
+        """
+        if self._s3 is None or self.local_mode:
+            return
+        if self.cancelled or self._summary_result is None:
+            return
+        wf = self.workflow
+        if not getattr(wf, "enable_report", False):
+            return
+        if not self._ensure_report_env():
+            return
+
+        from ..gh import GH
+        from ..gh_auth import GHAuth
+
+        summary = self._summary_result
+
+        if getattr(wf, "enable_gh_summary_comment", False):
+            try:
+                if GHAuth.auth(wf, no_strict=True):
+                    body = GH.ResultSummaryForGH.from_result(summary).to_markdown()
+                    if not GH.post_updateable_comment(
+                        comment_tags_and_bodies={"summary": body}, only_update=True
+                    ):
+                        print("ERROR: failed to post CI summary")
+            except Exception as e:
+                print(f"ERROR: failed to post CI summary: {e}")
+
+        if getattr(wf, "enable_cidb", False):
+            self._insert_cidb_workflow_usage(summary)
+
+        if getattr(wf, "enable_automerge", False) and self._pr_number:
+            try:
+                if GHAuth.auth(wf, no_strict=True):
+                    if summary.is_ok():
+                        if not GH.merge_pr():
+                            print("ERROR: Failed to merge the PR")
+                    else:
+                        print(f"NOTE: Workflow status [{summary.status}] - do not merge")
+            except Exception as e:
+                print(f"ERROR: Failed to merge the PR: [{e}]")
+
+        if getattr(wf, "enable_slack_feed", False):
+            self._update_slack_feed(summary)
+
+    def _insert_cidb_workflow_usage(self, summary):
+        """Write the single workflow-level usage row to CIDB (was the final job's
+        ``insert_workflow_usage``). Usage aggregates are read off the summary ext,
+        which the orchestrator owns; status / job-counts are the finalized DAG."""
+        if not Settings.SECRET_CI_DB_CONNECTION:
+            print(
+                "NOTE: CIDB enabled but Settings.SECRET_CI_DB_CONNECTION is not "
+                "set — skipping CIDB workflow-usage insert."
+            )
+            return
+        try:
+            from ..cidb import CIDB
+            from ..usage import ComputeUsage, PipelineUtilization, StorageUsage
+
+            conn_secret = self.workflow.get_secret(Settings.SECRET_CI_DB_CONNECTION)
+            assert conn_secret
+            max_run_attempt = max(
+                (int((r.ext or {}).get("run_attempt") or 1) for r in summary.results),
+                default=1,
+            )
+            CIDB.from_connection_secret(conn_secret.get_value()).insert_workflow_usage(
+                pipeline_utilization=PipelineUtilization.from_dict(
+                    summary.ext.get("pipeline_utilization", {})
+                ),
+                storage_usage=StorageUsage.from_dict(summary.ext.get("storage_usage", {})),
+                compute_usage=ComputeUsage.from_dict(summary.ext.get("compute_usage", {})),
+                job_counts=self._pipeline_job_counts(summary.results),
+                start_time=summary.start_time,
+                duration_s=summary.update_duration().duration,
+                workflow_status=summary.status,
+                run_attempt=max_run_attempt,
+            )
+        except Exception as e:
+            print(f"ERROR: Failed to insert workflow usage into CIDB: {e}")
+
+    def _update_slack_feed(self, summary):
+        """Push the workflow event to each commit author's Slack timeline (was the
+        final job's ``enable_slack_feed`` block)."""
+        try:
+            from ..event import EventFeed
+            from ..info import Info
+
+            info = Info()
+            commit_authors = info.get_kv_data("commit_authors") or []
+            updated_emails = []
+            for commit_author in commit_authors:
+                try:
+                    EventFeed.update(
+                        commit_author,
+                        summary.to_event(info=info),
+                        s3_path=Settings.EVENT_FEED_S3_PATH,
+                    )
+                    updated_emails.append(commit_author)
+                except Exception as e:
+                    print(f"ERROR: failed to update events for {commit_author}: {e}")
+            if updated_emails:
+                EventFeed.notify_slack_users(updated_emails)
+        except Exception as e:
+            print(f"ERROR: failed to update Slack feed: {e}")
 
     def save_snapshot(self, finalized=False, required=False):
         """Persist the DAG snapshot to ``runs/<run_id>/state.json``.
@@ -2243,9 +2496,10 @@ class WorkflowState:
         on a runner. The orchestrator already owns the report summary and
         completes the top-level check as ``cancelled`` (see
         REPORT_OWNERSHIP.md), and running post_hooks / CIDB / merge-ready for
-        a cancelled run is unwanted. Dispatching Finish Workflow would only
-        put it on a runner to be killed by the cancel watchdog (or time out
-        on the heartbeat), so it is SKIPPED here instead.
+        a cancelled run is unwanted. On a cancelled run ``cancel_unfinished_jobs``
+        has already CANCELLED every unfinished job including Finish Workflow, so
+        it never reaches here PENDING; the SKIP below is a defensive fallback
+        for the narrow window before that sweep runs.
         """
         ready = []
         for name, js in self.jobs.items():
@@ -2283,27 +2537,36 @@ class WorkflowState:
         return ready
 
     def cancel_unfinished_jobs(self):
-        """When a cancel signal arrives mid-run, mark every PENDING or
-        in-flight job that isn't flagged ``always_run`` as
-        CANCELLED. ``always_run`` post-run jobs (Finish Workflow) are left
-        alone here, but on a cancelled run ``get_ready`` SKIPs them rather
-        than dispatching — there is nothing to finalize on a runner (see
-        ``get_ready``).
+        """When a cancel signal arrives mid-run, mark every unfinished job —
+        PENDING, QUEUED, or RUNNING — CANCELLED, **including** ``always_run``
+        post-run jobs (Finish Workflow).
+
+        On a cancelled run there is nothing to finalize on a runner: the
+        orchestrator owns the report summary and completes the top-level check
+        as ``cancelled`` (see REPORT_OWNERSHIP.md), so Finish Workflow / CIDB
+        writeback / merge-ready are all unwanted. Cancelling Finish Workflow
+        here — rather than relying on ``get_ready`` to SKIP it — keeps teardown
+        self-contained: the DAG reaches a terminal state and the drive loop
+        exits even while dispatch is held. That matters because an AI
+        ``cancel_and_patch`` / ``cancel_run`` decision sets ``state.cancelled``
+        but leaves ``hold_dispatch`` set (see ai/__init__.py), which gates
+        ``get_ready`` off entirely — so if finalizing Finish Workflow depended
+        on ``get_ready``, the run would spin forever with Finish Workflow stuck
+        PENDING (orphaned orchestrator holding its SQS message in-flight).
 
         In-flight jobs that are cancelled here had their task already
         dispatched to a runner. The cancel flag written to S3 signals those
         runners to tear down; the eventual final state (if it still arrives)
-        will be ignored because finish() only accepts in-flight states.
+        will be ignored because finish() only accepts in-flight states. The flag
+        is only written when a *real* runner job (not ``always_run``) was live —
+        Finish Workflow runs in-process on the orchestrator, never on a runner.
         """
         has_running = any(
             js.status in (JobStatus.QUEUED, JobStatus.RUNNING) and not js.job.always_run
             for js in self.jobs.values()
         )
         for js in self.jobs.values():
-            if (
-                js.status in (JobStatus.PENDING, JobStatus.QUEUED, JobStatus.RUNNING)
-                and not js.job.always_run
-            ):
+            if js.status in (JobStatus.PENDING, JobStatus.QUEUED, JobStatus.RUNNING):
                 js.cancel(reason="run cancelled")
         if has_running and self._s3 is not None:
             try:
