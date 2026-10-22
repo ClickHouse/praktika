@@ -565,21 +565,26 @@ class JobState:
                 f"{type(e).__name__}: {e}"
             )
 
-    def _create_completed_check(self, conclusion, output=None, details_url=None):
+    def _create_completed_check(self, conclusion, output=None, details_url=None, force=False):
         """Post the GitHub check run directly in its terminal state.
 
         For jobs that never run (skipped), this posts the final conclusion in
         a single API call instead of queue()->complete(), which would briefly
         show a pending check before flipping it.
+
+        ``force`` bypasses the minimal-mode non-failure skip below; used when
+        completing a rerun that must overwrite a previous failed check-run
+        even though this attempt succeeded.
         """
         if self.check is not None:
             return
         ws = self._workflow_state
         if ws is None or not ws.can_post_checks:
             return
-        if self._minimal_checks and conclusion != "failure":
+        if self._minimal_checks and conclusion != "failure" and not force:
             # Minimal mode posts a per-job check-run only for failures; skip
-            # terminal non-failure conclusions (e.g. a skipped job).
+            # terminal non-failure conclusions (e.g. a skipped job), unless
+            # forced (a rerun must overwrite a stale failed check).
             return
         check_name = f"{ws.workflow.name} / {self.name}"
         try:
@@ -707,11 +712,18 @@ class JobState:
         self.non_blocking = bool(non_blocking) and not success
         self.finished_at = time.time()
         self.rc = 0 if success else 1
-        if self.check is None and not success and self._minimal_checks:
-            # Minimal mode: no queued check-run was created, so post the failure
-            # directly in its completed state (single API call).
+        if self.check is None and self._minimal_checks and (
+            not success or self.rerun_count > 0
+        ):
+            # Minimal mode: no queued check-run was created, so post the
+            # terminal conclusion directly (single API call). A rerun that
+            # now succeeds must still post a check to overwrite the stale
+            # failed check left by the earlier attempt.
             self._create_completed_check(
-                "failure", output=output, details_url=details_url
+                "success" if success else "failure",
+                output=output,
+                details_url=details_url,
+                force=self.rerun_count > 0,
             )
         else:
             self._update_check(
