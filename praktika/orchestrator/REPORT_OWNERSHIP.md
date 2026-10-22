@@ -182,11 +182,16 @@ both costs:
   (nested) out via `final.json`; the `NOT_FINALIZED` stamping is a GHA fallback,
   moot on the native path. Merge-ready status / open-issues / CIDB still run on
   the Finish Workflow runner, reading the summary the orchestrator maintains.
-- **Runner-side summary consumers** (`Runner.run`: the failed-job GH summary
-  comment, final-job CIDB usage insert, automerge, Slack) now run **final-job-only**
-  on the native path — the one point the summary is materialized locally (by
-  `_finish_workflow`'s own download). Mid-run status lives on the orchestrator's
-  check.
+- **Runner-side summary consumers** (`Runner.run`: GH summary comment, CIDB
+  workflow-usage insert, automerge, Slack feed, and the final-job open-issues
+  re-check) no longer run on the native path. They read the workflow summary,
+  whose only local copy on the final job is the stale pre-`_finish_workflow`
+  download — so instead the orchestrator runs them in `run_native_finalizers`
+  after the DAG (incl. Finish Workflow) is terminal, reading its finalized
+  in-memory summary. The per-job open-issues check still runs on the runner
+  (issues live in real jobs); the per-job CIDB insert also stays on the runner
+  (it inserts each job's own result, not the summary). Off the native path every
+  consumer keeps its original runner-side behavior.
 - **No download, no versioning.** `publish_report` holds the authoritative summary
   in memory (`_summary_result`, seeded by `create_initial_report` or loaded once on
   resume) and calls `update_workflow_results_inmem`, which applies the update
@@ -247,7 +252,11 @@ writer; the last writer wins.
 - `praktika/native_jobs.py` — `_finish_workflow`'s `update_final_report` upload is
   gated off on the native path (increment 5).
 - `praktika/runner.py` — `Runner.run`'s summary-consuming steps (GH summary comment,
-  CIDB, automerge, Slack) run final-job-only on the native path (increment 5).
+  CIDB workflow-usage, automerge, Slack, final-job open-issues re-check) are gated
+  off on the native path (increment 5); they move to the orchestrator.
+- `praktika/orchestrator/state.py` — `run_native_finalizers` (+ CIDB / Slack
+  helpers) runs those side effects from the orchestrator after the DAG is terminal;
+  `praktika/orchestrator/__init__.py` calls it in `_orchestrate_single`.
 - `praktika/result.py` — `_apply_workflow_update` (shared apply/diff helper),
   `update_workflow_results_inmem` + `overwrite_result_to_s3` (single-writer, no
   download, no versioning); `update_workflow_results` (versioned CAS) kept for the

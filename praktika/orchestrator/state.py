@@ -856,6 +856,10 @@ class WorkflowState:
         # lazily loaded once on a resume (see publish_report). None until
         # seeded/loaded.
         self._summary_result = None
+        # Set when an overwrite of the summary failed (the in-memory copy is
+        # already mutated, so the next loop's diff would read "unchanged" and
+        # never repair S3) — forces publish_report to retry the overwrite.
+        self._summary_dirty = False
 
         # S3 client used by sweep_liveness, sweep_completions, sweep_cancel,
         # and the orchestrator → runners kill flag. Only created in CI mode;
@@ -1415,6 +1419,13 @@ class WorkflowState:
             report_messages = []
             report_sources = set()
             for _name, _js, _pub in published:
+                # Clear this job's prior top-level entries unconditionally, even
+                # when its current result carries no messages — otherwise a job
+                # that emitted a warning on a previous run but now completes clean
+                # (and is terminal before any loop sees it as inflight) would leave
+                # its stale message on the summary forever. pre_run used to clear
+                # the job source unconditionally at job start.
+                report_sources.add(_name)
                 _ext = _pub.get("ext") or {}
                 for _ext_key, _kind in _EXT_KEY_TO_KIND.items():
                     for _entry in _ext.get(_ext_key) or []:
@@ -1444,8 +1455,9 @@ class WorkflowState:
             # messages to the in-memory summary and plain-overwrite the summary
             # object only when it changed — no per-loop download, no versioning
             # (the orchestrator is the sole writer on the native path).
-            _ResultS3.update_workflow_results_inmem(
+            self._summary_dirty = _ResultS3.update_workflow_results_inmem(
                 self._summary_result,
+                self._summary_dirty,
                 new_sub_results=rows + skipped_rows + cancelled_rows + running_rows,
                 report_messages=report_messages or None,
                 clear_report_sources=sorted(report_sources) or None,
@@ -1501,6 +1513,136 @@ class WorkflowState:
                 print(f"Attached orchestrator debug logs: {links}")
         except Exception as e:
             print(f"  [warn] could not attach orchestrator debug logs: {e}")
+
+    @staticmethod
+    def _pipeline_job_counts(job_results):
+        """Break the pipeline's jobs down by status for CIDB attributes (mirrors
+        Runner._pipeline_job_counts). ``run`` = jobs that actually ran."""
+        return {
+            "total": len(job_results),
+            "run": sum(1 for j in job_results if not (j.is_skipped() or j.is_dropped())),
+            "success": sum(1 for j in job_results if j.is_success()),
+            "failed": sum(1 for j in job_results if j.is_failure() or j.is_error()),
+            "skipped": sum(1 for j in job_results if j.is_skipped()),
+            "dropped": sum(1 for j in job_results if j.is_dropped()),
+        }
+
+    def run_native_finalizers(self):
+        """Run the report-derived side effects that the Finish Workflow runner job
+        used to run — GH summary comment, CIDB workflow-usage row, automerge, and
+        the Slack feed — from the orchestrator instead.
+
+        On the native path (ORCHESTRATOR_OWNS_REPORT) the runner no longer reads
+        the workflow summary for these (its local copy is stale: _finish_workflow
+        downloads the summary before producing its own result). The orchestrator
+        owns the authoritative summary and, by the time this runs (after the DAG
+        incl. Finish Workflow is terminal), holds the finalized report in memory —
+        so it is the correct and timely place. Best-effort: a failure here never
+        fails the run. No-op off the native path, on a cancelled run, or before
+        the summary is seeded.
+        """
+        if self._s3 is None or self.local_mode:
+            return
+        if self.cancelled or self._summary_result is None:
+            return
+        wf = self.workflow
+        if not getattr(wf, "enable_report", False):
+            return
+        if not self._ensure_report_env():
+            return
+
+        from ..gh import GH
+        from ..gh_auth import GHAuth
+
+        summary = self._summary_result
+
+        if getattr(wf, "enable_gh_summary_comment", False):
+            try:
+                if GHAuth.auth(wf, no_strict=True):
+                    body = GH.ResultSummaryForGH.from_result(summary).to_markdown()
+                    if not GH.post_updateable_comment(
+                        comment_tags_and_bodies={"summary": body}, only_update=True
+                    ):
+                        print("ERROR: failed to post CI summary")
+            except Exception as e:
+                print(f"ERROR: failed to post CI summary: {e}")
+
+        if getattr(wf, "enable_cidb", False):
+            self._insert_cidb_workflow_usage(summary)
+
+        if getattr(wf, "enable_automerge", False) and self._pr_number:
+            try:
+                if GHAuth.auth(wf, no_strict=True):
+                    if summary.is_ok():
+                        if not GH.merge_pr():
+                            print("ERROR: Failed to merge the PR")
+                    else:
+                        print(f"NOTE: Workflow status [{summary.status}] - do not merge")
+            except Exception as e:
+                print(f"ERROR: Failed to merge the PR: [{e}]")
+
+        if getattr(wf, "enable_slack_feed", False):
+            self._update_slack_feed(summary)
+
+    def _insert_cidb_workflow_usage(self, summary):
+        """Write the single workflow-level usage row to CIDB (was the final job's
+        ``insert_workflow_usage``). Usage aggregates are read off the summary ext,
+        which the orchestrator owns; status / job-counts are the finalized DAG."""
+        if not Settings.SECRET_CI_DB_CONNECTION:
+            print(
+                "NOTE: CIDB enabled but Settings.SECRET_CI_DB_CONNECTION is not "
+                "set — skipping CIDB workflow-usage insert."
+            )
+            return
+        try:
+            from ..cidb import CIDB
+            from ..usage import ComputeUsage, PipelineUtilization, StorageUsage
+
+            conn_secret = self.workflow.get_secret(Settings.SECRET_CI_DB_CONNECTION)
+            assert conn_secret
+            max_run_attempt = max(
+                (int((r.ext or {}).get("run_attempt") or 1) for r in summary.results),
+                default=1,
+            )
+            CIDB.from_connection_secret(conn_secret.get_value()).insert_workflow_usage(
+                pipeline_utilization=PipelineUtilization.from_dict(
+                    summary.ext.get("pipeline_utilization", {})
+                ),
+                storage_usage=StorageUsage.from_dict(summary.ext.get("storage_usage", {})),
+                compute_usage=ComputeUsage.from_dict(summary.ext.get("compute_usage", {})),
+                job_counts=self._pipeline_job_counts(summary.results),
+                start_time=summary.start_time,
+                duration_s=summary.update_duration().duration,
+                workflow_status=summary.status,
+                run_attempt=max_run_attempt,
+            )
+        except Exception as e:
+            print(f"ERROR: Failed to insert workflow usage into CIDB: {e}")
+
+    def _update_slack_feed(self, summary):
+        """Push the workflow event to each commit author's Slack timeline (was the
+        final job's ``enable_slack_feed`` block)."""
+        try:
+            from ..event import EventFeed
+            from ..info import Info
+
+            info = Info()
+            commit_authors = info.get_kv_data("commit_authors") or []
+            updated_emails = []
+            for commit_author in commit_authors:
+                try:
+                    EventFeed.update(
+                        commit_author,
+                        summary.to_event(info=info),
+                        s3_path=Settings.EVENT_FEED_S3_PATH,
+                    )
+                    updated_emails.append(commit_author)
+                except Exception as e:
+                    print(f"ERROR: failed to update events for {commit_author}: {e}")
+            if updated_emails:
+                EventFeed.notify_slack_users(updated_emails)
+        except Exception as e:
+            print(f"ERROR: failed to update Slack feed: {e}")
 
     def save_snapshot(self, finalized=False, required=False):
         """Persist the DAG snapshot to ``runs/<run_id>/state.json``.

@@ -1844,6 +1844,7 @@ class _ResultS3:
     def update_workflow_results_inmem(
         cls,
         workflow_result,
+        dirty=False,
         new_sub_results=None,
         storage_usage=None,
         compute_usage=None,
@@ -1864,6 +1865,13 @@ class _ResultS3:
         optimistic-concurrency CAS — that is only needed on the GitHub-Actions path
         where concurrent per-job writers still race the summary (see
         ``update_workflow_results``). ``workflow_result`` is mutated in place.
+
+        ``dirty`` carries forward a *previously failed* overwrite: ``_apply`` has
+        already mutated the in-memory summary, so a later loop's diff would read
+        "unchanged" and never repair S3 — the ``dirty`` flag forces a retry until
+        the overwrite lands. Returns the new dirty state (True = overwrite failed
+        this loop, retry next time). Never raises — report upkeep must not crash
+        the run.
         """
         changed, change_log = cls._apply_workflow_update(
             workflow_result,
@@ -1877,11 +1885,17 @@ class _ResultS3:
             top_links=top_links,
             top_ext=top_ext,
         )
-        if not changed:
+        if not changed and not dirty:
             print("Workflow report unchanged - skip upload")
-            return
-        print(change_log)
-        cls.overwrite_result_to_s3(workflow_result)
+            return False
+        print(change_log if changed else "Workflow report retrying previous failed upload")
+        try:
+            if cls.overwrite_result_to_s3(workflow_result):
+                return False
+            print("  [warn] workflow summary overwrite failed; will retry next publish")
+        except Exception as e:
+            print(f"  [warn] workflow summary overwrite raised: {type(e).__name__}: {e}; will retry")
+        return True
 
 
 class ResultTranslator:

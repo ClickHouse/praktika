@@ -63,6 +63,7 @@ def _make_state(s3, statuses, always_run=()):
     # run). None here; the two publish_report tests seed it so the single-writer
     # path doesn't try to lazy-load from S3.
     state._summary_result = None
+    state._summary_dirty = False
     state.jobs = {}
     for name, status in statuses.items():
         js = JobState.__new__(JobState)
@@ -513,7 +514,7 @@ def test_update_workflow_results_inmem_no_download_overwrite_on_change(monkeypat
     monkeypatch.setattr(
         result_mod._ResultS3,
         "overwrite_result_to_s3",
-        staticmethod(lambda result: writes.append(result.name) or ""),
+        staticmethod(lambda result: writes.append(result.name) or True),
     )
 
     def _no_download(*a, **k):
@@ -544,6 +545,89 @@ def test_update_workflow_results_inmem_no_download_overwrite_on_change(monkeypat
         summary, new_sub_results=[Result.create_new("A", Result.Status.OK)]
     )
     assert writes == ["PR"]
+
+
+def test_update_workflow_results_inmem_retries_after_failed_overwrite(monkeypatch):
+    """A failed overwrite sets dirty; the next publish retries even though the
+    in-memory diff now reads 'unchanged' — otherwise S3 would stay stale forever
+    (the in-memory copy is already mutated)."""
+    import praktika.result as result_mod
+    from praktika.result import Result, _ResultS3
+
+    attempts = []
+
+    def _flaky(result):
+        attempts.append(result.name)
+        if len(attempts) == 1:
+            raise RuntimeError("transient S3 error")
+        return True
+
+    monkeypatch.setattr(
+        result_mod._ResultS3, "overwrite_result_to_s3", staticmethod(_flaky)
+    )
+    monkeypatch.setattr(Result, "dump", lambda self, *a, **k: None)
+
+    summary = Result.create_new(
+        "PR", Result.Status.RUNNING, results=[Result.create_new("A", Result.Status.PENDING)]
+    )
+    rows = [Result.create_new("A", Result.Status.OK)]
+    # First publish: content changed, but the overwrite raises -> dirty.
+    dirty = _ResultS3.update_workflow_results_inmem(summary, False, new_sub_results=rows)
+    assert dirty is True
+    assert attempts == ["PR"]
+    # Second publish: identical content (diff reads unchanged), but dirty forces
+    # the retry, which now succeeds and clears dirty.
+    dirty = _ResultS3.update_workflow_results_inmem(summary, dirty, new_sub_results=rows)
+    assert dirty is False
+    assert attempts == ["PR", "PR"]
+
+
+def test_run_native_finalizers_comment_and_cancel(monkeypatch):
+    """Orchestrator-side finalizers post the GH summary comment when enabled, and
+    skip every side effect on a cancelled run."""
+    import praktika.gh as gh_mod
+    import praktika.gh_auth as gh_auth_mod
+    from praktika.result import Result
+
+    posted = []
+
+    class _FakeSummaryForGH:
+        def to_markdown(self, *a, **k):
+            return "BODY"
+
+    monkeypatch.setattr(gh_auth_mod.GHAuth, "auth", staticmethod(lambda *a, **k: True))
+    monkeypatch.setattr(
+        gh_mod.GH.ResultSummaryForGH,
+        "from_result",
+        classmethod(lambda cls, r, sha="": _FakeSummaryForGH()),
+    )
+    monkeypatch.setattr(
+        gh_mod.GH,
+        "post_updateable_comment",
+        staticmethod(lambda **k: posted.append(k) or True),
+    )
+
+    s3 = _FakeS3()
+    state = _make_state(s3, {"A": JobStatus.SUCCESS})
+    state.workflow = types.SimpleNamespace(
+        name="PR",
+        enable_report=True,
+        enable_gh_summary_comment=True,
+        enable_cidb=False,
+        enable_automerge=False,
+        enable_slack_feed=False,
+    )
+    state._report_env_ok = True
+    state._summary_result = Result.create_new("PR", Result.Status.OK)
+
+    state.run_native_finalizers()
+    assert len(posted) == 1
+
+    # Cancelled run: nothing to finalize on a runner, so no side effects.
+    posted.clear()
+    state.cancelled = True
+    state.run_native_finalizers()
+    assert posted == []
 
 
 def test_reset_posts_pending_check_at_reset_time(monkeypatch):

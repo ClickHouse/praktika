@@ -278,10 +278,11 @@ class HtmlRunnerHooks:
             # dependee-DROPPED cascade, usage, and the workflow-level report
             # messages (read from this job's final.json, which carries the ext
             # warnings/errors/notes appended just above). The runner contributes
-            # nothing to the summary and does not even read it: Runner.run's
-            # summary-consuming steps (GH summary comment, Slack, automerge,
-            # CIDB) run only for the final job on this path — the one point the
-            # full summary is materialized locally (by _finish_workflow).
+            # nothing to the summary and does not read it: the report-derived side
+            # effects (GH summary comment, CIDB workflow-usage, automerge, Slack)
+            # run in the orchestrator after the DAG is terminal (see
+            # WorkflowState.run_native_finalizers), so nothing on the runner needs
+            # a finalized local summary.
             return None
 
         new_sub_results = [result]

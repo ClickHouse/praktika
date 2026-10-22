@@ -86,6 +86,9 @@ class _FakeState:
     def print_summary(self):
         pass
 
+    def run_native_finalizers(self):
+        pass
+
     def cleanup(self):
         pass
 

@@ -770,6 +770,11 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
 
         _drive_dag(state, check, workflow, event, advisor, report_url, is_rerun)
         state.print_summary()
+        # Report-derived side effects (GH summary comment, CIDB workflow-usage,
+        # automerge, Slack) — the orchestrator runs these now that the runner's
+        # Finish Workflow job no longer reads the summary. The DAG is terminal
+        # here, so the in-memory summary is finalized. Best-effort.
+        state.run_native_finalizers()
     except Exception as e:
         error = f"[phase: {phase}] {type(e).__name__}: {e}"
         print(f"\n\nError: {error}")
