@@ -61,6 +61,25 @@ class _Settings:
     # the job is NOT failed. Surfaces a lost runner quickly (well before the
     # hard timeout) without turning a recoverable blip into a red check.
     HEARTBEAT_STALL_S = 300
+    # Minimum wall-clock gap, in seconds, between two PATCHes of the top-level
+    # workflow GitHub check. The orchestrator re-renders the check body every
+    # WAIT_POLL_INTERVAL_S (10s); regardless of this interval it only PATCHes
+    # when the rendered body actually changed (the dominant saving). On a large
+    # CI — hundreds of concurrent workflows sharing one GitHub App installation's
+    # rate-limit bucket — raise this to further coalesce updates. One-shot
+    # transitions (startup phases, terminal completion) bypass it and always
+    # land promptly.
+    TOP_CHECK_MIN_PATCH_INTERVAL_S = 20
+    # Per-job GitHub check-run verbosity (Praktika native engine), project-wide.
+    #   "verbose" (default): every job gets a check-run driven through its full
+    #     lifecycle — queued -> in_progress -> success/skipped/failure.
+    #   "minimal": a per-job check-run is posted ONLY for jobs that end in
+    #     failure (dead/failed). Passing, skipped, queued and in-progress jobs
+    #     emit no per-job check-run at all. This drastically cuts GitHub
+    #     check-run API calls on very large CI; the full per-job table is still
+    #     shown in the top-level workflow check's summary.
+    #   Any value other than "minimal" is treated as "verbose".
+    JOB_CHECKS_MODE: str = "verbose"
     # Hard timeout: a RUNNING job silent this long is declared dead. Held well
     # above the runner queue's visibility timeout so a runner that dies mid-job
     # is recovered by redelivery first: the job_task reappears once the

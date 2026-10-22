@@ -506,6 +506,17 @@ class JobState:
         ext["run_attempt"] = self.rerun_count + 1
         return pub
 
+    @property
+    def _minimal_checks(self):
+        """True when per-job check-runs should be posted only for failures.
+
+        Controlled project-wide by ``Settings.JOB_CHECKS_MODE == "minimal"``.
+        In minimal mode the queued/in-progress/success/skipped check-runs are
+        suppressed to cut GitHub API volume on very large CI; only jobs that end
+        in failure get a (single, already-completed) check-run.
+        """
+        return getattr(Settings, "JOB_CHECKS_MODE", "verbose") == "minimal"
+
     def _update_check(self, transition):
         """Run a check-run API call; never let it take down the orchestrator."""
         if self.check is None:
@@ -528,6 +539,10 @@ class JobState:
             return
         ws = self._workflow_state
         if ws is None or not ws.can_post_checks:
+            return
+        if self._minimal_checks:
+            # Minimal mode: no queued/in-progress check-run — a per-job check is
+            # posted only if the job ends in failure (see finish/fail_dead).
             return
         check_name = f"{ws.workflow.name} / {self.name}"
         runs_on = ", ".join(self.job.runs_on) if self.job.runs_on else "default"
@@ -561,6 +576,10 @@ class JobState:
             return
         ws = self._workflow_state
         if ws is None or not ws.can_post_checks:
+            return
+        if self._minimal_checks and conclusion != "failure":
+            # Minimal mode posts a per-job check-run only for failures; skip
+            # terminal non-failure conclusions (e.g. a skipped job).
             return
         check_name = f"{ws.workflow.name} / {self.name}"
         try:
@@ -688,13 +707,20 @@ class JobState:
         self.non_blocking = bool(non_blocking) and not success
         self.finished_at = time.time()
         self.rc = 0 if success else 1
-        self._update_check(
-            lambda c: c.complete(
-                "success" if success else "failure",
-                output=output,
-                details_url=details_url,
+        if self.check is None and not success and self._minimal_checks:
+            # Minimal mode: no queued check-run was created, so post the failure
+            # directly in its completed state (single API call).
+            self._create_completed_check(
+                "failure", output=output, details_url=details_url
             )
-        )
+        else:
+            self._update_check(
+                lambda c: c.complete(
+                    "success" if success else "failure",
+                    output=output,
+                    details_url=details_url,
+                )
+            )
         duration = self.finished_at - (self.started_at or self.finished_at)
         tag = "[DONE ]" if success else "[FAIL ]"
         attempt_note = f" (attempt {self.attempt})" if self.attempt > 1 else ""
@@ -738,7 +764,12 @@ class JobState:
         self.finished_at = time.time()
         self.rc = 1
         output = {"title": reason, "summary": reason}
-        self._update_check(lambda c: c.complete("failure", output=output))
+        if self.check is None and self._minimal_checks:
+            # Minimal mode: no queued check-run was created; post the failure
+            # directly in its completed state (single API call).
+            self._create_completed_check("failure", output=output)
+        else:
+            self._update_check(lambda c: c.complete("failure", output=output))
         duration = self.finished_at - (self.started_at or self.finished_at)
         print(f"[DEAD ] {self.name:70s} ({duration:.1f}s) {reason}")
 
