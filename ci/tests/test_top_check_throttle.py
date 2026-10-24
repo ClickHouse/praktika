@@ -87,3 +87,27 @@ def test_force_bypasses_dedup_and_interval():
         # identical state, no time advance, but forced -> patches anyway
         orch._patch_top_check(check, wf, state, phase="running", force=True)
     assert len(check.patches) == 2, check.patches
+
+
+def test_forced_patch_updates_baseline():
+    """A forced PATCH must advance the dedup signature + throttle window, so the
+    next regular poll of the same state neither re-PATCHes nor skips the
+    interval it should now be subject to."""
+    wf = mock.Mock()
+    wf.name = "W"
+    check = _FakeCheck()
+    state = _FakeState("A=RUNNING")
+    t = {"v": 1000.0}
+    with mock.patch.object(orch.time, "monotonic", lambda: t["v"]):
+        # Only a forced PATCH, then an identical non-forced poll.
+        orch._patch_top_check(check, wf, state, phase="running", force=True)
+        orch._patch_top_check(check, wf, state, phase="running")  # same sig -> dedup
+        assert len(check.patches) == 1, check.patches
+        # A real change still waits out the interval measured from the forced PATCH.
+        state._sig = "A=SUCCESS"
+        t["v"] += 5
+        orch._patch_top_check(check, wf, state, phase="running")  # too soon
+        assert len(check.patches) == 1, check.patches
+        t["v"] += 1000
+        orch._patch_top_check(check, wf, state, phase="running")  # flushes
+    assert len(check.patches) == 2, check.patches

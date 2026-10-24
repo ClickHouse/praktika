@@ -352,14 +352,14 @@ def _patch_top_check(check, workflow, state, error=None, details_url=None, phase
     output = _check_output(
         workflow, state, error=error, report_url=details_url, phase=phase, is_rerun=is_rerun, throttle=throttle
     )
+    state_sig = state.status_signature() if state is not None else ""
+    sig = hashlib.sha256(
+        "\x00".join(
+            (str(phase), str(is_rerun), str(throttle), str(error), str(details_url), state_sig)
+        ).encode("utf-8", "replace")
+    ).hexdigest()
+    now = time.monotonic()
     if not force:
-        state_sig = state.status_signature() if state is not None else ""
-        sig = hashlib.sha256(
-            "\x00".join(
-                (str(phase), str(is_rerun), str(throttle), str(error), str(details_url), state_sig)
-            ).encode("utf-8", "replace")
-        ).hexdigest()
-        now = time.monotonic()
         last_sig = getattr(check, "_last_patch_sig", None)
         last_ts = getattr(check, "_last_patch_ts", None)
         min_interval = getattr(Settings, "TOP_CHECK_MIN_PATCH_INTERVAL_S", 20)
@@ -372,9 +372,12 @@ def _patch_top_check(check, workflow, state, error=None, details_url=None, phase
     except Exception as e:
         print(f"  [warn] top-level check PATCH failed: {type(e).__name__}: {e}")
         return
-    if not force:
-        check._last_patch_sig = sig
-        check._last_patch_ts = now
+    # Update the baseline after every successful PATCH, including forced ones:
+    # a forced PATCH (startup phases, the "running" transition) advances the
+    # dedup signature and throttle window so the next regular poll doesn't
+    # immediately re-PATCH the same state nor skip the interval.
+    check._last_patch_sig = sig
+    check._last_patch_ts = now
 
 
 def orchestrate(
