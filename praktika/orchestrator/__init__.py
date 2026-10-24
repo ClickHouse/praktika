@@ -332,12 +332,17 @@ def _check_output(workflow, state, error=None, report_url=None, phase=None, is_r
 def _patch_top_check(check, workflow, state, error=None, details_url=None, phase=None, is_rerun=False, throttle=None, force=False):
     """PATCH the top-level workflow check with the current Markdown snapshot.
 
-    Rate-limit aware: unless ``force`` is set, the PATCH is suppressed when the
-    rendered body is unchanged since the last PATCH, or when fewer than
+    Rate-limit aware: unless ``force`` is set, the PATCH is suppressed when no
+    material state changed since the last PATCH, or when fewer than
     ``TOP_CHECK_MIN_PATCH_INTERVAL_S`` seconds have elapsed since it. The DAG
     loop re-evaluates every WAIT_POLL_INTERVAL_S, so a change that goes quiet
     still flushes on the first poll after the interval; the terminal
     ``complete()`` is a separate call, so the final state is always accurate.
+
+    Change detection hashes a *stable* signature (phase/throttle/error/URL plus
+    ``state.status_signature()``), NOT the rendered body: the body embeds each
+    running job's live elapsed duration, which ticks every poll, so hashing it
+    would never match and would defeat the dominant change-detection saving.
 
     Wrapped in try/except: a stuck GitHub API call must not kill the
     orchestration loop. The error is reported but otherwise swallowed.
@@ -348,9 +353,10 @@ def _patch_top_check(check, workflow, state, error=None, details_url=None, phase
         workflow, state, error=error, report_url=details_url, phase=phase, is_rerun=is_rerun, throttle=throttle
     )
     if not force:
+        state_sig = state.status_signature() if state is not None else ""
         sig = hashlib.sha256(
             "\x00".join(
-                (output.get("summary", ""), output.get("text", ""), str(details_url))
+                (str(phase), str(is_rerun), str(throttle), str(error), str(details_url), state_sig)
             ).encode("utf-8", "replace")
         ).hexdigest()
         now = time.monotonic()

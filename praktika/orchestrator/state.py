@@ -570,26 +570,21 @@ class JobState:
                 f"{type(e).__name__}: {e}"
             )
 
-    def _create_completed_check(self, conclusion, output=None, details_url=None, force=False):
+    def _create_completed_check(self, conclusion, output=None, details_url=None):
         """Post the GitHub check run directly in its terminal state.
 
         For jobs that never run (skipped), this posts the final conclusion in
         a single API call instead of queue()->complete(), which would briefly
         show a pending check before flipping it.
-
-        ``force`` bypasses the minimal-mode non-failure skip below; used when
-        completing a rerun that must overwrite a previous failed check-run
-        even though this attempt succeeded.
         """
         if self.check is not None:
             return
         ws = self._workflow_state
         if ws is None or not ws.can_post_checks:
             return
-        if self._minimal_checks and conclusion != "failure" and not force:
+        if self._minimal_checks and conclusion != "failure":
             # Minimal mode posts a per-job check-run only for failures; skip
-            # terminal non-failure conclusions (e.g. a skipped job), unless
-            # forced (a rerun must overwrite a stale failed check).
+            # terminal non-failure conclusions (e.g. a skipped job).
             return
         check_name = f"{ws.workflow.name} / {self.name}"
         try:
@@ -717,18 +712,14 @@ class JobState:
         self.non_blocking = bool(non_blocking) and not success
         self.finished_at = time.time()
         self.rc = 0 if success else 1
-        if self.check is None and self._minimal_checks and (
-            not success or self.rerun_count > 0
-        ):
-            # Minimal mode: no queued check-run was created, so post the
-            # terminal conclusion directly (single API call). A rerun that
-            # now succeeds must still post a check to overwrite the stale
-            # failed check left by the earlier attempt.
+        if self.check is None and not success and self._minimal_checks:
+            # Minimal mode: no queued check-run was created, so post the failure
+            # directly in its completed state (single API call). A rerun of a
+            # previously-failed job instead gets a fresh full-lifecycle check in
+            # _reset_job (its old red check is non-None at reset), so here its
+            # check is already set and completes normally via the else branch.
             self._create_completed_check(
-                "success" if success else "failure",
-                output=output,
-                details_url=details_url,
-                force=self.rerun_count > 0,
+                "failure", output=output, details_url=details_url
             )
         else:
             self._update_check(
@@ -2787,3 +2778,19 @@ class WorkflowState:
             note = ", ".join(note_bits) or "—"
             lines.append(f"| `{js.name}` | {js.status.value} | {dur} | {note} |")
         return "\n".join(lines)
+
+    def status_signature(self):
+        """Stable fingerprint of everything ``md_status`` / ``md_status_summary``
+        render EXCEPT the elapsed-duration column, which advances every poll
+        (it is computed from ``time.time()``). The top-level check uses this to
+        skip a PATCH when nothing material changed — hashing the rendered text
+        directly would never match, since the durations tick every 10s.
+
+        Keep in sync with ``md_status``: if a new rendered field can change
+        mid-run (status, attempt, stale flag, cancellation), include it here."""
+        parts = ["cancelled" if self.cancelled else ""]
+        for js in self.jobs.values():
+            parts.append(
+                f"{js.name}\x1f{js.status.value}\x1f{js.attempt}\x1f{int(js.stale_flagged)}"
+            )
+        return "\x1e".join(parts)
