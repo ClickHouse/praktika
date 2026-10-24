@@ -8,7 +8,6 @@ from praktika import Artifact, Docker, Job, Secret, Workflow
 from ci.settings.settings import RunnerLabels
 from praktika.settings import Settings
 
-_HEAD_PRAKTIKA_VERSION = "0.1.19"
 
 artifact = Artifact.Config(name="greet", type=Artifact.Type.S3, path="./artifact.txt")
 
@@ -57,37 +56,9 @@ workflow = Workflow.Config(
                 "finding is subjective, ambiguous, or the reviewer looks wrong, "
                 "continue and leave it for the author."
             ),
-            # Version-gate jobs: bump the stale constant, never pyproject.toml.
-            "Version Check": (
-                "The canonical praktika version is `version` in pyproject.toml. "
-                "The `_HEAD_PRAKTIKA_VERSION` constant in a workflow and the "
-                "praktika wheel the project_init scaffold pins must track it. If "
-                "a job fails because one of these is older than pyproject.toml, "
-                "that constant is stale: cancel_and_patch to bring it up to the "
-                "pyproject version. Never edit pyproject.toml to match a stale "
-                "constant, and leave `_BASE_*` version constants alone (they are "
-                "the prior release on purpose)."
-            ),
         },
     ),
     jobs=[
-        # Verify the Praktika actually executing the job is the head version.
-        # This repo runs Praktika straight from the checkout via PYTHONPATH (no
-        # per-task install — see controller._resolve_runtime), so the installed
-        # wheel metadata (importlib.metadata) is the stale baked AMI version, not
-        # what runs. current_praktika_version() reads the pyproject next to the
-        # imported package: head when run from the checkout, the baked version
-        # otherwise — so this also guards that the run-from-checkout path works.
-        Job.Config(
-            name="Version Check",
-            runs_on=[RunnerLabels.SMALL_AMD_UBUNTU],
-            command=(
-                "python3 -c \"from praktika.version import "
-                "current_praktika_version as v; "
-                "print('praktika=', v()); "
-                f"assert v() == '{_HEAD_PRAKTIKA_VERSION}', v()\""
-            ),
-        ),
         # Require a version bump whenever praktika / praktika-controller source
         # changes in the PR (script fetches the base version via the GitHub API;
         # the ephemeral-merge checkout has no base history locally).

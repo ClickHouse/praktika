@@ -425,6 +425,35 @@ _TERMINAL = {
 }
 
 
+# Row order for the top-level check's per-job table: most actionable first
+# (failures, then in-flight, then waiting), with the "did not really run"
+# outcomes last. "error"/"dropped" are not JobState statuses (they are
+# Result-level), but are listed so the ordering is stable if they ever surface.
+_STATUS_TABLE_ORDER = {
+    status: i
+    for i, status in enumerate(
+        [
+            "error",
+            "failure",
+            "running",
+            "queued",
+            "ready",
+            "pending",
+            "success",
+            "dropped",
+            "cancelled",
+            "skipped",
+        ]
+    )
+}
+
+
+def _job_status_sort_key(js):
+    """Sort key placing a job in ``_STATUS_TABLE_ORDER``; unknown statuses sort
+    last. ``sorted`` is stable, so jobs sharing a status keep DAG order."""
+    return _STATUS_TABLE_ORDER.get(js.status.value, len(_STATUS_TABLE_ORDER))
+
+
 class JobState:
     """Mutable runtime state for one job in a workflow run."""
 
@@ -506,6 +535,17 @@ class JobState:
         ext["run_attempt"] = self.rerun_count + 1
         return pub
 
+    @property
+    def _minimal_checks(self):
+        """True when per-job check-runs should be posted only for failures.
+
+        Controlled project-wide by ``Settings.JOB_CHECKS_MODE == "minimal"``.
+        In minimal mode the queued/in-progress/success/skipped check-runs are
+        suppressed to cut GitHub API volume on very large CI; only jobs that end
+        in failure get a (single, already-completed) check-run.
+        """
+        return getattr(Settings, "JOB_CHECKS_MODE", "verbose") == "minimal"
+
     def _update_check(self, transition):
         """Run a check-run API call; never let it take down the orchestrator."""
         if self.check is None:
@@ -515,8 +555,13 @@ class JobState:
         except Exception as e:
             print(f"  [warn] check update for {self.name!r}: {type(e).__name__}: {e}")
 
-    def _create_check(self):
+    def _create_check(self, force=False):
         """Queue the GitHub check run (status=queued) — called at kick time.
+
+        ``force`` overrides minimal mode's suppression: a re-run of a job that
+        previously posted a (failure) check must go through the full
+        queued -> ... -> final lifecycle so its now-possibly-passing outcome
+        supersedes the lingering red check for this name (see ``_reset_job``).
 
         Shows up in the PR as a pending check the moment the orchestrator
         decides to run the job, not back at workflow-start time. The check
@@ -528,6 +573,10 @@ class JobState:
             return
         ws = self._workflow_state
         if ws is None or not ws.can_post_checks:
+            return
+        if self._minimal_checks and not force:
+            # Minimal mode: no queued/in-progress check-run — a per-job check is
+            # posted only if the job ends in failure (see finish/fail_dead).
             return
         check_name = f"{ws.workflow.name} / {self.name}"
         runs_on = ", ".join(self.job.runs_on) if self.job.runs_on else "default"
@@ -561,6 +610,10 @@ class JobState:
             return
         ws = self._workflow_state
         if ws is None or not ws.can_post_checks:
+            return
+        if self._minimal_checks and conclusion != "failure":
+            # Minimal mode posts a per-job check-run only for failures; skip
+            # terminal non-failure conclusions (e.g. a skipped job).
             return
         check_name = f"{ws.workflow.name} / {self.name}"
         try:
@@ -688,13 +741,23 @@ class JobState:
         self.non_blocking = bool(non_blocking) and not success
         self.finished_at = time.time()
         self.rc = 0 if success else 1
-        self._update_check(
-            lambda c: c.complete(
-                "success" if success else "failure",
-                output=output,
-                details_url=details_url,
+        if self.check is None and not success and self._minimal_checks:
+            # Minimal mode: no queued check-run was created, so post the failure
+            # directly in its completed state (single API call). A rerun of a
+            # previously-failed job instead gets a fresh full-lifecycle check in
+            # _reset_job (its old red check is non-None at reset), so here its
+            # check is already set and completes normally via the else branch.
+            self._create_completed_check(
+                "failure", output=output, details_url=details_url
             )
-        )
+        else:
+            self._update_check(
+                lambda c: c.complete(
+                    "success" if success else "failure",
+                    output=output,
+                    details_url=details_url,
+                )
+            )
         duration = self.finished_at - (self.started_at or self.finished_at)
         tag = "[DONE ]" if success else "[FAIL ]"
         attempt_note = f" (attempt {self.attempt})" if self.attempt > 1 else ""
@@ -738,7 +801,12 @@ class JobState:
         self.finished_at = time.time()
         self.rc = 1
         output = {"title": reason, "summary": reason}
-        self._update_check(lambda c: c.complete("failure", output=output))
+        if self.check is None and self._minimal_checks:
+            # Minimal mode: no queued check-run was created; post the failure
+            # directly in its completed state (single API call).
+            self._create_completed_check("failure", output=output)
+        else:
+            self._update_check(lambda c: c.complete("failure", output=output))
         duration = self.finished_at - (self.started_at or self.finished_at)
         print(f"[DEAD ] {self.name:70s} ({duration:.1f}s) {reason}")
 
@@ -1938,6 +2006,14 @@ class WorkflowState:
         # goes queued -> in_progress -> final, and GitHub surfaces the latest
         # check per name (the previous same-name check collapses). The next
         # snapshot records the new check_id.
+        # In minimal mode a job normally posts no check unless it fails, but a
+        # re-run of a job that already has a check (i.e. a prior attempt failed
+        # and left a red check for this name) MUST drive a fresh full-lifecycle
+        # check — otherwise a now-passing re-run posts nothing and the old
+        # failure stays the latest check for this name. In verbose mode a
+        # finished job always has a check, so this simply preserves today's
+        # behavior.
+        had_check = js.check is not None
         js.check = None
         # Post the fresh QUEUED check now, not at kick() time. The target job is
         # kicked immediately, but a reset *downstream* job isn't kicked until its
@@ -1945,7 +2021,7 @@ class WorkflowState:
         # linger for the whole re-run. Posting here (same path kick() uses) shows
         # every reset job as pending the moment the re-run is applied; each flips
         # to in_progress when it actually runs. No-op without a GH token.
-        js._create_check()
+        js._create_check(force=had_check)
         return True
 
     def _delete_run_key(self, key):
@@ -2717,7 +2793,7 @@ class WorkflowState:
         lines.append("| Job | Status | Duration | Notes |")
         lines.append("|---|---|---|---|")
         now = time.time()
-        for js in self.jobs.values():
+        for js in sorted(self.jobs.values(), key=_job_status_sort_key):
             if js.started_at:
                 end = js.finished_at or now
                 dur = f"{int(end - js.started_at)}s"
@@ -2731,3 +2807,19 @@ class WorkflowState:
             note = ", ".join(note_bits) or "—"
             lines.append(f"| `{js.name}` | {js.status.value} | {dur} | {note} |")
         return "\n".join(lines)
+
+    def status_signature(self):
+        """Stable fingerprint of everything ``md_status`` / ``md_status_summary``
+        render EXCEPT the elapsed-duration column, which advances every poll
+        (it is computed from ``time.time()``). The top-level check uses this to
+        skip a PATCH when nothing material changed — hashing the rendered text
+        directly would never match, since the durations tick every 10s.
+
+        Keep in sync with ``md_status``: if a new rendered field can change
+        mid-run (status, attempt, stale flag, cancellation), include it here."""
+        parts = ["cancelled" if self.cancelled else ""]
+        for js in self.jobs.values():
+            parts.append(
+                f"{js.name}\x1f{js.status.value}\x1f{js.attempt}\x1f{int(js.stale_flagged)}"
+            )
+        return "\x1e".join(parts)

@@ -119,6 +119,9 @@ class _FakeState:
     def md_status(self):
         return "table"
 
+    def status_signature(self):
+        return "stable"
+
 
 _EVENT = {
     "repo": "ClickHouse/praktika",

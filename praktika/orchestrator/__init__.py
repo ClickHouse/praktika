@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -328,23 +329,55 @@ def _check_output(workflow, state, error=None, report_url=None, phase=None, is_r
     return {"title": title, "summary": summary, "text": text}
 
 
-def _patch_top_check(check, workflow, state, error=None, details_url=None, phase=None, is_rerun=False, throttle=None):
+def _patch_top_check(check, workflow, state, error=None, details_url=None, phase=None, is_rerun=False, throttle=None, force=False):
     """PATCH the top-level workflow check with the current Markdown snapshot.
+
+    Rate-limit aware: unless ``force`` is set, the PATCH is suppressed when no
+    material state changed since the last PATCH, or when fewer than
+    ``TOP_CHECK_MIN_PATCH_INTERVAL_S`` seconds have elapsed since it. The DAG
+    loop re-evaluates every WAIT_POLL_INTERVAL_S, so a change that goes quiet
+    still flushes on the first poll after the interval; the terminal
+    ``complete()`` is a separate call, so the final state is always accurate.
+
+    Change detection hashes a *stable* signature (phase/throttle/error/URL plus
+    ``state.status_signature()``), NOT the rendered body: the body embeds each
+    running job's live elapsed duration, which ticks every poll, so hashing it
+    would never match and would defeat the dominant change-detection saving.
 
     Wrapped in try/except: a stuck GitHub API call must not kill the
     orchestration loop. The error is reported but otherwise swallowed.
     """
     if check is None:
         return
+    output = _check_output(
+        workflow, state, error=error, report_url=details_url, phase=phase, is_rerun=is_rerun, throttle=throttle
+    )
+    state_sig = state.status_signature() if state is not None else ""
+    sig = hashlib.sha256(
+        "\x00".join(
+            (str(phase), str(is_rerun), str(throttle), str(error), str(details_url), state_sig)
+        ).encode("utf-8", "replace")
+    ).hexdigest()
+    now = time.monotonic()
+    if not force:
+        last_sig = getattr(check, "_last_patch_sig", None)
+        last_ts = getattr(check, "_last_patch_ts", None)
+        min_interval = getattr(Settings, "TOP_CHECK_MIN_PATCH_INTERVAL_S", 20)
+        if sig == last_sig:
+            return  # nothing changed since the last PATCH
+        if last_ts is not None and (now - last_ts) < min_interval:
+            return  # changed, but too soon; a later poll re-evaluates and flushes
     try:
-        check.update(
-            output=_check_output(
-                workflow, state, error=error, report_url=details_url, phase=phase, is_rerun=is_rerun, throttle=throttle
-            ),
-            details_url=details_url,
-        )
+        check.update(output=output, details_url=details_url)
     except Exception as e:
         print(f"  [warn] top-level check PATCH failed: {type(e).__name__}: {e}")
+        return
+    # Update the baseline after every successful PATCH, including forced ones:
+    # a forced PATCH (startup phases, the "running" transition) advances the
+    # dedup signature and throttle window so the next regular poll doesn't
+    # immediately re-PATCH the same state nor skip the interval.
+    check._last_patch_sig = sig
+    check._last_patch_ts = now
 
 
 def orchestrate(
@@ -657,7 +690,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
     # controller to retry on a fresh instance; a failure after it is not
     # (jobs are already running) and is reported as an ordinary failure.
     dag_started = False
-    _patch_top_check(check, workflow, None, phase=phase, details_url=report_url, is_rerun=is_rerun)
+    _patch_top_check(check, workflow, None, phase=phase, details_url=report_url, is_rerun=is_rerun, force=True)
     try:
         # Startup (AI advisor + workflow plan build) talks to S3/GH and can
         # hit transient infra errors; retry it a bounded number of times.
@@ -667,7 +700,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
         for attempt in range(1, attempts + 1):
             try:
                 phase = "ai_setup"
-                _patch_top_check(check, workflow, None, phase=phase, details_url=report_url, is_rerun=is_rerun)
+                _patch_top_check(check, workflow, None, phase=phase, details_url=report_url, is_rerun=is_rerun, force=True)
                 # None when AI orchestration is disabled (the default) or the
                 # configured provider can't be resolved — the loop is unchanged.
                 # The patcher lets a cancel_and_patch decision land a fix. In CI
@@ -696,7 +729,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
                 )
 
                 phase = "planning"
-                _patch_top_check(check, workflow, None, phase=phase, details_url=report_url, is_rerun=is_rerun)
+                _patch_top_check(check, workflow, None, phase=phase, details_url=report_url, is_rerun=is_rerun, force=True)
                 state = WorkflowState(
                     workflow,
                     event=event,
@@ -750,6 +783,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
                     phase=f"{phase} — retry {attempt + 1}/{attempts}",
                     details_url=report_url,
                     is_rerun=is_rerun,
+                    force=True,
                 )
                 time.sleep(min(2 ** attempt, 30))
 
@@ -777,7 +811,7 @@ def _orchestrate_single(workflow, event, gh_token=None, local_mode=False, existi
 
         phase = "running"
         dag_started = True
-        _patch_top_check(check, workflow, state, phase=phase, details_url=report_url, is_rerun=is_rerun)
+        _patch_top_check(check, workflow, state, phase=phase, details_url=report_url, is_rerun=is_rerun, force=True)
         if advisor is not None:
             advisor.on_run_start(state, event)
 

@@ -685,9 +685,12 @@ def test_run_native_finalizers_comment_and_cancel(monkeypatch):
 
 def test_reset_posts_pending_check_at_reset_time(monkeypatch):
     """On re-run every reset job (target + downstream) gets a fresh QUEUED check
-    immediately, so a downstream check doesn't linger stale until it re-runs."""
+    immediately, so a downstream check doesn't linger stale until it re-runs.
+
+    Verbose mode (the default): every reset job posts a pending check."""
     import praktika.orchestrator.state as state_mod
 
+    monkeypatch.setattr(state_mod.Settings, "JOB_CHECKS_MODE", "verbose", raising=False)
     posted = []
     monkeypatch.setattr(
         state_mod.JobCheckRun,
@@ -707,6 +710,40 @@ def test_reset_posts_pending_check_at_reset_time(monkeypatch):
     reset, _failed = state.apply_rerun(["A"])
     assert reset == {"A", "B", "C"}
     assert len(posted) == 3  # a pending check for each reset job, at reset time
+
+
+def test_reset_minimal_mode_only_previously_checked_job_reposts(monkeypatch):
+    """Minimal mode: on re-run, only a reset job that already had a check (i.e. a
+    prior attempt posted a red failure check) gets a fresh full-lifecycle check
+    to supersede it. Reset downstream jobs that never had a check (cancelled /
+    passing) stay silent, so a single root failure does not fan out into
+    O(downstream) check writes."""
+    import praktika.orchestrator.state as state_mod
+
+    monkeypatch.setattr(state_mod.Settings, "JOB_CHECKS_MODE", "minimal", raising=False)
+    posted = []
+    monkeypatch.setattr(
+        state_mod.JobCheckRun,
+        "queue",
+        staticmethod(
+            lambda token, repo, head_sha, name, output=None, external_id=None: (
+                posted.append(name),
+                types.SimpleNamespace(id=len(posted)),
+            )[1]
+        ),
+    )
+    s3 = _FakeS3()
+    state = _make_state(
+        s3, {"A": JobStatus.FAILURE, "B": JobStatus.CANCELLED, "C": JobStatus.CANCELLED}
+    )
+    state._gh_token = "tok"
+    # Only A failed and therefore carries a (red) check-run in minimal mode; the
+    # cancelled downstream jobs never posted one.
+    state.jobs["A"].check = types.SimpleNamespace(id=42)
+    reset, _failed = state.apply_rerun(["A"])
+    assert reset == {"A", "B", "C"}
+    # only the previously-failed job (A) re-posts a check; B/C stay silent
+    assert len(posted) == 1 and posted[0].endswith("/ A")
 
 
 def test_snapshot_target_pinned_from_config_workflow_and_frozen_against_later_jobs():
