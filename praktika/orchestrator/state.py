@@ -425,6 +425,35 @@ _TERMINAL = {
 }
 
 
+# Row order for the top-level check's per-job table: most actionable first
+# (failures, then in-flight, then waiting), with the "did not really run"
+# outcomes last. "error"/"dropped" are not JobState statuses (they are
+# Result-level), but are listed so the ordering is stable if they ever surface.
+_STATUS_TABLE_ORDER = {
+    status: i
+    for i, status in enumerate(
+        [
+            "error",
+            "failure",
+            "running",
+            "queued",
+            "ready",
+            "pending",
+            "success",
+            "dropped",
+            "cancelled",
+            "skipped",
+        ]
+    )
+}
+
+
+def _job_status_sort_key(js):
+    """Sort key placing a job in ``_STATUS_TABLE_ORDER``; unknown statuses sort
+    last. ``sorted`` is stable, so jobs sharing a status keep DAG order."""
+    return _STATUS_TABLE_ORDER.get(js.status.value, len(_STATUS_TABLE_ORDER))
+
+
 class JobState:
     """Mutable runtime state for one job in a workflow run."""
 
@@ -2764,7 +2793,7 @@ class WorkflowState:
         lines.append("| Job | Status | Duration | Notes |")
         lines.append("|---|---|---|---|")
         now = time.time()
-        for js in self.jobs.values():
+        for js in sorted(self.jobs.values(), key=_job_status_sort_key):
             if js.started_at:
                 end = js.finished_at or now
                 dur = f"{int(end - js.started_at)}s"
