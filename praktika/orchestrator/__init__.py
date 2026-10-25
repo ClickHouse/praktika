@@ -16,13 +16,14 @@ _EVENT_MAP = {
     "pull_request": Workflow.Event.PULL_REQUEST,
     "push": Workflow.Event.PUSH,
     # Fired by a GH_IGNITION workflow's ignition job via the gh-trigger lambda.
-    # Both carry the branch in head_ref and match against wf.branches like push.
+    # Both carry the branch in head_ref, but unlike push they do NOT filter on
+    # wf.branches (see find_workflows_for_event) — workflow_name pins the workflow.
     "schedule": Workflow.Event.SCHEDULE,
     "dispatch": Workflow.Event.DISPATCH,
 }
 
-# Event types whose message carries the target branch in `head_ref` and which
-# match against `wf.branches` (same as push).
+# Event types whose message carries the target branch in `head_ref`. push filters
+# on `wf.branches`; schedule/dispatch only use it for log context (not filtering).
 _HEAD_REF_EVENTS = ("push", "schedule", "dispatch")
 
 
