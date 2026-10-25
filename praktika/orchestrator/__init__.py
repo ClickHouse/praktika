@@ -16,13 +16,14 @@ _EVENT_MAP = {
     "pull_request": Workflow.Event.PULL_REQUEST,
     "push": Workflow.Event.PUSH,
     # Fired by a GH_IGNITION workflow's ignition job via the gh-trigger lambda.
-    # Both carry the branch in head_ref and match against wf.branches like push.
+    # Both carry the branch in head_ref, but unlike push they do NOT filter on
+    # wf.branches (see find_workflows_for_event) — workflow_name pins the workflow.
     "schedule": Workflow.Event.SCHEDULE,
     "dispatch": Workflow.Event.DISPATCH,
 }
 
-# Event types whose message carries the target branch in `head_ref` and which
-# match against `wf.branches` (same as push).
+# Event types whose message carries the target branch in `head_ref`. push filters
+# on `wf.branches`; schedule/dispatch only use it for log context (not filtering).
 _HEAD_REF_EVENTS = ("push", "schedule", "dispatch")
 
 
@@ -108,12 +109,13 @@ def find_workflows_for_event(event, workflow_name=None, _load_errors_out=None):
             if _branch_matches(branch, wf.branches):
                 matched.append(wf)
         elif event_type in ("schedule", "dispatch"):
-            # workflow_name (required above) already pins the exact workflow;
-            # branches is an optional restriction. Empty means run on whatever
-            # ref the cron/dispatch fired on - e.g. any ref chosen in the GH UI
-            # for a manual dispatch. When set, restrict to those refs.
-            if not wf.branches or _branch_matches(branch, wf.branches):
-                matched.append(wf)
+            # workflow_name (required above) already pins the exact workflow; the
+            # ref it runs on is whatever the trigger used. wf.branches is ignored
+            # here on purpose: GitHub cron only ever fires on the default branch
+            # (so a pin can never exclude a cron run), and a manual "Run workflow"
+            # dispatch is meant to work from any branch. A branches pin would only
+            # ever block dispatch, never guard cron, so it has no useful effect.
+            matched.append(wf)
 
     if not matched:
         name_hint = f" name [{name_filter}]" if name_filter else ""

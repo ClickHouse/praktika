@@ -141,7 +141,10 @@ def test_dispatch_without_branches_runs_on_any_ref(monkeypatch):
     assert [wf.name for wf in matched] == ["Release"]
 
 
-def test_dispatch_with_branches_restricts_ref(monkeypatch):
+def test_dispatch_ignores_branches_pin(monkeypatch):
+    # branches is ignored for schedule/dispatch: a manual dispatch runs from any
+    # ref even when the workflow pins branches (cron can only fire on the default
+    # branch, so a pin would only ever block dispatch, never guard cron).
     wf = _make_ignition_workflow(
         "Release", Workflow.Event.DISPATCH, branches=["main"]
     )
@@ -156,7 +159,7 @@ def test_dispatch_with_branches_restricts_ref(monkeypatch):
 
     matched = find_workflows_for_event(event)
 
-    assert matched == []  # ref not in the branches restriction
+    assert [w.name for w in matched] == ["Release"]
 
 
 def test_ignition_event_name_does_not_bypass_pool_routing(monkeypatch):
