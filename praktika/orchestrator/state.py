@@ -2414,7 +2414,16 @@ class WorkflowState:
                         # the previous one was lost. Surface it rather than let
                         # the check silently ride through the recovery.
                         for e in js.attempt_history:
-                            if e["attempt"] < attempt and e["outcome"] == "running":
+                            # Convert both running and already-stalled
+                            # (unresponsive) prior attempts: the replacement
+                            # arriving is proof the earlier runner is gone, and
+                            # sweep_completions only persists lost/never outcomes
+                            # — so leaving one "unresponsive" would drop its
+                            # warning on the common succeed-after-retry path.
+                            if e["attempt"] < attempt and e["outcome"] in (
+                                "running",
+                                "unresponsive",
+                            ):
                                 e["outcome"] = "lost (runner replaced)"
                         js.attempt = attempt
                         summary = (

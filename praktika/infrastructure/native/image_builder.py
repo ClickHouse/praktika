@@ -189,6 +189,12 @@ exec /usr/local/bin/praktika-controller
     # shell vars the configure script exports before the (unquoted) heredoc, so
     # they expand at boot; we deliberately avoid the agent's ${aws:InstanceId}
     # token, which bash would choke on inside the heredoc ("bad substitution").
+    # drop_original_metrics: aggregation_dimensions only ADDS the InstanceId+Pool
+    # rollup — the agent still emits the original, fully-dimensioned series
+    # (disk/diskio carry per-device/path/fstype dims, cpu/mem carry host). Left
+    # on, those originals are billed alongside the aggregate, multiplying the
+    # series count. Dropping them keeps exactly the one (instance, pool) series
+    # per measurement this config intends. Listed per collector by measurement.
     metrics_collected: Dict[str, Any] = {
         "cpu": {
             "measurement": [
@@ -199,19 +205,28 @@ exec /usr/local/bin/praktika-controller
             ],
             "totalcpu": True,
             "metrics_collection_interval": 60,
+            "drop_original_metrics": [
+                "cpu_usage_idle",
+                "cpu_usage_iowait",
+                "cpu_usage_user",
+                "cpu_usage_system",
+            ],
         },
         "mem": {
             "measurement": ["mem_used_percent", "mem_available_percent"],
             "metrics_collection_interval": 60,
+            "drop_original_metrics": ["mem_used_percent", "mem_available_percent"],
         },
         "disk": {
             "measurement": ["disk_used_percent", "disk_inodes_free"],
             "resources": ["/"],
             "metrics_collection_interval": 60,
+            "drop_original_metrics": ["disk_used_percent", "disk_inodes_free"],
         },
         "diskio": {
             "measurement": ["io_time", "iops_in_progress"],
             "metrics_collection_interval": 60,
+            "drop_original_metrics": ["io_time", "iops_in_progress"],
         },
     }
     metrics_config: Dict[str, Any] = {
@@ -221,8 +236,9 @@ exec /usr/local/bin/praktika-controller
             "Pool": "${PRAKTIKA_POOL}",
         },
         # One series per (instance, pool): per-instance granularity for the
-        # failure lookup, filterable by Pool, without the cost multiplier that
-        # extra rollup dimension-sets would add.
+        # failure lookup, filterable by Pool. aggregation_dimensions adds the
+        # rollup; drop_original_metrics (above) removes the fully-dimensioned
+        # originals so only that one series per measurement is billed.
         "aggregation_dimensions": [["InstanceId", "Pool"]],
         "metrics_collected": metrics_collected,
     }

@@ -375,6 +375,32 @@ def test_stall_flags_unresponsive_without_failing_then_recovers(capsys):
     assert "[ALIVE]" in capsys.readouterr().out
 
 
+def test_stalled_then_replaced_attempt_is_marked_lost():
+    """A runner flagged unresponsive (stall) and then replaced by a fresh
+    attempt must be recorded as lost — not left 'unresponsive', which
+    sweep_completions would drop from the succeed-after-retry warnings."""
+    s3 = _FakeS3()
+    state = _make_queued_state(["A"], {"A": 5}, s3)
+
+    # Attempt 1 picks up, then stalls (flagged unresponsive, not yet failed).
+    _put_heartbeat(s3, "run42", "A", time.time() - 1, instance_id="i-1", attempt=1)
+    state.sweep_liveness()
+    _put_heartbeat(
+        s3, "run42", "A", time.time() - (HEARTBEAT_STALL_S + 30), instance_id="i-1"
+    )
+    state.sweep_liveness()
+    assert state.jobs["A"].stale_flagged is True
+
+    # Attempt 2 lands on a fresh runner (redelivery) before the timeout.
+    _put_heartbeat(s3, "run42", "A", time.time(), instance_id="i-2", attempt=2)
+    state.sweep_liveness()
+
+    hist = {e["attempt"]: e for e in state.jobs["A"].attempt_history}
+    assert hist[1]["instance_id"] == "i-1"
+    assert "lost" in hist[1]["outcome"]
+    assert hist[2]["instance_id"] == "i-2"
+
+
 def test_top_level_report_surfaces_retry_and_stall():
     """The workflow-level summary and table flag retried and unresponsive jobs."""
     s3 = _FakeS3()
