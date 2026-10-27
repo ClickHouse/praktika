@@ -835,7 +835,7 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
             )
         )
 
-    if results[-1].is_ok() and workflow.enable_cache and Settings.ENABLE_SUBMODULE_CACHE:
+    if results[-1].is_ok() and Settings.ENABLE_SUBMODULE_CACHE:
         result = _prepare_submodule_cache(workflow, workflow_config)
         if result is not None:
             results.append(result)
