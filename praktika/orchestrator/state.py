@@ -489,6 +489,14 @@ class JobState:
         # bumps when a dead runner's job_task is redelivered and re-run; the
         # sweep surfaces the bump as a [RETRY] line and in the check output.
         self.attempt = 1
+        # Per-attempt runner identity, for observability: one entry per attempt
+        # ({attempt, instance_id, pool, last_phase, outcome}), so a job that ran
+        # across several runners records *which* instance each attempt used and
+        # how it ended. Ephemeral (NOT snapshotted — like the other heartbeat
+        # scalars it is rebuilt from heartbeats); it is folded into the job
+        # Result's warnings/info when the job finalizes, and that Result is what
+        # persists. See _note_attempt / _attempt_lines.
+        self.attempt_history = []
         # Set once the heartbeat gap crosses HEARTBEAT_STALL_S (runner flagged
         # unresponsive, awaiting redelivery); cleared when a fresh heartbeat
         # arrives. Keeps the [STALE] line and check update one-shot per stall.
@@ -786,6 +794,48 @@ class JobState:
         print(f"[SKIP ] {self.name:70s}{suffix}")
         return True
 
+    def _note_attempt(self, attempt, instance_id, pool, phase):
+        """Record (or refresh) the runner identity for ``attempt``.
+
+        Called on every heartbeat so the orchestrator retains *which* instance
+        ran each attempt and its last phase — the scalar ``runner_instance_id``
+        is overwritten on each retry and would otherwise lose the lost runner's
+        id. Returns the entry so callers can stamp an ``outcome``.
+        """
+        entry = next(
+            (e for e in self.attempt_history if e["attempt"] == attempt), None
+        )
+        if entry is None:
+            entry = {
+                "attempt": attempt,
+                "instance_id": instance_id or "",
+                "pool": pool or "",
+                "last_phase": phase or "",
+                "outcome": "running",
+            }
+            self.attempt_history.append(entry)
+        else:
+            if instance_id:
+                entry["instance_id"] = instance_id
+            if phase:
+                entry["last_phase"] = phase
+        return entry
+
+    def _attempt_lines(self):
+        """Human-readable one-liner per attempt (instance + pool + phase +
+        outcome), oldest first — e.g. for folding into the job Result."""
+        lines = []
+        for e in sorted(self.attempt_history, key=lambda e: e["attempt"]):
+            who = (
+                f"runner `{e['instance_id']}`"
+                if e.get("instance_id")
+                else f"pool `{e['pool']}`"
+            )
+            phase = f", last phase `{e['last_phase']}`" if e.get("last_phase") else ""
+            outcome = e.get("outcome") or "running"
+            lines.append(f"Attempt {e['attempt']}: {who}{phase} — {outcome}")
+        return lines
+
     def fail_dead(self, reason):
         """Transition an in-flight job -> FAILURE because it stopped responding.
 
@@ -800,7 +850,33 @@ class JobState:
         self.status = JobStatus.FAILURE
         self.finished_at = time.time()
         self.rc = 1
-        output = {"title": reason, "summary": reason}
+        # Synthesize an ERROR Result and stash it on ``self.result`` so the next
+        # publish_report overwrites the job's stale RUNNING row with a terminal
+        # one. Without this the dead job matches none of publish_report's buckets
+        # (not terminal — no result dict; not inflight — no longer RUNNING), so
+        # its RUNNING report row is never finalized even though the check is red.
+        # The per-attempt history is folded in (info + warnings) so the report
+        # and check name every runner the job burned through, not just the last.
+        attempt_lines = self._attempt_lines()
+        try:
+            from ..result import Result
+
+            res = Result.create_new(self.name, Result.Status.ERROR, info=reason)
+            res.start_time = self.started_at
+            res.duration = self.finished_at - (self.started_at or self.finished_at)
+            for line in attempt_lines:
+                res.add_warning(line)
+            self.result = Result.to_dict(res)
+        except Exception as e:
+            print(
+                f"  [warn] could not synthesize dead Result for {self.name!r}: "
+                f"{type(e).__name__}: {e}"
+            )
+        summary = reason
+        text = "\n".join(attempt_lines)
+        output = {"title": "ERROR", "summary": summary}
+        if text:
+            output["text"] = text
         if self.check is None and self._minimal_checks:
             # Minimal mode: no queued check-run was created; post the failure
             # directly in its completed state (single API call).
@@ -2205,6 +2281,39 @@ class WorkflowState:
                 payload, js.name, started_at=js.started_at
             )
             if isinstance(result_dict, dict):
+                # If the job burned through earlier runners before this attempt
+                # completed, surface each lost runner as a warning on the job
+                # Result so the report records *which* instances died, not just
+                # the one that finally finished. (The live [RETRY] line already
+                # named them transiently; this persists it.)
+                lost = [
+                    e
+                    for e in js.attempt_history
+                    if "lost" in e["outcome"] or "never" in e["outcome"]
+                ]
+                if lost:
+                    ext = result_dict.setdefault("ext", {})
+                    warnings = ext.setdefault("warnings", [])
+                    for e in sorted(lost, key=lambda e: e["attempt"]):
+                        who = (
+                            f"runner `{e['instance_id']}`"
+                            if e.get("instance_id")
+                            else f"pool `{e['pool']}`"
+                        )
+                        phase = (
+                            f", last phase `{e['last_phase']}`"
+                            if e.get("last_phase")
+                            else ""
+                        )
+                        warnings.append(
+                            {
+                                "message": (
+                                    f"Attempt {e['attempt']}: {who}{phase} — "
+                                    f"{e['outcome']}; job re-ran on a fresh runner."
+                                ),
+                                "from": result_dict.get("name", js.name),
+                            }
+                        )
                 # Stash the runner's raw Result. The orchestrator-authoritative
                 # rerun_count is projected into ext at report time by
                 # JobState.published_result (single point, survives resume) — not
@@ -2281,6 +2390,7 @@ class WorkflowState:
                     if instance_id:
                         js.runner_instance_id = instance_id
                     attempt = int(hb.get("attempt") or js.attempt)
+                    js._note_attempt(attempt, instance_id, runner_pool, phase)
                     runner_note = f" on runner `{instance_id}`" if instance_id else ""
                     if js.status == JobStatus.QUEUED:
                         js.attempt = attempt
@@ -2303,6 +2413,9 @@ class WorkflowState:
                         # A redelivered job_task re-ran on a fresh runner after
                         # the previous one was lost. Surface it rather than let
                         # the check silently ride through the recovery.
+                        for e in js.attempt_history:
+                            if e["attempt"] < attempt and e["outcome"] == "running":
+                                e["outcome"] = "lost (runner replaced)"
                         js.attempt = attempt
                         summary = (
                             f"RUNNING: re-running{runner_note} after the previous "
@@ -2341,6 +2454,16 @@ class WorkflowState:
             age_since_kick = now - kicked
             if js.status == JobStatus.QUEUED:
                 if heartbeat_missing and age_since_kick > RUNNER_PICKUP_TIMEOUT_S:
+                    if not js.attempt_history:
+                        js.attempt_history.append(
+                            {
+                                "attempt": js.attempt,
+                                "instance_id": "",
+                                "pool": runs_on,
+                                "last_phase": "",
+                                "outcome": "never started (no heartbeat)",
+                            }
+                        )
                     js.fail_dead(
                         f"runner pool `{runs_on}` never started job (no heartbeat in "
                         f"{int(age_since_kick)}s, timeout={RUNNER_PICKUP_TIMEOUT_S}s)"
@@ -2350,6 +2473,12 @@ class WorkflowState:
                 if age_since_hb > HEARTBEAT_TIMEOUT_S:
                     runner = js.runner_instance_id
                     phase = js.last_heartbeat_phase
+                    for e in js.attempt_history:
+                        if e["attempt"] == js.attempt and e["outcome"] in (
+                            "running",
+                            "unresponsive",
+                        ):
+                            e["outcome"] = "lost (no heartbeat)"
                     if runner:
                         reason = f"runner `{runner}` in pool `{runs_on}` stopped heartbeating"
                         if phase:
@@ -2367,6 +2496,9 @@ class WorkflowState:
                     js.fail_dead(reason)
                 elif age_since_hb > HEARTBEAT_STALL_S and not js.stale_flagged:
                     js.stale_flagged = True
+                    for e in js.attempt_history:
+                        if e["attempt"] == js.attempt and e["outcome"] == "running":
+                            e["outcome"] = "unresponsive"
                     runner = js.runner_instance_id
                     where = f"runner `{runner}`" if runner else f"pool `{runs_on}`"
                     summary = (

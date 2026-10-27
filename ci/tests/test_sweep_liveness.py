@@ -86,8 +86,10 @@ def _make_queued_state(job_names, started_at_offsets, fake_s3, run_id="run42"):
         js.last_heartbeat_phase = None
         js.runner_instance_id = None
         js.attempt = 1
+        js.attempt_history = []
         js.stale_flagged = False
         js.rerun_count = 0
+        js.result = None
         js._workflow_state = state
         state.jobs[name] = js
     return state
@@ -428,6 +430,55 @@ def test_stale_heartbeat_reason_names_runner_and_phase():
             f"timeout={HEARTBEAT_TIMEOUT_S}s)"
         )
     ]
+
+
+def test_dead_job_gets_terminal_result_with_attempt_history():
+    """fail_dead must stash an ERROR Result so publish_report overwrites the
+    job's stale RUNNING report row, and fold the per-attempt runner identity in
+    as warnings (so the report names the runner that died)."""
+    s3 = _FakeS3()
+    state = _make_queued_state(["A"], {"A": RUNNER_PICKUP_TIMEOUT_S + 200}, s3)
+    state.jobs["A"].status = JobStatus.RUNNING
+    state.jobs["A"].job.runs_on = ["arm-medium"]
+    _put_heartbeat(
+        s3,
+        "run42",
+        "A",
+        time.time() - (HEARTBEAT_TIMEOUT_S + 30),
+        instance_id="i-runner",
+        phase="running_job",
+    )
+
+    state.sweep_liveness()
+
+    js = state.jobs["A"]
+    assert js.status == JobStatus.FAILURE
+    # A terminal result dict is what lets publish_report finalize the row.
+    assert isinstance(js.result, dict)
+    assert js.result["status"] == "ERROR"
+    msgs = " ".join(
+        w["message"] for w in js.result.get("ext", {}).get("warnings", [])
+    )
+    assert "i-runner" in msgs
+    assert "lost (no heartbeat)" in msgs
+
+
+def test_pickup_timeout_result_records_never_started():
+    """A job never picked up also gets a terminal Result (so its RUNNING/queued
+    row is finalized) recording that no runner ever started it."""
+    s3 = _FakeS3()
+    state = _make_queued_state(["A"], {"A": RUNNER_PICKUP_TIMEOUT_S + 60}, s3)
+    state.jobs["A"].job.runs_on = ["arm-medium"]
+
+    state.sweep_liveness()
+
+    js = state.jobs["A"]
+    assert js.status == JobStatus.FAILURE
+    assert isinstance(js.result, dict)
+    msgs = " ".join(
+        w["message"] for w in js.result.get("ext", {}).get("warnings", [])
+    )
+    assert "never started" in msgs
 
 
 def test_sweep_is_noop_in_local_mode():

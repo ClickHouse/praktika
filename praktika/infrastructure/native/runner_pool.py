@@ -307,6 +307,12 @@ class RunnerPool:
     evidence to the `/{slug}/praktika-system` CloudWatch log group. Off by
     default; see praktika/docs/logging.md.
 
+    `ext["host_metrics"]` (truthy) tags instances so the baked CloudWatch agent
+    also ships CPU/memory/disk to the `CWAgent` namespace (dimensioned by
+    instance + pool), making a dead runner's resource curve queryable next to
+    its log stream. Off by default: custom metrics are billed per metric and the
+    per-instance dimensions multiply across a churning fleet.
+
     `ext["runtime_source"]` (str) makes this pool install Praktika at runtime
     instead of using the version baked into the AMI. It is surfaced as the
     `praktika_runtime_source` instance tag; on every task the controller
@@ -604,6 +610,12 @@ class RunnerPool:
             # Activates the baked praktika-system-logs streamer at boot so
             # kernel/OOM/systemd-kill evidence is shipped to CloudWatch.
             runtime_tags["praktika_system_logs"] = "1"
+        if self.ext.get("host_metrics"):
+            # Ships CPU/mem/disk to the CWAgent namespace (dimensioned by
+            # instance + pool) so a dead runner's resource curve is queryable
+            # next to its log stream. Opt-in: custom metrics are billed per
+            # metric and the per-instance dimensions multiply across the fleet.
+            runtime_tags["praktika_host_metrics"] = "1"
         runtime_source = str(self.ext.get("runtime_source", "") or "").strip()
         if runtime_source:
             # Install Praktika at runtime from this path instead of using the

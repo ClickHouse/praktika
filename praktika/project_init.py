@@ -585,6 +585,12 @@ def _infrastructure_template(answers: InitAnswers) -> str:
     ext_entries = [
         f'"allowed_push_branches": [{answers.main_branch!r}]',
         f'"allowed_pr_base_branches": [{answers.main_branch!r}]',
+        # Opt-in observability, scaffolded off (both cost CloudWatch money when
+        # on). system_logs ships kernel/OOM/systemd-kill evidence; host_metrics
+        # ships CPU/mem/disk so a dead box's resource curve is queryable. Flip to
+        # True per pool as needed. See the RunnerPool/OrchestratorPool docstrings.
+        '"system_logs": False',
+        '"host_metrics": False',
     ]
     if answers.enable_ai_capabilities:
         optional_ai_package = '                "anthropic[bedrock]",\n'
@@ -771,6 +777,11 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                         allow_all_secrets={not answers.is_oss},
                         allow_all_s3_prefixes={not answers.is_oss},
                         allow_ssm_debug=False,
+                        # Opt-in CloudWatch observability, off by default (both
+                        # cost money when on): system_logs = kernel/OOM/systemd
+                        # evidence; host_metrics = CPU/mem/disk curve for a dead
+                        # runner. See the RunnerPool docstring.
+                        ext={{"system_logs": False, "host_metrics": False}},
                     ),
                     Components.RunnerPool(
                         name="amd-small",
@@ -787,6 +798,11 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                         allow_all_secrets={not answers.is_oss},
                         allow_all_s3_prefixes={not answers.is_oss},
                         allow_ssm_debug=False,
+                        # Opt-in CloudWatch observability, off by default (both
+                        # cost money when on): system_logs = kernel/OOM/systemd
+                        # evidence; host_metrics = CPU/mem/disk curve for a dead
+                        # runner. See the RunnerPool docstring.
+                        ext={{"system_logs": False, "host_metrics": False}},
                     ),
                     Components.RunnerPool(
                         name="arm-medium",
@@ -803,6 +819,11 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                         allow_all_secrets={not answers.is_oss},
                         allow_all_s3_prefixes={not answers.is_oss},
                         allow_ssm_debug=False,
+                        # Opt-in CloudWatch observability, off by default (both
+                        # cost money when on): system_logs = kernel/OOM/systemd
+                        # evidence; host_metrics = CPU/mem/disk curve for a dead
+                        # runner. See the RunnerPool docstring.
+                        ext={{"system_logs": False, "host_metrics": False}},
                     ),
                     Components.RunnerPool(
                         name="amd-medium",
@@ -819,6 +840,11 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                         allow_all_secrets={not answers.is_oss},
                         allow_all_s3_prefixes={not answers.is_oss},
                         allow_ssm_debug=False,
+                        # Opt-in CloudWatch observability, off by default (both
+                        # cost money when on): system_logs = kernel/OOM/systemd
+                        # evidence; host_metrics = CPU/mem/disk curve for a dead
+                        # runner. See the RunnerPool docstring.
+                        ext={{"system_logs": False, "host_metrics": False}},
                     ),
                 ],
             )

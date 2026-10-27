@@ -151,6 +151,7 @@ def _make_state(
         js.skip_details_url = None
         js.last_heartbeat_ts = None
         js.attempt = 1
+        js.attempt_history = []
         js.stale_flagged = False
         js.result = None
         js.rerun_count = 0
