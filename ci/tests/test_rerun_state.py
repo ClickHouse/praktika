@@ -79,6 +79,7 @@ def _make_state(s3, statuses, always_run=()):
         js.runner_instance_id = None
         js.last_heartbeat_phase = None
         js.attempt = 1
+        js.attempt_history = []
         js.stale_flagged = False
         js.filter_reason = None
         js.skip_details_url = None
@@ -109,6 +110,28 @@ def test_apply_rerun_resets_job_and_failed_downstream():
     state.jobs["A"].status = JobStatus.FAILURE
     state.apply_rerun(["A"])
     assert state.jobs["A"].rerun_count == 2
+
+
+def test_apply_rerun_clears_attempt_history():
+    """A re-run must drop the prior run's per-attempt history, else a clean
+    re-run would reuse attempt 1's stale `lost` entry and falsely warn."""
+    s3 = _FakeS3()
+    # The helper wires A -> B -> C dependents, so include the cascade.
+    state = _make_state(
+        s3,
+        {"A": JobStatus.FAILURE, "B": JobStatus.CANCELLED, "C": JobStatus.CANCELLED},
+    )
+    state.jobs["A"].attempt_history = [
+        {
+            "attempt": 1,
+            "instance_id": "i-dead",
+            "pool": "amd-medium",
+            "last_phase": "running_job",
+            "outcome": "lost (no heartbeat)",
+        }
+    ]
+    state.apply_rerun(["A"])
+    assert state.jobs["A"].attempt_history == []
 
 
 def test_apply_rerun_skips_job_already_rerunning():

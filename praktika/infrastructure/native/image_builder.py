@@ -181,12 +181,82 @@ exec /usr/local/bin/praktika-controller
             "timezone": "UTC",
         },
     ]
-    cloudwatch_config_json = json.dumps(
-        {"logs": {"logs_collected": {"files": {"collect_list": collect_list}}}},
-        indent=2,
+    # Host metrics (CPU / memory / disk) alongside the logs. The agent ships
+    # these to the CWAgent namespace, dimensioned by InstanceId and Pool, so a
+    # dead runner's resource curve is queryable next to its controller log
+    # stream — the data needed to tell OOM from a CPU lockup from a full disk
+    # when a box goes dark mid-job. ${INSTANCE_ID} / ${PRAKTIKA_POOL} are plain
+    # shell vars the configure script exports before the (unquoted) heredoc, so
+    # they expand at boot; we deliberately avoid the agent's ${aws:InstanceId}
+    # token, which bash would choke on inside the heredoc ("bad substitution").
+    # drop_original_metrics: aggregation_dimensions only ADDS the InstanceId+Pool
+    # rollup — the agent still emits the original, fully-dimensioned series
+    # (disk/diskio carry per-device/path/fstype dims, cpu/mem carry host). Left
+    # on, those originals are billed alongside the aggregate, multiplying the
+    # series count. Dropping them keeps exactly the one (instance, pool) series
+    # per measurement this config intends. Listed per collector by measurement.
+    metrics_collected: Dict[str, Any] = {
+        "cpu": {
+            "measurement": [
+                "cpu_usage_idle",
+                "cpu_usage_iowait",
+                "cpu_usage_user",
+                "cpu_usage_system",
+            ],
+            "totalcpu": True,
+            "metrics_collection_interval": 60,
+            "drop_original_metrics": [
+                "cpu_usage_idle",
+                "cpu_usage_iowait",
+                "cpu_usage_user",
+                "cpu_usage_system",
+            ],
+        },
+        "mem": {
+            "measurement": ["mem_used_percent", "mem_available_percent"],
+            "metrics_collection_interval": 60,
+            "drop_original_metrics": ["mem_used_percent", "mem_available_percent"],
+        },
+        "disk": {
+            "measurement": ["disk_used_percent", "disk_inodes_free"],
+            "resources": ["/"],
+            "metrics_collection_interval": 60,
+            "drop_original_metrics": ["disk_used_percent", "disk_inodes_free"],
+        },
+        "diskio": {
+            "measurement": ["io_time", "iops_in_progress"],
+            "metrics_collection_interval": 60,
+            "drop_original_metrics": ["io_time", "iops_in_progress"],
+        },
+    }
+    metrics_config: Dict[str, Any] = {
+        "namespace": "CWAgent",
+        "append_dimensions": {
+            "InstanceId": "${INSTANCE_ID}",
+            "Pool": "${PRAKTIKA_POOL}",
+        },
+        # One series per (instance, pool): per-instance granularity for the
+        # failure lookup, filterable by Pool. aggregation_dimensions adds the
+        # rollup; drop_original_metrics (above) removes the fully-dimensioned
+        # originals so only that one series per measurement is billed.
+        "aggregation_dimensions": [["InstanceId", "Pool"]],
+        "metrics_collected": metrics_collected,
+    }
+    logs_section = {"logs": {"logs_collected": {"files": {"collect_list": collect_list}}}}
+    # Two variants of the agent config. Logs are always shipped; host metrics are
+    # opt-in (CloudWatch custom metrics are billed per metric, and the
+    # per-instance dimensions multiply across a churning fleet). The configure
+    # script writes the with-metrics variant only when the praktika_host_metrics
+    # instance tag is set; otherwise logs-only.
+    cloudwatch_config_json = json.dumps(logs_section, indent=2)
+    cloudwatch_config_with_metrics_json = json.dumps(
+        {**logs_section, "metrics": metrics_config}, indent=2
     )
     # NOTE: unquoted heredoc so ${PRAKTIKA_PROJECT_SLUG} expands at runtime;
-    # {instance_id} has no leading $, so the CloudWatch agent resolves it.
+    # {instance_id} has no leading $, so the CloudWatch agent resolves it. The
+    # metrics variant references ${INSTANCE_ID}/${PRAKTIKA_POOL} (plain shell
+    # vars set below) rather than the agent's ${aws:InstanceId} token, which
+    # bash would reject inside the unquoted heredoc ("bad substitution").
     cloudwatch_configure = (
         """#!/usr/bin/env bash
 set -euo pipefail
@@ -198,11 +268,31 @@ if [ -z "$PRAKTIKA_PROJECT_SLUG" ]; then
   exit 1
 fi
 
+# Host-metrics (CPU/mem/disk) opt-in. Default OFF: CloudWatch custom metrics are
+# billed per metric, and the per-instance dimensions multiply across a churning
+# fleet. Pools that need runner-death resource curves set the
+# praktika_host_metrics instance tag (ext["host_metrics"] on the pool). The
+# dimension values below are resolved here and expanded into the metrics config.
+PRAKTIKA_HOST_METRICS=$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/tags/instance/praktika_host_metrics || true)
+INSTANCE_ID=${INSTANCE_ID:-$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id || true)}
+PRAKTIKA_POOL=${PRAKTIKA_POOL:-$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/tags/instance/praktika_pool || true)}
+
+case "$(printf '%s' "${PRAKTIKA_HOST_METRICS:-}" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes|on|enabled)
+cat > /etc/praktika/amazon-cloudwatch-agent.json <<EOF
+"""
+        + cloudwatch_config_with_metrics_json
+        + """
+EOF
+    ;;
+  *)
 cat > /etc/praktika/amazon-cloudwatch-agent.json <<EOF
 """
         + cloudwatch_config_json
         + """
 EOF
+    ;;
+esac
 
 # The praktika-system-logs streamer (kernel/OOM/systemd-kill evidence) is baked
 # into every image but stays off unless the pool opts in via the

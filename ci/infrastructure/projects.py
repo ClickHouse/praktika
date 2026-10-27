@@ -193,8 +193,14 @@ def _runner_pool(
     ext=None,
     untrusted: bool = False,
     runtime_source: str = ".",
+    host_metrics: bool = False,
 ):
     ext = dict(ext) if ext is not None else {}
+    # Opt-in CPU/mem/disk metrics to the CWAgent namespace so a runner that dies
+    # mid-job leaves a resource curve (OOM vs CPU lockup vs full disk) next to
+    # its log stream. Off by default: custom metrics are billed per metric.
+    if host_metrics:
+        ext["host_metrics"] = True
     # Append (don't replace) so pools that already carry ext statements (e.g. the
     # bedrock pool) keep them.
     trust_deny = (
@@ -251,6 +257,7 @@ _runner_pools = [
         name="arm-2xsmall",
         instance_type="c7g.medium",
         image_builder="ci-arm64-image",
+        host_metrics=True,
         user_data=_runner_user_data(
             "# Update the controller if changed (to test new version w/o image rebuild)\n"
             f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages"
@@ -272,6 +279,7 @@ _runner_pools = [
         name="amd-2xsmall",
         instance_type="c7i.large",
         image_builder="ci-x86_64-image",
+        host_metrics=True,
         user_data=_runner_user_data(
             "# Update the controller if changed (to test new version w/o image rebuild)\n"
             f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages"
@@ -281,6 +289,7 @@ _runner_pools = [
         name="amd-2xsmall-ubuntu",
         instance_type="c7i.large",
         image_builder="ci-ubuntu-x86_64-image",
+        host_metrics=True,
         user_data=_runner_user_data(
             "# Update the controller if changed (to test new version w/o image rebuild)\n"
             f"python3.12 -m pip install --ignore-installed {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages"

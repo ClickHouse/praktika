@@ -605,8 +605,11 @@ def test_run_init_interactive_supports_oss_storage_and_ubuntu_images(
     assert (
         'ext={"allowed_push_branches": [\'main\'], '
         '"allowed_pr_base_branches": [\'main\'], '
+        '"system_logs": False, "host_metrics": False, '
         '"iam_statements": [_ORCHESTRATOR_BEDROCK_IAM_STATEMENT]}'
     ) in infra_text
+    # Opt-in observability knobs are scaffolded off on every runner pool too.
+    assert infra_text.count('ext={"system_logs": False, "host_metrics": False}') == 4
     assert "allowed_ssm_parameters=[]" in infra_text
     assert "allowed_secrets=[]" in infra_text
     assert "allowed_s3_prefixes=_PROJECT_S3_PREFIXES" in infra_text
