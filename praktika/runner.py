@@ -561,6 +561,17 @@ class Runner:
                     result.set_label(label, hint=hint)
             if host_metrics.get("oom_kill"):
                 cls._attach_oom_evidence(result, int(host_metrics["oom_kill"]))
+                # An OOM kill during the job fails it, regardless of exit code:
+                # "exit 0 despite an OOM" is exactly the silent failure we're
+                # surfacing (an OK Result may have been persisted before a
+                # teardown OOM, or a wrapper may swallow an OOM-killed worker).
+                # The exit-code block below is a no-op once a Result
+                # is_completed(), so force it here. Preserve an already-failed
+                # status; promote OK / still-running to ERROR. (oom_kill is the
+                # machine-wide /proc/vmstat counter; on a dedicated single-job
+                # runner the victim is effectively always this job.)
+                if not result.is_completed() or result.is_ok():
+                    result.set_status(Result.Status.ERROR)
         if exit_code != 0:
             if not result.is_completed():
                 # Read the tail up front so a docker daemon death (exit 125 +

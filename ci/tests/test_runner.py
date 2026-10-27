@@ -85,6 +85,47 @@ def test_job_python_env_prefers_runtime_paths_before_repo_paths(monkeypatch, tmp
     assert site_paths
 
 
+def test_oom_kill_fails_an_otherwise_ok_job(monkeypatch, tmp_path):
+    """An OOM during the job fails it even on a clean (exit 0 / OK) Result —
+    'green despite an OOM' is the silent failure we surface — and the warning is
+    attached. An already-failed status is preserved."""
+    from types import SimpleNamespace
+
+    from praktika.result import Result
+    from praktika.runner import Runner
+    from praktika.settings import Settings
+
+    monkeypatch.setattr(Settings, "TEMP_DIR", str(tmp_path))
+    job = SimpleNamespace(name="oomjob")
+    proc = SimpleNamespace(
+        timeout_exceeded=False, get_latest_log=lambda max_lines=20: ""
+    )
+
+    # OK Result + OOM + clean exit -> promoted to ERROR with an OOM warning.
+    Result.create_new("oomjob", Result.Status.OK).dump()
+    res = Runner._finalize_job_result(
+        job,
+        proc,
+        exit_code=0,
+        host_metrics={"oom_kill": 1, "peaks": {"mem_gb": 30}, "mem_total_gb": 32},
+    )
+    assert res.status == Result.Status.ERROR
+    warnings = " ".join(w["message"] for w in (res.ext.get("warnings") or []))
+    assert "OOM" in warnings
+
+    # No OOM -> an OK job stays OK.
+    Result.create_new("oomjob", Result.Status.OK).dump()
+    res_ok = Runner._finalize_job_result(job, proc, exit_code=0, host_metrics={})
+    assert res_ok.status == Result.Status.OK
+
+    # Already-failed status is preserved, not rewritten.
+    Result.create_new("oomjob", Result.Status.FAIL).dump()
+    res_fail = Runner._finalize_job_result(
+        job, proc, exit_code=1, host_metrics={"oom_kill": 2}
+    )
+    assert res_fail.status == Result.Status.FAIL
+
+
 class TestRunner(unittest.TestCase):
     def setUp(self):
         from praktika.settings import Settings
