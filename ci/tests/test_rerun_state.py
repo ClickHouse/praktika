@@ -475,6 +475,48 @@ def test_publish_report_aggregates_usage_idempotently(monkeypatch):
     assert captured["compute_usage"].runners_usage["arm-small"] == 30
 
 
+def test_publish_report_surfaces_lost_runners_mid_flight(monkeypatch):
+    """A still-RUNNING job that already lost an earlier runner surfaces that loss
+    as a warning on its RUNNING report row AND on the top summary — in real time,
+    before the job reaches a terminal state."""
+    import praktika.result as result_mod
+    from praktika.result import Result
+
+    captured = {}
+    monkeypatch.setattr(
+        result_mod._ResultS3,
+        "update_workflow_results_inmem",
+        staticmethod(lambda *a, **kw: captured.update(kw)),
+    )
+
+    s3 = _FakeS3()
+    state = _make_state(s3, {"A": JobStatus.RUNNING})
+    state.workflow = types.SimpleNamespace(name="PR", enable_report=True)
+    state._report_env_ok = True
+    state._summary_result = Result.create_new("PR", Result.Status.RUNNING)
+    state.jobs["A"].started_at = 100.0
+    state.jobs["A"].attempt_history = [
+        {
+            "attempt": 1,
+            "instance_id": "i-dead",
+            "pool": "amd-medium",
+            "last_phase": "running_job",
+            "outcome": "lost (no heartbeat)",
+        }
+    ]
+
+    state.publish_report()
+
+    rows = {r.name: r for r in captured["new_sub_results"]}
+    assert rows["A"].status == Result.Status.RUNNING
+    row_warnings = (rows["A"].ext or {}).get("warnings") or []
+    assert any("i-dead" in w["message"] for w in row_warnings)
+    top_msgs = captured.get("report_messages") or []
+    assert any(
+        "i-dead" in m["message"] and m["kind"] == "warning" for m in top_msgs
+    )
+
+
 def test_publish_report_authors_skipped_rows(monkeypatch):
     """The orchestrator — not the Config job's hook_html.configure — authors the
     cached/filtered SKIPPED rows on the native path (orchestrator-backlog

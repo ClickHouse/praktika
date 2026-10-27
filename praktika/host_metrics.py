@@ -62,6 +62,7 @@ class HostMetricsCollector:
     _PSI_CPU = "/proc/pressure/cpu"
     _PSI_MEM = "/proc/pressure/memory"
     _PSI_IO = "/proc/pressure/io"
+    _VMSTAT = "/proc/vmstat"
 
     # Utilization label thresholds (see classify). Percentages unless noted.
     _UNDER_MEM_PCT = 40.0  # peak RAM below this -> RAM over-provisioned
@@ -113,6 +114,12 @@ class HostMetricsCollector:
         self._n_fine = 0
         self._psi_start: Optional[Dict[str, int]] = None
         self._psi_end: Optional[Dict[str, int]] = None
+        # Kernel OOM-kill counter (/proc/vmstat oom_kill) sampled at start/stop;
+        # the delta tells whether the OOM killer fired during this job even
+        # though the freed memory is gone from a post-run /proc snapshot. None
+        # when /proc/vmstat has no oom_kill field (older kernels).
+        self._oom_kill_start: Optional[int] = None
+        self._oom_kill_end: Optional[int] = None
         # Monotonic start reference and the true elapsed span, used as the job
         # duration so stall% is normalized by real wall time (not by the last
         # sample timestamp, which lags when the sampler is starved under load).
@@ -150,6 +157,7 @@ class HostMetricsCollector:
             self._disk_available = False
         self._t0 = time.monotonic()
         self._psi_start = self._read_psi()
+        self._oom_kill_start = self._read_oom_kill()
         self._thread = threading.Thread(target=self._run, name="host-metrics", daemon=True)
         self._thread.start()
         print(
@@ -172,6 +180,7 @@ class HostMetricsCollector:
         if self._psi_end is None:
             self._psi_end = self._read_psi()
             self._elapsed_s = time.monotonic() - self._t0
+        self._oom_kill_end = self._read_oom_kill()
         if not self._samples:
             return None
         return self._compact(self._samples)
@@ -440,6 +449,26 @@ class HostMetricsCollector:
             "io_full_s": secs("io_full"),
         }
 
+    def _read_oom_kill(self) -> Optional[int]:
+        """Cumulative kernel OOM-kill count from ``/proc/vmstat`` (``oom_kill``),
+        or None when the field is absent (older kernels) or unreadable."""
+        try:
+            with open(self._VMSTAT, "r", encoding="utf8") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) == 2 and parts[0] == "oom_kill":
+                        return int(parts[1])
+        except (OSError, ValueError):
+            return None
+        return None
+
+    def _oom_kill_delta(self) -> Optional[int]:
+        """OOM kills observed during the run, or None if the counter was
+        unavailable at either endpoint."""
+        if self._oom_kill_start is None or self._oom_kill_end is None:
+            return None
+        return max(0, self._oom_kill_end - self._oom_kill_start)
+
     def _compact(self, samples: List[Dict[str, float]]) -> Dict:
         mem_total_gb = round(self._mem_total_kb / 1024.0 / 1024.0, 2)
         peaks = {
@@ -485,6 +514,13 @@ class HostMetricsCollector:
         psi = self._psi_delta()
         if psi:
             result["psi"] = psi
+        oom_kill = self._oom_kill_delta()
+        if oom_kill:
+            # The kernel OOM killer fired during this job. The freed memory is
+            # already gone from any post-run snapshot, so this counter is the
+            # durable signal; the runner surfaces it (and the kernel evidence) on
+            # the Result.
+            result["oom_kill"] = oom_kill
         return result
 
     @staticmethod
