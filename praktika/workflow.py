@@ -261,6 +261,14 @@ class Workflow:
                     Workflow.Engine.is_native(self.engine)
                     and Settings.ENABLE_S3_REPO_SNAPSHOT
                 )
+                # Submodule cache is prepared by the Config Workflow too; inject
+                # one when any job needs submodules so the archive and
+                # submodule_cache_hash exist for downstream restore, even if the
+                # workflow enables nothing else.
+                or (
+                    Settings.ENABLE_SUBMODULE_CACHE
+                    and any(job.needs_submodules for job in self.jobs)
+                )
             )
 
         @dataclass
