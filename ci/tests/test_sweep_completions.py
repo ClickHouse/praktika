@@ -150,6 +150,8 @@ def _make_state(
         js.filter_reason = None
         js.skip_details_url = None
         js.last_heartbeat_ts = None
+        js.runner_instance_id = None
+        js.last_heartbeat_phase = None
         js.attempt = 1
         js.attempt_history = []
         js.stale_flagged = False
@@ -352,6 +354,37 @@ def test_final_state_advances_running_to_success():
     state.sweep_completions()
     assert state.jobs["A"].status == JobStatus.SUCCESS
     assert state.jobs["A"].rc == 0
+
+
+def test_completion_marks_prior_runner_lost_when_liveness_missed_the_retry():
+    """Race: a fresh attempt starts and finishes between polls, so its final.json
+    lands before any liveness sweep saw its heartbeat and marked the prior
+    attempt lost. sweep_completions must still record the superseded runner (the
+    completing instance differs from the one in history)."""
+    s3 = _FakeS3()
+    state = _make_state(["A"], s3, status=JobStatus.RUNNING)
+    state.jobs["A"].attempt_history = [
+        {
+            "attempt": 1,
+            "instance_id": "i-1",
+            "pool": "amd-medium",
+            "last_phase": "running_job",
+            "outcome": "running",
+        }
+    ]
+    _put_final(
+        s3, "run42", "A", rc=0, result=_result_payload("A"), instance_id="i-2"
+    )
+
+    state.sweep_completions()
+
+    assert state.jobs["A"].status == JobStatus.SUCCESS
+    msgs = " ".join(
+        w["message"]
+        for w in state.jobs["A"].result.get("ext", {}).get("warnings", [])
+    )
+    assert "i-1" in msgs
+    assert "lost" in msgs
 
 
 def test_final_state_advances_queued_to_failure():

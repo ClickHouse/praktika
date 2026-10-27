@@ -2069,6 +2069,10 @@ class WorkflowState:
         js.runner_instance_id = None
         js.last_heartbeat_phase = None
         js.attempt = 1
+        # Clear the prior run's per-attempt history too: otherwise _note_attempt
+        # would reuse attempt-1's stale entry (keeping its `lost` outcome) and a
+        # clean re-run would falsely warn that its runner was lost / it re-ran.
+        js.attempt_history = []
         js.stale_flagged = False
         js.filter_reason = None
         js.rerun_count += 1
@@ -2281,6 +2285,25 @@ class WorkflowState:
                 payload, js.name, started_at=js.started_at
             )
             if isinstance(result_dict, dict):
+                # wait() runs sweep_completions() before sweep_liveness(), so if a
+                # fresh attempt both started and finished between polls its
+                # final.json lands here before any liveness sweep saw its
+                # heartbeat — the RETRY branch never marked the prior attempt
+                # lost, and once this job is terminal the liveness sweep skips it.
+                # Close the race here: the instance that produced this result is
+                # the survivor, so any earlier attempt on a *different* instance
+                # still flagged running/unresponsive is a runner this completion
+                # superseded. (Guard on a known completing instance to avoid
+                # mislabeling when the payload carried none.)
+                completing = js.runner_instance_id
+                if completing:
+                    for e in js.attempt_history:
+                        if (
+                            e["outcome"] in ("running", "unresponsive")
+                            and e.get("instance_id")
+                            and e["instance_id"] != completing
+                        ):
+                            e["outcome"] = "lost (runner replaced)"
                 # If the job burned through earlier runners before this attempt
                 # completed, surface each lost runner as a warning on the job
                 # Result so the report records *which* instances died, not just
