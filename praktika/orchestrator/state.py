@@ -821,18 +821,26 @@ class JobState:
                 entry["last_phase"] = phase
         return entry
 
-    def _attempt_lines(self):
+    def _attempt_lines(self, lost_only=False):
         """Human-readable one-liner per attempt (instance + pool + phase +
-        outcome), oldest first — e.g. for folding into the job Result."""
+        outcome), oldest first — e.g. for folding into the job Result.
+
+        ``lost_only`` keeps just the runners this job lost (replaced / dead /
+        never started), which is what should surface as a warning on a job that
+        is still running or has since succeeded — the current, healthy attempt
+        is not a warning. A dead job uses the full list (every attempt failed).
+        """
         lines = []
         for e in sorted(self.attempt_history, key=lambda e: e["attempt"]):
+            outcome = e.get("outcome") or "running"
+            if lost_only and "lost" not in outcome and "never" not in outcome:
+                continue
             who = (
                 f"runner `{e['instance_id']}`"
                 if e.get("instance_id")
                 else f"pool `{e['pool']}`"
             )
             phase = f", last phase `{e['last_phase']}`" if e.get("last_phase") else ""
-            outcome = e.get("outcome") or "running"
             lines.append(f"Attempt {e['attempt']}: {who}{phase} — {outcome}")
         return lines
 
@@ -1526,6 +1534,12 @@ class WorkflowState:
                 _r = Result.create_new(name, Result.Status.RUNNING)
                 if js.started_at:
                     _r.start_time = js.started_at
+                # Surface runners already lost on earlier attempts while the job
+                # is still retrying — so a flaky/dying runner shows on the report
+                # in real time, not only once the job reaches a terminal state.
+                # Stable across loops: the lines only grow as attempts are lost.
+                for line in js._attempt_lines(lost_only=True):
+                    _r.add_warning(line)
                 running_rows.append(_r)
 
             top_ext = {}
@@ -1588,9 +1602,16 @@ class WorkflowState:
                         report_sources.add(_frm)
             # Clear any stale top-level messages left by a re-run job while it is
             # back in flight (pre_run used to do this). First-run jobs have none,
-            # so this is a no-op for them.
+            # so this is a no-op for them. Also bubble an in-flight job's
+            # already-lost runners to the top summary now (same lines on its
+            # RUNNING row), so a job still retrying surfaces its runner deaths on
+            # the run in real time — parity with the terminal path below.
             for _name, _js in inflight:
                 report_sources.add(_name)
+                for _line in _js._attempt_lines(lost_only=True):
+                    report_messages.append(
+                        {"message": _line, "kind": "warning", "from": _name}
+                    )
 
             # Ensure the authoritative summary is in memory. A fresh run seeded it
             # in create_initial_report; a resume (which does not call that) loads
@@ -2307,35 +2328,16 @@ class WorkflowState:
                 # If the job burned through earlier runners before this attempt
                 # completed, surface each lost runner as a warning on the job
                 # Result so the report records *which* instances died, not just
-                # the one that finally finished. (The live [RETRY] line already
-                # named them transiently; this persists it.)
-                lost = [
-                    e
-                    for e in js.attempt_history
-                    if "lost" in e["outcome"] or "never" in e["outcome"]
-                ]
-                if lost:
+                # the one that finally finished. Same lines the RUNNING row
+                # already carried mid-flight; this persists them on the terminal
+                # row (and lets publish_report bubble them to the top summary).
+                lost_lines = js._attempt_lines(lost_only=True)
+                if lost_lines:
                     ext = result_dict.setdefault("ext", {})
                     warnings = ext.setdefault("warnings", [])
-                    for e in sorted(lost, key=lambda e: e["attempt"]):
-                        who = (
-                            f"runner `{e['instance_id']}`"
-                            if e.get("instance_id")
-                            else f"pool `{e['pool']}`"
-                        )
-                        phase = (
-                            f", last phase `{e['last_phase']}`"
-                            if e.get("last_phase")
-                            else ""
-                        )
+                    for line in lost_lines:
                         warnings.append(
-                            {
-                                "message": (
-                                    f"Attempt {e['attempt']}: {who}{phase} — "
-                                    f"{e['outcome']}; job re-ran on a fresh runner."
-                                ),
-                                "from": result_dict.get("name", js.name),
-                            }
+                            {"message": line, "from": result_dict.get("name", js.name)}
                         )
                 # Stash the runner's raw Result. The orchestrator-authoritative
                 # rerun_count is projected into ext at report time by
