@@ -398,6 +398,13 @@ class Validator:
                                 [r in GHRunners for r in job.runs_on]
                             ), f"GH runners [{job.name}:{job.runs_on}] must not be used with S3 as artifact storage"
 
+            # Submodule caching is prepared by the Config Workflow and restored
+            # by jobs with needs_submodules; it uses CACHE_S3_PATH independently
+            # of workflow.enable_cache.
+            submodule_cache_active = Settings.ENABLE_SUBMODULE_CACHE and any(
+                job.needs_submodules for job in workflow.jobs
+            )
+
             if workflow.enable_cache:
                 assert (
                     Settings.CI_CONFIG_RUNS_ON
@@ -406,6 +413,15 @@ class Validator:
                 assert (
                     Settings.CACHE_S3_PATH
                 ), f"CACHE_S3_PATH Setting must be defined if enable_cache=True, workflow [{workflow.name}]"
+
+            if submodule_cache_active:
+                assert (
+                    Settings.CI_CONFIG_RUNS_ON
+                ), f"Runner label to run workflow config job must be provided via CACHE_CONFIG_RUNS_ON setting if ENABLE_SUBMODULE_CACHE=True and a job needs submodules, workflow [{workflow.name}]"
+
+                assert (
+                    Settings.CACHE_S3_PATH
+                ), f"CACHE_S3_PATH Setting must be defined if ENABLE_SUBMODULE_CACHE=True and a job needs submodules, workflow [{workflow.name}]"
 
             if workflow.dockers:
                 if not Settings.ENABLE_MULTIPLATFORM_DOCKER_IN_ONE_JOB:
@@ -480,6 +496,14 @@ class Validator:
                     assert not any(
                         job in ("ubuntu-latest",) for job in job.runs_on
                     ), f"GitHub Runners must not be used for workflow with enabled: workflow.enable_cache, workflow.enable_html or workflow.enable_merge_ready_status as s3 access is required, workflow [{workflow.name}], job [{job.name}]"
+
+            if submodule_cache_active:
+                for job in workflow.jobs:
+                    if not job.needs_submodules:
+                        continue
+                    assert not any(
+                        label in ("ubuntu-latest",) for label in job.runs_on
+                    ), f"GitHub Runners must not be used for jobs with needs_submodules when ENABLE_SUBMODULE_CACHE=True as s3 access is required to restore the submodule cache, workflow [{workflow.name}], job [{job.name}]"
 
             if workflow.enable_cidb:
                 cls.evaluate_check(
