@@ -43,3 +43,44 @@ def test_next_window_target_bounds():
     assert HostMetricsCollector._next_window_target(0.0, 1.0, 5.0) == 1.0
     assert HostMetricsCollector._next_window_target(8.0, 1.0, 5.0) == 2.0  # 8*0.25
     assert HostMetricsCollector._next_window_target(100.0, 1.0, 5.0) == 5.0  # capped
+
+
+def _min_sample():
+    return [
+        {
+            "t": 1.0,
+            "cpu": 0.0,
+            "cpu_peak": 0.0,
+            "iowait": 0.0,
+            "iowait_peak": 0.0,
+            "mem": 0.0,
+            "mem_peak": 0.0,
+        }
+    ]
+
+
+def test_oom_kill_counter_read(tmp_path):
+    c = HostMetricsCollector()
+    f = tmp_path / "vmstat"
+    f.write_text("nr_free_pages 123\noom_kill 7\npgfault 9\n")
+    c._VMSTAT = str(f)
+    assert c._read_oom_kill() == 7
+    # Absent field (older kernels) -> None, never a crash.
+    f.write_text("nr_free_pages 123\npgfault 9\n")
+    assert c._read_oom_kill() is None
+
+
+def test_oom_kill_delta_and_summary():
+    c = HostMetricsCollector()
+    # Counter climbed during the run -> surfaced in the compacted summary.
+    c._oom_kill_start, c._oom_kill_end = 5, 8
+    assert c._oom_kill_delta() == 3
+    assert c._compact(_min_sample())["oom_kill"] == 3
+    # No OOM during the run -> key omitted entirely.
+    c._oom_kill_start, c._oom_kill_end = 5, 5
+    assert c._oom_kill_delta() == 0
+    assert "oom_kill" not in c._compact(_min_sample())
+    # Counter unavailable at an endpoint -> None, key omitted.
+    c._oom_kill_start, c._oom_kill_end = None, 8
+    assert c._oom_kill_delta() is None
+    assert "oom_kill" not in c._compact(_min_sample())

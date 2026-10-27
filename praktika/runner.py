@@ -559,6 +559,8 @@ class Runner:
             if not result.is_skipped():
                 for label, hint in HostMetricsCollector.classify(host_metrics):
                     result.set_label(label, hint=hint)
+            if host_metrics.get("oom_kill"):
+                cls._attach_oom_evidence(result, int(host_metrics["oom_kill"]))
         if exit_code != 0:
             if not result.is_completed():
                 # Read the tail up front so a docker daemon death (exit 125 +
@@ -602,6 +604,54 @@ class Runner:
                     )
         result.dump()
         return result
+
+    @classmethod
+    def _attach_oom_evidence(cls, result, oom_kill_count):
+        """Surface a kernel OOM kill that fired during the job.
+
+        The host-metrics collector saw ``/proc/vmstat`` ``oom_kill`` increase
+        during the run, i.e. the kernel OOM killer took a process (commonly why
+        a job is killed or the box goes dark). Add a warning naming it — with
+        the peak RAM from the metrics summary and the kernel's "Killed process"
+        line — and attach the recent kernel log so the report explains the
+        death without a separate journal/CloudWatch query. All best-effort:
+        ``journalctl -k`` needs root (the controller runs the job-runner as
+        root) and a journald backend; a miss just omits the attachment.
+        """
+        peak = ""
+        try:
+            metrics = (result.ext or {}).get("metrics") or {}
+            peaks = metrics.get("peaks") or {}
+            if peaks.get("mem_gb") and metrics.get("mem_total_gb"):
+                peak = f" Peak RAM {peaks['mem_gb']}/{metrics['mem_total_gb']} GB."
+        except Exception:
+            peak = ""
+        kernel_log = ""
+        try:
+            kernel_log = (
+                Shell.get_output("journalctl -k --no-pager -n 2000 2>/dev/null") or ""
+            )
+        except Exception:
+            kernel_log = ""
+        killed = ""
+        for line in kernel_log.splitlines():
+            if "Killed process" in line:
+                killed = line.split("Killed process", 1)[1].strip()
+        msg = (
+            f"Runner OOM: the kernel OOM killer fired {oom_kill_count}x during "
+            f"this job — likely why it was killed or went unresponsive."
+            f"{peak}" + (f" Killed process {killed}." if killed else "")
+        )
+        result.add_warning(msg)
+        print(f"WARNING: {msg}")
+        if kernel_log:
+            try:
+                oom_file = f"{Settings.TEMP_DIR}/oom_kernel.log"
+                with open(oom_file, "w", encoding="utf8") as f:
+                    f.write(kernel_log + "\n")
+                result.set_files([oom_file], strict=False)
+            except OSError as e:
+                print(f"WARNING: could not write OOM kernel log: {e}")
 
     def _run(
         self,

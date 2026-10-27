@@ -349,6 +349,15 @@ Environment=HOME=/root
 ExecStart=/usr/local/bin/praktika-controller-start
 Restart=always
 RestartSec=5
+# A job's test process runs inside this unit's cgroup. systemd's default
+# OOMPolicy (stop) treats "a cgroup member was OOM-killed" as unit failure and
+# tears the WHOLE unit down — killing the controller and the orchestrate-job
+# subprocess before the job-runner can observe the test's non-zero exit and
+# write a terminal final.json. The orphaned job then only surfaces as a 900s
+# heartbeat timeout. `continue` leaves the controller alive when a job subprocess
+# is OOM-killed, so it reports the failure as a real (rc != 0) job result. The
+# controller itself being OOM-killed is still handled by Restart=always.
+OOMPolicy=continue
 StandardOutput=append:/var/log/praktika-controller.log
 StandardError=append:/var/log/praktika-controller.log
 
