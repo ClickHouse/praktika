@@ -789,7 +789,7 @@ def test_write_infra_failure_final_ships_real_error_result(monkeypatch):
         "repo": "ClickHouse/praktika",
         "pr_number": 154,
         "head_sha": "abc123",
-        "workflow_name": "Praktika CI Advanced",
+        "workflow_name": "PR",
     }
     exc = RuntimeError("pip install returned non-zero exit status 1")
 

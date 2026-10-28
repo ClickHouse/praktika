@@ -66,4 +66,4 @@ CI_DB_TABLE_NAME = "checks"
 # JSON connection blob auto-published by Components.CIDBCluster.deploy().
 SECRET_CI_DB_CONNECTION = "praktika-cidb-connection"
 
-DEFAULT_LOCAL_TEST_WORKFLOW = "Praktika CI Advanced"
+DEFAULT_LOCAL_TEST_WORKFLOW = "PR"

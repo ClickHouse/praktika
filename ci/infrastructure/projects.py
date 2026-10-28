@@ -380,7 +380,7 @@ _orchestrator_pool = Components.OrchestratorPool(
         # This is the pool that runs "Praktika MainCI" (push to main), so it must
         # accept main push events. The library default is now "no pushes", so list
         # the branch explicitly here; the `-base` pool leaves it unset and thus
-        # rejects pushes (it only runs the PR-event "Praktika CI").
+        # rejects pushes (it only runs the PR-event "PR Prev Version").
         "allowed_push_branches": ["main"],
     },
     user_data="\n".join(
@@ -413,7 +413,7 @@ _orchestrator_pool_base = Components.OrchestratorPool(
         "iam_statements": [_ORCHESTRATOR_BEDROCK_IAM_STATEMENT],
         # See praktika/docs/logging.md; captures OOM/kill traces for the controller.
         "system_logs": True,
-        # This pool only runs the PR-event "Praktika CI" (orchestrator_filter="base");
+        # This pool only runs the PR-event "PR Prev Version" (orchestrator_filter="base");
         # it has no push workflow. Empty list = the webhook Lambda rejects all push
         # events, so a main push isn't enqueued here only to match nothing and post a
         # spurious "No workflow matched" check. (Same as leaving it unset, but explicit.)

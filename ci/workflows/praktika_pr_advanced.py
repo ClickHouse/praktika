@@ -1,5 +1,5 @@
 """
-Praktika CI Advanced — full-featured workflow demo.
+PR — full-featured workflow demo.
 
 Covers all features: S3 artifacts, docker, cache digests, parametrized jobs,
 CI DB reporting, merge-ready status, GH summary comments, secrets.
@@ -12,7 +12,7 @@ from praktika.settings import Settings
 artifact = Artifact.Config(name="greet", type=Artifact.Type.S3, path="./artifact.txt")
 
 workflow = Workflow.Config(
-    name="Praktika CI Advanced",
+    name="PR",
     event=Workflow.Event.PULL_REQUEST,
     base_branches=["main"],
     runs_on_label_prefix="pr-",

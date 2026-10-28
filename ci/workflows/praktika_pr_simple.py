@@ -1,5 +1,5 @@
 """
-Praktika CI - simple workflow demo.
+PR Prev Version - simple workflow demo.
 
 Covers: S3 artifact upload/download, job dependencies, parametrized jobs.
 No docker, no cache digests, no merge-ready status.
@@ -22,7 +22,7 @@ _BASE_PRAKTIKA_VERSION = "0.1.17"
 artifact = Artifact.Config(name="greet", type=Artifact.Type.S3, path="./artifact.txt")
 
 workflow = Workflow.Config(
-    name="Praktika CI",
+    name="PR Prev Version",
     event=Workflow.Event.PULL_REQUEST,
     base_branches=["main"],
     orchestrator_filter="base",
