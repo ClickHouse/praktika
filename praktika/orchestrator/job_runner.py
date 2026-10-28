@@ -332,6 +332,19 @@ def run_job(task, gh_token=None, local=False, timestamp=False):
     ``timestamp=True`` prefixes every job.log line with a wall-clock timestamp
     (the controller passes it so CI job logs carry per-line timing).
     """
+    # Log the praktika version that actually runs the job (the installed wheel in
+    # this base venv). Printed first, from the runner process itself — which IS
+    # that praktika — so it lands in the controller log even if the job fails
+    # immediately. Without it there is no way to tell from the logs which praktika
+    # a runner executed, e.g. a stale AMI whose baked venv predates a just-shipped
+    # wheel.
+    try:
+        from ..version import current_praktika_version
+
+        print(f"Praktika runtime version: {current_praktika_version()}")
+    except Exception as e:
+        print(f"Praktika runtime version: unknown ({type(e).__name__}: {e})")
+
     workflow_name = task.get("workflow_name", "")
     job_name = task.get("job_name", "")
 

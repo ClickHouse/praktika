@@ -54,7 +54,7 @@ def test_workflow_name_filter_selects_one_matching_workflow(monkeypatch):
 
 
 def test_workflow_name_filter_ignores_orchestrator_pool_filter(monkeypatch):
-    base_workflow = _make_pr_workflow("Praktika CI", orchestrator_filter="base")
+    base_workflow = _make_pr_workflow("PR Prev Version", orchestrator_filter="base")
     event = {"type": "pull_request", "base_ref": "main"}
 
     monkeypatch.setenv("PRAKTIKA_CONTROLLER_QUEUE", "workflow-orchestrator")
@@ -63,9 +63,9 @@ def test_workflow_name_filter_ignores_orchestrator_pool_filter(monkeypatch):
         lambda *a, **k: [base_workflow],
     )
 
-    matched = find_workflows_for_event(event, workflow_name="Praktika CI")
+    matched = find_workflows_for_event(event, workflow_name="PR Prev Version")
 
-    assert [wf.name for wf in matched] == ["Praktika CI"]
+    assert [wf.name for wf in matched] == ["PR Prev Version"]
 
 
 def test_base_orchestrator_skips_default_workflows(monkeypatch):

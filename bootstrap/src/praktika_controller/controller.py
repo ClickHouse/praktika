@@ -1024,6 +1024,14 @@ def poll():
         log_name, INSTANCE_ID, os.path.join(WORK_DIR, "praktika-controller.log")
     )
     log.info("Resolved controller role=%s queue=%s", role, queue_name)
+    try:
+        from .self_update import _installed_version
+
+        log.info(
+            "praktika-controller version=%s", _installed_version() or "unknown"
+        )
+    except Exception as e:  # noqa: BLE001
+        log.info("praktika-controller version=unknown (%s)", type(e).__name__)
 
     # Converge to the pinned controller BEFORE polling, so a self-update never
     # consumes an SQS delivery (attempt N/3 == ApproximateReceiveCount; the old
