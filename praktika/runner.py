@@ -1495,6 +1495,17 @@ class Runner:
             )
             sys.stdout = _TimestampedStream(tee) if timestamp else tee
             sys.stderr = sys.stdout
+            # Emit the runtime version now that the tee is live, so it is in the
+            # uploaded job.log (RUN_LOG) too — not just the controller log. The
+            # earlier run_job print (before this tee, so it misses RUN_LOG) is
+            # kept because it still fires on an early crash before run() is ever
+            # reached; a duplicate line in the controller log is fine.
+            try:
+                from .version import current_praktika_version
+
+                print(f"Praktika runtime version: {current_praktika_version()}")
+            except Exception as e:  # noqa: BLE001
+                print(f"Praktika runtime version: unknown ({type(e).__name__}: {e})")
             return self._run_one(
                 workflow=workflow,
                 job=job,
