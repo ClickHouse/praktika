@@ -550,7 +550,7 @@ def test_launch_template_deploy_skips_when_image_builder_has_no_images(monkeypat
         lambda: (_ for _ in ()).throw(Exception("Launch Template not found")),
     )
 
-    def _build():
+    def _build(existing_image_id=None):
         raise Exception(
             "No ready AMI found for Image Builder pipeline "
             "'ci-arm64-imagebuilder-pipeline'. Rerun deploy after the image is ready."
@@ -638,7 +638,7 @@ def test_launch_template_deploy_fails_when_latest_builds_have_no_ready_ami(monke
         lambda: (_ for _ in ()).throw(Exception("Launch Template not found")),
     )
 
-    def _build():
+    def _build(existing_image_id=None):
         raise Exception(
             "No ready AMI found for Image Builder pipeline "
             "'ci-arm64-imagebuilder-pipeline'. Rerun deploy after the image is ready."
@@ -888,3 +888,66 @@ def test_image_builder_deploy_skips_build_when_unchanged(monkeypatch):
 
     assert result is builder
     assert started["called"] is False
+
+
+def test_existing_image_builder_lt_deploy_preserves_live_ami(monkeypatch):
+    # An already-deployed, image-builder-backed template must keep the AMI the
+    # live template carries (Image Builder owns AMI updates via its distribution
+    # config) instead of re-resolving "latest" — re-resolving is a moving target
+    # that made deploy rewrite the AMI non-deterministically (the incident).
+    class _ExplodingBuilder(ImageBuilder.Config):
+        def resolve_latest_ami_id(self):  # must NOT be called for an existing LT
+            raise AssertionError("resolve_latest_ami_id called for existing LT")
+
+    lt = LaunchTemplate.Config(
+        name="praktika-arm-2xsmall-lt",
+        region="eu-north-1",
+        instance_type="c7g.medium",
+        image_builder=_ExplodingBuilder(name="praktika-ci-arm64-image"),
+    )
+
+    monkeypatch.setattr(
+        "praktika.infrastructure.launch_template.aws_client",
+        lambda *a, **k: object(),
+    )
+    monkeypatch.setattr(lt, "fetch", lambda: None)  # exists
+    monkeypatch.setattr(lt, "_resolve_launch_template_id", lambda: "lt-123")
+    monkeypatch.setattr(
+        lt, "_current_launch_template_image_id", lambda ec2, lt_id: "ami-live123"
+    )
+    # Pretend the current version already matches, so no new version is cut.
+    monkeypatch.setattr(
+        lt, "_is_current_version_up_to_date", lambda *a, **k: True
+    )
+
+    lt.deploy()
+
+    # The live AMI was pinned (builder resolver never consulted) and no rewrite.
+    assert lt.image_id == "ami-live123"
+    assert lt.ext.get("version_updated") is False
+
+
+def test_first_create_image_builder_lt_resolves_from_builder():
+    # With no existing template (first create), it must resolve from the builder.
+    class _Builder(ImageBuilder.Config):
+        def resolve_latest_ami_id(self):
+            return "ami-resolved456"
+
+    lt = LaunchTemplate.Config(
+        name="praktika-arm-2xsmall-lt",
+        region="eu-north-1",
+        instance_type="c7g.medium",
+        image_builder=_Builder(name="praktika-ci-arm64-image"),
+    )
+
+    assert lt._resolve_image_id() == "ami-resolved456"
+
+
+def test_pinned_image_id_short_circuits_resolution():
+    lt = LaunchTemplate.Config(
+        name="praktika-pinned-lt",
+        region="eu-north-1",
+        instance_type="c7g.medium",
+        image_id="ami-pinned789",
+    )
+    assert lt._resolve_image_id() == "ami-pinned789"

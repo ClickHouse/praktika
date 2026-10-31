@@ -1,7 +1,9 @@
 import copy
+import hashlib
+import json
 import re
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from dataclasses import asdict, dataclass, field
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from ..settings import _Settings
 from ..version import current_praktika_version, version_key
@@ -1472,14 +1474,18 @@ class CloudInfrastructure:
             all=False,
             only: Optional[List[str]] = None,
             is_test: bool = False,
+            plan_only: bool = False,
         ):
             """
-            Deploy Lambda functions.
+            Deploy infrastructure components.
 
             Args:
                 all: If False, only deploy code (skip settings validation and IAM policies).
                      If True, deploy everything (validate settings, deploy code, attach IAM policies).
                 only: If set, deploy only selected component types by name.
+                plan_only: If True, print the plan of what would change (vs the
+                     last-deployed manifest) and return without deploying anything
+                     — the read-only `--plan` check.
             """
             self._validate_min_praktika_version()
             self._verify_account()
@@ -1531,10 +1537,163 @@ class CloudInfrastructure:
                         f"Missing required settings for Lambda deployment: {', '.join(missing_settings)}"
                     )
 
+            # Incremental-deploy manifest setup. Map each component to a stable
+            # digest; the manifest in SSM lets us skip (with no AWS call) every
+            # one whose digest is unchanged since the last success.
+            digestable = {
+                "vpc": self.vpcs,
+                "dedicated_host": self.dedicated_hosts,
+                "iam_role": self.iam_roles,
+                "iam_instance_profile": self.iam_instance_profiles,
+                "ec2_instance": self.ec2_instances,
+                "secret_parameter": self.secret_parameters,
+                "github_token_minter": self.github_token_minters,
+                "storage": self.storages,
+                "report_page": self.report_pages,
+                "sqs_queue": self.sqs_queues,
+                "lambda_function": self.lambda_functions,
+                "image_builder": self.image_builders,
+                "launch_template": self.launch_templates,
+                "autoscaling_group": self.autoscaling_groups,
+            }
+            # `--all` probes everything live (drift recovery); `--only` and
+            # `--test` touch a subset, so don't skip based on the manifest there.
+            use_manifest = not all and not only_set and not is_test
+
+            def _digest_extra(kind: str, cfg) -> str:
+                # External (non-config) inputs folded into the digest.
+                if kind == "lambda_function":
+                    return self._lambda_source_fingerprint(cfg)
+                if kind == "report_page":
+                    return self._report_page_fingerprint(cfg)
+                return ""
+
+            desired: Dict[str, str] = {}
+            all_keys = set()
+            for kind, items in digestable.items():
+                for cfg in items:
+                    key = self._mf_key(kind, cfg)
+                    all_keys.add(key)
+                    digest = self._component_digest(cfg, _digest_extra(kind, cfg))
+                    if digest is not None:
+                        desired[key] = digest
+
+            # The out-of-repo CI config param is create-if-absent; once present,
+            # a constant digest lets it skip on every later deploy.
+            ci_config_key = f"ci_config:{self._project_prefix()}"
+            all_keys.add(ci_config_key)
+            desired[ci_config_key] = "present"
+
+            # CIDB cluster (one per project, no `name` field, so a dedicated
+            # key). Skipping on a config match trades drift recovery for speed:
+            # a terminated replica or a rolled AMI is reconciled by `--all`, not
+            # a routine deploy.
+            cidb_key = f"cidb_cluster:{self._project_prefix()}"
+            if self.cidb_cluster is not None:
+                all_keys.add(cidb_key)
+                cidb_digest = self._component_digest(self.cidb_cluster)
+                if cidb_digest is not None:
+                    desired[cidb_key] = cidb_digest
+
+            ssm_mf = None
+            loaded: Dict[str, str] = {}
+            recorded: Dict[str, str] = {}
+            if self._settings and self._settings.AWS_REGION:
+                schema = self._manifest_schema_fingerprint()
+                ssm_mf = aws_client(
+                    "ssm", self._settings.AWS_REGION, self._manifest_param_name()
+                )
+                loaded, loaded_schema = self._load_manifest(ssm_mf)
+                # A praktika-version or region change retires the whole manifest
+                # so updated deploy logic re-runs against every component.
+                if loaded_schema != schema:
+                    loaded = {}
+                recorded = dict(loaded)
+
+            # ---- Plan phase: compare desired config vs the last-deployed
+            # manifest. Pure local computation (no AWS calls) — the fast "what
+            # changed" summary. `--plan` prints it and stops; `--deploy` prints it
+            # and then applies only the affected components.
+            to_create, to_update, unchanged, to_delete = [], [], [], []
+            for key in sorted(all_keys):
+                digest = desired.get(key)
+                if digest is None:  # unserializable config -> always (re)deploy
+                    to_update.append(key)
+                elif key not in loaded:
+                    to_create.append(key)
+                elif loaded[key] != digest:
+                    to_update.append(key)
+                else:
+                    unchanged.append(key)
+            to_delete = sorted(k for k in loaded if k not in all_keys)
+
+            def _print_plan() -> None:
+                print("\n" + "=" * 60)
+                print(f"Deploy plan: {self.name}  (config vs last deployed)")
+                print("=" * 60)
+                if ssm_mf is None:
+                    print("  (no manifest: AWS settings not configured)")
+                for label, keys in (
+                    ("+ create", to_create),
+                    ("~ update", to_update),
+                    ("- delete", to_delete),
+                ):
+                    if keys:
+                        print(f"  {label} ({len(keys)}):")
+                        for k in keys:
+                            print(f"      {k}")
+                print(f"  = unchanged: {len(unchanged)}")
+                print("-" * 60)
+                print(
+                    f"Plan: {len(to_create)} to create, {len(to_update)} to update, "
+                    f"{len(to_delete)} to delete, {len(unchanged)} unchanged."
+                )
+                if not use_manifest and not plan_only:
+                    if all:
+                        print(
+                            "Note: --all ignores the manifest — ALL components will "
+                            "be probed and deployed live (drift recovery)."
+                        )
+                    elif only_set:
+                        print(
+                            f"Note: --only {sorted(only_set)} — deploying only "
+                            "matching component types (manifest skip disabled)."
+                        )
+
+            _print_plan()
+            if plan_only:
+                print("\nNo changes applied (--plan is read-only).")
+                return
+
+            def _mf_skip(kind: str, cfg) -> bool:
+                # The plan summary above already reports skips; stay quiet here so
+                # the apply output shows only the components actually deployed.
+                if not use_manifest:
+                    return False
+                key = self._mf_key(kind, cfg)
+                digest = desired.get(key)
+                return digest is not None and loaded.get(key) == digest
+
+            def _mf_record(kind: str, cfg) -> None:
+                _mf_record_key(self._mf_key(kind, cfg))
+
+            def _mf_record_key(key: str) -> None:
+                if ssm_mf is None:
+                    return
+                digest = desired.get(key)
+                if digest is None or recorded.get(key) == digest:
+                    return
+                # Write incrementally so a mid-deploy failure still records the
+                # components that already succeeded; the next run resumes.
+                recorded[key] = digest
+                self._write_manifest(ssm_mf, schema, recorded)
+
             # Deploy VPCs first: EC2 instances (and ASGs) resolve their subnet
             # and security groups from the VPC by name at deploy time.
             if _wants("VPC", "VPCs"):
                 for vpc_config in self.vpcs:
+                    if _mf_skip("vpc", vpc_config):
+                        continue
                     # Respect an explicitly-set region (e.g. a cross-region VPC
                     # for a Mac pool); only fall back to the global setting.
                     if not vpc_config.region:
@@ -1543,10 +1702,13 @@ class CloudInfrastructure:
                     print(f"Deploying VPC: {vpc_config.name}")
                     print("=" * 60)
                     vpc_config.deploy()
+                    _mf_record("vpc", vpc_config)
 
             # Deploy all Dedicated Hosts
             if _wants("DedicatedHost", "DedicatedHosts"):
                 for host_config in self.dedicated_hosts:
+                    if _mf_skip("dedicated_host", host_config):
+                        continue
                     # Only fall back to the global region setting when no explicit AZs are
                     # configured; otherwise _resolved_region() derives the correct region
                     # from the AZ name and a single AWS_REGION would break multi-region setups.
@@ -1561,28 +1723,37 @@ class CloudInfrastructure:
                     print(f"Deploying Dedicated Hosts: {host_config.name}")
                     print("=" * 60)
                     host_config.deploy()
+                    _mf_record("dedicated_host", host_config)
 
             # Deploy IAM roles before anything that depends on them
             if _wants("IAMRole", "IAMRoles"):
                 for role_config in self.iam_roles:
+                    if _mf_skip("iam_role", role_config):
+                        continue
                     role_config.region = self._settings.AWS_REGION
                     print("\n" + "=" * 60)
                     print(f"Deploying IAM Role: {role_config.name}")
                     print("=" * 60)
                     role_config.deploy()
+                    _mf_record("iam_role", role_config)
 
             # Deploy IAM Instance Profiles (role must exist first)
             if _wants("IAMInstanceProfile", "IAMInstanceProfiles"):
                 for ip_config in self.iam_instance_profiles:
+                    if _mf_skip("iam_instance_profile", ip_config):
+                        continue
                     ip_config.region = self._settings.AWS_REGION
                     print("\n" + "=" * 60)
                     print(f"Deploying IAM Instance Profile: {ip_config.name}")
                     print("=" * 60)
                     ip_config.deploy()
+                    _mf_record("iam_instance_profile", ip_config)
 
             # Deploy EC2 Instances
             if _wants("EC2Instance", "EC2Instances", "Instance", "Instances"):
                 for instance_config in self.ec2_instances:
+                    if _mf_skip("ec2_instance", instance_config):
+                        continue
                     # Respect an explicitly-set region (e.g. a cross-region Mac
                     # pool); only fall back to the global setting otherwise.
                     if not instance_config.region:
@@ -1592,15 +1763,19 @@ class CloudInfrastructure:
                     print(f"Deploying EC2 Instance: {instance_config.name}")
                     print("=" * 60)
                     instance_config.deploy()
+                    _mf_record("ec2_instance", instance_config)
 
             # Deploy secret parameters (before Lambdas that reference them)
             if _wants("SecretParameter", "SecretParameters", "Secret", "Secrets"):
                 for secret_config in self.secret_parameters:
+                    if _mf_skip("secret_parameter", secret_config):
+                        continue
                     secret_config.region = self._settings.AWS_REGION
                     print("\n" + "=" * 60)
                     print(f"Deploying Secret Parameter: {secret_config.name}")
                     print("=" * 60)
                     secret_config.deploy()
+                    _mf_record("secret_parameter", secret_config)
 
             # Ensure the GitHub App secret exists (before the minter Lambda).
             # Non-destructive: creates an empty-valued secret if absent so a
@@ -1613,6 +1788,8 @@ class CloudInfrastructure:
                 "gh-token",
             ):
                 for token_minter in self.github_token_minters:
+                    if _mf_skip("github_token_minter", token_minter):
+                        continue
                     if not token_minter.region:
                         token_minter.region = self._settings.AWS_REGION
                     print("\n" + "=" * 60)
@@ -1621,6 +1798,7 @@ class CloudInfrastructure:
                     )
                     print("=" * 60)
                     token_minter.deploy_secret()
+                    _mf_record("github_token_minter", token_minter)
 
             # Deploy CI DB cluster: authorizes SG ingress for ClickHouse ports
             # and launches each replica EC2. Runs after SecretParameter so the
@@ -1629,11 +1807,15 @@ class CloudInfrastructure:
                 _wants("CIDBCluster", "CIDB", "CIDBClusters", "CI_DB")
                 and self.cidb_cluster
             ):
-                self.cidb_cluster.region = self._settings.AWS_REGION
-                print("\n" + "=" * 60)
-                print(f"Deploying CIDB Cluster (size={self.cidb_cluster.size})")
-                print("=" * 60)
-                self.cidb_cluster.deploy()
+                if use_manifest and loaded.get(cidb_key) == desired.get(cidb_key):
+                    pass  # unchanged — already reported in the plan summary
+                else:
+                    self.cidb_cluster.region = self._settings.AWS_REGION
+                    print("\n" + "=" * 60)
+                    print(f"Deploying CIDB Cluster (size={self.cidb_cluster.size})")
+                    print("=" * 60)
+                    self.cidb_cluster.deploy()
+                    _mf_record_key(cidb_key)
 
             # DockerProxy needs its private hosted zone + SG ingress (its
             # deploy()) in addition to the role/profile/LT/ASG. Under a full
@@ -1668,35 +1850,46 @@ class CloudInfrastructure:
             # Deploy S3 buckets
             if _wants("Storage", "Storages", "S3", "Bucket", "Buckets"):
                 for storage_config in self.storages:
+                    if _mf_skip("storage", storage_config):
+                        continue
                     storage_config.region = self._settings.AWS_REGION
                     print("\n" + "=" * 60)
                     print(f"Deploying Storage: {storage_config.name}")
                     print("=" * 60)
                     storage_config.deploy()
+                    _mf_record("storage", storage_config)
 
             # Upload HTML report pages (after Storage so the bucket exists)
             if _wants("ReportPage", "ReportPages", "Html", "HTML"):
                 for rp in self.report_pages:
+                    if _mf_skip("report_page", rp):
+                        continue
                     print("\n" + "=" * 60)
                     print(f"Deploying ReportPage: {rp.path}")
                     print("=" * 60)
                     rp.deploy(is_test=is_test)
+                    _mf_record("report_page", rp)
 
             # Deploy SQS queues (before Lambdas so queue URLs are available)
             if _wants("SQS", "SQSQueue", "SQSQueues"):
                 for sqs_config in self.sqs_queues:
+                    if _mf_skip("sqs_queue", sqs_config):
+                        continue
                     sqs_config.region = self._settings.AWS_REGION
 
                     print("\n" + "=" * 60)
                     print(f"Deploying SQS Queue: {sqs_config.name}")
                     print("=" * 60)
                     sqs_config.deploy()
+                    _mf_record("sqs_queue", sqs_config)
 
             # Deploy all Lambdas before image-backed compute so webhook/API
             # entrypoints are recreated even while Image Builder pipelines are
             # still producing their first ready AMIs.
             if _wants("Lambda", "Lambdas", "LambdaFunction", "LambdaFunctions"):
                 for lambda_config in self.lambda_functions:
+                    if _mf_skip("lambda_function", lambda_config):
+                        continue
                     # Always set region if available (needed even for code-only deploys)
                     lambda_config.region = self._settings.AWS_REGION
 
@@ -1713,6 +1906,9 @@ class CloudInfrastructure:
                     print(f"Deploying Lambda: {lambda_config.name}")
                     print("=" * 60)
                     lambda_config.deploy()
+                    # In --all the IAM-policy pass below still runs (use_manifest
+                    # is off there, so this record never short-circuits it).
+                    _mf_record("lambda_function", lambda_config)
 
             # Only attach IAM policies in full deployment mode
             if all and _wants("Lambda", "Lambdas", "LambdaFunction", "LambdaFunctions"):
@@ -1757,28 +1953,38 @@ class CloudInfrastructure:
             # building.
             if _wants("ImageBuilder", "ImageBuilders"):
                 for ib_config in self.image_builders:
+                    if _mf_skip("image_builder", ib_config):
+                        continue
                     ib_config.region = self._settings.AWS_REGION
 
                     print("\n" + "=" * 60)
                     print(f"Deploying Image Builder: {ib_config.name}")
                     print("=" * 60)
                     ib_config.deploy()
+                    _mf_record("image_builder", ib_config)
 
-            # Deploy all Launch Templates after ImageBuilders so image-builder
-            # backed templates can resolve their latest AMI ids.
+            # Deploy all Launch Templates after ImageBuilders. The AMI itself is
+            # kept current by the Image Builder distribution config (it rolls a
+            # new LT version with setDefaultVersion), so the digest covers only
+            # config — an unchanged template skips without pinning a stale AMI.
             if _wants("LaunchTemplate", "LaunchTemplates"):
                 for lt_config in self.launch_templates:
+                    if _mf_skip("launch_template", lt_config):
+                        continue
                     lt_config.region = self._settings.AWS_REGION
 
                     print("\n" + "=" * 60)
                     print(f"Deploying Launch Template: {lt_config.name}")
                     print("=" * 60)
                     lt_config.deploy()
+                    _mf_record("launch_template", lt_config)
 
             # Deploy all ASGs after Launch Templates.
             deployed_asg_configs = []
             if _wants("AutoScalingGroup", "AutoScalingGroups", "ASG", "ASGs"):
                 for asg_config in self.autoscaling_groups:
+                    if _mf_skip("autoscaling_group", asg_config):
+                        continue
                     asg_config.region = self._settings.AWS_REGION
 
                     print("\n" + "=" * 60)
@@ -1786,16 +1992,318 @@ class CloudInfrastructure:
                     print("=" * 60)
                     asg_config.deploy()
                     deployed_asg_configs.append(asg_config)
+                    _mf_record("autoscaling_group", asg_config)
 
             # Seed the out-of-repo CI config SSM parameter (create-if-absent, so an
             # operator's existing value is never clobbered by a redeploy).
             if _wants("CIConfig", "ci-config", "ciconfig"):
-                print("\n" + "=" * 60)
-                print("Deploying CI config SSM parameter")
-                print("=" * 60)
-                self._ensure_ci_config_parameter()
+                if use_manifest and loaded.get(ci_config_key) == desired.get(
+                    ci_config_key
+                ):
+                    pass  # unchanged — already reported in the plan summary
+                else:
+                    print("\n" + "=" * 60)
+                    print("Deploying CI config SSM parameter")
+                    print("=" * 60)
+                    self._ensure_ci_config_parameter()
+                    _mf_record_key(ci_config_key)
+
+            # Terraform-style teardown: components present in the manifest but
+            # gone from the config are orphans — delete them in reverse-
+            # dependency order. `--only` is a targeted apply, so it never prunes
+            # (a full deploy reconciles the deletions instead).
+            if ssm_mf is not None and not only_set:
+                orphans = set(recorded) - all_keys
+                by_kind: Dict[str, List[str]] = {}
+                for key in orphans:
+                    kind, _, name = key.partition(":")
+                    by_kind.setdefault(kind, []).append(name)
+
+                deletable = [k for k in self._ORPHAN_DELETE_ORDER if k in by_kind]
+                undeletable = sorted(set(by_kind) - set(self._ORPHAN_DELETE_ORDER))
+
+                if deletable:
+                    region = self._settings.AWS_REGION
+                    print("\n" + "=" * 60)
+                    print("Pruning components removed from config")
+                    print("=" * 60)
+                    for kind in deletable:
+                        for name in sorted(by_kind[kind]):
+                            print(f"Deleting {kind} '{name}' (removed from config)")
+                            self._orphan_delete_config(kind, name, region).delete()
+                            # Drop from the manifest only after a successful
+                            # delete, writing incrementally so an interrupted
+                            # prune resumes cleanly.
+                            recorded.pop(f"{kind}:{name}", None)
+                            self._write_manifest(ssm_mf, schema, recorded)
+
+                for kind in undeletable:
+                    for name in sorted(by_kind[kind]):
+                        # No delete() for this type — keep it in the manifest so
+                        # the reminder persists until it's removed by hand.
+                        print(
+                            f"WARNING: {kind} '{name}' was removed from config but "
+                            f"has no auto-delete; remove it manually"
+                        )
+
+            # Flush any outstanding manifest change (e.g. a `--all`/`--only` run
+            # that refreshed digests without a per-component incremental write).
+            if ssm_mf is not None and recorded != loaded:
+                self._write_manifest(ssm_mf, schema, recorded)
 
             self._print_deployment_warnings(deployed_asg_configs)
+
+        # ---- incremental-deploy manifest -------------------------------------
+        #
+        # A full `--deploy` is slow mostly because every component round-trips to
+        # AWS (describe/get) just to decide it's already up to date. To skip that,
+        # on a successful deploy we store a manifest in SSM mapping each
+        # pure-config component to a stable digest of its desired config. On the
+        # next default deploy we recompute each digest locally and skip (without
+        # any AWS call) every component whose digest is unchanged.
+        #
+        # Every component participates. Those whose desired state is fully in
+        # their config dataclass digest from config alone; those that also read
+        # external inputs fold a fingerprint of that input in (`extra`):
+        #   - Lambda  -> sha of its source files + dependency specs (so a code
+        #                change busts the digest without building the zip).
+        #   - ReportPage -> sha of the HTML (+ favicon) it uploads.
+        # Launch templates digest from config *without* the AMI: Image Builder's
+        # distribution config owns the AMI->LT version update (setDefaultVersion),
+        # so the AMI floats independently and a config-match skip is safe. CIDB
+        # also participates, but note its live EC2 / published private IP drift
+        # outside the config, so recovering a terminated replica needs `--all`.
+        #
+        # The manifest is advisory: `--all` ignores it and probes everything live
+        # (the drift-recovery path), and a praktika-version or region change
+        # invalidates the whole manifest so deploy logic changes take effect.
+        _MANIFEST_SCHEMA = "v2"
+
+        def _manifest_param_name(self) -> str:
+            return f"{self._project_prefix()}-infra-manifest"
+
+        def _manifest_schema_fingerprint(self) -> str:
+            region = (
+                self._settings.AWS_REGION if self._settings else ""
+            ) or ""
+            return f"{current_praktika_version()}|{region}|{self._MANIFEST_SCHEMA}"
+
+        @staticmethod
+        def _mf_key(kind: str, cfg) -> str:
+            """Stable manifest key for a component. Uses its ``name``, falling
+            back to the basename of ``path`` for path-identified components
+            (e.g. ReportPage)."""
+            import os
+
+            name = getattr(cfg, "name", "") or ""
+            if not name:
+                path = getattr(cfg, "path", "") or ""
+                name = os.path.basename(path) or path
+            return f"{kind}:{name}"
+
+        @staticmethod
+        def _component_digest(obj, extra: str = "") -> Optional[str]:
+            """Stable 16-hex digest of a component's *desired* config.
+
+            Drops ``ext`` (runtime-populated: arns, cached ids) and ``region``
+            (set from settings at deploy time, folded into the schema fingerprint
+            instead) at every nesting level. ``extra`` folds in external inputs
+            not held in config (e.g. a Lambda's source fingerprint). Returns None
+            if the config can't be serialized — the caller then treats the
+            component as always-deploy.
+            """
+
+            from dataclasses import fields, is_dataclass
+
+            seen = set()
+
+            def _canon(value, depth):
+                if is_dataclass(value) and not isinstance(value, type):
+                    # A nested value that is itself a deployable component
+                    # (carries its own deploy()) is a cross-component reference
+                    # — e.g. a launch template -> its image builder. Record it by
+                    # name only: the referenced component has its own manifest
+                    # entry, so this keeps each digest independent and breaks the
+                    # launch-template <-> image-builder reference cycle. Owned
+                    # sub-structures (e.g. a VPC Subnet, no deploy()) recurse.
+                    if depth > 0 and callable(getattr(value, "deploy", None)):
+                        return {"__component_ref__": getattr(value, "name", None)}
+                    oid = id(value)
+                    if oid in seen:  # backstop for any owned-structure cycle
+                        return {"__cycle__": getattr(value, "name", None)}
+                    seen.add(oid)
+                    return {
+                        f.name: _canon(getattr(value, f.name), depth + 1)
+                        for f in fields(value)
+                        if f.name not in ("ext", "region")
+                    }
+                if isinstance(value, dict):
+                    return {
+                        k: _canon(v, depth + 1)
+                        for k, v in value.items()
+                        if k not in ("ext", "region")
+                    }
+                if isinstance(value, (list, tuple)):
+                    return [_canon(v, depth + 1) for v in value]
+                if callable(value):
+                    # A function/class field (e.g. ImageBuilder.parent_image_
+                    # resolver): key by its qualified name, never str() — that
+                    # embeds a memory address and would make the digest unstable.
+                    return {
+                        "__callable__": getattr(value, "__qualname__", None)
+                        or getattr(value, "__name__", None)
+                        or repr(type(value))
+                    }
+                return value
+
+            try:
+                canonical = json.dumps(
+                    {"c": _canon(obj, 0), "x": extra}, sort_keys=True, default=str
+                )
+            except Exception:
+                return None
+            return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+        @staticmethod
+        def _file_content_digest(paths) -> str:
+            """sha256 over the sorted (path, bytes) of each file — deterministic,
+            local-only (no AWS), and insensitive to mtime/order (unlike a built
+            zip). A missing file hashes to a stable marker."""
+            h = hashlib.sha256()
+            for p in sorted(set(paths)):
+                h.update(p.encode("utf-8"))
+                try:
+                    with open(p, "rb") as f:
+                        h.update(f.read())
+                except OSError:
+                    h.update(b"\0MISSING\0")
+            return h.hexdigest()
+
+        @classmethod
+        def _lambda_source_fingerprint(cls, cfg) -> str:
+            """Fingerprint a Lambda's deployable code: the contents of ``path``
+            (file or dir) plus ``include_files``, and the dependency specs. We
+            hash source content, not the packaged zip — the zip embeds mtimes and
+            pip output and so isn't reproducible."""
+            import os
+
+            files: List[str] = []
+
+            def _collect(p: str):
+                if not p:
+                    return
+                if os.path.isdir(p):
+                    for root, _, names in os.walk(p):
+                        files.extend(os.path.join(root, n) for n in names)
+                else:
+                    files.append(p)
+
+            _collect(getattr(cfg, "path", "") or "")
+            for inc in getattr(cfg, "include_files", []) or []:
+                _collect(inc)
+            deps = sorted(getattr(cfg, "python_dependencies", []) or [])
+            return cls._file_content_digest(files) + "|" + json.dumps(deps)
+
+        @classmethod
+        def _report_page_fingerprint(cls, cfg) -> str:
+            """Fingerprint the HTML a ReportPage uploads, plus the optional local
+            favicon it also uploads."""
+            import os
+
+            files = [getattr(cfg, "path", "") or ""]
+            try:
+                from ..settings import Settings
+
+                fav = os.path.join(
+                    Settings.SETTINGS_DIRECTORY or "", "favicon.png"
+                )
+                if os.path.isfile(fav):
+                    files.append(fav)
+            except Exception:
+                pass
+            return cls._file_content_digest([f for f in files if f])
+
+        # Orphan teardown (terraform-style): a component dropped from the config
+        # is in the manifest but no longer in `all_keys`. These are torn down in
+        # reverse-dependency order on the next full deploy. delete() only reads
+        # name+region, so a minimal reconstructed Config suffices; the required
+        # positional fields below are dummies delete() never looks at. Kinds with
+        # no delete() (sqs_queue, ec2_instance, dedicated_host) are absent here
+        # and get a manual-removal warning instead.
+        _ORPHAN_DELETE_ORDER = (
+            "autoscaling_group",
+            "launch_template",
+            "iam_instance_profile",
+            "iam_role",
+            "storage",
+            "secret_parameter",
+            "vpc",
+        )
+
+        @staticmethod
+        def _orphan_delete_config(kind: str, name: str, region: str):
+            """Reconstruct a deletable component's Config from kind+name, or None
+            if this kind has no auto-delete."""
+            from .iam_instance_profile import IAMInstanceProfile
+            from .iam_role import IAMRole
+            from .secret_parameter import SecretParameter
+            from .storage import Storage
+            from .vpc import VPC
+
+            if kind == "autoscaling_group":
+                return AutoScalingGroup.Config(name=name, region=region)
+            if kind == "launch_template":
+                return LaunchTemplate.Config(name=name, region=region)
+            if kind == "iam_instance_profile":
+                return IAMInstanceProfile.Config(
+                    name=name, role_name="", region=region
+                )
+            if kind == "iam_role":
+                return IAMRole.Config(
+                    name=name, trust_service="ec2.amazonaws.com", region=region
+                )
+            if kind == "storage":
+                return Storage.Config(name=name, retention_days=1, region=region)
+            if kind == "secret_parameter":
+                return SecretParameter.Config(name=name, region=region)
+            if kind == "vpc":
+                return VPC.Config(name=name, region=region)
+            return None
+
+        def _load_manifest(self, ssm) -> Tuple[Dict[str, str], Optional[str]]:
+            """Return (components-map, schema_fingerprint) from the SSM manifest.
+
+            A missing, unreadable, or corrupt manifest degrades to ({}, None) so
+            the deploy falls back to probing everything — never a hard failure."""
+            try:
+                resp = ssm.get_parameter(Name=self._manifest_param_name())
+                data = json.loads(resp["Parameter"]["Value"])
+                components = data.get("components") or {}
+                if not isinstance(components, dict):
+                    return {}, None
+                return components, data.get("schema_version")
+            except Exception:
+                return {}, None
+
+        def _write_manifest(self, ssm, schema: str, components: Dict[str, str]):
+            top = hashlib.sha256(
+                "\n".join(
+                    f"{k}={components[k]}" for k in sorted(components)
+                ).encode("utf-8")
+            ).hexdigest()[:16]
+            ssm.put_parameter(
+                Name=self._manifest_param_name(),
+                Type="String",
+                Overwrite=True,
+                # Intelligent-Tiering auto-upgrades to the 8KB Advanced tier only
+                # if the manifest outgrows the 4KB standard limit (no cost until
+                # then), so large fleets keep working without a tier decision.
+                Tier="Intelligent-Tiering",
+                Value=json.dumps(
+                    {"schema_version": schema, "top": top, "components": components},
+                    sort_keys=True,
+                ),
+            )
 
         def _ensure_ci_config_parameter(self):
             """Create the ``{slug}-ci-config`` SSM parameter with a commented-out

@@ -431,6 +431,25 @@ class LaunchTemplate:
                     f"Launch Template {self.name} does not exist yet, will create new"
                 )
 
+            # Image Builder owns the AMI on an image-builder-backed template: its
+            # distribution config rolls a new version with the latest AMI and
+            # sets it default. So for a template that already exists, pin the AMI
+            # to what the live template carries instead of re-resolving "latest"
+            # (a moving, eventually-consistent target) — that keeps deploy
+            # idempotent and stops it fighting Image Builder over the AMI. On
+            # first create there is nothing to pin, so we resolve one to seed it.
+            if (
+                exists
+                and not self.image_id
+                and (self.image_builder or self.image_builder_pipeline_name)
+            ):
+                try:
+                    self.image_id = self._current_launch_template_image_id(
+                        ec2, self._resolve_launch_template_id()
+                    )
+                except Exception:
+                    pass
+
             try:
                 launch_template_data = self._build_launch_template_data()
             except Exception as e:
