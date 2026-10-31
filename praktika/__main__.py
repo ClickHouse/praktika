@@ -161,11 +161,20 @@ def create_parser():
     )
 
     _infra_parser = subparsers.add_parser(
-        "infrastructure", help="Manage CI infrastructure components"
+        "infrastructure",
+        aliases=["infra"],
+        help="Manage CI infrastructure components",
     )
     _infra_parser.add_argument(
         "--deploy",
         help="Deploy cloud infrastructure or upload HTML report",
+        action="store_true",
+        default=False,
+    )
+    _infra_parser.add_argument(
+        "--plan",
+        help="Read-only: show which components changed vs the last-deployed "
+        "manifest (create/update/delete) without deploying anything",
         action="store_true",
         default=False,
     )
@@ -363,7 +372,7 @@ def main(argv=None):
         from .ai_review import main as review_main
 
         review_main(args)
-    elif args.command == "infrastructure":
+    elif args.command in ("infrastructure", "infra"):
         from .interactive import UserPrompt
 
         project = getattr(args, "project", None) or None
@@ -372,20 +381,21 @@ def main(argv=None):
         try:
             if (
                 not args.deploy
+                and not args.plan
                 and not args.destroy_runtime
                 and not args.destroy_all
                 and not args.restart_instances
                 and not args.verify
             ):
                 Utils.raise_with_error(
-                    "infrastructure command requires --deploy, --destroy-runtime, --destroy-all, --restart-instances, or --verify"
+                    "infrastructure command requires --deploy, --plan, --destroy-runtime, --destroy-all, --restart-instances, or --verify"
                 )
             if args.destroy_runtime and args.destroy_all:
                 Utils.raise_with_error(
                     "Use either --destroy-runtime or --destroy-all, not both"
                 )
 
-            if args.deploy:
+            if args.deploy or args.plan:
                 from .mangle import _get_infra_config
 
                 infra_config = _get_infra_config(project)
@@ -394,6 +404,7 @@ def main(argv=None):
                     all=args.all,
                     only=args.only,
                     is_test=args.test,
+                    plan_only=args.plan,
                 )
 
             if args.destroy_runtime:
