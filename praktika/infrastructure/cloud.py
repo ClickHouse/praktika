@@ -2,7 +2,7 @@ import copy
 import hashlib
 import json
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from ..settings import _Settings
