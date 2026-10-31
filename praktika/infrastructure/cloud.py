@@ -1733,7 +1733,8 @@ class CloudInfrastructure:
                     print(f"Deploying Dedicated Hosts: {host_config.name}")
                     print("=" * 60)
                     host_config.deploy()
-                    _mf_record("dedicated_host", host_config)
+                    if not host_config.ext.get("deploy_incomplete"):
+                        _mf_record("dedicated_host", host_config)
 
             # Deploy IAM roles before anything that depends on them
             if _wants("IAMRole", "IAMRoles"):
@@ -1938,7 +1939,10 @@ class CloudInfrastructure:
                     lambda_config.deploy()
                     # In --all the IAM-policy pass below still runs (use_manifest
                     # is off there, so this record never short-circuits it).
-                    _mf_record("lambda_function", lambda_config)
+                    # Skip recording if a secret/policy step failed, so the next
+                    # deploy retries rather than treating it as done.
+                    if not lambda_config.ext.get("deploy_incomplete"):
+                        _mf_record("lambda_function", lambda_config)
 
             # Only attach IAM policies in full deployment mode
             if all and _wants("Lambda", "Lambdas", "LambdaFunction", "LambdaFunctions"):

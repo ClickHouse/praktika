@@ -120,3 +120,10 @@ for `cidb_cluster`/`ci_config`, the project slug).
   digest, and the manifest stores no per-component region. This only affects
   explicitly cross-region components (Mac / cross-region VPC pools); use `--all`
   after a region change and delete such orphans manually.
+
+- **Rotating a secret's value does not re-deploy its consumer.** A Lambda's
+  digest includes the secret parameter *names* it reads, not their SSM *values*
+  (hashing values would require reading SSM on every plan, defeating the no-AWS
+  fast path). If you rotate a secret's value in place, the consuming Lambda's
+  digest is unchanged and it keeps the old value baked into its environment.
+  Re-deploy the consumer with `--all` (or `--only Lambda`) after a rotation.

@@ -121,6 +121,7 @@ class Lambda:
                     print(f"Fetched secret: {param_name} -> {env_var_name}")
                 except Exception as e:
                     print(f"Warning: Failed to fetch secret {param_name}: {e}")
+                    self.ext["deploy_incomplete"] = True
 
             return env_vars
 
@@ -317,6 +318,11 @@ class Lambda:
             Deploy a Lambda function to AWS using self.ext configuration.
             If Lambda exists, fetches current configuration including role_arn.
             """
+
+            # Cleared here and set if a secret can't be read or an inline policy
+            # fails to attach; the deploy manifest skips recording an incomplete
+            # Lambda so the next deploy retries instead of treating it as done.
+            self.ext.pop("deploy_incomplete", None)
 
             self._validate_secrets()
 
@@ -515,6 +521,7 @@ class Lambda:
                     print(f"Attached inline policy '{policy_name}' to role '{role_name}'")
                 except Exception as e:
                     print(f"Warning: Failed to attach policy '{policy_name}': {e}")
+                    self.ext["deploy_incomplete"] = True
 
         def _ensure_api_gateway(self, function_name: str):
             """Create or verify an HTTP API Gateway for this Lambda."""

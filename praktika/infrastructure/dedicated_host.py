@@ -201,6 +201,10 @@ class DedicatedHost:
             return self
 
         def deploy(self):
+            # Cleared here and set below if any AZ fails to reach its desired host
+            # count; the deploy manifest skips recording an incomplete pool so the
+            # next deploy retries (capacity errors are commonly transient).
+            self.ext.pop("deploy_incomplete", None)
             if not self.instance_type:
                 raise ValueError(
                     f"instance_type must be set for DedicatedHost '{self.name}' (e.g. mac2-m2.metal)"
@@ -261,6 +265,7 @@ class DedicatedHost:
                         print(
                             f"Warning: Failed to set AutoPlacement={self.auto_placement} for existing hosts in {az}: {e}"
                         )
+                        self.ext["deploy_incomplete"] = True
 
                 missing = self.quantity_per_az - len(existing)
                 if missing <= 0:
@@ -311,6 +316,7 @@ class DedicatedHost:
                             f"Try again later or contact AWS support."
                         )
                         allocated_by_az[az] = []
+                        self.ext["deploy_incomplete"] = True
                     elif error_code == "HostLimitExceeded":
                         # Likely caused by existing hosts that are not tagged with
                         # the expected praktika tags and therefore not found by fetch().
@@ -345,6 +351,7 @@ class DedicatedHost:
                             f" in {az} for pool '{self.name}'.{hint}"
                         )
                         allocated_by_az[az] = []
+                        self.ext["deploy_incomplete"] = True
                     elif error_code == "UnsupportedHostConfiguration":
                         print(
                             f"Warning: Instance type '{self.instance_type}' is not supported in {az} - skipping this AZ. "
@@ -352,6 +359,7 @@ class DedicatedHost:
                             f"Update your configuration to use supported AZs only."
                         )
                         allocated_by_az[az] = []
+                        self.ext["deploy_incomplete"] = True
                     else:
                         raise
 
