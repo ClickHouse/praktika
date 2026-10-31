@@ -927,6 +927,37 @@ def test_existing_image_builder_lt_deploy_preserves_live_ami(monkeypatch):
     assert lt.ext.get("version_updated") is False
 
 
+def test_existing_image_builder_lt_aborts_when_live_ami_unreadable(monkeypatch):
+    # If the live AMI can't be read for an existing image-builder-backed LT,
+    # deploy must abort — never fall back to re-resolving "latest" (which would
+    # rewrite the Image Builder-managed AMI).
+    class _ExplodingBuilder(ImageBuilder.Config):
+        def resolve_latest_ami_id(self):
+            raise AssertionError("fell back to re-resolving latest AMI")
+
+    lt = LaunchTemplate.Config(
+        name="praktika-arm-2xsmall-lt",
+        region="eu-north-1",
+        instance_type="c7g.medium",
+        image_builder=_ExplodingBuilder(name="praktika-ci-arm64-image"),
+    )
+
+    monkeypatch.setattr(
+        "praktika.infrastructure.launch_template.aws_client",
+        lambda *a, **k: object(),
+    )
+    monkeypatch.setattr(lt, "fetch", lambda: None)  # exists
+    monkeypatch.setattr(lt, "_resolve_launch_template_id", lambda: "lt-123")
+
+    def _boom(ec2, lt_id):
+        raise RuntimeError("describe failed")
+
+    monkeypatch.setattr(lt, "_current_launch_template_image_id", _boom)
+
+    with pytest.raises(RuntimeError, match="could not be read"):
+        lt.deploy()
+
+
 def test_first_create_image_builder_lt_resolves_from_builder():
     # With no existing template (first create), it must resolve from the builder.
     class _Builder(ImageBuilder.Config):

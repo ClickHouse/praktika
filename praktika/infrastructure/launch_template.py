@@ -443,12 +443,20 @@ class LaunchTemplate:
                 and not self.image_id
                 and (self.image_builder or self.image_builder_pipeline_name)
             ):
+                # Must read the live AMI to pin it. If that fails we must NOT fall
+                # back to re-resolving "latest" (that is exactly the AMI rewrite
+                # this guards against) — abort loudly instead.
                 try:
                     self.image_id = self._current_launch_template_image_id(
                         ec2, self._resolve_launch_template_id()
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Launch Template '{self.name}' exists but its current AMI "
+                        f"could not be read ({e}); refusing to re-resolve 'latest' "
+                        f"and risk rewriting the Image Builder-managed AMI. Re-run "
+                        f"once the template is readable."
+                    ) from e
 
             try:
                 launch_template_data = self._build_launch_template_data()

@@ -53,7 +53,8 @@ praktika infra --plan | --deploy
         component.deploy() ──► on success, write its digest to the manifest
         │                       (incremental, so an interrupted run resumes)
         ▼
-  delete orphans in reverse-dependency order (ASG→LT→profile→role→…→VPC)
+  delete orphans in reverse-dependency order
+        │   (ASG→LT→image_builder→lambda→profile→role→storage→secret→VPC)
         │   kinds without a delete() (sqs, ec2, dedicated_host) → warn instead
         ▼
   done

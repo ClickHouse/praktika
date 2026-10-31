@@ -1868,7 +1868,12 @@ class CloudInfrastructure:
                     print(f"Deploying ReportPage: {rp.path}")
                     print("=" * 60)
                     rp.deploy(is_test=is_test)
-                    _mf_record("report_page", rp)
+                    # In --test mode the page is uploaded as an `_test.html`
+                    # variant, so recording the production digest would make a
+                    # later real deploy skip the production HTML. Only record for
+                    # a real (non-test) upload.
+                    if not is_test:
+                        _mf_record("report_page", rp)
 
             # Deploy SQS queues (before Lambdas so queue URLs are available)
             if _wants("SQS", "SQSQueue", "SQSQueues"):
@@ -2233,6 +2238,8 @@ class CloudInfrastructure:
         _ORPHAN_DELETE_ORDER = (
             "autoscaling_group",
             "launch_template",
+            "image_builder",
+            "lambda_function",
             "iam_instance_profile",
             "iam_role",
             "storage",
@@ -2254,6 +2261,14 @@ class CloudInfrastructure:
                 return AutoScalingGroup.Config(name=name, region=region)
             if kind == "launch_template":
                 return LaunchTemplate.Config(name=name, region=region)
+            if kind == "image_builder":
+                return ImageBuilder.Config(name=name, region=region)
+            if kind == "lambda_function":
+                from .lambda_function import Lambda
+
+                return Lambda.Config(
+                    name=name, path="", handler="", region=region
+                )
             if kind == "iam_instance_profile":
                 return IAMInstanceProfile.Config(
                     name=name, role_name="", region=region
