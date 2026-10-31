@@ -2918,14 +2918,24 @@ class WorkflowState:
     # ------------------------------------------------------------ markdown
 
     def md_status_summary(self):
-        """One-line summary ("2 success, 1 running, 3 pending") for the
-        top-level check's `output.summary`. Uses `JobStatus` values so the
-        wording matches `md_status` and `print_summary`."""
-        counts = defaultdict(int)
+        """One-line summary ("1 running, 3 pending, 2 finished") for the
+        top-level check's `output.summary`. Jobs roll up into three buckets:
+        running (dispatched to a runner or executing), pending (still waiting
+        on deps or a free runner), and finished (any terminal outcome —
+        success, failure, skipped or cancelled). The per-job table in
+        `md_status` still breaks the finished bucket down by outcome."""
+        running = pending = finished = 0
         for js in self.jobs.values():
-            counts[js.status] += 1
-        bits = [f"{counts[s]} {s.value}" for s in JobStatus if counts[s]]
-        summary = ", ".join(bits) or "no jobs"
+            if js.status in _TERMINAL:
+                finished += 1
+            elif js.status in (JobStatus.RUNNING, JobStatus.QUEUED):
+                running += 1
+            else:  # PENDING, READY — not yet dispatched
+                pending += 1
+        if self.jobs:
+            summary = f"{running} running, {pending} pending, {finished} finished"
+        else:
+            summary = "no jobs"
         retried = sum(1 for js in self.jobs.values() if js.attempt > 1)
         unresponsive = sum(1 for js in self.jobs.values() if js.stale_flagged)
         notes = []
