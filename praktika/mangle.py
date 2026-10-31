@@ -279,14 +279,18 @@ def _native_job_runs_on(workflow):
 
 
 def _update_workflow_with_native_jobs(workflow):
+    # Isolate shared Job.Config instances: the same objects are commonly referenced
+    # by multiple workflows (one job_configs module), and the steps below mutate
+    # job attributes in place (notably runs_on_label_prefix). Without this, one
+    # workflow's mangling leaks into another.
+    workflow.jobs = [copy.deepcopy(j) for j in workflow.jobs]
+
     if workflow.dockers and not workflow.disable_dockers_build:
         from .native_jobs import (
             _docker_build_amd_linux_job,
             _docker_build_arm_linux_job,
             _docker_build_manifest_job,
         )
-
-        workflow.jobs = [copy.deepcopy(j) for j in workflow.jobs]
 
         docker_job_names = []
         docker_digest_config = Job.CacheDigestConfig()
