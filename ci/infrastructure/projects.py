@@ -141,11 +141,13 @@ def _runner_user_data(controller_update_cmd: str) -> str:
     )
 
 
-# OSS trust boundary for the repo-snapshot tiers. Snapshots live under
-# praktika-artifacts-eu-north-1/repo-snapshots/v1/PRs/... (written by fork /
-# pull_request runs, which route to the pr-* pools via the PR workflow's
-# runs_on_label_prefix="pr-") and .../repo-snapshots/v1/REFs/... (written by push
-# runs on non-pr pools). PRs/ is the untrusted tier, REFs/ the trusted one. The
+# OSS trust boundary for the repo-snapshot tiers. Snapshots live under the
+# artifact tier prefixes: praktika-artifacts-eu-north-1/PRs/repo-snapshot/v1/...
+# (written by fork / pull_request runs, which route to the pr-* pools via the PR
+# workflow's runs_on_label_prefix="pr-") and .../REFs/repo-snapshot/v1/... (written
+# by push runs on non-pr pools). PRs/ is the untrusted tier, REFs/ the trusted one.
+# Because snapshots nest under PRs//REFs/, one per-tier rule covers both artifacts
+# and snapshots — no separate snapshot prefix to enumerate. The
 # runner S3 grant is bucket-wide for convenience (fine on a private project with
 # no untrusted actor), so on this OSS project we carve the tiers back out per pool
 # with explicit Deny statements (Deny always overrides Allow). Information-flow
@@ -166,7 +168,7 @@ _UNTRUSTED_DENY_WRITE_TRUSTED_STATEMENT = {
         "s3:DeleteObject",
         "s3:AbortMultipartUpload",
     ],
-    "Resource": "arn:aws:s3:::artifacts-eu-north-1/repo-snapshots/v1/REFs/*",
+    "Resource": "arn:aws:s3:::artifacts-eu-north-1/REFs/repo-snapshot/v1/*",
 }
 _TRUSTED_DENY_ACCESS_UNTRUSTED_STATEMENT = {
     "Sid": "DenyTrustedAccessToUntrustedSnapshots",
@@ -179,7 +181,7 @@ _TRUSTED_DENY_ACCESS_UNTRUSTED_STATEMENT = {
         "s3:DeleteObject",
         "s3:AbortMultipartUpload",
     ],
-    "Resource": "arn:aws:s3:::artifacts-eu-north-1/repo-snapshots/v1/PRs/*",
+    "Resource": "arn:aws:s3:::artifacts-eu-north-1/PRs/repo-snapshot/v1/*",
 }
 
 

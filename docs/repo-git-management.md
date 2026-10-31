@@ -251,9 +251,12 @@ replaces `N` clones with `N` cheap S3 downloads.
 Snapshots are content-addressed and split by trust tier:
 
 ```
-repo-snapshots/v1/PRs/<sha256>.tar.zst     # pull_request (fork-reachable)
-repo-snapshots/v1/REFs/<sha256>.tar.zst    # push / trusted events
+PRs/repo-snapshot/v1/<sha256>.tar.zst     # pull_request (fork-reachable)
+REFs/repo-snapshot/v1/<sha256>.tar.zst    # push / trusted events
 ```
+
+Snapshots nest under the `PRs/`/`REFs/` artifact tiers, so a single set of
+per-tier IAM rules covers both artifacts and snapshots.
 
 `pull_request` runs route to the `pr-*` runner pools (via the PR workflow's
 `runs_on_label_prefix="pr-"`), `push` runs to the non-`pr-*` pools. These objects
@@ -270,7 +273,7 @@ have a short S3 retention (a few days — large, consumed within minutes). See
   equivalent of `clone_repo`'s stale-head guard).
 - **Trust segregation, IAM-enforced.** The runner role is bucket-wide, so
   `ci/infrastructure/projects.py` carves the tiers back out per pool with explicit
-  Deny statements (`repo-snapshots/v1/{PRs,REFs}/*`):
+  Deny statements (`{PRs,REFs}/repo-snapshot/v1/*`):
 
   | Pool | `REFs/*` (trusted) | `PRs/*` (untrusted) |
   |---|---|---|

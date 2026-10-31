@@ -319,7 +319,7 @@ def _prepare_repo_snapshot(workflow, workflow_config: RunConfig) -> Result:
     and before any PR-influenced code executes. The controller establishes the
     run's single commit (the merge of PR head into the target-branch tip, or the
     plain head on push), publishes the history-free snapshot to
-    repo-snapshots/v1/{PRs,REFs}/<sha256>.tar.zst, and pins snapshot_sha /
+    {PRs,REFs}/repo-snapshot/v1/<sha256>.tar.zst, and pins snapshot_sha /
     repo_snapshot_key into the run. The orchestrator seeds it before dispatching
     any job (see orchestrator.state.seed_repo_snapshot), so EVERY job — this
     Config Workflow included — restores that exact tree; the controller's

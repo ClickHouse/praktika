@@ -26,9 +26,12 @@ RETENTION_PREFIXES = [
 # Prefixes with their own (shorter) retention, independent of the bucket-wide
 # retention_days. Repo snapshots are large (a whole repo tree) and high-churn (one
 # per run / per PR iteration) but are consumed within minutes of creation, so they
-# expire fast to bound storage.
+# expire fast to bound storage. They nest under the PRs//REFs/ artifact tiers; S3
+# applies the earliest-expiring matching rule, so these 3-day rules win over the
+# broader PRs//REFs/ retention for snapshot objects.
 SHORT_RETENTION_PREFIXES = {
-    "repo-snapshots/": 3,
+    "PRs/repo-snapshot/v1/": 3,
+    "REFs/repo-snapshot/v1/": 3,
 }
 
 

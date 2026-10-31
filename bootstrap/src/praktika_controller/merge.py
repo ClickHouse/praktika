@@ -120,6 +120,16 @@ def _git_out(args, cwd) -> str:
     return _git(args, cwd).stdout.strip()
 
 
+def _scrub_remote_url(url: str) -> str:
+    """Strip any ``user[:token]@`` userinfo from an https remote URL.
+
+    clone_repo bakes ``https://x-access-token:<token>@github.com/<repo>.git`` into
+    clone_dir's origin. The snapshot is uploaded to S3 (for PRs, the untrusted
+    tier every job can read), so the origin we persist into it must be
+    token-less — matching the scrubbed URL clone_repo itself leaves behind."""
+    return re.sub(r"^(https?://)[^/@]*@", r"\1", url.strip())
+
+
 def read_repo_settings(clone_dir, log, ci_config=None) -> dict:
     """Read the merge-relevant settings from the repo checkout.
 
@@ -462,6 +472,23 @@ def _build_and_publish_snapshot(clone_dir, snapshot_sha, is_pr, artifact_bucket,
         with profile_step(log, "snapshot: build minimal .git (no checkout)"):
             _git(["update-ref", "--no-deref", "HEAD", snapshot_sha], snap_dir)
             _git(["read-tree", snapshot_sha], snap_dir)
+            # Bake a token-less `origin` into the snapshot so jobs that restore it
+            # behave like a normal clone (which clone_repo leaves with a scrubbed
+            # origin). Without this the snapshot .git has no remote, so a job's
+            # `git fetch origin <ref>` fails and it must fall back to the GitHub
+            # contents API (e.g. ci/jobs/check_crd_compat.py). The one-off
+            # file:// fetch above never created a remote; add it explicitly here.
+            origin_url = _scrub_remote_url(
+                _git(
+                    ["config", "--get", "remote.origin.url"], clone_dir, check=False
+                ).stdout
+            )
+            if origin_url:
+                _git(["remote", "add", "origin", origin_url], snap_dir)
+            else:
+                log.warning(
+                    "clone_dir has no origin URL; snapshot will have no remote"
+                )
         snap_sha = _git_out(["rev-parse", "HEAD"], snap_dir)
         if snap_sha != snapshot_sha:
             raise RuntimeError(
@@ -531,11 +558,13 @@ def _build_and_publish_snapshot(clone_dir, snapshot_sha, is_pr, artifact_bucket,
             content_hash = h.hexdigest()
         log.info("[profile] snapshot: archive size %.1f MiB", os.path.getsize(archive_path) / 1048576)
         # Trust tier: PRs/ (pull_request, fork-reachable) vs REFs/ (push/trusted).
-        # IAM scopes these so a pr-* pool can read but not write REFs/, and a
-        # trusted pool can neither read nor write PRs/.
+        # Snapshots live UNDER the artifact tier prefix (PRs/repo-snapshot/v1/...
+        # and REFs/repo-snapshot/v1/...) so one set of per-tier IAM rules covers
+        # both artifacts and snapshots: a pr-* pool can read but not write REFs/,
+        # and a trusted pool can neither read nor write PRs/.
         tier = "PRs" if is_pr else "REFs"
         bucket, key = _split_artifact_bucket(
-            artifact_bucket, f"repo-snapshots/v1/{tier}/{content_hash}.tar.zst"
+            artifact_bucket, f"{tier}/repo-snapshot/v1/{content_hash}.tar.zst"
         )
         repo_snapshot_key = f"{bucket}/{key}"
 

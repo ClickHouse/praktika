@@ -9,9 +9,11 @@ Below, variables are written as `<…>`; everything else is a fixed prefix. The
 bucket is whole-bucket public-read (`s3:GetObject` on `*`), and lifecycle rules
 expire the *ephemeral* prefixes (`RETENTION_PREFIXES`: `PRs/`, `REFs/`, `runs/`,
 `ci_cache/`, …) after `retention_days`, while root objects and `packages/` are kept
-forever. `repo-snapshots/` has its own **short** retention (a few days —
-`SHORT_RETENTION_PREFIXES`) since the archives are large and consumed within
-minutes of creation (`praktika/infrastructure/storage.py`).
+forever. The repo-snapshot sub-prefixes (`{PRs,REFs}/repo-snapshot/v1/`) have their
+own **short** retention (a few days — `SHORT_RETENTION_PREFIXES`) since the archives
+are large and consumed within minutes of creation; S3 applies the earliest-expiring
+matching rule, so these win over the broader `PRs/`/`REFs/` retention
+(`praktika/infrastructure/storage.py`).
 
 ## Root
 
@@ -77,8 +79,8 @@ See `praktika/docs/repo-git-management.md`.
 
 | Key | Purpose |
 |---|---|
-| `repo-snapshots/v1/PRs/<sha256>.tar.zst` | Snapshot for `pull_request` (fork-reachable) runs — the ephemeral merge, or the head. |
-| `repo-snapshots/v1/REFs/<sha256>.tar.zst` | Snapshot for `push`/trusted runs (plain head, no merge). |
+| `PRs/repo-snapshot/v1/<sha256>.tar.zst` | Snapshot for `pull_request` (fork-reachable) runs — the ephemeral merge, or the head. |
+| `REFs/repo-snapshot/v1/<sha256>.tar.zst` | Snapshot for `push`/trusted runs (plain head, no merge). |
 
 `<sha256>` is the content hash of the archive (tamper-evident: consumers re-hash
 the download and reject a mismatch).
