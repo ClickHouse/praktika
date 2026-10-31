@@ -54,8 +54,10 @@ praktika infra --plan | --deploy
         │                       (incremental, so an interrupted run resumes)
         ▼
   delete orphans in reverse-dependency order
-        │   (ASG→LT→image_builder→lambda→profile→role→storage→secret→VPC)
-        │   kinds without a delete() (sqs, ec2, dedicated_host) → warn instead
+        │   (ASG→LT→lambda→profile→role→storage→secret→VPC)
+        │   kinds that can't be fully deleted from name alone → warn instead
+        │   (sqs, ec2, dedicated_host: no delete(); image_builder: needs
+        │    recipe version + owned components)
         ▼
   done
 ```

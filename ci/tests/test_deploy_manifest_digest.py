@@ -111,8 +111,9 @@ def test_orphan_reconstructs_deletable_kinds_by_name():
         assert hasattr(cfg, "delete")
 
 
-def test_orphan_returns_none_for_kinds_without_delete():
-    # These have no delete(); they must fall through to the manual warning,
-    # never a bogus reconstructed-and-deleted call.
-    for kind in ("sqs_queue", "ec2_instance", "dedicated_host"):
+def test_orphan_returns_none_for_non_name_reconstructable_kinds():
+    # sqs/ec2/dedicated_host have no delete(); image_builder has one but it can't
+    # be fully driven from name alone (recipe version + owned components). All
+    # must fall through to the manual warning, never a partial delete.
+    for kind in ("sqs_queue", "ec2_instance", "dedicated_host", "image_builder"):
         assert _orphan(kind, "praktika-gone", "eu-north-1") is None

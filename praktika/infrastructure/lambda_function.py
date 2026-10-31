@@ -496,8 +496,12 @@ class Lambda:
 
         def delete(self):
 
-            if self.schedule_expression:
-                self._delete_eventbridge_schedule()
+            # Always attempt schedule cleanup, not just when schedule_expression is
+            # set: an orphan reconstructed from name alone has no schedule, but a
+            # removed scheduled Lambda must still have its EventBridge rule deleted.
+            # The rule name is derived from the function name and the call is quiet
+            # when there is nothing to remove.
+            self._delete_eventbridge_schedule()
             client = aws_client("lambda", self.region, self.name)
             try:
                 client.delete_function(FunctionName=self.name)
@@ -637,11 +641,15 @@ class Lambda:
                     Ids=[self._schedule_target_id()],
                     Force=True,
                 )
+            except events.exceptions.ResourceNotFoundException:
+                return  # no rule for this function — nothing to clean up (quiet)
             except Exception as e:
                 print(f"Warning: Failed to remove EventBridge targets for {rule_name}: {e}")
             try:
                 events.delete_rule(Name=rule_name, Force=True)
                 print(f"Deleted EventBridge schedule '{rule_name}'")
+            except events.exceptions.ResourceNotFoundException:
+                pass
             except Exception as e:
                 print(f"Warning: Failed to delete EventBridge schedule {rule_name}: {e}")
 

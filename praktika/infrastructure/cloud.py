@@ -2262,13 +2262,14 @@ class CloudInfrastructure:
         # is in the manifest but no longer in `all_keys`. These are torn down in
         # reverse-dependency order on the next full deploy. delete() only reads
         # name+region, so a minimal reconstructed Config suffices; the required
-        # positional fields below are dummies delete() never looks at. Kinds with
-        # no delete() (sqs_queue, ec2_instance, dedicated_host) are absent here
-        # and get a manual-removal warning instead.
+        # positional fields below are dummies delete() never looks at. Kinds whose
+        # delete() needs more than name+region to be complete are absent here and
+        # get a manual-removal warning instead: those with no delete() at all
+        # (sqs_queue, ec2_instance, dedicated_host) and image_builder (its
+        # delete() matches recipes by version and owns inline components).
         _ORPHAN_DELETE_ORDER = (
             "autoscaling_group",
             "launch_template",
-            "image_builder",
             "lambda_function",
             "iam_instance_profile",
             "iam_role",
@@ -2291,8 +2292,11 @@ class CloudInfrastructure:
                 return AutoScalingGroup.Config(name=name, region=region)
             if kind == "launch_template":
                 return LaunchTemplate.Config(name=name, region=region)
-            if kind == "image_builder":
-                return ImageBuilder.Config(name=name, region=region)
+            # image_builder is intentionally NOT auto-deleted: ImageBuilder.delete()
+            # matches recipes by name+version and also owns inline components, none
+            # of which can be reconstructed from the name alone, so a name-only
+            # delete would leave custom-version recipes/components behind. Fall
+            # through to the manual-removal warning instead.
             if kind == "lambda_function":
                 from .lambda_function import Lambda
 
