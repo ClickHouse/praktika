@@ -103,3 +103,20 @@ for `cidb_cluster`/`ci_config`, the project slug).
 - **CIDB is skippable but stateful.** Its digest is config-only; a terminated
   replica or a rolled AMI (live EC2 state) is *not* reflected, so recover those
   with `--all`, not a routine `--deploy`.
+
+## Known limitations
+
+- **Cross-component dependencies are not propagated.** A component's digest
+  covers only its *own* config, not the resolved state of things it depends on.
+  The main case: ASG/LT/EC2 resolve subnet and security-group IDs from their
+  `vpc_name` at deploy time (into `ext`, which is excluded from the digest). If
+  you change a VPC's subnets/SGs, dependents' digests don't change, so they are
+  skipped and keep the old IDs. Reconcile a shared-dependency change with
+  `--all` (or `--only AutoScalingGroup LaunchTemplate …`) rather than a plain
+  `--deploy`.
+
+- **Region changes to an individual component are not tracked, and orphan
+  deletion targets the global `AWS_REGION`.** `region` is excluded from the
+  digest, and the manifest stores no per-component region. This only affects
+  explicitly cross-region components (Mac / cross-region VPC pools); use `--all`
+  after a region change and delete such orphans manually.

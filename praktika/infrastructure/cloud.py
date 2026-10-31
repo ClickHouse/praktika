@@ -1595,6 +1595,16 @@ class CloudInfrastructure:
                 if cidb_digest is not None:
                     desired[cidb_key] = cidb_digest
 
+            # DockerProxy's own deploy() (private hosted zone + SG ingress) isn't
+            # one of the typed/digestable lists, so give it a dedicated key to
+            # keep the fast path from re-running it on every unchanged deploy.
+            docker_proxy_key = f"docker_proxy:{self._project_prefix()}"
+            if self.docker_proxy is not None:
+                all_keys.add(docker_proxy_key)
+                dp_digest = self._component_digest(self.docker_proxy)
+                if dp_digest is not None:
+                    desired[docker_proxy_key] = dp_digest
+
             ssm_mf = None
             loaded: Dict[str, str] = {}
             recorded: Dict[str, str] = {}
@@ -1807,7 +1817,11 @@ class CloudInfrastructure:
                 _wants("CIDBCluster", "CIDB", "CIDBClusters", "CI_DB")
                 and self.cidb_cluster
             ):
-                if use_manifest and loaded.get(cidb_key) == desired.get(cidb_key):
+                if (
+                    use_manifest
+                    and cidb_key in desired
+                    and loaded.get(cidb_key) == desired[cidb_key]
+                ):
                     pass  # unchanged — already reported in the plan summary
                 else:
                     self.cidb_cluster.region = self._settings.AWS_REGION
@@ -1831,16 +1845,26 @@ class CloudInfrastructure:
             ):
                 dp = self.docker_proxy
                 region = self._settings.AWS_REGION
-                print("\n" + "=" * 60)
-                print("Deploying DockerProxy")
-                print("=" * 60)
                 if only_set:
                     dp.ec2_role.region = region
                     dp.ec2_role.deploy()
                     dp.instance_profile.region = region
                     dp.instance_profile.deploy()
-                dp.region = region
-                dp.deploy()  # private hosted zone + SG ingress
+                # Gate the zone + SG ingress reconciliation on the manifest so an
+                # unchanged deploy doesn't keep probing AWS for it.
+                if (
+                    use_manifest
+                    and docker_proxy_key in desired
+                    and loaded.get(docker_proxy_key) == desired[docker_proxy_key]
+                ):
+                    pass  # unchanged — already reported in the plan summary
+                else:
+                    print("\n" + "=" * 60)
+                    print("Deploying DockerProxy")
+                    print("=" * 60)
+                    dp.region = region
+                    dp.deploy()  # private hosted zone + SG ingress
+                    _mf_record_key(docker_proxy_key)
                 if only_set:
                     dp.launch_template.region = region
                     dp.launch_template.deploy()
