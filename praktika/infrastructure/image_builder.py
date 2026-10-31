@@ -651,6 +651,13 @@ class ImageBuilder:
                                 f"Launch Template '{launch_template.name}' is not deployed yet; "
                                 f"skipping Image Builder launch template propagation for '{self.name}'"
                             )
+                            # The distribution config is being created without this
+                            # LT wired in (LTs deploy after image builders on a
+                            # first run). Mark the build incomplete so the deploy
+                            # manifest doesn't record it as done — the next deploy
+                            # must re-run and attach the now-existing LT, else its
+                            # AMI will never auto-update via setDefaultVersion.
+                            self.ext["deploy_incomplete"] = True
                             continue
                         raise
                     launch_template_id = launch_template.ext.get(
@@ -965,6 +972,10 @@ class ImageBuilder:
                 )
 
         def deploy(self):
+            # Cleared here; set if a launch template can't be wired into the
+            # distribution config yet (first run, LTs deploy later). The deploy
+            # manifest then skips recording so the next deploy re-attaches it.
+            self.ext.pop("deploy_incomplete", None)
             try:
                 self.fetch()
             except Exception:

@@ -1995,7 +1995,11 @@ class CloudInfrastructure:
                     print(f"Deploying Image Builder: {ib_config.name}")
                     print("=" * 60)
                     ib_config.deploy()
-                    _mf_record("image_builder", ib_config)
+                    # Don't record if a launch template couldn't be wired into the
+                    # distribution config yet (first run) — the next deploy must
+                    # re-run to attach it so its AMI auto-updates.
+                    if not ib_config.ext.get("deploy_incomplete"):
+                        _mf_record("image_builder", ib_config)
 
             # Deploy all Launch Templates after ImageBuilders. The AMI itself is
             # kept current by the Image Builder distribution config (it rolls a
