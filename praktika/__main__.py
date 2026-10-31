@@ -394,6 +394,16 @@ def main(argv=None):
                 Utils.raise_with_error(
                     "Use either --destroy-runtime or --destroy-all, not both"
                 )
+            if args.plan and (
+                args.destroy_runtime
+                or args.destroy_all
+                or args.restart_instances
+                or args.verify
+            ):
+                Utils.raise_with_error(
+                    "--plan is read-only and cannot be combined with "
+                    "--destroy-runtime, --destroy-all, --restart-instances, or --verify"
+                )
 
             if args.deploy or args.plan:
                 from .mangle import _get_infra_config

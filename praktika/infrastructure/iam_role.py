@@ -60,6 +60,7 @@ class IAMRole:
             return True
 
         def deploy(self):
+            self.ext.pop("deploy_incomplete", None)
             iam = aws_client("iam", self.region, self.name)
 
             if self._is_up_to_date(iam):
@@ -96,6 +97,8 @@ class IAMRole:
             desired_policy_arns = {p for p in (self.policy_arns or []) if p}
             desired_inline_names = {n for n in (self.inline_policies or {}).keys() if n}
 
+            had_failure = False
+
             try:
                 paginator = iam.get_paginator("list_attached_role_policies")
                 for page in paginator.paginate(RoleName=self.name):
@@ -106,8 +109,10 @@ class IAMRole:
                                 iam.detach_role_policy(RoleName=self.name, PolicyArn=policy_arn)
                             except Exception as e:
                                 print(f"Warning: Failed to detach policy {policy_arn}: {e}")
+                                had_failure = True
             except Exception as e:
                 print(f"Warning: Failed to list managed policies for {self.name}: {e}")
+                had_failure = True
 
             try:
                 paginator = iam.get_paginator("list_role_policies")
@@ -118,8 +123,10 @@ class IAMRole:
                                 iam.delete_role_policy(RoleName=self.name, PolicyName=policy_name)
                             except Exception as e:
                                 print(f"Warning: Failed to delete inline policy {policy_name}: {e}")
+                                had_failure = True
             except Exception as e:
                 print(f"Warning: Failed to list inline policies for {self.name}: {e}")
+                had_failure = True
 
             for policy_arn in self.policy_arns or []:
                 if not policy_arn:
@@ -128,6 +135,7 @@ class IAMRole:
                     iam.attach_role_policy(RoleName=self.name, PolicyArn=policy_arn)
                 except Exception as e:
                     print(f"Warning: Failed to attach policy {policy_arn}: {e}")
+                    had_failure = True
 
             for policy_name, policy_document in (self.inline_policies or {}).items():
                 if not policy_name or not policy_document:
@@ -140,8 +148,17 @@ class IAMRole:
                     )
                 except Exception as e:
                     print(f"Warning: Failed to put inline policy {policy_name}: {e}")
+                    had_failure = True
 
-            print(f"Successfully deployed IAM role: {self.name}")
+            if had_failure:
+                self.ext["deploy_incomplete"] = True
+                print(
+                    f"WARNING: IAM role '{self.name}' deployed with policy "
+                    "reconciliation failures; rerun is required before this is "
+                    "recorded as up to date."
+                )
+            else:
+                print(f"Successfully deployed IAM role: {self.name}")
             return self
 
         def delete(self):

@@ -1745,7 +1745,8 @@ class CloudInfrastructure:
                     print(f"Deploying IAM Role: {role_config.name}")
                     print("=" * 60)
                     role_config.deploy()
-                    _mf_record("iam_role", role_config)
+                    if not role_config.ext.get("deploy_incomplete"):
+                        _mf_record("iam_role", role_config)
 
             # Deploy IAM Instance Profiles (role must exist first)
             if _wants("IAMInstanceProfile", "IAMInstanceProfiles"):
@@ -2021,7 +2022,8 @@ class CloudInfrastructure:
                     print("=" * 60)
                     asg_config.deploy()
                     deployed_asg_configs.append(asg_config)
-                    _mf_record("autoscaling_group", asg_config)
+                    if not asg_config.ext.get("deferred_missing_launch_template"):
+                        _mf_record("autoscaling_group", asg_config)
 
             # Seed the out-of-repo CI config SSM parameter (create-if-absent, so an
             # operator's existing value is never clobbered by a redeploy).
