@@ -193,19 +193,23 @@ class LaunchTemplate:
             return self.image_id
 
         def _current_launch_template_image_id(self, ec2, lt_id: str) -> str:
+            # Read $Default, not $Latest: Image Builder owns the AMI via
+            # setDefaultVersion, so $Default is the authoritative current AMI.
+            # A stray newer non-default version could carry an older AMI, and
+            # preserving that would re-introduce a stale AMI.
             resp = ec2.describe_launch_template_versions(
                 LaunchTemplateId=lt_id,
-                Versions=["$Latest"],
+                Versions=["$Default"],
             )
             versions = resp.get("LaunchTemplateVersions", [])
             if not versions:
                 raise Exception(
-                    f"Launch Template '{self.name}' has no latest version to reuse"
+                    f"Launch Template '{self.name}' has no default version to reuse"
                 )
             image_id = versions[0].get("LaunchTemplateData", {}).get("ImageId", "")
             if not image_id:
                 raise Exception(
-                    f"Launch Template '{self.name}' latest version has no ImageId"
+                    f"Launch Template '{self.name}' default version has no ImageId"
                 )
             return image_id
 

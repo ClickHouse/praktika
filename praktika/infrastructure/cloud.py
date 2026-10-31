@@ -1566,6 +1566,11 @@ class CloudInfrastructure:
                     return self._lambda_source_fingerprint(cfg)
                 if kind == "report_page":
                     return self._report_page_fingerprint(cfg)
+                if kind == "ec2_instance":
+                    # user_data_file contents are read at deploy time and aren't in
+                    # the config, so hash the file so an edit busts the digest.
+                    uf = getattr(cfg, "user_data_file", "") or ""
+                    return self._file_content_digest([uf]) if uf else ""
                 return ""
 
             desired: Dict[str, str] = {}

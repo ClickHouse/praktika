@@ -84,10 +84,11 @@ config (source files, etc.):
 
 | Component (kind) | Config hashed (minus `ext`/`region`) | Extra input folded in |
 |---|---|---|
-| `vpc`, `dedicated_host`, `iam_role`, `iam_instance_profile`, `ec2_instance`, `secret_parameter`, `storage`, `sqs_queue`, `autoscaling_group`, `image_builder`, `github_token_minter` | all fields | — |
+| `vpc`, `dedicated_host`, `iam_role`, `iam_instance_profile`, `secret_parameter`, `storage`, `sqs_queue`, `autoscaling_group`, `image_builder`, `github_token_minter` | all fields | — |
 | `launch_template` | all fields; image builder **by name**; **AMI excluded** | — |
 | `lambda_function` | handler, env, timeout, memory, api_gateway, schedule, policies… | **source file contents + `python_dependencies` specs** (no zip, no `pip`) |
 | `report_page` | path, bucket | **HTML file content** (+ favicon if present) |
+| `ec2_instance` | all fields | **`user_data_file` contents** (read at deploy, not in config) |
 | `cidb_cluster` | all fields (one per project; key `cidb_cluster:{slug}`) | — |
 | `ci_config` | — | constant `"present"` (create-if-absent param; key `ci_config:{slug}`) |
 
