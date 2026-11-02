@@ -71,18 +71,33 @@ if __name__ == "__main__":
             name=PYPI_TOKEN_PARAMETER,
             type=Secret.Type.AWS_SSM_PARAMETER,
         ).get_value()
+        twine_env = {
+            **BUILD_ENV,
+            "TWINE_USERNAME": "__token__",
+            "TWINE_PASSWORD": token,
+        }
+        # Upload each package as its own step so they report independently: a
+        # failure publishing one (e.g. a permissions 403 on praktika) does not
+        # stop the other from being attempted and surfaced in the result tree.
         results.append(
             Result.from_commands_run(
-                name="Upload to PyPI",
+                name="Upload praktika to PyPI",
                 command=[
-                    f"{PY} -m twine check dist/* bootstrap/dist/*",
-                    f"{PY} -m twine upload --non-interactive dist/* bootstrap/dist/*",
+                    f"{PY} -m twine check dist/*",
+                    f"{PY} -m twine upload --non-interactive dist/*",
                 ],
-                env={
-                    **BUILD_ENV,
-                    "TWINE_USERNAME": "__token__",
-                    "TWINE_PASSWORD": token,
-                },
+                env=twine_env,
+                fail_fast=True,
+            )
+        )
+        results.append(
+            Result.from_commands_run(
+                name="Upload praktika-controller to PyPI",
+                command=[
+                    f"{PY} -m twine check bootstrap/dist/*",
+                    f"{PY} -m twine upload --non-interactive bootstrap/dist/*",
+                ],
+                env=twine_env,
                 fail_fast=True,
             )
         )
