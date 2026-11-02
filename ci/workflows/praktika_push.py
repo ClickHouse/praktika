@@ -30,10 +30,12 @@ workflow = Workflow.Config(
     name="Praktika MainCI",
     event=Workflow.Event.PUSH,
     # Patterns are matched exact-or-regex (praktika.orchestrator._branch_matches).
-    # Besides main, run push CI on generalize-* branches to exercise push CI
-    # off-main. External pushes stay excluded regardless (push webhooks are
+    # Besides main, run push CI on main-test-* branches to exercise push CI
+    # off-main. The publish jobs below self-gate to main (see each script), so a
+    # main-test-* push runs the pytests/coverage but never overwrites the released
+    # wheels. External pushes stay excluded regardless (push webhooks are
     # repo-internal; forks route through the PR approval gate).
-    branches=["main", "generalize-.*"],
+    branches=["main", "main-test-.*"],
     jobs=[
         Job.Config(
             name="Publish wheel",
@@ -60,14 +62,6 @@ workflow = Workflow.Config(
             command="python3 ./ci/scripts/publish_coverage_pages.py",
             requires=[coverage_html.name],
             enable_gh_auth=True,
-        ),
-        # Temporary: always-failing standalone job to exercise per-job re-run on
-        # push/MainCI. No requires/provides so it fails independently. Remove once
-        # re-run is verified.
-        Job.Config(
-            name="Mock Fail",
-            runs_on=[RunnerLabels.SMALL_ARM],
-            command="echo 'mock failure for rerun testing' && exit 1",
         ),
     ],
     artifacts=[coverage_html],

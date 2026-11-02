@@ -3,6 +3,14 @@
 # by the images and user-data bootstrap paths.
 set -euo pipefail
 
+# Publish only from main. main-test-* pushes run this job too (to exercise push
+# CI off-main) but must never overwrite the released controller wheel / aliases.
+BRANCH="$(python3 -c 'from praktika.info import Info; print(Info().git_branch or "")')"
+if [ "${BRANCH}" != "main" ]; then
+  echo "Skip publish: branch '${BRANCH}' is not main."
+  exit 0
+fi
+
 # Controller version is kept in lockstep with praktika (single source of truth:
 # `version` in the root pyproject.toml), so this resolves to that version.
 VERSION="$(

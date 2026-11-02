@@ -375,9 +375,10 @@ _orchestrator_pool = Components.OrchestratorPool(
         # the branch explicitly here; the `-base` pool leaves it unset and thus
         # rejects pushes (it only runs the PR-event "PR Prev Version").
         # Entries are matched exact-or-regex in the webhook Lambda
-        # (_is_allowed_push_branch), mirroring the orchestrator; generalize-*
-        # branches are allowed so push CI can be exercised off-main.
-        "allowed_push_branches": ["main", "generalize-.*"],
+        # (_is_allowed_push_branch), mirroring the orchestrator; main-test-*
+        # branches are allowed so push CI can be exercised off-main (publish jobs
+        # self-gate to main, so these never overwrite released wheels).
+        "allowed_push_branches": ["main", "main-test-.*"],
     },
     user_data="\n".join(
         [
