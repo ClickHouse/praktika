@@ -273,7 +273,7 @@ have a short S3 retention (a few days — large, consumed within minutes). See
   equivalent of `clone_repo`'s stale-head guard).
 - **Trust segregation, IAM-enforced.** The runner role is bucket-wide, so
   `ci/infrastructure/projects.py` carves the tiers back out per pool with explicit
-  Deny statements (`{PRs,REFs}/repo-snapshot/v1/*`):
+  Deny statements (`{PRs,REFs}/*`, covering artifacts and the nested snapshots):
 
   | Pool | `REFs/*` (trusted) | `PRs/*` (untrusted) |
   |---|---|---|
