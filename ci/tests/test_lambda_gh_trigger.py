@@ -445,7 +445,7 @@ def test_rerun_without_external_id_is_skipped(monkeypatch):
     # or the top-level workflow check) is a full re-run, which is NOT supported for
     # any event type — it must be dropped, never enqueued. (GitHub does not even
     # surface a "re-run all" button for API-posted checks, so this is belt-and-
-    # suspenders.) See docs/proposals/rerun.md.
+    # suspenders.) See praktika/orchestrator/PROTOCOL.md.
     mod = _reload_lambda(monkeypatch)
     enqueued = []
 

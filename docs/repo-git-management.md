@@ -177,7 +177,7 @@ Two re-run paths, each with different repo semantics. The first is GitHub's nati
 per-job button; the second is a custom praktika action. (A full "Re-run all jobs" is
 **not supported** — `check_suite.rerequested` and top-level-check re-runs are dropped
 with a `SKIP`. GitHub does not surface a "re-run all" button for API-posted checks
-anyway. See `docs/proposals/rerun.md`.)
+anyway. See `praktika/orchestrator/PROTOCOL.md` for the full re-run protocol.)
 
 ### Re-run failed jobs — resume, reusing the original snapshot
 
