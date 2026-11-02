@@ -61,6 +61,14 @@ workflow = Workflow.Config(
             requires=[coverage_html.name],
             enable_gh_auth=True,
         ),
+        # Temporary: always-failing standalone job to exercise per-job re-run on
+        # push/MainCI. No requires/provides so it fails independently. Remove once
+        # re-run is verified.
+        Job.Config(
+            name="Mock Fail",
+            runs_on=[RunnerLabels.SMALL_ARM],
+            command="echo 'mock failure for rerun testing' && exit 1",
+        ),
     ],
     artifacts=[coverage_html],
     enable_report=True,
