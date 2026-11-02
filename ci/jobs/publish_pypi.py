@@ -9,6 +9,8 @@ be cut from a specific sha of main rather than the dispatched ref's HEAD.
 The PyPI token is read from the `praktika-pypi-token` AWS SSM parameter and passed
 to twine as TWINE_PASSWORD (username is the literal `__token__`).
 """
+import os
+
 from praktika import Secret
 from praktika.info import Info
 from praktika.result import Result
@@ -18,6 +20,13 @@ VENV = "./ci/tmp/pypi-build-venv"
 PY = f"{VENV}/bin/python"
 
 PYPI_TOKEN_PARAMETER = "praktika-pypi-token"
+
+# The runner exports PYTHONPATH pointing at the baked base venv. Left in place it
+# leaks into our fresh build venv: pip then treats twine's deps (e.g. requests) as
+# already satisfied and skips installing them INTO the venv, and `env=`-scoped
+# steps that drop PYTHONPATH later fail to import them. Strip it so the venv is
+# self-contained for both the build and the twine upload.
+BUILD_ENV = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
 
 if __name__ == "__main__":
     sw = Utils.Stopwatch()
@@ -52,6 +61,7 @@ if __name__ == "__main__":
                 # so setup.py's version lookup fails.
                 f"{PY} -m build --wheel --no-isolation --outdir bootstrap/dist bootstrap",
             ],
+            env=BUILD_ENV,
             fail_fast=True,
         )
     )
@@ -69,6 +79,7 @@ if __name__ == "__main__":
                     f"{PY} -m twine upload --non-interactive dist/* bootstrap/dist/*",
                 ],
                 env={
+                    **BUILD_ENV,
                     "TWINE_USERNAME": "__token__",
                     "TWINE_PASSWORD": token,
                 },
