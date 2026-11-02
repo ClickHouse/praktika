@@ -630,6 +630,41 @@ def test_non_pr_partial_rerun_finished_carries_event_type_and_inputs(monkeypatch
     assert wf.get("fresh_base") is False  # forced off without a PR head to re-merge
 
 
+def test_push_rerun_classified_from_snapshot_not_pr_association(monkeypatch):
+    # Regression (PR review): a push run's check can carry a pull_requests entry
+    # (GitHub associates any PR whose head/commit matches). Classification must come
+    # from the snapshot's event_type, not that array — otherwise a push rerun would
+    # gain PR metadata and be wrongly stale-rejected once the PR head advances.
+    mod = _reload_lambda(monkeypatch)
+    enqueued = []
+
+    snap = {
+        "finalized": True,
+        "repo": "owner/repo",
+        "head_sha": "b" * 40,
+        "event_type": "push",  # authoritative: this is a push run
+        "head_ref": "main",
+    }
+
+    def _must_not_fetch(repo, pr_number):
+        raise AssertionError("push rerun must not call _fetch_pr despite PR association")
+
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(mod, "_fetch_pr", _must_not_fetch)
+    monkeypatch.setattr(mod, "_load_run_snapshot", lambda run_id: snap)
+    monkeypatch.setattr(mod, "_write_rerun_request", lambda run_id, jobs, delivery_id: None)
+    monkeypatch.setattr(mod, "_claim_resume_lock", lambda run_id, event_ts: True)
+    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append(workflow))
+
+    # Check carries an associated PR (number 17), but the snapshot says push.
+    mod.lambda_handler(_partial_rerun_event("dpush-assoc", job="Mock Fail"), None)
+
+    assert len(enqueued) == 1
+    wf = enqueued[0]
+    assert wf["event_type"] == "push"
+    assert "pr_number" not in wf  # not reclassified as a PR despite the association
+
+
 def _fresh_base_rerun_event(delivery, run_id="run42", job="Style check", head_sha="b" * 40):
     external_id = json.dumps(
         {"kind": "praktika_job_check", "run_id": run_id, "job": job}, sort_keys=True

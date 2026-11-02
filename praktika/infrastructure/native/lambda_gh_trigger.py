@@ -1081,25 +1081,40 @@ def _handle_partial_rerun(
         print(f"SKIP: partial rerun — sender {sender} not allowed")
         return
 
-    # A per-job check belongs either to a PR run (it has a pull_requests entry) or
-    # to a push/schedule/dispatch run (empty pull_requests).
-    #   PR run: runners check out the LIVE PR head (refs/pull/N/head), not the sha
-    #   of the check being rerun. So before re-running an old check we must confirm
-    #   the PR head has not advanced — otherwise this would run the current
-    #   (possibly unapproved fork) code under the old check's authorization. Fetch
-    #   the PR; reject on mismatch, and for fork PRs also require a maintainer.
-    #   Fail closed on any error.
-    #   Non-PR run: the resume restores the exact commit the original run pinned
-    #   (its published snapshot) — there is no live checkout to go stale and no
-    #   fork to gate, so the ALLOWED_SENDERS check above is the whole gate (GitHub
-    #   only shows the re-run button to write-access users).
-    rerun_sha = check_obj.get("head_sha", "")
+    # Classify the run as PR vs non-PR from its PERSISTED event type, NOT the
+    # check's pull_requests array. GitHub populates pull_requests with any PR whose
+    # head/commit matches, so a push check on a same-repo branch that also has an
+    # open PR would be misread as a PR rerun — it would gain pr_number + PR metadata
+    # while the snapshot says event_type="push", and (once the PR head advances) be
+    # wrongly rejected as "stale". The run snapshot is the single source of truth.
+    #
+    # This read is only for classification; event_type is immutable for a run. The
+    # `finalized` flag that routes running-vs-finished is re-read AFTER the request
+    # write below, so the finish-race handshake (write-before-read-finalized) holds.
+    snap = _load_run_snapshot(run_id)
     prs = check_obj.get("pull_requests", [])
-    pr_number = prs[0].get("number") if prs else None
+    event_type = (snap or {}).get("event_type")
+    if event_type:
+        is_pr = event_type == "pull_request"
+    else:
+        # No snapshot yet, or one predating event_type being persisted. Such a run
+        # is always a PR (non-PR rerun did not exist before that field), so fall
+        # back to the pull_requests association — the original heuristic.
+        is_pr = bool(prs)
+
+    rerun_sha = check_obj.get("head_sha", "")
     meta = None
-    if pr_number:
-        if not rerun_sha:
-            print(f"SKIP: partial rerun run={run_id} — missing head sha")
+    if is_pr:
+        # PR run: runners check out the LIVE PR head (refs/pull/N/head), not the sha
+        # of the check being rerun. So before re-running an old check we must confirm
+        # the PR head has not advanced — otherwise this would run the current
+        # (possibly unapproved fork) code under the old check's authorization. Fetch
+        # the PR; reject on mismatch, and for fork PRs also require a maintainer.
+        # Fail closed on any error. The PR number comes from the snapshot (the run's
+        # real PR), not the association array.
+        pr_number = (snap or {}).get("pr_number") or (prs[0].get("number") if prs else None)
+        if not pr_number or not rerun_sha:
+            print(f"SKIP: partial rerun run={run_id} — missing PR number or head sha")
             return
         try:
             current_sha, meta = _fetch_pr(repo, pr_number)
@@ -1117,6 +1132,10 @@ def _handle_partial_rerun(
             if not _can_maintain_repo(repo, sender, token):
                 print(f"SKIP: partial rerun run={run_id} — fork PR rerun by non-maintainer {sender}")
                 return
+    # else: push/schedule/dispatch run — the resume restores the exact commit the
+    # original run pinned (its published snapshot), so there is no live checkout to
+    # go stale and no fork to gate; the ALLOWED_SENDERS check above is the whole
+    # gate (GitHub shows the re-run button to write-access users only).
 
     # Record the request in S3 FIRST — before reading finalized — so a run that
     # finalizes concurrently can't strand it: the orchestrator's finalize recheck
@@ -1132,6 +1151,7 @@ def _handle_partial_rerun(
     # a failure and can be retried, rather than returning HTTP 200.
     _write_rerun_request(run_id, [job], delivery_id)
 
+    # Re-read for the finalized routing decision (see the finish-race note above).
     snap = _load_run_snapshot(run_id)
 
     if not (snap and snap.get("finalized")):
