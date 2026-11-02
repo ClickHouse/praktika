@@ -86,7 +86,9 @@ def test_publish_coverage_pages_rewrites_coverage_directory(tmp_path, monkeypatc
     monkeypatch.setattr(
         publish_coverage_pages,
         "Info",
-        lambda: SimpleNamespace(pr_number=126, sha="abcdef1234567890"),
+        lambda: SimpleNamespace(
+            pr_number=126, sha="abcdef1234567890", git_branch="main"
+        ),
     )
     monkeypatch.setattr(
         publish_coverage_pages.GH, "publish_gh_pages", staticmethod(_fake_publish)

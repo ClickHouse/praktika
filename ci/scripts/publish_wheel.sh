@@ -4,6 +4,14 @@
 # "Publish wheel" job in ci/workflows/praktika_push.py on push to main.
 set -euo pipefail
 
+# Publish only from main. main-test-* pushes run this job too (to exercise push
+# CI off-main) but must never overwrite the released wheels / latest aliases.
+BRANCH="$(python3 -c 'from praktika.info import Info; print(Info().git_branch or "")')"
+if [ "${BRANCH}" != "main" ]; then
+  echo "Skip publish: branch '${BRANCH}' is not main."
+  exit 0
+fi
+
 VERSION="$(
   python3 -c "from praktika.version import current_praktika_version; print(current_praktika_version())"
 )"

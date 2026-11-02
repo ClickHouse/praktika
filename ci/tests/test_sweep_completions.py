@@ -45,7 +45,7 @@ class _FakeCheck:
     def __init__(self):
         self.completed = []
 
-    def complete(self, conclusion, output=None, details_url=None):
+    def complete(self, conclusion, output=None, details_url=None, actions=None):
         self.completed.append(
             {"conclusion": conclusion, "output": output, "details_url": details_url}
         )
@@ -55,7 +55,7 @@ class _PostedCheck:
     def __init__(self, record):
         self.record = record
 
-    def complete(self, conclusion, output=None, details_url=None):
+    def complete(self, conclusion, output=None, details_url=None, actions=None):
         self.record["completed"].append(
             {"conclusion": conclusion, "output": output, "details_url": details_url}
         )
@@ -78,7 +78,7 @@ def _capture_check_queues(monkeypatch):
 
     def fake_create_completed(
         token, repo, head_sha, name, conclusion, output=None, details_url=None,
-        external_id=None,
+        external_id=None, actions=None,
     ):
         # Skipped jobs post their terminal state in a single call. Record the
         # conclusion under the same "completed" shape the queue()->complete()

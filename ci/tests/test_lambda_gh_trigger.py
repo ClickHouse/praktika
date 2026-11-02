@@ -440,63 +440,20 @@ def _rerun_event(delivery, sender="maintainer", head_sha="b" * 40):
     }
 
 
-def test_external_rerun_requires_maintainer(monkeypatch):
-    mod = _reload_lambda(monkeypatch)
-    state = {"approval_check_id": 77, "head_sha": "b" * 40}
-    enqueued = []
-
-    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
-    monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr_number: ("b" * 40, _rerun_meta(external=True)))
-    monkeypatch.setattr(mod, "_load_approval_state", lambda repo, pr_number: state)
-    monkeypatch.setattr(mod, "_get_github_token", lambda required_permissions=None: "tok")
-    monkeypatch.setattr(mod, "_can_maintain_repo", lambda repo, login, token: False)
-    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)))
-
-    mod.lambda_handler(_rerun_event("d4", sender="contributor"), None)
-
-    assert enqueued == []
-
-
-def test_internal_rerun_fetches_metadata_and_enqueues(monkeypatch):
-    # An internal (same-repo) rerun enqueues directly, and the fetched PR
-    # metadata (labels/title/draft) rides along so the DAG matches the live PR.
+def test_rerun_without_external_id_is_skipped(monkeypatch):
+    # A rerequested check WITHOUT a per-job external_id (a check_suite "re-run all"
+    # or the top-level workflow check) is a full re-run, which is NOT supported for
+    # any event type — it must be dropped, never enqueued. (GitHub does not even
+    # surface a "re-run all" button for API-posted checks, so this is belt-and-
+    # suspenders.) See docs/proposals/rerun.md.
     mod = _reload_lambda(monkeypatch)
     enqueued = []
 
     monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
-    monkeypatch.setattr(
-        mod,
-        "_fetch_pr",
-        lambda repo, pr_number: ("b" * 40, _rerun_meta(external=False, labels=["ci", "release"])),
-    )
-    monkeypatch.setattr(mod, "_load_approval_state", lambda repo, pr_number: None)
-    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)))
+    monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr_number: ("b" * 40, _rerun_meta(external=False)))
+    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append(workflow))
 
-    mod.lambda_handler(_rerun_event("d-internal", sender="contributor"), None)
-
-    assert len(enqueued) == 1
-    workflow = enqueued[0][0]
-    assert workflow["external_pr"] is False
-    assert workflow["action"] == "rerequested"
-    assert workflow["head_sha"] == "b" * 40
-    assert workflow["labels"] == ["ci", "release"]
-    assert workflow["title"] == "Test PR"
-
-
-def test_rerun_fails_closed_when_pr_fetch_fails(monkeypatch):
-    # If the PR refetch fails we cannot tell internal from external, so the
-    # rerun must be dropped rather than run down the ungated internal path.
-    mod = _reload_lambda(monkeypatch)
-    enqueued = []
-
-    def _boom(repo, pr_number):
-        raise RuntimeError("GitHub API down")
-
-    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
-    monkeypatch.setattr(mod, "_fetch_pr", _boom)
-    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)))
-
-    mod.lambda_handler(_rerun_event("d-fail", sender="contributor"), None)
+    mod.lambda_handler(_rerun_event("d-full", sender="contributor"), None)
 
     assert enqueued == []
 
@@ -612,6 +569,102 @@ def test_partial_rerun_finished_enqueues_resume(monkeypatch):
     assert wf.get("fresh_base") is False
 
 
+def _non_pr_partial_rerun_event(delivery, run_id="run42", job="Mock Fail", head_sha="b" * 40):
+    external_id = json.dumps(
+        {"kind": "praktika_job_check", "run_id": run_id, "job": job}, sort_keys=True
+    )
+    return {
+        "headers": {"X-GitHub-Event": "check_run", "X-GitHub-Delivery": delivery},
+        "body": json.dumps(
+            {
+                "action": "rerequested",
+                "sender": {"login": "maxknv"},
+                "check_run": {
+                    "head_sha": head_sha,
+                    "external_id": external_id,
+                    "pull_requests": [],  # push/schedule/dispatch run: no PR
+                },
+                "repository": {"full_name": "owner/repo"},
+            }
+        ),
+    }
+
+
+def test_non_pr_partial_rerun_finished_carries_event_type_and_inputs(monkeypatch):
+    # A per-job re-run of a push/schedule/dispatch run (empty pull_requests) skips
+    # the PR stale-head/fork guard entirely (never calls _fetch_pr) and resumes on
+    # the pinned snapshot, carrying the original event_type, head_ref, and dispatch
+    # inputs so re-dispatched jobs reproduce the original run rather than defaults.
+    mod = _reload_lambda(monkeypatch)
+    enqueued = []
+
+    snap = {
+        "finalized": True,
+        "repo": "owner/repo",
+        "head_sha": "b" * 40,
+        "event_type": "dispatch",
+        "head_ref": "main",
+        "inputs": {"mode": "full", "ref": "v1.2.3"},
+    }
+
+    def _must_not_fetch(repo, pr_number):
+        raise AssertionError("non-PR rerun must not call _fetch_pr")
+
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(mod, "_fetch_pr", _must_not_fetch)
+    monkeypatch.setattr(mod, "_load_run_snapshot", lambda run_id: snap)
+    monkeypatch.setattr(mod, "_write_rerun_request", lambda run_id, jobs, delivery_id: None)
+    monkeypatch.setattr(mod, "_claim_resume_lock", lambda run_id, event_ts: True)
+    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append(workflow))
+
+    mod.lambda_handler(_non_pr_partial_rerun_event("dnp1"), None)
+
+    assert len(enqueued) == 1
+    wf = enqueued[0]
+    assert wf["type"] == "rerun"
+    assert wf["rerun_jobs"] == ["Mock Fail"]
+    assert wf["event_type"] == "dispatch"
+    assert wf["head_ref"] == "main"
+    assert wf["inputs"] == {"mode": "full", "ref": "v1.2.3"}
+    assert "pr_number" not in wf          # no PR metadata attached for a non-PR run
+    assert wf.get("fresh_base") is False  # forced off without a PR head to re-merge
+
+
+def test_push_rerun_classified_from_snapshot_not_pr_association(monkeypatch):
+    # Regression (PR review): a push run's check can carry a pull_requests entry
+    # (GitHub associates any PR whose head/commit matches). Classification must come
+    # from the snapshot's event_type, not that array — otherwise a push rerun would
+    # gain PR metadata and be wrongly stale-rejected once the PR head advances.
+    mod = _reload_lambda(monkeypatch)
+    enqueued = []
+
+    snap = {
+        "finalized": True,
+        "repo": "owner/repo",
+        "head_sha": "b" * 40,
+        "event_type": "push",  # authoritative: this is a push run
+        "head_ref": "main",
+    }
+
+    def _must_not_fetch(repo, pr_number):
+        raise AssertionError("push rerun must not call _fetch_pr despite PR association")
+
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(mod, "_fetch_pr", _must_not_fetch)
+    monkeypatch.setattr(mod, "_load_run_snapshot", lambda run_id: snap)
+    monkeypatch.setattr(mod, "_write_rerun_request", lambda run_id, jobs, delivery_id: None)
+    monkeypatch.setattr(mod, "_claim_resume_lock", lambda run_id, event_ts: True)
+    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append(workflow))
+
+    # Check carries an associated PR (number 17), but the snapshot says push.
+    mod.lambda_handler(_partial_rerun_event("dpush-assoc", job="Mock Fail"), None)
+
+    assert len(enqueued) == 1
+    wf = enqueued[0]
+    assert wf["event_type"] == "push"
+    assert "pr_number" not in wf  # not reclassified as a PR despite the association
+
+
 def _fresh_base_rerun_event(delivery, run_id="run42", job="Style check", head_sha="b" * 40):
     external_id = json.dumps(
         {"kind": "praktika_job_check", "run_id": run_id, "job": job}, sort_keys=True
@@ -706,74 +759,6 @@ def test_partial_rerun_finished_lock_lost_queues_without_spawn(monkeypatch):
 
     assert requests == [("run42", ["Style check"])]
     assert enqueued == []
-
-
-def test_rerun_without_external_id_uses_full_path(monkeypatch):
-    # No per-job external_id (e.g. check_suite "re-run all") → full-workflow rerun.
-    mod = _reload_lambda(monkeypatch)
-    enqueued = []
-
-    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
-    monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr_number: ("b" * 40, _rerun_meta(external=False)))
-    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append(workflow))
-
-    mod.lambda_handler(_rerun_event("d-full", sender="contributor"), None)
-
-    assert len(enqueued) == 1
-    assert enqueued[0]["type"] == "pull_request"
-    assert enqueued[0]["action"] == "rerequested"
-
-
-def test_external_rerun_of_stale_head_is_not_rebound_to_current(monkeypatch):
-    # Security: a maintainer rerun of a STALE check (head A) must not approve or
-    # enqueue the current head (B). The rerun carries the stale sha A; state has
-    # advanced to B. A must not be silently rebound to B.
-    mod = _reload_lambda(monkeypatch)
-    state = {"approval_check_id": 77, "head_sha": "b" * 40}  # PR head advanced to B
-    enqueued = []
-    gate_updates = []
-    stored = []
-
-    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
-    monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr_number: ("b" * 40, _rerun_meta(external=True)))
-    monkeypatch.setattr(mod, "_load_approval_state", lambda repo, pr_number: state)
-    monkeypatch.setattr(mod, "_get_github_token", lambda required_permissions=None: "tok")
-    monkeypatch.setattr(mod, "_can_maintain_repo", lambda repo, login, token: True)
-    monkeypatch.setattr(mod, "_update_gate_check", lambda *a, **k: gate_updates.append((a, k)))
-    monkeypatch.setattr(mod, "_store_gate_state", lambda *a, **k: stored.append((a, k)))
-    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)))
-
-    mod.lambda_handler(_rerun_event("d5", head_sha="a" * 40), None)  # stale check A
-
-    assert enqueued == []
-    assert gate_updates == []
-    assert stored == []
-
-
-def test_external_rerun_of_current_head_approves_and_enqueues(monkeypatch):
-    # A maintainer rerun of the CURRENT head (sha matches state) is an explicit
-    # approval of that exact commit: gate approved, workflow enqueued with the
-    # authoritative fetched metadata.
-    mod = _reload_lambda(monkeypatch)
-    state = {"approval_check_id": 77, "head_sha": "b" * 40}
-    enqueued = []
-    stored = []
-
-    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
-    monkeypatch.setattr(mod, "_fetch_pr", lambda repo, pr_number: ("b" * 40, _rerun_meta(external=True)))
-    monkeypatch.setattr(mod, "_load_approval_state", lambda repo, pr_number: state)
-    monkeypatch.setattr(mod, "_get_github_token", lambda required_permissions=None: "tok")
-    monkeypatch.setattr(mod, "_can_maintain_repo", lambda repo, login, token: True)
-    monkeypatch.setattr(mod, "_update_gate_check", lambda *a, **k: None)
-    monkeypatch.setattr(mod, "_store_gate_state", lambda *a, **k: stored.append((a, k)))
-    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append((workflow, delivery_id)))
-
-    mod.lambda_handler(_rerun_event("d6", head_sha="b" * 40), None)
-
-    assert len(enqueued) == 1
-    assert enqueued[0][0]["head_sha"] == "b" * 40
-    assert enqueued[0][0]["external_pr"] is True
-    assert stored  # gate marked approved for the current head
 
 
 class _ThrottleS3:

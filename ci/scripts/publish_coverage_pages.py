@@ -40,6 +40,17 @@ def _extract_coverage_archive():
 def main():
     info = Info()
 
+    # Publish only from main. main-test-* pushes run this job too (to exercise
+    # push CI off-main) but must not overwrite the published coverage report.
+    if info.git_branch != "main":
+        result = Result.create_from(
+            name="Publish Coverage Report",
+            status=Result.Status.OK,
+            info=f"Skipped: branch {info.git_branch!r} is not main.",
+        )
+        result.complete_job()
+        return
+
     _extract_coverage_archive()
     url = GH.publish_gh_pages(
         str(COVERAGE_HTML_DIR),

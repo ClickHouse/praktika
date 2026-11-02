@@ -2119,18 +2119,24 @@ class CloudInfrastructure:
         # outside the config, so recovering a terminated replica needs `--all`.
         #
         # The manifest is advisory: `--all` ignores it and probes everything live
-        # (the drift-recovery path), and a praktika-version or region change
-        # invalidates the whole manifest so deploy logic changes take effect.
+        # (the drift-recovery path), and a region change invalidates the whole
+        # manifest. A routine praktika *version* bump does NOT invalidate it (that
+        # would force a full redeploy on every release). Bump _MANIFEST_SCHEMA
+        # manually when a praktika change alters how any component is deployed, to
+        # intentionally retire old manifests so the new logic re-runs everywhere.
         _MANIFEST_SCHEMA = "v2"
 
         def _manifest_param_name(self) -> str:
             return f"{self._project_prefix()}-infra-manifest"
 
         def _manifest_schema_fingerprint(self) -> str:
+            # Intentionally excludes the praktika version: a version bump alone
+            # must not invalidate the manifest. Bump _MANIFEST_SCHEMA to force a
+            # rebuild when deploy logic changes.
             region = (
                 self._settings.AWS_REGION if self._settings else ""
             ) or ""
-            return f"{current_praktika_version()}|{region}|{self._MANIFEST_SCHEMA}"
+            return f"{region}|{self._MANIFEST_SCHEMA}"
 
         @staticmethod
         def _mf_key(kind: str, cfg) -> str:
