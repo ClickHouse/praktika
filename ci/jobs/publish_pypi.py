@@ -41,12 +41,16 @@ if __name__ == "__main__":
             name="Build distributions",
             command=[
                 f"python3 -m venv {VENV}",
-                f"{PY} -m pip install --upgrade pip build twine",
-                # praktika (root project).
+                f"{PY} -m pip install --upgrade pip setuptools wheel build twine",
+                # praktika (root project): sdist + wheel.
                 f"{PY} -m build --outdir dist/",
-                # praktika-controller (bootstrap project). --no-isolation lets
-                # bootstrap/setup.py read the version from the root pyproject.
-                f"{PY} -m build --no-isolation --outdir bootstrap/dist bootstrap",
+                # praktika-controller (bootstrap project): WHEEL ONLY, built
+                # straight from the worktree. --no-isolation + --wheel keeps the
+                # root pyproject one level up so bootstrap/setup.py can read the
+                # version from it. A plain `build` would build the wheel from an
+                # extracted sdist in a temp dir where the root pyproject is absent,
+                # so setup.py's version lookup fails.
+                f"{PY} -m build --wheel --no-isolation --outdir bootstrap/dist bootstrap",
             ],
             fail_fast=True,
         )
