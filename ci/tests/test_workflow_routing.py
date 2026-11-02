@@ -267,6 +267,42 @@ def test_native_jobs_can_follow_base_runner_override():
     assert workflow.jobs[-1].runs_on == ["arm-2xsmall-base"]
 
 
+def test_runs_on_prefix_does_not_leak_across_workflows_sharing_job_config():
+    # A shared module-level Job.Config is referenced by two workflows (the normal
+    # job_configs.py pattern). Mangling the prefixed workflow must not mutate the
+    # shared object and rewrite the no-prefix workflow's runs_on.
+    shared_job = Job.Config(
+        name="Shared Job",
+        runs_on=["arm-2cpu-4g"],
+        command="true",
+    )
+    prefixed = Workflow.Config(
+        name="PR",
+        event=Workflow.Event.PULL_REQUEST,
+        base_branches=["main"],
+        runs_on_label_prefix="pr-",
+        jobs=[shared_job],
+    )
+    plain = Workflow.Config(
+        name="Main",
+        event=Workflow.Event.PUSH,
+        branches=["main"],
+        jobs=[shared_job],
+    )
+
+    _update_workflow_with_native_jobs(prefixed)
+    _update_workflow_with_native_jobs(plain)
+
+    def _runs_on(workflow):
+        return next(j.runs_on for j in workflow.jobs if j.name == "Shared Job")
+
+    assert _runs_on(prefixed) == ["pr-arm-2cpu-4g"]
+    # The no-prefix workflow keeps its bare label, and the shared singleton is
+    # untouched.
+    assert _runs_on(plain) == ["arm-2cpu-4g"]
+    assert shared_job.runs_on == ["arm-2cpu-4g"]
+
+
 _GOOD_WF_FILE = '''\
 from praktika import Job, Workflow
 

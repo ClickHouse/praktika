@@ -168,7 +168,7 @@ def test_prepare_merges_base_and_head(tmp_path):
     parents = _git(clone, "rev-list", "--parents", "-n", "1", snapshot_sha).split()[1:]
     assert parents == [b1, head_sha]
     # Published to the PRs/ tier, content-addressed, and actually uploaded.
-    assert key.startswith("mybucket/prefix/repo-snapshots/v1/PRs/")
+    assert key.startswith("mybucket/prefix/PRs/repo-snapshot/v1/")
     assert ("mybucket", key.split("/", 1)[1]) in s3.objects
 
 
@@ -198,6 +198,47 @@ def test_snapshot_restores_to_merge_commit(tmp_path):
     assert os.path.exists(os.path.join(restored_dir, "added_by_base.txt"))  # from base
     # Worktree matches HEAD (index was seeded via read-tree, not a checkout).
     assert _git(restored_dir, "status", "--porcelain") == ""
+    # Origin is baked in so jobs can `git fetch origin <ref>` from the snapshot
+    # instead of falling back to the GitHub contents API. It mirrors clone_dir's
+    # origin (here the local path to the fixture origin repo).
+    assert _git(restored_dir, "config", "--get", "remote.origin.url") == str(origin)
+
+
+def test_snapshot_origin_is_token_scrubbed(tmp_path):
+    # The origin baked into the snapshot must never carry the clone's access
+    # token: the archive is uploaded to S3 and (for PRs) readable by every job.
+    origin, head_sha, _ = _make_origin(tmp_path)
+    clone = _make_clone(tmp_path, origin, head_sha)
+    # Simulate clone_repo's token-bearing origin URL.
+    _git(clone, "remote", "set-url", "origin",
+         "https://x-access-token:secret-token@github.com/acme/repo.git")
+    s3 = _FakeS3()
+    event = {"type": "pull_request", "pr_number": 7, "base_ref": "main"}
+
+    # Plain-head snapshot (no merge) so the fake, unreachable origin URL is never
+    # fetched — we only assert the URL baked into the snapshot config is scrubbed.
+    _, snapshot_sha, key = merge.prepare_repo_snapshot(
+        str(clone), event, dict(PR_MERGE_SETTINGS, ENABLE_PR_EPHEMERAL_MERGE_COMMIT=False),
+        s3, _Log(),
+    )
+
+    restore_work = tmp_path / "restore"
+    restore_work.mkdir()
+    restored_dir, _ = common.restore_repo_snapshot(
+        s3, key, snapshot_sha, 7, work_dir=str(restore_work), log=_Log()
+    )
+    url = _git(restored_dir, "config", "--get", "remote.origin.url")
+    assert url == "https://github.com/acme/repo.git"
+    assert "secret-token" not in url
+
+
+def test_scrub_remote_url():
+    f = merge._scrub_remote_url
+    assert f("https://x-access-token:tok@github.com/a/b.git") == "https://github.com/a/b.git"
+    assert f("https://user@ghe.example.com/a/b.git") == "https://ghe.example.com/a/b.git"
+    assert f("https://github.com/a/b.git") == "https://github.com/a/b.git"
+    assert f("git@github.com:a/b.git") == "git@github.com:a/b.git"  # ssh: untouched
+    assert f("  https://tok@host/x.git  ") == "https://host/x.git"
 
 
 def test_merge_is_deterministic(tmp_path):
@@ -241,7 +282,7 @@ def test_push_plain_head_snapshot(tmp_path):
     assert base_sha == ""
     assert snapshot_sha == head_sha  # no merge
     assert _git(clone, "rev-parse", "HEAD") == head_sha
-    assert key.startswith("mybucket/prefix/repo-snapshots/v1/REFs/")  # trusted tier
+    assert key.startswith("mybucket/prefix/REFs/repo-snapshot/v1/")  # trusted tier
 
 
 def test_disabled_returns_none(tmp_path):
@@ -262,7 +303,7 @@ def test_pr_without_merge_flag_is_plain_head(tmp_path):
     )
     assert base_sha == ""
     assert snapshot_sha == head_sha
-    assert key.startswith("mybucket/prefix/repo-snapshots/v1/PRs/")  # still a PR event
+    assert key.startswith("mybucket/prefix/PRs/repo-snapshot/v1/")  # still a PR event
 
 
 def test_merged_tree_bucket_overrides_head(tmp_path):
@@ -301,7 +342,7 @@ def test_merged_tree_bucket_overrides_head(tmp_path):
     _, _, key = merge.prepare_repo_snapshot(str(clone), event, settings, s3, _Log())
 
     # Snapshot published to the merged (private) bucket, and nothing to the public one.
-    assert key.startswith("private-bucket/repo-snapshots/v1/PRs/")
+    assert key.startswith("private-bucket/PRs/repo-snapshot/v1/")
     assert not any(bucket == "public-bucket" for (bucket, _k) in s3.objects)
 
 

@@ -9,9 +9,11 @@ Below, variables are written as `<…>`; everything else is a fixed prefix. The
 bucket is whole-bucket public-read (`s3:GetObject` on `*`), and lifecycle rules
 expire the *ephemeral* prefixes (`RETENTION_PREFIXES`: `PRs/`, `REFs/`, `runs/`,
 `ci_cache/`, …) after `retention_days`, while root objects and `packages/` are kept
-forever. `repo-snapshots/` has its own **short** retention (a few days —
-`SHORT_RETENTION_PREFIXES`) since the archives are large and consumed within
-minutes of creation (`praktika/infrastructure/storage.py`).
+forever. The repo-snapshot sub-prefixes (`{PRs,REFs}/repo-snapshot/v1/`) have their
+own **short** retention (a few days — `SHORT_RETENTION_PREFIXES`) since the archives
+are large and consumed within minutes of creation; S3 applies the earliest-expiring
+matching rule, so these win over the broader `PRs/`/`REFs/` retention
+(`praktika/infrastructure/storage.py`).
 
 ## Root
 
@@ -72,13 +74,15 @@ restored by every downstream job instead of cloning. For `pull_request` with
 `Settings.ENABLE_PR_EPHEMERAL_MERGE_COMMIT` the snapshot is the ephemeral merge of
 head into the target tip; otherwise (and for push) it is the plain head. The trust
 tier is `PRs` (untrusted) vs `REFs` (trusted); IAM scopes them so `pr-*` pools are
-denied *write* to `REFs/`, and trusted pools are denied *read+write* to `PRs/`.
-See `praktika/docs/repo-git-management.md`.
+denied *write* to `REFs/`, and trusted pools are denied *write* to `PRs/`. The
+*write* denies are the enforced integrity boundary; the trusted no-*read* of `PRs/`
+is best-effort only (the bucket is public-read for the report viewer, so an unsigned
+request bypasses the identity-policy Deny). See `praktika/docs/repo-git-management.md`.
 
 | Key | Purpose |
 |---|---|
-| `repo-snapshots/v1/PRs/<sha256>.tar.zst` | Snapshot for `pull_request` (fork-reachable) runs — the ephemeral merge, or the head. |
-| `repo-snapshots/v1/REFs/<sha256>.tar.zst` | Snapshot for `push`/trusted runs (plain head, no merge). |
+| `PRs/repo-snapshot/v1/<sha256>.tar.zst` | Snapshot for `pull_request` (fork-reachable) runs — the ephemeral merge, or the head. |
+| `REFs/repo-snapshot/v1/<sha256>.tar.zst` | Snapshot for `push`/trusted runs (plain head, no merge). |
 
 `<sha256>` is the content hash of the archive (tamper-evident: consumers re-hash
 the download and reject a mismatch).

@@ -70,7 +70,7 @@ def test_run_config_snapshot_fields_default_when_absent():
 
 
 def test_run_config_snapshot_fields_round_trip():
-    key = "bucket/repo-snapshots/v1/PRs/abc.tar.zst"
+    key = "bucket/PRs/repo-snapshot/v1/abc.tar.zst"
     config = RunConfig.from_dict(
         _minimal_config_dict(
             base_sha="base-sha",

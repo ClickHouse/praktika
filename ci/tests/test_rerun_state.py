@@ -820,7 +820,7 @@ def test_snapshot_target_pinned_from_config_workflow_and_frozen_against_later_jo
     state.apply_workflow_config(
         {
             "snapshot_sha": "m1",
-            "repo_snapshot_key": "repo-snapshots/v1/PRs/HASH1.tar.zst",
+            "repo_snapshot_key": "PRs/repo-snapshot/v1/HASH1.tar.zst",
         }
     )
     assert state._snapshot_sha == "m1"
@@ -830,7 +830,7 @@ def test_snapshot_target_pinned_from_config_workflow_and_frozen_against_later_jo
     state.apply_workflow_config(
         {
             "snapshot_sha": "evil",
-            "repo_snapshot_key": "repo-snapshots/v1/PRs/EVIL.tar.zst",
+            "repo_snapshot_key": "PRs/repo-snapshot/v1/EVIL.tar.zst",
         }
     )
     # Frozen: the attacker's values are ignored.
@@ -845,7 +845,7 @@ def test_seed_repo_snapshot_from_controller_wins_over_config_job():
     s3 = _FakeS3()
     state = _make_state(s3, {"A": JobStatus.PENDING})
 
-    state.seed_repo_snapshot("ctrl-merge", "repo-snapshots/v1/PRs/CTRL.tar.zst")
+    state.seed_repo_snapshot("ctrl-merge", "PRs/repo-snapshot/v1/CTRL.tar.zst")
     assert state._snapshot_sha == "ctrl-merge"
     assert state._repo_snapshot_key.endswith("CTRL.tar.zst")
 
@@ -853,7 +853,7 @@ def test_seed_repo_snapshot_from_controller_wins_over_config_job():
     state.apply_workflow_config(
         {
             "snapshot_sha": "other",
-            "repo_snapshot_key": "repo-snapshots/v1/PRs/OTHER.tar.zst",
+            "repo_snapshot_key": "PRs/repo-snapshot/v1/OTHER.tar.zst",
         }
     )
     assert state._snapshot_sha == "ctrl-merge"
@@ -869,7 +869,7 @@ def test_seed_repo_snapshot_is_noop_when_empty():
     assert state._snapshot_sha == ""
     assert state._repo_snapshot_key == ""
     state.apply_workflow_config(
-        {"snapshot_sha": "m1", "repo_snapshot_key": "repo-snapshots/v1/PRs/H.tar.zst"}
+        {"snapshot_sha": "m1", "repo_snapshot_key": "PRs/repo-snapshot/v1/H.tar.zst"}
     )
     assert state._snapshot_sha == "m1"
 
@@ -879,9 +879,9 @@ def test_override_repo_snapshot_replaces_pinned_value():
     # published a new snapshot, which must REPLACE the one loaded from state.json.
     s3 = _FakeS3()
     state = _make_state(s3, {"A": JobStatus.PENDING})
-    state.seed_repo_snapshot("orig", "repo-snapshots/v1/PRs/ORIG.tar.zst")
+    state.seed_repo_snapshot("orig", "PRs/repo-snapshot/v1/ORIG.tar.zst")
 
-    state.override_repo_snapshot("fresh", "repo-snapshots/v1/PRs/FRESH.tar.zst")
+    state.override_repo_snapshot("fresh", "PRs/repo-snapshot/v1/FRESH.tar.zst")
     assert state._snapshot_sha == "fresh"
     assert state._repo_snapshot_key.endswith("FRESH.tar.zst")
 

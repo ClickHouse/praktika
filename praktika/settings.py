@@ -172,7 +172,7 @@ class _Settings:
     # (required for private submodules); otherwise they run anonymously.
     ENABLE_SUBMODULE_CLONE_AUTH: bool = False
     # If enabled, Config Workflow snapshots the whole repo state once and publishes
-    # it to S3 (repo-snapshots/v1/{PRs,REFs}/<sha256>.tar.zst); every downstream job
+    # it to S3 ({PRs,REFs}/repo-snapshot/v1/<sha256>.tar.zst); every downstream job
     # restores it instead of cloning from GitHub.
     ENABLE_S3_REPO_SNAPSHOT: bool = False
     # For pull_request runs (requires ENABLE_S3_REPO_SNAPSHOT), snapshot the

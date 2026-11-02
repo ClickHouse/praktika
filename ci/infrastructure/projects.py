@@ -141,24 +141,17 @@ def _runner_user_data(controller_update_cmd: str) -> str:
     )
 
 
-# OSS trust boundary for the repo-snapshot tiers. Snapshots live under
-# praktika-artifacts-eu-north-1/repo-snapshots/v1/PRs/... (written by fork /
-# pull_request runs, which route to the pr-* pools via the PR workflow's
-# runs_on_label_prefix="pr-") and .../repo-snapshots/v1/REFs/... (written by push
-# runs on non-pr pools). PRs/ is the untrusted tier, REFs/ the trusted one. The
-# runner S3 grant is bucket-wide for convenience (fine on a private project with
-# no untrusted actor), so on this OSS project we carve the tiers back out per pool
-# with explicit Deny statements (Deny always overrides Allow). Information-flow
-# rule: reads may go down-trust but never up, and writes never go up.
-#
-#   untrusted (pr-*) pool: may READ REFs (reuse), must NOT WRITE REFs (no poisoning)
-#   trusted (non-pr) pool: must NOT READ or WRITE PRs (no tainted input into trusted)
-#
-# The tiers are empty until ENABLE_S3_REPO_SNAPSHOT is set, so these denies are
-# inert for existing CI. Bare bucket names are namespaced to
-# praktika-artifacts-eu-north-1 by the deploy-time policy sweep.
+# OSS trust boundary: the bucket-wide runner grant is carved back per pool so
+# untrusted pr-* pools can't WRITE the trusted REFs/* tier (no poisoning) and
+# trusted pools can't WRITE the untrusted PRs/* tier. The WRITE denies are the
+# enforced integrity boundary. The trusted no-READ of PRs/* is only best-effort:
+# the bucket is public-read (for the report viewer), so a trusted job could still
+# fetch a PR object via an unsigned request that bypasses this identity-policy
+# Deny — treat it as defense-in-depth, not a hard confidentiality boundary.
+# Snapshots nest under these prefixes, so one per-tier rule covers both. Bare
+# bucket names are namespaced to praktika-artifacts-eu-north-1 by the deploy sweep.
 _UNTRUSTED_DENY_WRITE_TRUSTED_STATEMENT = {
-    "Sid": "DenyUntrustedWriteToTrustedSnapshots",
+    "Sid": "DenyUntrustedWriteToTrusted",
     "Effect": "Deny",
     "Action": [
         "s3:PutObject",
@@ -166,10 +159,10 @@ _UNTRUSTED_DENY_WRITE_TRUSTED_STATEMENT = {
         "s3:DeleteObject",
         "s3:AbortMultipartUpload",
     ],
-    "Resource": "arn:aws:s3:::artifacts-eu-north-1/repo-snapshots/v1/REFs/*",
+    "Resource": "arn:aws:s3:::artifacts-eu-north-1/REFs/*",
 }
 _TRUSTED_DENY_ACCESS_UNTRUSTED_STATEMENT = {
-    "Sid": "DenyTrustedAccessToUntrustedSnapshots",
+    "Sid": "DenyTrustedAccessToUntrusted",
     "Effect": "Deny",
     "Action": [
         "s3:GetObject",
@@ -179,7 +172,7 @@ _TRUSTED_DENY_ACCESS_UNTRUSTED_STATEMENT = {
         "s3:DeleteObject",
         "s3:AbortMultipartUpload",
     ],
-    "Resource": "arn:aws:s3:::artifacts-eu-north-1/repo-snapshots/v1/PRs/*",
+    "Resource": "arn:aws:s3:::artifacts-eu-north-1/PRs/*",
 }
 
 
