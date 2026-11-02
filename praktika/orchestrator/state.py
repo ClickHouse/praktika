@@ -2918,24 +2918,46 @@ class WorkflowState:
     # ------------------------------------------------------------ markdown
 
     def md_status_summary(self):
-        """One-line summary ("1 running, 3 pending, 2 finished") for the
-        top-level check's `output.summary`. Jobs roll up into three buckets:
-        running (dispatched to a runner or executing), pending (still waiting
-        on deps or a free runner), and finished (any terminal outcome —
-        success, failure, skipped or cancelled). The per-job table in
-        `md_status` still breaks the finished bucket down by outcome."""
-        running = pending = finished = 0
+        """One-line summary for the top-level check's `output.summary`/`title`.
+
+        While the run is in flight jobs roll up into three buckets: running
+        (dispatched to a runner or executing), pending (still waiting on deps
+        or a free runner), and finished (any terminal outcome), e.g.
+        "1 running, 3 pending, 2 finished". Once every job is terminal the
+        running/pending counts are always 0, so the finished bucket is instead
+        broken down by outcome — failed (failure/cancelled/error), success and
+        skipped, e.g. "2 failed, 11 success, 1 skipped". Retried /
+        runner-unresponsive jobs are appended as notes."""
+        running = pending = 0
+        failed = success = skipped = 0
         for js in self.jobs.values():
             if js.status in _TERMINAL:
-                finished += 1
+                if js.status == JobStatus.SUCCESS:
+                    success += 1
+                elif js.status == JobStatus.SKIPPED:
+                    skipped += 1
+                else:  # FAILURE / CANCELLED (and any error) count as failed
+                    failed += 1
             elif js.status in (JobStatus.RUNNING, JobStatus.QUEUED):
                 running += 1
             else:  # PENDING, READY — not yet dispatched
                 pending += 1
-        if self.jobs:
-            summary = f"{running} running, {pending} pending, {finished} finished"
-        else:
+        if not self.jobs:
             summary = "no jobs"
+        elif running == 0 and pending == 0:
+            # Terminal: running/pending are always 0, so breaking the finished
+            # bucket down by outcome is the only informative view.
+            bits = []
+            if failed:
+                bits.append(f"{failed} failed")
+            if success:
+                bits.append(f"{success} success")
+            if skipped:
+                bits.append(f"{skipped} skipped")
+            summary = ", ".join(bits) or "no jobs"
+        else:
+            finished = failed + success + skipped
+            summary = f"{running} running, {pending} pending, {finished} finished"
         retried = sum(1 for js in self.jobs.values() if js.attempt > 1)
         unresponsive = sum(1 for js in self.jobs.values() if js.stale_flagged)
         notes = []
