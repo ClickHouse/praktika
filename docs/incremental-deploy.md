@@ -12,15 +12,18 @@ The manifest lives in SSM at `{project-slug}-infra-manifest`:
 
 ```json
 {
-  "schema_version": "<praktika-version>|<aws-region>|v2",
+  "schema_version": "<aws-region>|v2",
   "top": "<hash of all component digests>",
   "components": { "iam_role:acme-ci-runner": "<16-hex>", "...": "..." }
 }
 ```
 
-If `schema_version` doesn't match the running praktika version + region, the whole
-manifest is treated as empty and every component is re-deployed (so a praktika
-upgrade that changes deploy logic always takes effect).
+If `schema_version` doesn't match, the whole manifest is treated as empty and
+every component is re-deployed. It is **region + a manual `v2` schema tag** —
+note it deliberately does **not** include the praktika version, so a routine
+version bump does not invalidate the manifest. When a praktika change alters how
+a component is deployed, bump the `_MANIFEST_SCHEMA` constant (`v2` → `v3`) to
+retire old manifests on purpose.
 
 ## Flow
 
@@ -35,7 +38,7 @@ praktika infra --plan | --deploy
         │
         ▼
   load manifest from SSM  {slug}-infra-manifest        (1 GetParameter)
-        │   schema mismatch (version|region|v2) → manifest treated as empty
+        │   schema mismatch (region|v2) → manifest treated as empty
         ▼
   PLAN = diff(desired, manifest)
         +  create     key absent from manifest
