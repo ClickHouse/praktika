@@ -29,7 +29,11 @@ coverage_html = Artifact.Config(
 workflow = Workflow.Config(
     name="Praktika MainCI",
     event=Workflow.Event.PUSH,
-    branches=["main"],
+    # Patterns are matched exact-or-regex (praktika.orchestrator._branch_matches).
+    # Besides main, run push CI on generalize-* branches to exercise push CI
+    # off-main. External pushes stay excluded regardless (push webhooks are
+    # repo-internal; forks route through the PR approval gate).
+    branches=["main", "generalize-.*"],
     jobs=[
         Job.Config(
             name="Publish wheel",

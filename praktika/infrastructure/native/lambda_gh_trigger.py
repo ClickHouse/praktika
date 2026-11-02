@@ -348,6 +348,18 @@ def _is_allowed_pr_base_branch(base_ref: str) -> bool:
     return False
 
 
+def _is_allowed_push_branch(branch: str) -> bool:
+    """A pushed branch matches the allow-list — exact or regex.
+
+    Mirrors the orchestrator's push-branch matching (praktika.orchestrator._branch_matches)
+    so a push the lambda enqueues is one a workflow can actually pick up. An empty
+    allow-list matches nothing, so no push is enqueued."""
+    for pattern in ALLOWED_PUSH_BRANCHES:
+        if pattern == branch or re.fullmatch(pattern, branch):
+            return True
+    return False
+
+
 def _pr_metadata(pr, repo):
     """Normalize a PR object into the metadata fields a workflow message carries.
 
@@ -478,7 +490,7 @@ def _build_push_workflow(payload, event_ts):
     if not ref.startswith("refs/heads/"):
         return None
     branch = ref[len("refs/heads/") :]
-    if branch not in ALLOWED_PUSH_BRANCHES:
+    if not _is_allowed_push_branch(branch):
         return None
     head_sha = payload.get("after") or payload.get("head_commit", {}).get("id", "")
     if not head_sha:

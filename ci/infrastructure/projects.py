@@ -374,7 +374,10 @@ _orchestrator_pool = Components.OrchestratorPool(
         # accept main push events. The library default is now "no pushes", so list
         # the branch explicitly here; the `-base` pool leaves it unset and thus
         # rejects pushes (it only runs the PR-event "PR Prev Version").
-        "allowed_push_branches": ["main"],
+        # Entries are matched exact-or-regex in the webhook Lambda
+        # (_is_allowed_push_branch), mirroring the orchestrator; generalize-*
+        # branches are allowed so push CI can be exercised off-main.
+        "allowed_push_branches": ["main", "generalize-.*"],
     },
     user_data="\n".join(
         [
