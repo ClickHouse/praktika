@@ -121,7 +121,7 @@ class _FakeCheck:
             }
         )
 
-    def complete(self, conclusion, output=None, details_url=None):
+    def complete(self, conclusion, output=None, details_url=None, actions=None):
         self.completed.append(
             {"conclusion": conclusion, "output": output, "details_url": details_url}
         )

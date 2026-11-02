@@ -406,6 +406,53 @@ def _build_pr_workflow(action, repo, pr_number, head_sha, sender, event_ts, meta
     }
 
 
+def _build_rerun_workflow(run_id, rerun_jobs, snap, repo, sender, event_ts, meta, fresh_base=False):
+    """Assemble a ``type="rerun"`` resume message for a partial re-run (one job),
+    for any event type.
+
+    A resume re-drives an existing run in place: it reuses the run's pinned repo
+    snapshot + frozen CI config so it reproduces the exact tree the run was built
+    from, rather than the current head. Carries the original event type + ref off
+    the snapshot so ``_orchestrate_resume`` reconstructs the right context (a PR as
+    a PR, a push/schedule/dispatch as its real type).
+
+    ``meta`` (from ``_fetch_pr``) is non-None only for a PR run — its fields
+    (head_ref/base_ref/fork/labels/title/draft) plus the PR number are carried so
+    the resume has a full pull_request context even when the snapshot has no
+    environment to inherit it from. For a push/schedule/dispatch run ``meta`` is
+    None and there is no PR number; ``fresh_base`` (a PR-only re-merge against the
+    moved base) is forced off there since there is no PR head to merge.
+    """
+    workflow = {
+        "type": "rerun",
+        "run_id": run_id,
+        "rerun_jobs": list(rerun_jobs),
+        "repo": snap.get("repo") or repo,
+        "head_sha": snap.get("head_sha", ""),
+        "sender": sender,
+        "event_ts": event_ts,
+        # Re-drive the SAME merged tree the original run pinned: the controller
+        # restores this snapshot (no re-merge) so runtime + DAG match the original.
+        "snapshot_sha": snap.get("snapshot_sha", ""),
+        "repo_snapshot_key": snap.get("repo_snapshot_key", ""),
+        "base_sha": snap.get("base_sha", ""),
+        # Reuse the original run's frozen out-of-repo CI config so a resume never
+        # diverges from the run it resumes. See ci-config.md.
+        "ci_config": snap.get("ci_config") or {},
+        "fresh_base": bool(fresh_base) and meta is not None,
+        # Original workflow event type + ref so the resume is classified as the
+        # first run was, not assumed to be a PR. See _orchestrate_resume.
+        "event_type": snap.get("event_type") or "pull_request",
+        "head_ref": snap.get("head_ref", ""),
+    }
+    if meta is not None:
+        # PR run: carry the authoritative PR metadata + number. ``meta`` last so
+        # its keys (e.g. the live PR's head_ref) win over the snapshot's.
+        workflow["pr_number"] = snap.get("pr_number")
+        workflow.update(meta)
+    return workflow
+
+
 def _build_workflow(action, payload, event_ts):
     """Build a CI workflow message from a pull_request event. Returns None to skip."""
     if action not in ("opened", "synchronize", "reopened", "rerequested"):
@@ -964,20 +1011,28 @@ def _handle_gate_action(payload, delivery_id: str, sender: str, identifier: str)
 def _handle_rerun(check_obj, payload, delivery_id, sender, event_ts, source):
     """Route a ``check_run`` / ``check_suite`` ``rerequested`` event.
 
-    A single per-job check carries ``{run_id, job}`` in its ``external_id``, so a
-    re-run of one check becomes a *partial* re-run — only that job (and its
-    failed downstream) re-runs, in place on the existing run. Anything without
-    that marker (the check_suite "re-run all", the top-level check, or a run from
-    before external_ids) falls back to a full-workflow re-run.
+    Only a **per-job** re-run is supported: a single per-job check carries
+    ``{run_id, job}`` in its ``external_id``, so a re-run of one check becomes a
+    *partial* re-run — only that job (and its failed downstream) re-runs, in place
+    on the existing run. Works for every event type (pull_request/push/schedule/
+    dispatch).
+
+    A re-run WITHOUT that marker — the check_suite "re-run all / failed checks"
+    button, or a re-run of the top-level workflow check — is a *full* re-run and is
+    **not supported** (for any event type): it is dropped with a log line. Re-run
+    the individual failed job(s) instead. See docs/proposals/rerun.md.
     """
-    # Neither path rate-limits: the partial-rerun path is serialized by a per-run
-    # resume.lock and absorbs unlimited live requests; the full-rerun path mints a
-    # fresh run per click (rapid clicks just waste compute — see _handle_full_rerun).
+    # The partial-rerun path does not rate-limit: it is serialized by a per-run
+    # resume.lock and absorbs unlimited live requests (bounded per job by
+    # MAX_RERUNS_PER_JOB).
     parsed = _parse_job_check_external_id(check_obj.get("external_id", ""))
     if parsed:
         _handle_partial_rerun(parsed[0], parsed[1], check_obj, payload, delivery_id, sender, event_ts)
         return
-    _handle_full_rerun(check_obj, payload, delivery_id, sender, event_ts, source)
+    print(
+        f"SKIP: {source}.rerequested — full 're-run all' is not supported; "
+        f"re-run individual failed jobs instead"
+    )
 
 
 def _rerun_base_label(fresh_base):
@@ -1010,34 +1065,42 @@ def _handle_partial_rerun(
         print(f"SKIP: partial rerun — sender {sender} not allowed")
         return
 
-    # Runners check out the LIVE PR head (refs/pull/N/head), not the sha of the
-    # check being rerun. So before re-running an old check we must confirm the
-    # PR head has not advanced — otherwise this would run the current (possibly
-    # unapproved fork) code under the old check's authorization. Fetch the PR;
-    # reject on mismatch, and for fork PRs also require a maintainer. Fail closed
-    # on any error / missing PR.
+    # A per-job check belongs either to a PR run (it has a pull_requests entry) or
+    # to a push/schedule/dispatch run (empty pull_requests).
+    #   PR run: runners check out the LIVE PR head (refs/pull/N/head), not the sha
+    #   of the check being rerun. So before re-running an old check we must confirm
+    #   the PR head has not advanced — otherwise this would run the current
+    #   (possibly unapproved fork) code under the old check's authorization. Fetch
+    #   the PR; reject on mismatch, and for fork PRs also require a maintainer.
+    #   Fail closed on any error.
+    #   Non-PR run: the resume restores the exact commit the original run pinned
+    #   (its published snapshot) — there is no live checkout to go stale and no
+    #   fork to gate, so the ALLOWED_SENDERS check above is the whole gate (GitHub
+    #   only shows the re-run button to write-access users).
     rerun_sha = check_obj.get("head_sha", "")
     prs = check_obj.get("pull_requests", [])
     pr_number = prs[0].get("number") if prs else None
-    if not pr_number or not rerun_sha:
-        print(f"SKIP: partial rerun run={run_id} — missing PR number or head sha")
-        return
-    try:
-        current_sha, meta = _fetch_pr(repo, pr_number)
-    except Exception as e:
-        print(f"SKIP: partial rerun run={run_id} — could not verify PR head, failing closed: {e}")
-        return
-    if current_sha != rerun_sha:
-        print(
-            f"SKIP: partial rerun run={run_id} — stale (rerun sha {rerun_sha[:12]} "
-            f"!= current head {current_sha[:12]})"
-        )
-        return
-    if meta["external_pr"]:
-        token = _get_github_token(required_permissions={"metadata": "read"})
-        if not _can_maintain_repo(repo, sender, token):
-            print(f"SKIP: partial rerun run={run_id} — fork PR rerun by non-maintainer {sender}")
+    meta = None
+    if pr_number:
+        if not rerun_sha:
+            print(f"SKIP: partial rerun run={run_id} — missing head sha")
             return
+        try:
+            current_sha, meta = _fetch_pr(repo, pr_number)
+        except Exception as e:
+            print(f"SKIP: partial rerun run={run_id} — could not verify PR head, failing closed: {e}")
+            return
+        if current_sha != rerun_sha:
+            print(
+                f"SKIP: partial rerun run={run_id} — stale (rerun sha {rerun_sha[:12]} "
+                f"!= current head {current_sha[:12]})"
+            )
+            return
+        if meta["external_pr"]:
+            token = _get_github_token(required_permissions={"metadata": "read"})
+            if not _can_maintain_repo(repo, sender, token):
+                print(f"SKIP: partial rerun run={run_id} — fork PR rerun by non-maintainer {sender}")
+                return
 
     # Record the request in S3 FIRST — before reading finalized — so a run that
     # finalizes concurrently can't strand it: the orchestrator's finalize recheck
@@ -1080,38 +1143,14 @@ def _handle_partial_rerun(
         )
         return
 
-    # Carry the authoritative PR metadata (fork repo, labels, title, draft, refs)
-    # so the resume reconstructs a real pull_request context even when the run's
-    # snapshot has no environment to inherit it from — otherwise a fork PR could
-    # look internal and lose its metadata (see _orchestrate_resume).
-    workflow = {
-        "type": "rerun",
-        "run_id": run_id,
-        "rerun_jobs": [job],
-        "repo": snap.get("repo") or repo,
-        "head_sha": snap.get("head_sha", ""),
-        "pr_number": snap.get("pr_number"),
-        "sender": sender,
-        "event_ts": event_ts,
-        # Re-drive the SAME merged tree the original run pinned: carry the
-        # published snapshot so the controller restores it (no re-merge) and the
-        # resumed orchestrator's runtime + DAG match the original ephemeral merge
-        # rather than the current head. A "re-run all" (full rerun) instead mints a
-        # fresh run that re-merges against the current base — see _handle_full_rerun.
-        "snapshot_sha": snap.get("snapshot_sha", ""),
-        "repo_snapshot_key": snap.get("repo_snapshot_key", ""),
-        "base_sha": snap.get("base_sha", ""),
-        # Reuse the original run's frozen out-of-repo CI config so a resume never
-        # diverges from the run it resumes (e.g. a fresh-base rerun must make the
-        # SAME force_merge_commit decision the original run did, regardless of what
-        # SSM says now). Carried like the snapshot identity above. See ci-config.md.
-        "ci_config": snap.get("ci_config") or {},
-        # Fresh-base rerun (per-job "Rerun w/ fresh base" button): the controller
-        # re-merges the head against the CURRENT base tip and publishes a new
-        # snapshot instead of restoring the one above. Finished-run only.
-        "fresh_base": bool(fresh_base),
-        **meta,
-    }
+    # Build the resume message. For a PR run this carries the authoritative PR
+    # metadata (fork repo, labels, title, draft, refs) so the resume reconstructs
+    # a real pull_request context even when the run's snapshot has no environment
+    # to inherit it from; for a non-PR run (meta is None) it carries the original
+    # event type + ref off the snapshot instead. See _build_rerun_workflow.
+    workflow = _build_rerun_workflow(
+        run_id, [job], snap, repo, sender, event_ts, meta, fresh_base=fresh_base
+    )
     try:
         _enqueue(workflow, delivery_id)
     except Exception:
@@ -1124,119 +1163,6 @@ def _handle_partial_rerun(
         f"RERUN (partial, resume, spawned, {_rerun_base_label(fresh_base)}): "
         f"run={run_id} job={job!r}"
     )
-
-
-def _handle_full_rerun(check_obj, payload, delivery_id, sender, event_ts, source):
-    """Full-workflow re-run (check_suite "re-run all", or a pre-external_id run).
-
-    A rerun button only exists on a check that was already created for this exact
-    sha, so a rerun of a real CI check is inherently a rerun of a sha that ran
-    before (and, for a fork PR, was already approved). We refetch the PR by
-    number: it is the single authoritative source of fork status (which decides
-    internal vs external routing) and of the labels/title/draft that the check
-    payload omits but the DAG is filtered on. ``source`` is "check_run" /
-    "check_suite" for logging.
-    """
-    prs = check_obj.get("pull_requests", [])
-    if not prs:
-        print(f"SKIP: {source}.rerequested — no associated PR")
-        return
-    pr_number = prs[0].get("number")
-    rerun_sha = check_obj.get("head_sha", "")
-    repo = payload.get("repository", {}).get("full_name", "")
-    if not pr_number or not rerun_sha:
-        print(f"SKIP: {source}.rerequested — missing PR number or head sha")
-        return
-    if ALLOWED_SENDERS and sender not in ALLOWED_SENDERS:
-        print(f"SKIP: {source}.rerequested — sender {sender} not allowed")
-        return
-
-    # One fetch gives the fork status (routing), the DAG-shaping metadata the
-    # check payload lacks, and the live head sha. Fail closed on any error so a
-    # fork PR can never slip onto the ungated internal enqueue path.
-    try:
-        current_sha, meta = _fetch_pr(repo, pr_number)
-    except Exception as e:
-        print(
-            f"SKIP: {source}.rerequested — could not fetch PR#{pr_number}, "
-            f"failing closed: {e}"
-        )
-        return
-
-    # Runners check out the live PR head, not rerun_sha. If the head has advanced
-    # since this check ran, re-running it would execute the current (possibly
-    # unapproved fork) code under this old check's identity — reject as stale.
-    if current_sha != rerun_sha:
-        print(
-            f"SKIP: {source}.rerequested — stale (rerun sha {rerun_sha[:12]} "
-            f"!= current head {current_sha[:12]})"
-        )
-        return
-
-    # No throttle / dedup here: a full re-run mints a brand-new run (new run_id,
-    # new S3 prefix) and writes no cancel marker, so two rapid "re-run all" clicks
-    # simply spawn two independent full workflows — wasteful, but harmless (see
-    # PROTOCOL.md). Users should avoid mashing the button.
-    workflow = _build_pr_workflow(
-        "rerequested", repo, pr_number, rerun_sha, sender, event_ts, meta
-    )
-
-    if not meta["external_pr"]:
-        # Same-repo PR: trusted code, no approval gate. Enqueue directly.
-        _enqueue(workflow, delivery_id)
-        print(f"RERUN ({source}): PR#{pr_number} sha={rerun_sha[:12]}")
-        return
-
-    _handle_external_rerun(workflow, delivery_id, sender)
-
-
-def _handle_external_rerun(workflow: dict, delivery_id: str, sender: str):
-    """Enqueue a fork-PR rerun once it is authorized.
-
-    Metadata (labels/fork/etc.) is already authoritative on ``workflow`` from the
-    refetch in ``_handle_rerun``; this only re-derives *authorization*, which is
-    the one thing the internal path doesn't need:
-
-    - Require a maintainer. GitHub only shows the re-run button to write-access
-      users, but the webhook sender is not otherwise trusted for an authz call,
-      and this also blocks re-running the "awaiting approval" gate check of an
-      unapproved commit.
-    - Reject a rerun whose sha is no longer the approved head. Old check runs
-      persist after the PR head advances; a rerun of a stale check must run that
-      stale sha at most, never be treated as approval of the current head.
-    """
-    repo = workflow["repo"]
-    pr_number = workflow["pr_number"]
-    rerun_sha = workflow["head_sha"]
-    token = _get_github_token(
-        required_permissions={"checks": "write", "metadata": "read"}
-    )
-    if not _can_maintain_repo(repo, sender, token):
-        print(f"SKIP: external PR rerun by non-maintainer {sender}")
-        return
-    state = _load_approval_state(repo, pr_number)
-    if not state or state.get("head_sha") != rerun_sha:
-        print(
-            f"SKIP: stale external rerun of PR#{pr_number} "
-            f"sha={rerun_sha[:12]} current={(state or {}).get('head_sha', '')[:12]}"
-        )
-        return
-    if state.get("approval_check_id"):
-        _best_effort(
-            "mark approval gate approved from rerun",
-            _update_gate_check,
-            repo,
-            int(state["approval_check_id"]),
-            token,
-            status="completed",
-            conclusion="success",
-            title="Approved",
-            summary="A maintainer explicitly reran CI for this external PR commit.",
-            text=f"Approved by maintainer rerun from `{sender}`.",
-        )
-        _store_gate_state(workflow, int(state["approval_check_id"]), "approved", sender)
-    _enqueue(workflow, delivery_id)
-    print(f"RERUN APPROVED: PR#{pr_number} sha={rerun_sha[:12]}")
 
 
 def lambda_handler(event, context):

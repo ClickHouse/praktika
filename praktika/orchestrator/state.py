@@ -332,22 +332,26 @@ class JobCheckRun:
     @classmethod
     def create_completed(
         cls, token, repo, head_sha, name, conclusion, output=None, details_url=None,
-        external_id=None,
+        external_id=None, actions=None,
     ):
         """Create a check run already in its terminal state in one POST.
 
         Used for jobs that never run (skipped) so the check posts its final
         conclusion directly, rather than the queue()->complete() two-call
         dance that briefly surfaces a pending check before flipping it.
+
+        ``actions`` are per-job check-run action buttons (e.g. "Rerun w/ fresh
+        base"); omitted when the caller passes none — see
+        ``JobState._completion_actions``, which withholds them on non-PR runs.
         """
         body = {
             "name": name,
             "head_sha": head_sha,
             "status": "completed",
             "conclusion": conclusion,
-            # Offer the per-job "fresh base" re-run on the completed check.
-            "actions": list(_RERUN_FRESH_BASE_ACTIONS),
         }
+        if actions:
+            body["actions"] = list(actions)
         if output is not None:
             body["output"] = output
         if details_url is not None:
@@ -381,13 +385,16 @@ class JobCheckRun:
             body,
         )
 
-    def complete(self, conclusion, output=None, details_url=None):
+    def complete(self, conclusion, output=None, details_url=None, actions=None):
         body = {
             "status": "completed",
             "conclusion": conclusion,
-            # Offer the per-job "fresh base" re-run on the completed check.
-            "actions": list(_RERUN_FRESH_BASE_ACTIONS),
         }
+        # Per-job action buttons (e.g. "Rerun w/ fresh base"); omitted when the
+        # caller passes none — see JobState._completion_actions (withheld on non-PR
+        # runs, where there is no PR head to re-merge against a base).
+        if actions:
+            body["actions"] = list(actions)
         if output is not None:
             body["output"] = output
         if details_url is not None:
@@ -607,6 +614,21 @@ class JobState:
                 f"{type(e).__name__}: {e}"
             )
 
+    def _completion_actions(self):
+        """Action buttons to attach to this job's terminal check run.
+
+        The only button is "Rerun w/ fresh base", which re-merges the PR head
+        against the current base tip — meaningful only on a PR run. A
+        push/schedule/dispatch run has no PR head to re-merge, so it gets no
+        action buttons (a plain per-job re-run still works via the check's native
+        "Re-run" button, which resumes the run on its pinned snapshot).
+        """
+        ws = getattr(self, "_workflow_state", None)
+        ev = (getattr(ws, "_event", None) or {}) if ws is not None else {}
+        if ev.get("type") == "pull_request":
+            return list(_RERUN_FRESH_BASE_ACTIONS)
+        return []
+
     def _create_completed_check(self, conclusion, output=None, details_url=None):
         """Post the GitHub check run directly in its terminal state.
 
@@ -637,6 +659,7 @@ class JobState:
                 external_id=(
                     _job_check_external_id(run_id, self.name) if run_id else None
                 ),
+                actions=self._completion_actions(),
             )
         except Exception as e:
             print(
@@ -764,6 +787,7 @@ class JobState:
                     "success" if success else "failure",
                     output=output,
                     details_url=details_url,
+                    actions=self._completion_actions(),
                 )
             )
         duration = self.finished_at - (self.started_at or self.finished_at)
@@ -890,7 +914,11 @@ class JobState:
             # directly in its completed state (single API call).
             self._create_completed_check("failure", output=output)
         else:
-            self._update_check(lambda c: c.complete("failure", output=output))
+            self._update_check(
+                lambda c: c.complete(
+                    "failure", output=output, actions=self._completion_actions()
+                )
+            )
         duration = self.finished_at - (self.started_at or self.finished_at)
         print(f"[DEAD ] {self.name:70s} ({duration:.1f}s) {reason}")
 
@@ -925,6 +953,7 @@ class JobState:
                 lambda c: c.complete(
                     "cancelled",
                     output={"title": "CANCELLED", "summary": f"CANCELLED: {reason}."},
+                    actions=self._completion_actions(),
                 )
             )
         print(f"[CANCL] {self.name:70s} ({reason})")
@@ -1856,6 +1885,7 @@ class WorkflowState:
         """
         if self._s3 is None or self.local_mode:
             return
+        _event = getattr(self, "_event", None) or {}
         snap = {
             "run_id": self._run_id,
             "workflow_name": self.workflow.name,
@@ -1863,6 +1893,12 @@ class WorkflowState:
             "head_sha": self._head_sha,
             "pr_number": self._pr_number,
             "event_ts": self._event_ts,
+            # Original GitHub event type ("pull_request"/"push"/"schedule"/
+            # "dispatch") and ref, so a re-run (resume) reconstructs the run's
+            # real context for every event type instead of assuming a PR. Read by
+            # the lambda's rerun handlers and by _orchestrate_resume.
+            "event_type": _event.get("type", ""),
+            "head_ref": _event.get("head_ref", ""),
             "finalized": bool(finalized),
             "updated_at": time.time(),
             "environment": self._environment,

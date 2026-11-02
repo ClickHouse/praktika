@@ -896,18 +896,27 @@ def _orchestrate_resume(event, gh_token=None, ci=True):
         print("Resume: missing run_id, nothing to do")
         return 1
 
-    # The lambda routes on type="rerun", but for building the per-job environment
-    # this run IS a pull_request. Re-shape the event so _build_ci_environment
-    # classifies it as a PR (uses head_repo/labels/draft the lambda carried);
-    # otherwise a run whose snapshot has no environment would appear internal
-    # (FORK_NAME == REPOSITORY) and drop PR metadata. See review #18.
-    event = dict(event)
-    event["type"] = "pull_request"
-
     snap = load_run_snapshot(run_id)
     if not snap:
         print(f"Resume: no state snapshot for run {run_id}; cannot resume")
         return 1
+
+    # The lambda routes on type="rerun"; re-shape the event back to the run's
+    # ORIGINAL workflow event type so every downstream consumer (the per-job
+    # task's event_type, _build_ci_environment, the report env, CIDB) classifies
+    # this resume exactly as the first run was:
+    #   - a PR as a PR — _build_ci_environment keys fork-trust off FORK_NAME, and
+    #     a run whose snapshot carries no environment would otherwise look
+    #     internal (FORK_NAME == REPOSITORY) and drop PR metadata. The lambda
+    #     carries head_repo/labels/draft on the message for exactly this. See
+    #     review #18.
+    #   - a push/schedule/dispatch as its real type — so push-only steps (image
+    #     publishing), FORK_NAME, and CIDB records stay correct instead of being
+    #     mislabeled as a PR.
+    # Prefer the type the lambda carried on the message, then the snapshot, then
+    # pull_request for runs that predate event_type being persisted.
+    event = dict(event)
+    event["type"] = event.get("event_type") or snap.get("event_type") or "pull_request"
     workflow_name = snap.get("workflow_name", "")
     workflow = next((wf for wf in _get_workflows() if wf.name == workflow_name), None)
     if workflow is None:

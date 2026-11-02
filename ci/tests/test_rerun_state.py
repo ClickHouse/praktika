@@ -6,7 +6,26 @@ import io
 import json
 import types
 
-from praktika.orchestrator.state import JobState, JobStatus, WorkflowState
+from praktika.orchestrator.state import (
+    JobState,
+    JobStatus,
+    WorkflowState,
+    _RERUN_FRESH_BASE_ACTIONS,
+)
+
+
+def test_fresh_base_action_only_offered_on_pr_runs():
+    # The "Rerun w/ fresh base" per-job button re-merges the PR head against the
+    # current base, so it must appear only on PR runs. push/schedule/dispatch runs
+    # (and a job with no workflow-state attached) get no action buttons.
+    js = JobState.__new__(JobState)
+    js._workflow_state = types.SimpleNamespace(_event={"type": "pull_request"})
+    assert js._completion_actions() == list(_RERUN_FRESH_BASE_ACTIONS)
+    for ev_type in ("push", "schedule", "dispatch"):
+        js._workflow_state = types.SimpleNamespace(_event={"type": ev_type})
+        assert js._completion_actions() == []
+    js._workflow_state = None
+    assert js._completion_actions() == []
 
 
 class _FakeS3:

@@ -173,22 +173,19 @@ _Environment` (`COMMIT_MESSAGE` / `COMMIT_AUTHORS`), where the job prefers them 
 
 ## Re-runs
 
-Three re-run paths, each with different repo semantics. The first two are GitHub's
-native buttons; the third is a custom praktika action.
-
-### Re-run all jobs — fresh run, re-merged against current base
-
-GitHub `check_suite.rerequested` (the "Re-run all jobs" button) has no per-job
-marker → `_handle_full_rerun` mints a **brand-new run** (new `run_id`, new S3
-prefix) as an ordinary `pull_request` trigger. It therefore goes through the normal
-fresh-run path and, in Mode 3, **re-merges against the current base tip** at re-run
-time. Use this when the base moved and you want a full re-plan (new base jobs,
-recomputed digests/filters, current `main`).
+Two re-run paths, each with different repo semantics. The first is GitHub's native
+per-job button; the second is a custom praktika action. (A full "Re-run all jobs" is
+**not supported** — `check_suite.rerequested` and top-level-check re-runs are dropped
+with a `SKIP`. GitHub does not surface a "re-run all" button for API-posted checks
+anyway. See `docs/proposals/rerun.md`.)
 
 ### Re-run failed jobs — resume, reusing the original snapshot
 
 GitHub `check_run.rerequested` on a per-job check carries `{run_id, job}` in its
-`external_id` → `_handle_partial_rerun` **resumes the existing run in place**:
+`external_id` → `_handle_partial_rerun` **resumes the existing run in place**. This
+works for **every event type** (`pull_request` / `push` / `schedule` / `dispatch`);
+a non-PR run skips the PR stale-head/fork guard and simply re-runs the exact pinned
+commit.
 
 - **Finished run** → a fresh orchestrator boots, reloads the persisted DAG from
   `state.json`, resets the target job(s) + failed downstream, and re-drives. The
@@ -221,17 +218,18 @@ guards) with `fresh_base=True`, but behaves differently by run state:
 **Caveat.** A fresh-base *partial* re-run refreshes only the **executed tree**. It
 resumes the persisted DAG and the original Config Workflow's decisions (job set,
 ordering, docker digests, changed-file filters), so a base change to *job structure*
-or *Dockerfiles* is **not** picked up — use **"Re-run all jobs"** for a full
-re-plan. Fresh-base partial re-run is for "a base fix / flaky-infra fix landed on
-`main`, re-run just my expensive failed job against it."
+or *Dockerfiles* is **not** picked up (there is no full "Re-run all jobs" re-plan;
+push a new commit for that). Fresh-base partial re-run is for "a base fix /
+flaky-infra fix landed on `main`, re-run just my expensive failed job against it."
 
 #### Re-run summary
 
 | Trigger | Scope | Base | Re-plans DAG/digests? |
 |---|---|---|---|
-| Re-run all jobs | whole workflow (new run) | current tip (re-merged) | yes |
 | Re-run failed jobs | failed job(s) + downstream (resume) | original (snapshot reused) | no |
 | Rerun w/ fresh base | selected job(s) + downstream (resume, finished only) | current tip (re-merged) | no (tree only) |
+
+(Full "Re-run all jobs" is not supported — push a new commit for a full re-plan.)
 
 ---
 
