@@ -41,6 +41,9 @@ PACKAGES = {
 
 
 def _matches(path, watch):
+    # Documentation-only changes never require a version bump.
+    if path.endswith(".md"):
+        return False
     for w in watch:
         if w.endswith("/"):
             if path.startswith(w):
