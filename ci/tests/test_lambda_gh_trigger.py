@@ -569,6 +569,67 @@ def test_partial_rerun_finished_enqueues_resume(monkeypatch):
     assert wf.get("fresh_base") is False
 
 
+def _non_pr_partial_rerun_event(delivery, run_id="run42", job="Mock Fail", head_sha="b" * 40):
+    external_id = json.dumps(
+        {"kind": "praktika_job_check", "run_id": run_id, "job": job}, sort_keys=True
+    )
+    return {
+        "headers": {"X-GitHub-Event": "check_run", "X-GitHub-Delivery": delivery},
+        "body": json.dumps(
+            {
+                "action": "rerequested",
+                "sender": {"login": "maxknv"},
+                "check_run": {
+                    "head_sha": head_sha,
+                    "external_id": external_id,
+                    "pull_requests": [],  # push/schedule/dispatch run: no PR
+                },
+                "repository": {"full_name": "owner/repo"},
+            }
+        ),
+    }
+
+
+def test_non_pr_partial_rerun_finished_carries_event_type_and_inputs(monkeypatch):
+    # A per-job re-run of a push/schedule/dispatch run (empty pull_requests) skips
+    # the PR stale-head/fork guard entirely (never calls _fetch_pr) and resumes on
+    # the pinned snapshot, carrying the original event_type, head_ref, and dispatch
+    # inputs so re-dispatched jobs reproduce the original run rather than defaults.
+    mod = _reload_lambda(monkeypatch)
+    enqueued = []
+
+    snap = {
+        "finalized": True,
+        "repo": "owner/repo",
+        "head_sha": "b" * 40,
+        "event_type": "dispatch",
+        "head_ref": "main",
+        "inputs": {"mode": "full", "ref": "v1.2.3"},
+    }
+
+    def _must_not_fetch(repo, pr_number):
+        raise AssertionError("non-PR rerun must not call _fetch_pr")
+
+    monkeypatch.setattr(mod, "verify_github_signature", lambda event: None)
+    monkeypatch.setattr(mod, "_fetch_pr", _must_not_fetch)
+    monkeypatch.setattr(mod, "_load_run_snapshot", lambda run_id: snap)
+    monkeypatch.setattr(mod, "_write_rerun_request", lambda run_id, jobs, delivery_id: None)
+    monkeypatch.setattr(mod, "_claim_resume_lock", lambda run_id, event_ts: True)
+    monkeypatch.setattr(mod, "_enqueue", lambda workflow, delivery_id: enqueued.append(workflow))
+
+    mod.lambda_handler(_non_pr_partial_rerun_event("dnp1"), None)
+
+    assert len(enqueued) == 1
+    wf = enqueued[0]
+    assert wf["type"] == "rerun"
+    assert wf["rerun_jobs"] == ["Mock Fail"]
+    assert wf["event_type"] == "dispatch"
+    assert wf["head_ref"] == "main"
+    assert wf["inputs"] == {"mode": "full", "ref": "v1.2.3"}
+    assert "pr_number" not in wf          # no PR metadata attached for a non-PR run
+    assert wf.get("fresh_base") is False  # forced off without a PR head to re-merge
+
+
 def _fresh_base_rerun_event(delivery, run_id="run42", job="Style check", head_sha="b" * 40):
     external_id = json.dumps(
         {"kind": "praktika_job_check", "run_id": run_id, "job": job}, sort_keys=True

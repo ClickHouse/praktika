@@ -456,6 +456,10 @@ def _build_rerun_workflow(run_id, rerun_jobs, snap, repo, sender, event_ts, meta
         # first run was, not assumed to be a PR. See _orchestrate_resume.
         "event_type": snap.get("event_type") or "pull_request",
         "head_ref": snap.get("head_ref", ""),
+        # workflow_dispatch inputs, so a resumed dispatch run re-dispatches jobs
+        # with the original inputs rather than defaults (they live in a separate
+        # file, not the serialized environment). Empty for non-dispatch events.
+        "inputs": snap.get("inputs") or {},
     }
     if meta is not None:
         # PR run: carry the authoritative PR metadata + number. ``meta`` last so

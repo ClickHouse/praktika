@@ -1899,6 +1899,11 @@ class WorkflowState:
             # the lambda's rerun handlers and by _orchestrate_resume.
             "event_type": _event.get("type", ""),
             "head_ref": _event.get("head_ref", ""),
+            # workflow_dispatch inputs (GH_IGNITION) live in a separate per-job
+            # file, not the serialized environment, so a resumed dispatch run must
+            # re-carry them here or re-dispatched jobs would read defaults via
+            # Info.get_workflow_input_value. Empty for events without inputs.
+            "inputs": _event.get("inputs") or {},
             "finalized": bool(finalized),
             "updated_at": time.time(),
             "environment": self._environment,
