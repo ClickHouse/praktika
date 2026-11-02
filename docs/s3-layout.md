@@ -74,8 +74,10 @@ restored by every downstream job instead of cloning. For `pull_request` with
 `Settings.ENABLE_PR_EPHEMERAL_MERGE_COMMIT` the snapshot is the ephemeral merge of
 head into the target tip; otherwise (and for push) it is the plain head. The trust
 tier is `PRs` (untrusted) vs `REFs` (trusted); IAM scopes them so `pr-*` pools are
-denied *write* to `REFs/`, and trusted pools are denied *read+write* to `PRs/`.
-See `praktika/docs/repo-git-management.md`.
+denied *write* to `REFs/`, and trusted pools are denied *write* to `PRs/`. The
+*write* denies are the enforced integrity boundary; the trusted no-*read* of `PRs/`
+is best-effort only (the bucket is public-read for the report viewer, so an unsigned
+request bypasses the identity-policy Deny). See `praktika/docs/repo-git-management.md`.
 
 | Key | Purpose |
 |---|---|
