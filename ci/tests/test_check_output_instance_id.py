@@ -16,7 +16,9 @@ def test_orchestrator_check_output_includes_instance_id(monkeypatch):
 
     output = _check_output(workflow, state)
 
-    assert output["title"] == "PR"
+    # The title carries the live job-count rollup so it renders inline in the
+    # PR checks box (the check `name` is the "PR" label, set at start()).
+    assert output["title"] == "1 running, 2 pending"
     assert "orchestrator `i-orchestrator123`" in output["summary"]
     assert "**Orchestrator instance:** `i-orchestrator123`" in output["text"]
     assert "status table" in output["text"]

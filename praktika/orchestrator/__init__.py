@@ -286,15 +286,22 @@ def _check_output(workflow, state, error=None, report_url=None, phase=None, is_r
                 else ""
             ),
         }
-    title = workflow.name
+    # `output.title` is the one line GitHub renders inline next to the check in
+    # the PR's checks box (the check's `name` is the bold label). Carry the live
+    # job-count rollup here so running/pending/finished shows without opening the
+    # check; `output.summary` keeps the same text plus the links/markers below.
     if error is not None:
         summary = f"Orchestrator failed: {error}"
+        title = "Orchestrator failed"
     elif state is None:
         summary = f"`{workflow.name}` — {phase}" if phase else f"Planning `{workflow.name}`"
+        title = phase or "Planning"
     elif state.cancelled:
         summary = f"Cancelled — {state.md_status_summary()}"
+        title = f"Cancelled — {state.md_status_summary()}"
     else:
         summary = state.md_status_summary()
+        title = summary
     # A capacity throttle is the headline state while a run is held before its
     # first dispatch — lead with it so the PR shows *why* nothing has started.
     if throttle:
