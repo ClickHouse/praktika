@@ -304,8 +304,11 @@ def _check_output(workflow, state, error=None, report_url=None, phase=None, is_r
         title = summary
     # A capacity throttle is the headline state while a run is held before its
     # first dispatch — lead with it so the PR shows *why* nothing has started.
+    # Prefix the title too: it is what renders inline in the checks box, so the
+    # throttle reason must lead there, not just in the detail-page summary.
     if throttle:
         summary = f"⏳ {throttle} — {summary}"
+        title = f"⏳ {throttle} — {title}"
     if is_rerun:
         summary += " — 🔁 re-run"
     if report_url:
