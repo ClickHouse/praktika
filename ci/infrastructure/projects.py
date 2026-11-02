@@ -245,12 +245,21 @@ _CODE_REVIEW_BEDROCK_IAM_STATEMENT = {
     ],
 }
 
+_PYPI_TOKEN_IAM_STATEMENT = {
+    "Sid": "PyPITokenRead",
+    "Effect": "Allow",
+    "Action": ["ssm:GetParameter", "ssm:GetParameters"],
+    "Resource": ["arn:aws:ssm:*:*:parameter/praktika-pypi-token"],
+}
+
 _runner_pools = [
     _runner_pool(
         name="arm-2xsmall",
         instance_type="c7g.medium",
         image_builder="ci-arm64-image",
         host_metrics=True,
+        # Trusted pool; carries the scoped PyPI-token read for the publish job.
+        ext={"iam_statements": [_PYPI_TOKEN_IAM_STATEMENT]},
         user_data=_runner_user_data(
             "# Update the controller if changed (to test new version w/o image rebuild)\n"
             f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages"

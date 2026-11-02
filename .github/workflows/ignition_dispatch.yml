@@ -10,6 +10,10 @@ on:
         description: Paths to run ruff against
         required: false
         default: .
+      sha:
+        description: Optional commit sha of main to build from (defaults to the dispatched ref's HEAD)
+        required: false
+        default: ''
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

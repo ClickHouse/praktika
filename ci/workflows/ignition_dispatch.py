@@ -22,6 +22,15 @@ workflow = Workflow.Config(
             runs_on=[RunnerLabels.SMALL_ARM],
             command="python3 ./ci/tests/example_ignition/echo_input.py",
         ),
+        # Build the praktika + praktika-controller distributions and publish them
+        # to PyPI. Replaces the "Build Praktika for PyPI" job that lived in
+        # ClickHouse. Reads the optional `sha` input to build from a specific
+        # commit of main.
+        Job.Config(
+            name="Build & Publish to PyPI",
+            runs_on=[RunnerLabels.SMALL_ARM],
+            command="python3 ./ci/jobs/publish_pypi.py",
+        ),
     ],
     inputs=[
         Workflow.Config.InputConfig(
@@ -29,6 +38,12 @@ workflow = Workflow.Config(
             is_required=False,
             default_value=".",
             description="Paths to run ruff against",
+        ),
+        Workflow.Config.InputConfig(
+            name="sha",
+            is_required=False,
+            default_value="",
+            description="Optional commit sha of main to build from (defaults to the dispatched ref's HEAD)",
         ),
     ],
     enable_report=True,
