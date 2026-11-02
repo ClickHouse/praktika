@@ -1097,9 +1097,12 @@ def _handle_partial_rerun(
     if event_type:
         is_pr = event_type == "pull_request"
     else:
-        # No snapshot yet, or one predating event_type being persisted. Such a run
-        # is always a PR (non-PR rerun did not exist before that field), so fall
-        # back to the pull_requests association — the original heuristic.
+        # No event_type on the snapshot. The orchestrator writes an initial
+        # snapshot (carrying event_type) BEFORE it posts any per-job check, so a
+        # check that can be rerequested always has a backing snapshot — this only
+        # happens for a run that STARTED before event_type was persisted. Such a
+        # run is always a PR (non-PR rerun did not exist then), so fall back to the
+        # pull_requests association. New runs never reach this branch.
         is_pr = bool(prs)
 
     rerun_sha = check_obj.get("head_sha", "")

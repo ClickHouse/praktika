@@ -582,6 +582,16 @@ def _drive_dag(state, check, workflow, event, advisor, report_url, is_rerun):
     finalizing, one last ``sweep_rerun`` closes the window where a request lands
     just as the DAG drains — if it resets anything, we keep going.
     """
+    # Write an initial snapshot BEFORE the first kick() posts any per-job check,
+    # so a check can never exist without a backing state.json. This closes the
+    # window the lambda's rerun classifier would otherwise have to guess through:
+    # a fast job can complete (and be rerequested) before the loop's
+    # end-of-iteration save_snapshot, and without this the rerun would find no
+    # snapshot and fall back to the unreliable pull_requests association to pick
+    # PR vs non-PR. The snapshot carries event_type, so classification is always
+    # authoritative. Cheap PUT; the loop rewrites it each iteration anyway. No-op
+    # in local mode / without S3.
+    state.save_snapshot()
     cancel_handled = False
     while True:
         while state.not_finished():
