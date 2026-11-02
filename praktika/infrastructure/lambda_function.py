@@ -121,6 +121,7 @@ class Lambda:
                     print(f"Fetched secret: {param_name} -> {env_var_name}")
                 except Exception as e:
                     print(f"Warning: Failed to fetch secret {param_name}: {e}")
+                    self.ext["deploy_incomplete"] = True
 
             return env_vars
 
@@ -318,6 +319,11 @@ class Lambda:
             If Lambda exists, fetches current configuration including role_arn.
             """
 
+            # Cleared here and set if a secret can't be read or an inline policy
+            # fails to attach; the deploy manifest skips recording an incomplete
+            # Lambda so the next deploy retries instead of treating it as done.
+            self.ext.pop("deploy_incomplete", None)
+
             self._validate_secrets()
 
             lambda_client = aws_client("lambda", self.region, self.name)
@@ -490,8 +496,13 @@ class Lambda:
 
         def delete(self):
 
-            if self.schedule_expression:
-                self._delete_eventbridge_schedule()
+            # Always attempt schedule + API-gateway cleanup, not just when the
+            # corresponding config is set: an orphan reconstructed from name alone
+            # has neither, but a removed scheduled/API-backed Lambda must still
+            # have its EventBridge rule and HTTP API removed. Both are addressed by
+            # names derived from the function name and are quiet when absent.
+            self._delete_eventbridge_schedule()
+            self._delete_api_gateway()
             client = aws_client("lambda", self.region, self.name)
             try:
                 client.delete_function(FunctionName=self.name)
@@ -515,6 +526,7 @@ class Lambda:
                     print(f"Attached inline policy '{policy_name}' to role '{role_name}'")
                 except Exception as e:
                     print(f"Warning: Failed to attach policy '{policy_name}': {e}")
+                    self.ext["deploy_incomplete"] = True
 
         def _ensure_api_gateway(self, function_name: str):
             """Create or verify an HTTP API Gateway for this Lambda."""
@@ -630,13 +642,39 @@ class Lambda:
                     Ids=[self._schedule_target_id()],
                     Force=True,
                 )
+            except events.exceptions.ResourceNotFoundException:
+                return  # no rule for this function — nothing to clean up (quiet)
             except Exception as e:
                 print(f"Warning: Failed to remove EventBridge targets for {rule_name}: {e}")
             try:
                 events.delete_rule(Name=rule_name, Force=True)
                 print(f"Deleted EventBridge schedule '{rule_name}'")
+            except events.exceptions.ResourceNotFoundException:
+                pass
             except Exception as e:
                 print(f"Warning: Failed to delete EventBridge schedule {rule_name}: {e}")
+
+        def _delete_api_gateway(self):
+            # The HTTP API is named "{function_name}-API" (see _ensure_api_gateway),
+            # so it is discoverable and deletable by name even for an orphan
+            # reconstructed from the name alone. Deleting the API removes its
+            # routes/integrations/stages too. Quiet when there is no matching API.
+            apigw = aws_client("apigatewayv2", self.region, self.name)
+            api_name = f"{self.name}-API"
+            try:
+                apis = apigw.get_apis().get("Items", []) or []
+            except Exception as e:
+                print(f"Warning: Failed to list API Gateways for {self.name}: {e}")
+                return
+            for api in apis:
+                if api.get("Name") == api_name:
+                    try:
+                        apigw.delete_api(ApiId=api["ApiId"])
+                        print(f"Deleted API Gateway '{api_name}'")
+                    except Exception as e:
+                        print(
+                            f"Warning: Failed to delete API Gateway {api_name}: {e}"
+                        )
 
         def _dump_api_endpoint(self, function_name: str, endpoint: str):
             from ..settings import Settings

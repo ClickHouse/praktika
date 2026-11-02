@@ -784,7 +784,10 @@ def test_infrastructure_main_deploy_validates_before_deploy(monkeypatch):
 
     assert calls == [
         ("validate", config),
-        ("deploy", {"all": False, "only": None, "is_test": False}),
+        (
+            "deploy",
+            {"all": False, "only": None, "is_test": False, "plan_only": False},
+        ),
     ]
 
 

@@ -193,19 +193,23 @@ class LaunchTemplate:
             return self.image_id
 
         def _current_launch_template_image_id(self, ec2, lt_id: str) -> str:
+            # Read $Default, not $Latest: Image Builder owns the AMI via
+            # setDefaultVersion, so $Default is the authoritative current AMI.
+            # A stray newer non-default version could carry an older AMI, and
+            # preserving that would re-introduce a stale AMI.
             resp = ec2.describe_launch_template_versions(
                 LaunchTemplateId=lt_id,
-                Versions=["$Latest"],
+                Versions=["$Default"],
             )
             versions = resp.get("LaunchTemplateVersions", [])
             if not versions:
                 raise Exception(
-                    f"Launch Template '{self.name}' has no latest version to reuse"
+                    f"Launch Template '{self.name}' has no default version to reuse"
                 )
             image_id = versions[0].get("LaunchTemplateData", {}).get("ImageId", "")
             if not image_id:
                 raise Exception(
-                    f"Launch Template '{self.name}' latest version has no ImageId"
+                    f"Launch Template '{self.name}' default version has no ImageId"
                 )
             return image_id
 
@@ -430,6 +434,33 @@ class LaunchTemplate:
                 print(
                     f"Launch Template {self.name} does not exist yet, will create new"
                 )
+
+            # Image Builder owns the AMI on an image-builder-backed template: its
+            # distribution config rolls a new version with the latest AMI and
+            # sets it default. So for a template that already exists, pin the AMI
+            # to what the live template carries instead of re-resolving "latest"
+            # (a moving, eventually-consistent target) — that keeps deploy
+            # idempotent and stops it fighting Image Builder over the AMI. On
+            # first create there is nothing to pin, so we resolve one to seed it.
+            if (
+                exists
+                and not self.image_id
+                and (self.image_builder or self.image_builder_pipeline_name)
+            ):
+                # Must read the live AMI to pin it. If that fails we must NOT fall
+                # back to re-resolving "latest" (that is exactly the AMI rewrite
+                # this guards against) — abort loudly instead.
+                try:
+                    self.image_id = self._current_launch_template_image_id(
+                        ec2, self._resolve_launch_template_id()
+                    )
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Launch Template '{self.name}' exists but its current AMI "
+                        f"could not be read ({e}); refusing to re-resolve 'latest' "
+                        f"and risk rewriting the Image Builder-managed AMI. Re-run "
+                        f"once the template is readable."
+                    ) from e
 
             try:
                 launch_template_data = self._build_launch_template_data()
