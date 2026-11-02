@@ -271,18 +271,23 @@ have a short S3 retention (a few days — large, consumed within minutes). See
 - **Authorized-commit guard.** Jobs never resolve a live ref or fetch from GitHub
   for checkout; the restore requires `HEAD == snapshot_sha` (the snapshot-mode
   equivalent of `clone_repo`'s stale-head guard).
-- **Trust segregation, IAM-enforced.** The runner role is bucket-wide, so
+- **Trust segregation, IAM.** The runner role is bucket-wide, so
   `ci/infrastructure/projects.py` carves the tiers back out per pool with explicit
   Deny statements (`{PRs,REFs}/*`, covering artifacts and the nested snapshots):
 
   | Pool | `REFs/*` (trusted) | `PRs/*` (untrusted) |
   |---|---|---|
   | `pr-*` (untrusted) | read allowed, **write Deny** | read+write (own tier) |
-  | non-`pr-*` (trusted) | read+write (own tier) | **read+write Deny** |
+  | non-`pr-*` (trusted) | read+write (own tier) | read best-effort Deny, **write Deny** |
 
-  Rule: reads may flow down-trust, never up; writes never up. A fork job cannot
-  plant a `REFs/` snapshot, and a trusted run cannot ingest a `PRs/` one. A private
-  project with no untrusted actor can omit these Denys (whole-bucket is fine).
+  Rule: reads may flow down-trust, never up; writes never up. The **write** Denys
+  are the enforced integrity boundary — a fork job cannot plant a `REFs/` snapshot,
+  and a trusted run cannot overwrite a `PRs/` one. The trusted **read** Deny on
+  `PRs/*` is only best-effort: the bucket is public-read (for the report viewer), so
+  a trusted job could still fetch a PR object via an unsigned request that bypasses
+  this identity-policy Deny. Treat it as defense-in-depth, not a hard confidentiality
+  boundary; enforcing it would require dropping public reads of the PR tier. A
+  private project with no untrusted actor can omit these Denys (whole-bucket is fine).
 - **Merge safety.** Git merge is data-only (no PR code runs during the merge), so
   merging untrusted fork content in the baked controller is safe. Merging trusted
   base code with untrusted fork code and running it is the standard `pull_request`

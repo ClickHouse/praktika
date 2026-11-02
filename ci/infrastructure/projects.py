@@ -143,7 +143,11 @@ def _runner_user_data(controller_update_cmd: str) -> str:
 
 # OSS trust boundary: the bucket-wide runner grant is carved back per pool so
 # untrusted pr-* pools can't WRITE the trusted REFs/* tier (no poisoning) and
-# trusted pools can't READ/WRITE the untrusted PRs/* tier (no tainted input).
+# trusted pools can't WRITE the untrusted PRs/* tier. The WRITE denies are the
+# enforced integrity boundary. The trusted no-READ of PRs/* is only best-effort:
+# the bucket is public-read (for the report viewer), so a trusted job could still
+# fetch a PR object via an unsigned request that bypasses this identity-policy
+# Deny — treat it as defense-in-depth, not a hard confidentiality boundary.
 # Snapshots nest under these prefixes, so one per-tier rule covers both. Bare
 # bucket names are namespaced to praktika-artifacts-eu-north-1 by the deploy sweep.
 _UNTRUSTED_DENY_WRITE_TRUSTED_STATEMENT = {
