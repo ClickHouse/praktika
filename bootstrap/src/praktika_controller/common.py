@@ -1171,7 +1171,10 @@ def restore_repo_snapshot(
       snapshot_sha (the repo-snapshot equivalent of clone_repo's stale-head guard).
     - The snapshot_key is stamped by the orchestrator from the trusted Config
       Workflow's RunConfig — a job cannot redirect it — and the PRs/ (untrusted)
-      and REFs/ (trusted) tiers are IAM-scoped so they never mix.
+      and REFs/ (trusted) tiers are IAM-scoped: writes never cross tiers
+      (enforced), while cross-tier reads are only best-effort-blocked (the
+      bucket is public-read). The content-addressed hash + authorized-commit
+      guard above are what actually gate what executes.
     """
     import hashlib
     import shlex

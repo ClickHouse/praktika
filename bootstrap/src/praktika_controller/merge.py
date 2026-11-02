@@ -561,7 +561,8 @@ def _build_and_publish_snapshot(clone_dir, snapshot_sha, is_pr, artifact_bucket,
         # Snapshots live UNDER the artifact tier prefix (PRs/repo-snapshot/v1/...
         # and REFs/repo-snapshot/v1/...) so one set of per-tier IAM rules covers
         # both artifacts and snapshots: a pr-* pool can read but not write REFs/,
-        # and a trusted pool can neither read nor write PRs/.
+        # and a trusted pool is denied writing PRs/ (its PRs/ read deny is only
+        # best-effort — the bucket is public-read; see ci/infrastructure/projects.py).
         tier = "PRs" if is_pr else "REFs"
         bucket, key = _split_artifact_bucket(
             artifact_bucket, f"{tier}/repo-snapshot/v1/{content_hash}.tar.zst"
