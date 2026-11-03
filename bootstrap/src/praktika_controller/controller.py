@@ -736,7 +736,7 @@ def handle_workflow(
                 gh_token,
                 "failure",
                 "CI failed to start",
-                f"Orchestrator could not start the workflow before cloning: {e}",
+                f"Orchestrator failed before starting the workflow: {e}",
                 log=log,
             )
             raise

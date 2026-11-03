@@ -71,6 +71,11 @@ Relax `_build_push_workflow` (lines 490-509) to branch on the ref kind before th
 ref = payload.get("ref", "")
 head_sha = payload.get("after") or payload.get("head_commit", {}).get("id", "")
 if ref.startswith("refs/tags/"):
+    # A tag *deletion* arrives as the same push webhook with deleted=true and
+    # after="000...0" (40 zeroes — truthy, so `not head_sha` would NOT catch it).
+    # Reject it, or we enqueue a release run against a non-existent SHA.
+    if payload.get("deleted") or head_sha == "0" * 40:
+        return None
     if not head_sha:
         return None
     return {
@@ -135,6 +140,11 @@ Workflow.Config(
   (e.g. to push back to it) must special-case tag runs. If a clearer accessor is
   wanted, expose `is_event_tag` / the tag via `Info`, but that is additive and
   not required for the trigger itself.
+- **Tag deletion must be rejected.** Deleting a tag arrives as the same `push`
+  webhook with `deleted: true` and `after` = 40 zeroes. The zero SHA is truthy,
+  so a naive `if not head_sha` check does **not** catch it and would enqueue a
+  release run against a non-existent commit. Gate on `payload["deleted"]` (and
+  the zero SHA) before producing the `tag` event — see §2.
 - **Annotated vs lightweight tags.** For an annotated tag, `payload["after"]` is
   still the target commit sha, so checkout is unaffected; the annotation object
   sha is not used.

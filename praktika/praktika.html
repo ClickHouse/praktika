@@ -458,7 +458,7 @@
         <div class="left"></div>
         <div class="right"></div>
         <div class="settings">
-            <span id="proxy-toggle" title="Configure downstream proxy URL">🔗</span>
+            <span id="proxy-toggle" title="Configure report proxy URL">🔗</span>
             <span id="status-filter-toggle" title="Filter by status"></span>
             <span id="sort-toggle" title="Sort by status">🔼</span>
             <span id="theme-toggle" title="Toggle day/night theme">🔆️</span>
@@ -609,7 +609,7 @@
 
     function toggleProxy() {
         const current = localStorage.getItem('privateBaseUrl') || '';
-        const value = prompt('Downstream proxy base URL (leave empty to disable):', current);
+        const value = prompt('Report proxy base URL — serves private reports and the live-debug shell (leave empty to disable):', current);
         if (value === null) return; // cancelled
         if (value.trim()) {
             try {
@@ -632,8 +632,8 @@
         if (toggle) {
             toggle.style.opacity = hasProxy ? '1' : '0.4';
             toggle.title = hasProxy
-                ? 'Downstream proxy: ' + localStorage.getItem('privateBaseUrl')
-                : 'Configure downstream proxy URL';
+                ? 'Report proxy: ' + localStorage.getItem('privateBaseUrl')
+                : 'Configure report proxy URL';
         }
     }
 
@@ -2042,6 +2042,26 @@
                         });
                     }
                     td.appendChild(statusEl);
+                    // Live-debug shell: while a top-level job is RUNNING, the
+                    // orchestrator stamps the runner's instance id onto its row
+                    // ext. If a report proxy base URL is configured, that proxy
+                    // jump-hosts an interactive shell into the runner at
+                    // /term/?arg=<instance_id>. Only at the workflow top level
+                    // (nest_level === 1) and only while RUNNING — the id is
+                    // cleared when the row leaves RUNNING, so the link goes away.
+                    const debugProxyBase = localStorage.getItem('privateBaseUrl');
+                    if (nest_level === 1 && value_ === 'running'
+                            && result.ext?.instance_id && debugProxyBase) {
+                        const debugLink = document.createElement('a');
+                        debugLink.href = `${debugProxyBase}/term/?arg=${encodeURIComponent(result.ext.instance_id)}`;
+                        debugLink.target = '_blank';
+                        debugLink.rel = 'noopener noreferrer';
+                        debugLink.textContent = '🐞 debug';
+                        debugLink.className = 'file-link';
+                        debugLink.style.marginLeft = '8px';
+                        debugLink.title = `Debug shell on runner ${result.ext.instance_id}`;
+                        td.appendChild(debugLink);
+                    }
                     row.style.display = shouldShowRow(filter, row.dataset.status) ? '' : 'none';
                 } else if (column === 'name') {
                     const statusValue = result["status"] ? result["status"].toLowerCase() : "";
