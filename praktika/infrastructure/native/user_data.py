@@ -42,6 +42,7 @@ def s3_proxy_user_data(
     oauth_client_id_ssm,
     oauth_client_secret_ssm,
     proxied_buckets,
+    max_debug_sessions=5,
 ):
     """Render the S3 report proxy bootstrap script.
 
@@ -50,8 +51,10 @@ def s3_proxy_user_data(
     environment variable rendered into its systemd unit.
     """
     import base64
+    import gzip
 
     signer_py = (_HERE / "s3_proxy_signer.py").read_text()
+    debug_connect_py = (_HERE / "debug_connect.py").read_text()
     template = (_HERE / "s3_proxy_user_data.sh").read_text()
     placeholders = (
         "__TS_OAUTH_CLIENT_ID_SSM__",
@@ -60,12 +63,22 @@ def s3_proxy_user_data(
         "__TS_HOSTNAME__",
         "__PROXIED_BUCKETS__",
         "__SIGNER_PY_B64__",
+        "__DEBUG_CONNECT_B64__",
+        "__MAX_DEBUG_SESSIONS__",
     )
     for ph in placeholders:
         if ph not in template:
             raise RuntimeError(f"s3_proxy_user_data.sh is missing {ph}")
-    signer_b64 = base64.b64encode(signer_py.encode("utf-8")).decode("ascii")
-    return (
+    # gzip before base64 (the instance decodes with `base64 -d | gunzip`): the
+    # two inlined Python payloads together blow past EC2's 16 KiB user_data cap
+    # otherwise. mtime=0 keeps the output byte-stable for the deploy digest.
+    signer_b64 = base64.b64encode(
+        gzip.compress(signer_py.encode("utf-8"), mtime=0)
+    ).decode("ascii")
+    debug_connect_b64 = base64.b64encode(
+        gzip.compress(debug_connect_py.encode("utf-8"), mtime=0)
+    ).decode("ascii")
+    rendered = (
         template
         .replace("__TS_OAUTH_CLIENT_ID_SSM__", oauth_client_id_ssm)
         .replace("__TS_OAUTH_CLIENT_SECRET_SSM__", oauth_client_secret_ssm)
@@ -73,7 +86,20 @@ def s3_proxy_user_data(
         .replace("__TS_HOSTNAME__", hostname)
         .replace("__PROXIED_BUCKETS__", " ".join(proxied_buckets))
         .replace("__SIGNER_PY_B64__", signer_b64)
+        .replace("__DEBUG_CONNECT_B64__", debug_connect_b64)
+        .replace("__MAX_DEBUG_SESSIONS__", str(int(max_debug_sessions)))
     )
+    # EC2 caps user_data at 16 KiB raw (pre-base64). The two gzip+base64 payloads
+    # plus the script sit close to it, so fail fast at render with a clear message
+    # instead of a cryptic AWS error on deploy. If this trips, trim the bootstrap
+    # comments or the inlined Python.
+    size = len(rendered.encode("utf-8"))
+    if size > 16384:
+        raise RuntimeError(
+            f"s3_proxy user_data is {size} bytes, over EC2's 16384-byte limit; "
+            f"trim s3_proxy_user_data.sh or the inlined signer/debug_connect."
+        )
+    return rendered
 
 
 def _docker_proxy_tailscale_setup(tailscale, listen_port):

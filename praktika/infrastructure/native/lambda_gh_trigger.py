@@ -1036,7 +1036,7 @@ def _handle_rerun(check_obj, payload, delivery_id, sender, event_ts, source):
     A re-run WITHOUT that marker — the check_suite "re-run all / failed checks"
     button, or a re-run of the top-level workflow check — is a *full* re-run and is
     **not supported** (for any event type): it is dropped with a log line. Re-run
-    the individual failed job(s) instead. See docs/proposals/rerun.md.
+    the individual failed job(s) instead. See orchestrator/PROTOCOL.md.
     """
     # The partial-rerun path does not rate-limit: it is serialized by a per-run
     # resume.lock and absorbs unlimited live requests (bounded per job by

@@ -540,7 +540,7 @@ def _verify_s3_proxy(name: str, proxy, region: str) -> List[CheckResult]:
                 f"{len(served)} bytes (HTTP {status}), S3 returned {len(expected)}",
             )
         ]
-    return results + [
+    results = results + [
         CheckResult(
             f"{name} serves",
             True,
@@ -548,6 +548,39 @@ def _verify_s3_proxy(name: str, proxy, region: str) -> List[CheckResult]:
             f"bytes match S3 (HTTP {status})",
         )
     ]
+
+    # Live-debug web terminal: ttyd serves its index page at /term/. A 200 here
+    # confirms the ttyd unit is up and Caddy routes /term* to it (the SSH jump
+    # only happens on the WebSocket, so the index load needs no runner).
+    term_url = f"http://{fqdn}:8080/term/"
+    try:
+        with urllib.request.urlopen(term_url, timeout=15) as response:
+            term_status = response.status
+        results.append(
+            CheckResult(
+                f"{name} debug-terminal",
+                term_status == 200,
+                f"ttyd answered HTTP {term_status} at {fqdn}:8080/term/",
+            )
+        )
+    except urllib.error.HTTPError as e:
+        results.append(
+            CheckResult(
+                f"{name} debug-terminal",
+                False,
+                f"ttyd returned HTTP {e.code} at {fqdn}:8080/term/",
+            )
+        )
+    except Exception as e:  # noqa: BLE001 - connection failure => unreachable
+        results.append(
+            CheckResult(
+                f"{name} debug-terminal",
+                False,
+                f"ttyd unreachable at {fqdn}:8080/term/ "
+                f"({type(e).__name__}: {e})",
+            )
+        )
+    return results
 
 
 def _verify_docker_proxy(name: str, proxy, region: str) -> List[CheckResult]:

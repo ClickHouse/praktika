@@ -423,6 +423,26 @@ _cidb_cluster = Components.CIDBCluster(
     size=1,
 )
 
+# Tailnet report proxy + live-job-debug jump host. A single-instance ASG on the
+# project VPC that (a) serves reports over the tailnet and (b) hosts the ttyd
+# web terminal at /term, SSH-jumping into a running job's runner. VPC / subnet /
+# SG are inherited from the project VPC by _apply_pool_defaults, so only the
+# tailnet identity + OAuth source are set here. The OAuth client SSM params must
+# already exist (created out of band) for the node to join the tailnet at boot.
+_s3_proxy = Components.S3Proxy(
+    # Report / terminal URL: https://praktika-ci.tail983ac.ts.net/...
+    hostname="praktika-ci",
+    instance_type="t4g.large",
+    # Must match a tag the OAuth client below is authorized for. These creds are
+    # shared with the amber project, whose proxy mints keys under this tag, so
+    # reuse it (a tag the client can't mint fails the tailnet join at boot).
+    tailnet="tail983ac.ts.net",
+    tailscale_tag="tag:svc-core-ci-github",
+    tailscale_oauth_client_id_ssm="/praktika/tailscale/oauth-client-id",
+    tailscale_oauth_client_secret_ssm="/praktika/tailscale/oauth-client-secret",
+    # proxied_buckets defaults to every project Storage bucket.
+)
+
 PROJECTS = [
     CloudInfrastructure.Config(
         name="praktika",
@@ -445,5 +465,6 @@ PROJECTS = [
         orchestrator_pools=[_orchestrator_pool, _orchestrator_pool_base],
         runner_pools=_runner_pools,
         cidb_cluster=_cidb_cluster,
+        s3_proxy=_s3_proxy,
     ),
 ]

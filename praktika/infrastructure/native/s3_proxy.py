@@ -82,6 +82,10 @@ class S3Proxy:
     # Buckets to serve. Empty => filled with every project Storage bucket by
     # CloudInfrastructure (after project namespacing) via set_proxied_buckets().
     proxied_buckets: List[str] = field(default_factory=list)
+    # Global cap on concurrent live-debug shell sessions the jump host (ttyd)
+    # will serve at once, across all runners/users. The N+1th browser connection
+    # is refused. 0 == unlimited.
+    max_debug_sessions: int = 5
     security_group_ids: List[str] = field(default_factory=list)
     security_group_names: List[str] = field(default_factory=list)
     volume_size_gb: int = 20
@@ -174,6 +178,29 @@ class S3Proxy:
                     "Resource": bucket_arns,
                 }
             )
+        # Live job debug (jump host): the proxy describes a target instance to
+        # verify it is a running job runner, then pushes an ephemeral SSH key to
+        # it via EC2 Instance Connect. SendSSHPublicKey is tag-scoped so the
+        # proxy cannot key itself, the CIDB, or any non-runner instance.
+        statements.append(
+            {
+                "Sid": "DescribeRunnerInstances",
+                "Effect": "Allow",
+                "Action": ["ec2:DescribeInstances"],  # only supports Resource "*"
+                "Resource": "*",
+            }
+        )
+        statements.append(
+            {
+                "Sid": "SendSSHKeyToRunners",
+                "Effect": "Allow",
+                "Action": ["ec2-instance-connect:SendSSHPublicKey"],
+                "Resource": "arn:aws:ec2:*:*:instance/*",
+                "Condition": {
+                    "StringEquals": {"ec2:ResourceTag/praktika_role": "job_runner"}
+                },
+            }
+        )
         self.ec2_role.inline_policies = {
             "S3ProxyAccess": {
                 "Version": "2012-10-17",
@@ -186,6 +213,7 @@ class S3Proxy:
             oauth_client_id_ssm=self.tailscale_oauth_client_id_ssm,
             oauth_client_secret_ssm=self.tailscale_oauth_client_secret_ssm,
             proxied_buckets=self.proxied_buckets,
+            max_debug_sessions=self.max_debug_sessions,
         )
 
     def set_proxied_buckets(self, buckets: List[str]):
@@ -203,3 +231,48 @@ class S3Proxy:
         if not self.hostname or not self.tailnet:
             return ""
         return f"{self.hostname}.{self.tailnet.strip().lstrip('.')}"
+
+    def deploy(self):
+        """Authorize proxy -> runner SSH on tcp/22. The IAM role/profile, launch
+        template and ASG deploy through the standard CloudInfrastructure passes;
+        this owns the one thing specific to the live-debug jump host that those
+        passes don't cover: an ingress rule letting the proxy reach runners on
+        port 22 over the shared VPC.
+
+        Minimal-change approach (mirrors DockerProxy.deploy): a self-referencing
+        rule on the shared ``{vpc}-sg`` (source = same SG). It works because the
+        proxy and the runners share that SG; it slightly over-grants (also allows
+        runner<->runner:22 inside the CI VPC). A dedicated proxy SG would be
+        tighter but churns more infra. Idempotent."""
+        from .._utils import aws_client
+        from ..vpc import VPC
+
+        if not self.region:
+            raise ValueError("S3Proxy.region is not set")
+
+        lookup = VPC.Lookup(name=self.vpc_name, region=self.region)
+        sg_ids = list(self.security_group_ids)
+        sg_ids.extend(lookup.resolve_security_group_ids(self.security_group_names))
+        if not sg_ids:
+            raise ValueError("S3Proxy has no resolvable security groups")
+
+        ec2 = aws_client("ec2", self.region, "s3-proxy")
+        for sg_id in sg_ids:
+            try:
+                ec2.authorize_security_group_ingress(
+                    GroupId=sg_id,
+                    IpPermissions=[
+                        {
+                            "IpProtocol": "tcp",
+                            "FromPort": 22,
+                            "ToPort": 22,
+                            "UserIdGroupPairs": [{"GroupId": sg_id}],
+                        }
+                    ],
+                )
+                print(f"Authorized tcp/22 on {sg_id} from {sg_id}")
+            except ec2.exceptions.ClientError as e:
+                if "InvalidPermission.Duplicate" in str(e):
+                    print(f"Ingress tcp/22 on {sg_id} already present")
+                else:
+                    raise

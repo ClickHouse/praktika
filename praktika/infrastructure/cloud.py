@@ -1610,6 +1610,17 @@ class CloudInfrastructure:
                 if dp_digest is not None:
                     desired[docker_proxy_key] = dp_digest
 
+            # S3Proxy.deploy() (the proxy->runner tcp/22 ingress for the live
+            # debug jump host) is the same kind of side-effect as DockerProxy's,
+            # so give it its own manifest key to keep the fast path from
+            # re-running it on every unchanged deploy.
+            s3_proxy_key = f"s3_proxy:{self._project_prefix()}"
+            if self.s3_proxy is not None:
+                all_keys.add(s3_proxy_key)
+                sp_digest = self._component_digest(self.s3_proxy)
+                if sp_digest is not None:
+                    desired[s3_proxy_key] = sp_digest
+
             ssm_mf = None
             loaded: Dict[str, str] = {}
             recorded: Dict[str, str] = {}
@@ -1877,6 +1888,43 @@ class CloudInfrastructure:
                     dp.launch_template.deploy()
                     dp.autoscaling_group.region = region
                     dp.autoscaling_group.deploy()
+
+            # S3Proxy needs its proxy->runner tcp/22 SG ingress (its deploy())
+            # in addition to the role/profile/LT/ASG. Same shape as DockerProxy:
+            # under a full deploy the generic passes cover role/profile/LT/ASG,
+            # so here we only run deploy() (SG ingress); under a filtered
+            # `--only S3Proxy` run those generic passes are skipped, so we also
+            # deploy the component's own role/profile/LT/ASG to make it complete.
+            # All deploys are idempotent.
+            if (
+                _wants("S3Proxy", "s3-proxy", "s3proxy", "proxy")
+                and self.s3_proxy
+            ):
+                sp = self.s3_proxy
+                region = self._settings.AWS_REGION
+                if only_set:
+                    sp.ec2_role.region = region
+                    sp.ec2_role.deploy()
+                    sp.instance_profile.region = region
+                    sp.instance_profile.deploy()
+                if (
+                    use_manifest
+                    and s3_proxy_key in desired
+                    and loaded.get(s3_proxy_key) == desired[s3_proxy_key]
+                ):
+                    pass  # unchanged — already reported in the plan summary
+                else:
+                    print("\n" + "=" * 60)
+                    print("Deploying S3Proxy")
+                    print("=" * 60)
+                    sp.region = region
+                    sp.deploy()  # proxy -> runner tcp/22 SG ingress
+                    _mf_record_key(s3_proxy_key)
+                if only_set:
+                    sp.launch_template.region = region
+                    sp.launch_template.deploy()
+                    sp.autoscaling_group.region = region
+                    sp.autoscaling_group.deploy()
 
             # Deploy S3 buckets
             if _wants("Storage", "Storages", "S3", "Bucket", "Buckets"):
@@ -3326,6 +3374,16 @@ class CloudInfrastructure:
             ):
                 selected[self.docker_proxy.autoscaling_group.name] = (
                     self.docker_proxy.autoscaling_group
+                )
+
+            # Same scoping for the S3 report proxy: `--only S3Proxy` rolls just
+            # the single proxy instance (stateless; safe to replace) onto the
+            # current launch template version, without disturbing runner pools.
+            if self.s3_proxy and _wants(
+                "S3Proxy", "s3-proxy", "s3proxy", "proxy"
+            ):
+                selected[self.s3_proxy.autoscaling_group.name] = (
+                    self.s3_proxy.autoscaling_group
                 )
 
             if _wants("AutoScalingGroup", "AutoScalingGroups", "ASG", "ASGs"):
