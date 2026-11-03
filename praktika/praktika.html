@@ -2050,16 +2050,22 @@
                     // (nest_level === 1) and only while RUNNING — the id is
                     // cleared when the row leaves RUNNING, so the link goes away.
                     const debugProxyBase = localStorage.getItem('privateBaseUrl');
+                    // instance_id is runner/report-controlled data; only ever treat
+                    // it as safe to embed in a URL or (worse) a copy-pasted shell
+                    // command once it matches the strict EC2 instance-id shape
+                    // enforced server-side by debug_connect.py's _INSTANCE_ID_RE.
+                    const rawInstanceId = result.ext?.instance_id;
+                    const validInstanceId = typeof rawInstanceId === 'string' && /^i-[0-9a-f]{8,}$/.test(rawInstanceId);
                     if (nest_level === 1 && value_ === 'running'
-                            && result.ext?.instance_id && debugProxyBase) {
+                            && validInstanceId && debugProxyBase) {
                         const debugLink = document.createElement('a');
-                        debugLink.href = `${debugProxyBase}/term/?arg=${encodeURIComponent(result.ext.instance_id)}`;
+                        debugLink.href = `${debugProxyBase}/term/?arg=${encodeURIComponent(rawInstanceId)}`;
                         debugLink.target = '_blank';
                         debugLink.rel = 'noopener noreferrer';
                         // Bare terminal emoji, inline with the status text: same
                         // line, inherits its font-size, no link underline.
                         debugLink.textContent = '🖥️';
-                        debugLink.title = `Open debug terminal on runner ${result.ext.instance_id}`;
+                        debugLink.title = `Open debug terminal on runner ${rawInstanceId}`;
                         debugLink.style.textDecoration = 'none';
                         debugLink.style.marginLeft = '6px';
                         debugLink.style.cursor = 'pointer';
@@ -2070,8 +2076,11 @@
                         // proxy and run the same jump-host wrapper, for people who
                         // want a real terminal instead of the browser. The proxy
                         // FQDN is the configured base URL minus its scheme.
+                        // rawInstanceId is already validated above against the
+                        // strict instance-id pattern, so it cannot carry shell
+                        // metacharacters here.
                         const proxyFqdn = debugProxyBase.replace(/^https?:\/\//, '').replace(/\/+$/, '');
-                        const sshCmd = `ssh -t ec2-user@${proxyFqdn} -- /usr/bin/python3 /opt/praktika-debug/debug_connect.py ${result.ext.instance_id}`;
+                        const sshCmd = `ssh -t ec2-user@${proxyFqdn} -- /usr/bin/python3 /opt/praktika-debug/debug_connect.py ${rawInstanceId}`;
                         const copyBtn = document.createElement('span');
                         copyBtn.textContent = '⧉';
                         copyBtn.title = `Copy terminal command:\n${sshCmd}`;
