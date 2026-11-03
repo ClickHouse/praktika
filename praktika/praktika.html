@@ -2065,6 +2065,29 @@
                         debugLink.style.cursor = 'pointer';
                         debugLink.style.verticalAlign = 'middle';
                         td.appendChild(debugLink);
+
+                        // Copy-paste terminal equivalent: Tailscale-SSH into the
+                        // proxy and run the same jump-host wrapper, for people who
+                        // want a real terminal instead of the browser. The proxy
+                        // FQDN is the configured base URL minus its scheme.
+                        const proxyFqdn = debugProxyBase.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+                        const sshCmd = `ssh -t ec2-user@${proxyFqdn} -- /usr/bin/python3 /opt/praktika-debug/debug_connect.py ${result.ext.instance_id}`;
+                        const copyBtn = document.createElement('span');
+                        copyBtn.textContent = '⧉';
+                        copyBtn.title = `Copy terminal command:\n${sshCmd}`;
+                        copyBtn.style.marginLeft = '6px';
+                        copyBtn.style.cursor = 'pointer';
+                        copyBtn.style.verticalAlign = 'middle';
+                        copyBtn.addEventListener('click', (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            navigator.clipboard.writeText(sshCmd).then(() => {
+                                const prev = copyBtn.textContent;
+                                copyBtn.textContent = '✓';
+                                setTimeout(() => { copyBtn.textContent = prev; }, 1200);
+                            });
+                        });
+                        td.appendChild(copyBtn);
                     }
                     row.style.display = shouldShowRow(filter, row.dataset.status) ? '' : 'none';
                 } else if (column === 'name') {
