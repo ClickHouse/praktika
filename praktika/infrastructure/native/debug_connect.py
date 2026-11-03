@@ -52,16 +52,28 @@ _SSH_OPTS = [
     "-o", "ConnectTimeout=10",
 ]
 # The job runs out of the checkout at /opt/praktika/work/repo and writes its live
-# log to ci/tmp/job.log there (Settings.RUN_LOG). cd into it and start tailing
-# the log right away — Ctrl-C drops to an interactive shell in the same dir, so
-# the tail is just the first thing that happens, not a cage. Fall back to $HOME
-# if the checkout isn't there yet.
+# log to ci/tmp/job.log there (Settings.RUN_LOG). cd into it and start tailing the
+# log right away, then leave the viewer in an interactive shell in the same dir.
+#
+# The tail runs as the *startup command of an interactive shell* (bash --rcfile):
+# an interactive shell ignores SIGINT (returns to its prompt) instead of exiting,
+# so Ctrl-C stops the tail and keeps the connection — whereas a plain
+# "tail; exec bash" runs under a non-interactive shell that SIGINT aborts whole,
+# killing the session before the shell starts. The rcfile also sources ~/.bashrc
+# so the prompt keeps the user's normal aliases/PATH. Falls back to $HOME if the
+# checkout isn't there yet.
+#
+# NB: bash requires long options (--rcfile) BEFORE short ones (-i); "bash -i
+# --rcfile" fails with "--: invalid option".
 _REMOTE_CMD = (
     "cd /opt/praktika/work/repo 2>/dev/null || cd ~; "
-    "echo '--- praktika-debug: tailing ci/tmp/job.log "
-    "(Ctrl-C for an interactive shell) ---'; "
-    "tail -F ci/tmp/job.log 2>/dev/null; "
-    "exec bash -l"
+    "exec bash --rcfile <("
+    "cat ~/.bashrc 2>/dev/null; "
+    "printf '%s\\n' "
+    "'echo \"--- praktika-debug: tailing ci/tmp/job.log "
+    "(Ctrl-C stops the tail, keeps the shell) ---\"' "
+    "'tail -F ci/tmp/job.log 2>/dev/null'"
+    ") -i"
 )
 
 
