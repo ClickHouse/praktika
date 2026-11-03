@@ -34,6 +34,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import urllib.request
 
 import boto3
 
@@ -68,6 +69,37 @@ def _die(msg):
     sys.stderr.write(f"praktika-debug: {msg}\n")
     sys.stderr.flush()
     sys.exit(1)
+
+
+def _imds(method, path, headers):
+    req = urllib.request.Request(
+        f"http://169.254.169.254{path}", method=method, headers=headers
+    )
+    with urllib.request.urlopen(req, timeout=3) as resp:
+        return resp.read().decode().strip()
+
+
+def _resolve_region():
+    """Region for the AWS clients. The ttyd systemd unit exports
+    AWS_DEFAULT_REGION, but a direct `ssh ... debug_connect.py` session has no
+    such env, so fall back to the proxy's own region from IMDSv2 — keeping the
+    wrapper usable both from the browser terminal and straight over SSH."""
+    for var in ("AWS_DEFAULT_REGION", "AWS_REGION"):
+        if os.environ.get(var):
+            return os.environ[var]
+    try:
+        token = _imds(
+            "PUT",
+            "/latest/api/token",
+            {"X-aws-ec2-metadata-token-ttl-seconds": "60"},
+        )
+        return _imds(
+            "GET",
+            "/latest/meta-data/placement/region",
+            {"X-aws-ec2-metadata-token": token},
+        )
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _describe_runner(ec2, instance_id):
@@ -105,7 +137,7 @@ def main():
     if not _INSTANCE_ID_RE.match(instance_id):
         _die(f"invalid instance id: {instance_id!r}")
 
-    session = boto3.session.Session()
+    session = boto3.session.Session(region_name=_resolve_region())
     private_ip, az = _describe_runner(session.client("ec2"), instance_id)
     eic = session.client("ec2-instance-connect")
 
