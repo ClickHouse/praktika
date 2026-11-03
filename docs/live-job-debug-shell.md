@@ -110,6 +110,11 @@ All under `praktika/infrastructure/native/` unless noted.
 2. While a job is RUNNING, click **🖥️ debug** in its status cell. A browser
    terminal opens, already tailing `ci/tmp/job.log`. Ctrl-C to get a shell.
 
+> The report shows both QUEUED and RUNNING jobs as `running`, but the 🖥️ link
+> needs `ext.instance_id` (set only once a runner picks the job up and
+> heartbeats). So a `running` row without the link is still queued — there is no
+> runner attached yet to debug.
+
 ## Deployment & rolling
 
 ```bash
