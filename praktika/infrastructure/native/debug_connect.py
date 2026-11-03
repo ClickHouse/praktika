@@ -50,6 +50,18 @@ _SSH_OPTS = [
     "-o", "UserKnownHostsFile=/dev/null",
     "-o", "ConnectTimeout=10",
 ]
+# The job runs out of the checkout at /opt/praktika/work/repo and writes its live
+# log to ci/tmp/job.log there (Settings.RUN_LOG). cd into it and start tailing
+# the log right away — Ctrl-C drops to an interactive shell in the same dir, so
+# the tail is just the first thing that happens, not a cage. Fall back to $HOME
+# if the checkout isn't there yet.
+_REMOTE_CMD = (
+    "cd /opt/praktika/work/repo 2>/dev/null || cd ~; "
+    "echo '--- praktika-debug: tailing ci/tmp/job.log "
+    "(Ctrl-C for an interactive shell) ---'; "
+    "tail -F ci/tmp/job.log 2>/dev/null; "
+    "exec bash -l"
+)
 
 
 def _die(msg):
@@ -141,7 +153,6 @@ def main():
     sys.stderr.write(
         f"praktika-debug: connecting to runner {instance_id} ({private_ip}) "
         f"as {chosen}\n"
-        "  tip: tail the live job log with  tail -F ci/tmp/job.log\n"
     )
     sys.stderr.flush()
 
@@ -151,9 +162,12 @@ def main():
         _push_key(chosen)
     except Exception as e:  # noqa: BLE001
         _die(f"send-ssh-public-key failed for {chosen}: {e}")
+    # -tt forces a remote PTY even though a command is given, so bash stays
+    # interactive after the tail is interrupted. ttyd already handed us a PTY.
     os.execvp(
         "ssh",
-        ["ssh", "-i", key_path, *_SSH_OPTS, f"{chosen}@{private_ip}"],
+        ["ssh", "-tt", "-i", key_path, *_SSH_OPTS,
+         f"{chosen}@{private_ip}", _REMOTE_CMD],
     )
 
 
