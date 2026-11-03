@@ -121,6 +121,10 @@ def main():
     sw = Utils.Stopwatch()
     info = Info()
 
+    # TEMP (testing only, revert): hold the job RUNNING for 10 min so there is a
+    # live runner to attach the debug shell to. Remove before merge.
+    time.sleep(600)
+
     if info.pr_number <= 0:
         Result.get().set_results(
             results=[
