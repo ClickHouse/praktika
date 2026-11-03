@@ -82,6 +82,10 @@ class S3Proxy:
     # Buckets to serve. Empty => filled with every project Storage bucket by
     # CloudInfrastructure (after project namespacing) via set_proxied_buckets().
     proxied_buckets: List[str] = field(default_factory=list)
+    # Global cap on concurrent live-debug shell sessions the jump host (ttyd)
+    # will serve at once, across all runners/users. The N+1th browser connection
+    # is refused. 0 == unlimited.
+    max_debug_sessions: int = 5
     security_group_ids: List[str] = field(default_factory=list)
     security_group_names: List[str] = field(default_factory=list)
     volume_size_gb: int = 20
@@ -209,6 +213,7 @@ class S3Proxy:
             oauth_client_id_ssm=self.tailscale_oauth_client_id_ssm,
             oauth_client_secret_ssm=self.tailscale_oauth_client_secret_ssm,
             proxied_buckets=self.proxied_buckets,
+            max_debug_sessions=self.max_debug_sessions,
         )
 
     def set_proxied_buckets(self, buckets: List[str]):

@@ -42,6 +42,7 @@ def s3_proxy_user_data(
     oauth_client_id_ssm,
     oauth_client_secret_ssm,
     proxied_buckets,
+    max_debug_sessions=5,
 ):
     """Render the S3 report proxy bootstrap script.
 
@@ -63,6 +64,7 @@ def s3_proxy_user_data(
         "__PROXIED_BUCKETS__",
         "__SIGNER_PY_B64__",
         "__DEBUG_CONNECT_B64__",
+        "__MAX_DEBUG_SESSIONS__",
     )
     for ph in placeholders:
         if ph not in template:
@@ -85,6 +87,7 @@ def s3_proxy_user_data(
         .replace("__PROXIED_BUCKETS__", " ".join(proxied_buckets))
         .replace("__SIGNER_PY_B64__", signer_b64)
         .replace("__DEBUG_CONNECT_B64__", debug_connect_b64)
+        .replace("__MAX_DEBUG_SESSIONS__", str(int(max_debug_sessions)))
     )
 
 

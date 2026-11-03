@@ -123,8 +123,12 @@ Wants=network-online.target
 [Service]
 Environment=AWS_DEFAULT_REGION=${REGION}
 # -a: pass the URL ?arg= query to the command; -W: writable (interactive);
-# -b /term: base path fronted by Caddy; bound to loopback (Caddy owns TLS/auth).
-ExecStart=/usr/local/bin/ttyd -p 7681 -i 127.0.0.1 -b /term -a -W \
+# -b /term: base path fronted by Caddy; bound to loopback (Caddy owns TLS/auth);
+# -m: one ttyd process serves this whole jump host, so this is a GLOBAL cap on
+# concurrent debug sessions on the proxy (across all runners/users, not per
+# runner) -- ttyd refuses connections past the limit. Set from
+# S3Proxy.max_debug_sessions (0 == unlimited).
+ExecStart=/usr/local/bin/ttyd -p 7681 -i 127.0.0.1 -b /term -a -W -m __MAX_DEBUG_SESSIONS__ \
   -t disableLeaveAlert=true \
   /usr/bin/python3 /opt/praktika-debug/debug_connect.py
 Restart=always
