@@ -37,10 +37,41 @@ TS_AUTHKEY=$(curl -s "https://api.tailscale.com/api/v2/tailnet/-/keys" \
   -d '{"capabilities":{"devices":{"create":{"reusable":false,"ephemeral":true,"preauthorized":true,"tags":["__TS_TAG__"]}}},"expirySeconds":600}' \
   | jq -r .key)
 
+# --- Forcefully release the target hostname before joining ---
+# Delete any device that still holds "__TS_HOSTNAME__" (or a "__TS_HOSTNAME__-N"
+# variant left by an ungraceful prior termination where logout-on-shutdown never
+# ran). Without this, Tailscale appends "-1" and the stable MagicDNS name drifts,
+# so the report/terminal FQDN changes out from under users. Requires the OAuth
+# client to have device-delete scope.
+for TS_DID in $(curl -s "https://api.tailscale.com/api/v2/tailnet/-/devices" \
+  -H "Authorization: Bearer $TS_ACCESS_TOKEN" \
+  | jq -r --arg h "__TS_HOSTNAME__" '.devices[] | select(.hostname == $h or (.hostname | test("^" + $h + "-[0-9]+$"))) | .id'); do
+  curl -s -o /dev/null -X DELETE "https://api.tailscale.com/api/v2/device/$TS_DID" \
+    -H "Authorization: Bearer $TS_ACCESS_TOKEN" || true
+done
+
 # --- Install Tailscale and join the tailnet ---
 curl -fsSL https://tailscale.com/install.sh | sh
 tailscale up --ssh --auth-key="$TS_AUTHKEY" --hostname="__TS_HOSTNAME__"
 TS_FQDN=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
+
+# --- Deregister this ephemeral node on shutdown so the stable hostname is freed
+#     immediately for the replacement (otherwise Tailscale keeps the offline
+#     device for a while and the next node collides onto __TS_HOSTNAME__-1) ---
+cat > /etc/systemd/system/tailscale-logout.service <<'UNIT'
+[Unit]
+Description=Tailscale logout on shutdown (deregister ephemeral node)
+DefaultDependencies=no
+Before=shutdown.target reboot.target halt.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStop=/usr/bin/tailscale logout
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now tailscale-logout.service
 
 # --- TLS certificate from Tailscale (renewed by a daily systemd timer below) ---
 mkdir -p /etc/caddy/tls

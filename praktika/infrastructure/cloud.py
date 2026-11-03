@@ -3376,6 +3376,16 @@ class CloudInfrastructure:
                     self.docker_proxy.autoscaling_group
                 )
 
+            # Same scoping for the S3 report proxy: `--only S3Proxy` rolls just
+            # the single proxy instance (stateless; safe to replace) onto the
+            # current launch template version, without disturbing runner pools.
+            if self.s3_proxy and _wants(
+                "S3Proxy", "s3-proxy", "s3proxy", "proxy"
+            ):
+                selected[self.s3_proxy.autoscaling_group.name] = (
+                    self.s3_proxy.autoscaling_group
+                )
+
             if _wants("AutoScalingGroup", "AutoScalingGroups", "ASG", "ASGs"):
                 for asg_config in self.autoscaling_groups:
                     selected.setdefault(asg_config.name, asg_config)

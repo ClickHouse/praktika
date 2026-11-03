@@ -2056,10 +2056,14 @@
                         debugLink.href = `${debugProxyBase}/term/?arg=${encodeURIComponent(result.ext.instance_id)}`;
                         debugLink.target = '_blank';
                         debugLink.rel = 'noopener noreferrer';
-                        debugLink.textContent = '🐞 debug';
-                        debugLink.className = 'file-link';
-                        debugLink.style.marginLeft = '8px';
-                        debugLink.title = `Debug shell on runner ${result.ext.instance_id}`;
+                        // Bare terminal emoji, inline with the status text: same
+                        // line, inherits its font-size, no link underline.
+                        debugLink.textContent = '🖥️';
+                        debugLink.title = `Open debug terminal on runner ${result.ext.instance_id}`;
+                        debugLink.style.textDecoration = 'none';
+                        debugLink.style.marginLeft = '6px';
+                        debugLink.style.cursor = 'pointer';
+                        debugLink.style.verticalAlign = 'middle';
                         td.appendChild(debugLink);
                     }
                     row.style.display = shouldShowRow(filter, row.dataset.status) ? '' : 'none';
