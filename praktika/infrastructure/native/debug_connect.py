@@ -1,33 +1,15 @@
 #!/usr/bin/env python3
 """Per-session jump-host wrapper for the Praktika live-debug shell.
 
-ttyd runs this once per browser connection with the target runner's EC2
-instance id as argv[1] (passed through the ``/term/?arg=<id>`` URL). The arg is
-attacker-controlled, so this script is the trust boundary between the tailnet
-viewer and the runner. It:
-
-  1. validates the instance id format,
-  2. confirms via ``ec2:DescribeInstances`` that the target is a *running* job
-     runner (tag ``praktika_role=job_runner``) — refusing the proxy itself, the
-     CIDB, or any non-runner instance,
-  3. mints an ephemeral (~60s) ed25519 key and pushes it to the runner with
-     ``ec2-instance-connect:SendSSHPublicKey`` (no standing secrets land on the
-     proxy or the runner),
-  4. exec's ``ssh`` into the runner's private IP over the shared VPC, as the
-     first login user that the pushed key actually authenticates.
-
-The runner's default login user depends on the pool's AMI: AL2023 runners use
-``ec2-user``, Ubuntu runners use ``ubuntu``. EC2 Instance Connect's
-``SendSSHPublicKey`` accepts any user string and only *delivers* the key for
-that user at login time, so we push + probe each candidate in turn and connect
-as the one that works (rather than hardcoding one and failing on the other
-pool type).
-
-Runs on the S3 proxy box (Amazon Linux 2023); boto3 and openssh-clients are
-installed by ``s3_proxy_user_data.sh``. The instance role grants exactly the two
-scoped permissions used here (see ``S3Proxy._refresh``). The IAM
-``SendSSHPublicKey`` grant is additionally tag-scoped to ``praktika_role=
-job_runner``, so the DescribeInstances guard below is defense in depth.
+ttyd (or a direct ssh) runs this per connection with the target runner's EC2
+instance id as argv[1] (from the untrusted ``/term/?arg=<id>`` URL). It: checks
+the id format; confirms via ``ec2:DescribeInstances`` the target is a *running*
+``praktika_role=job_runner`` (refusing the proxy/CIDB/anything else); mints an
+ephemeral (~60s) ed25519 key, pushes it with EC2 Instance Connect, and ssh's
+into the runner's private IP over the shared VPC. Login user varies by pool AMI
+(AL2023 => ec2-user, Ubuntu => ubuntu), so we push+probe each candidate and use
+the first that authenticates. Runs on the S3 proxy box; the instance role's two
+scoped grants (see ``S3Proxy._refresh``) are all it needs.
 """
 import os
 import re
@@ -40,31 +22,27 @@ import boto3
 
 _INSTANCE_ID_RE = re.compile(r"^i-[0-9a-f]{8,}$")
 _RUNNER_ROLE_TAG = "job_runner"
-# Login users to try, in order. AL2023 runners => ec2-user; Ubuntu runners =>
-# ubuntu. The first whose pushed key authenticates is used.
+# Max concurrent sessions on this jump host (from the ttyd unit, set from
+# S3Proxy.max_debug_sessions). 0/unset => no cap. Enforced here (not via ttyd -m)
+# so an over-limit viewer gets a readable banner, not ttyd's bare reconnect
+# button. Every live session's ssh argv carries the temp key dir, so we count it.
+_MAX_SESSIONS = int(os.environ.get("PRAKTIKA_DEBUG_MAX_SESSIONS") or 0)
+_KEYDIR_PREFIX = "praktika-debug-"
+# Login user by pool AMI; first whose pushed key authenticates wins.
 _CANDIDATE_USERS = ("ec2-user", "ubuntu")
-# Host-key pinning buys nothing here (ephemeral runners, VPC-internal, trust is
-# the EIC + tag-scoping) and would break when a recycled private IP reappears
-# with a new host key, so skip known_hosts entirely.
+# No host-key pinning: ephemeral VPC-internal runners recycle IPs (trust is the
+# EIC + tag-scoping, not host keys), so skip known_hosts.
 _SSH_OPTS = [
     "-o", "StrictHostKeyChecking=no",
     "-o", "UserKnownHostsFile=/dev/null",
     "-o", "ConnectTimeout=10",
 ]
-# The job runs out of the checkout at /opt/praktika/work/repo and writes its live
-# log to ci/tmp/job.log there (Settings.RUN_LOG). cd into it and start tailing the
-# log right away, then leave the viewer in an interactive shell in the same dir.
-#
-# The tail runs as the *startup command of an interactive shell* (bash --rcfile):
-# an interactive shell ignores SIGINT (returns to its prompt) instead of exiting,
-# so Ctrl-C stops the tail and keeps the connection — whereas a plain
-# "tail; exec bash" runs under a non-interactive shell that SIGINT aborts whole,
-# killing the session before the shell starts. The rcfile also sources ~/.bashrc
-# so the prompt keeps the user's normal aliases/PATH. Falls back to $HOME if the
-# checkout isn't there yet.
-#
-# NB: bash requires long options (--rcfile) BEFORE short ones (-i); "bash -i
-# --rcfile" fails with "--: invalid option".
+# Open in the job checkout (/opt/praktika/work/repo; Settings.RUN_LOG lives at
+# ci/tmp/job.log there) and auto-tail the live log. The tail is the rcfile
+# startup command of an INTERACTIVE shell, so Ctrl-C stops the tail and returns
+# to a prompt (a non-interactive "tail; exec bash" would be killed whole by
+# SIGINT). rcfile also sources ~/.bashrc. Falls back to $HOME. NB: bash wants
+# --rcfile before -i.
 _REMOTE_CMD = (
     "cd /opt/praktika/work/repo 2>/dev/null || cd ~; "
     "exec bash --rcfile <("
@@ -83,6 +61,38 @@ def _die(msg):
     sys.exit(1)
 
 
+def _active_sessions():
+    """Count live sessions via pgrep over the temp-key-dir prefix in each
+    session's ssh argv. This process has no key dir yet, so it isn't counted."""
+    try:
+        out = subprocess.run(
+            ["pgrep", "-f", _KEYDIR_PREFIX],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        return len([ln for ln in out.stdout.splitlines() if ln.strip()])
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _enforce_cap():
+    """At the concurrent-session cap, print a visible banner and exit."""
+    if _MAX_SESSIONS <= 0:
+        return
+    active = _active_sessions()
+    if active >= _MAX_SESSIONS:
+        bar = "=" * 56
+        sys.stdout.write(
+            f"\r\n{bar}\r\n"
+            f"  Too many live debug sessions on this jump host\r\n"
+            f"  ({active}/{_MAX_SESSIONS} in use). Close one and reconnect.\r\n"
+            f"{bar}\r\n"
+        )
+        sys.stdout.flush()
+        sys.exit(0)
+
+
 def _imds(method, path, headers):
     req = urllib.request.Request(
         f"http://169.254.169.254{path}", method=method, headers=headers
@@ -92,10 +102,8 @@ def _imds(method, path, headers):
 
 
 def _resolve_region():
-    """Region for the AWS clients. The ttyd systemd unit exports
-    AWS_DEFAULT_REGION, but a direct `ssh ... debug_connect.py` session has no
-    such env, so fall back to the proxy's own region from IMDSv2 — keeping the
-    wrapper usable both from the browser terminal and straight over SSH."""
+    """AWS region: env (set by the ttyd unit) else the proxy's own region from
+    IMDSv2 (a direct ssh session has no env). Keeps both paths working."""
     for var in ("AWS_DEFAULT_REGION", "AWS_REGION"):
         if os.environ.get(var):
             return os.environ[var]
@@ -149,11 +157,14 @@ def main():
     if not _INSTANCE_ID_RE.match(instance_id):
         _die(f"invalid instance id: {instance_id!r}")
 
+    # Refuse with a visible message before touching AWS if we are at the cap.
+    _enforce_cap()
+
     session = boto3.session.Session(region_name=_resolve_region())
     private_ip, az = _describe_runner(session.client("ec2"), instance_id)
     eic = session.client("ec2-instance-connect")
 
-    tmp = tempfile.mkdtemp(prefix="praktika-debug-")
+    tmp = tempfile.mkdtemp(prefix=_KEYDIR_PREFIX)
     key_path = os.path.join(tmp, "id")
     subprocess.run(
         ["ssh-keygen", "-t", "ed25519", "-N", "", "-q", "-f", key_path],

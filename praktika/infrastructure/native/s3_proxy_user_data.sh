@@ -1,14 +1,8 @@
 #!/usr/bin/env bash
-# Praktika S3 report proxy bootstrap (Amazon Linux 2023).
-#
-# Serves the project's PRIVATE S3 report buckets to Tailscale users, read-only:
-#   Tailscale user --[tailnet]--> Caddy (:443 TLS, :8080 HTTP, GET/HEAD only)
-#                                   --> signer.py (SigV4, EC2 instance role)
-#                                   --> S3 (buckets stay fully private)
-#
-# The instance joins the tailnet with an ephemeral, tagged auth key minted at
-# boot from a Tailscale OAuth client stored in SSM. No static S3 or Tailscale
-# credentials are written to disk.
+# Praktika S3 report proxy bootstrap (Amazon Linux 2023). Serves PRIVATE S3
+# report buckets to the tailnet (Caddy TLS -> signer.py SigV4 -> S3) and hosts
+# the live-debug ttyd terminal. Joins the tailnet with an ephemeral SSM-minted
+# auth key; no static credentials on disk.
 set -xeuo pipefail
 
 # --- Resolve region from IMDSv2 (launch template forces HttpTokens=required) ---
@@ -37,12 +31,10 @@ TS_AUTHKEY=$(curl -s "https://api.tailscale.com/api/v2/tailnet/-/keys" \
   -d '{"capabilities":{"devices":{"create":{"reusable":false,"ephemeral":true,"preauthorized":true,"tags":["__TS_TAG__"]}}},"expirySeconds":600}' \
   | jq -r .key)
 
-# --- Forcefully release the target hostname before joining ---
-# Delete any device that still holds "__TS_HOSTNAME__" (or a "__TS_HOSTNAME__-N"
-# variant left by an ungraceful prior termination where logout-on-shutdown never
-# ran). Without this, Tailscale appends "-1" and the stable MagicDNS name drifts,
-# so the report/terminal FQDN changes out from under users. Requires the OAuth
-# client to have device-delete scope.
+# --- Release the target hostname before joining: delete any device holding
+#     "__TS_HOSTNAME__" / "__TS_HOSTNAME__-N" (left by an ungraceful prior
+#     termination) so Tailscale doesn't append "-1" and drift the stable FQDN.
+#     Needs device-delete scope on the OAuth client. ---
 for TS_DID in $(curl -s "https://api.tailscale.com/api/v2/tailnet/-/devices" \
   -H "Authorization: Bearer $TS_ACCESS_TOKEN" \
   | jq -r --arg h "__TS_HOSTNAME__" '.devices[] | select(.hostname == $h or (.hostname | test("^" + $h + "-[0-9]+$"))) | .id'); do
@@ -55,9 +47,7 @@ curl -fsSL https://tailscale.com/install.sh | sh
 tailscale up --ssh --auth-key="$TS_AUTHKEY" --hostname="__TS_HOSTNAME__"
 TS_FQDN=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
 
-# --- Deregister this ephemeral node on shutdown so the stable hostname is freed
-#     immediately for the replacement (otherwise Tailscale keeps the offline
-#     device for a while and the next node collides onto __TS_HOSTNAME__-1) ---
+# --- Deregister on shutdown so the stable hostname is freed for the replacement ---
 cat > /etc/systemd/system/tailscale-logout.service <<'UNIT'
 [Unit]
 Description=Tailscale logout on shutdown (deregister ephemeral node)
@@ -122,13 +112,14 @@ After=network-online.target
 Wants=network-online.target
 [Service]
 Environment=AWS_DEFAULT_REGION=${REGION}
+# PRAKTIKA_DEBUG_MAX_SESSIONS: GLOBAL cap on concurrent debug sessions on this
+# jump host (across all runners/users), from S3Proxy.max_debug_sessions (0 ==
+# unlimited). Enforced inside debug_connect.py so an over-limit viewer gets a
+# readable banner in the terminal rather than ttyd's bare reconnect button.
+Environment=PRAKTIKA_DEBUG_MAX_SESSIONS=__MAX_DEBUG_SESSIONS__
 # -a: pass the URL ?arg= query to the command; -W: writable (interactive);
-# -b /term: base path fronted by Caddy; bound to loopback (Caddy owns TLS/auth);
-# -m: one ttyd process serves this whole jump host, so this is a GLOBAL cap on
-# concurrent debug sessions on the proxy (across all runners/users, not per
-# runner) -- ttyd refuses connections past the limit. Set from
-# S3Proxy.max_debug_sessions (0 == unlimited).
-ExecStart=/usr/local/bin/ttyd -p 7681 -i 127.0.0.1 -b /term -a -W -m __MAX_DEBUG_SESSIONS__ \
+# -b /term: base path fronted by Caddy; bound to loopback (Caddy owns TLS/auth).
+ExecStart=/usr/local/bin/ttyd -p 7681 -i 127.0.0.1 -b /term -a -W \
   -t disableLeaveAlert=true \
   /usr/bin/python3 /opt/praktika-debug/debug_connect.py
 Restart=always
