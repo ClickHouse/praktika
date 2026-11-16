@@ -46,6 +46,13 @@ done
 curl -fsSL https://tailscale.com/install.sh | sh
 tailscale up --ssh --auth-key="$TS_AUTHKEY" --hostname="__TS_HOSTNAME__"
 TS_FQDN=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
+# The node's tailnet IPs (v4 + v6). Caddy binds ONLY these below, so the report
+# signer and -- critically -- the /term debug terminal are reachable solely over
+# the tailnet overlay, never on the VPC ENI. This is defense in depth: the SG
+# already does not open 8080/443 to the VPC, but binding here means a future
+# broad self-referencing SG rule can't accidentally expose the jump host to
+# (untrusted) runners.
+TS_BIND=$(tailscale ip | tr '\n' ' ')
 
 # --- Deregister on shutdown so the stable hostname is freed for the replacement ---
 cat > /etc/systemd/system/tailscale-logout.service <<'UNIT'
@@ -105,6 +112,10 @@ base64 -d <<'DEBUG_CONNECT_B64' | gunzip > /opt/praktika-debug/debug_connect.py
 __DEBUG_CONNECT_B64__
 DEBUG_CONNECT_B64
 
+# Cap on disk for the direct-SSH path (runs debug_connect.py outside the ttyd
+# unit, so it can't read the unit's PRAKTIKA_DEBUG_MAX_SESSIONS env).
+printf '%s\n' "__MAX_DEBUG_SESSIONS__" > /opt/praktika-debug/max_sessions
+
 cat > /etc/systemd/system/praktika-debug-ttyd.service <<UNIT
 [Unit]
 Description=Praktika live-debug web terminal (ttyd jump host)
@@ -112,10 +123,7 @@ After=network-online.target
 Wants=network-online.target
 [Service]
 Environment=AWS_DEFAULT_REGION=${REGION}
-# PRAKTIKA_DEBUG_MAX_SESSIONS: GLOBAL cap on concurrent debug sessions on this
-# jump host (across all runners/users), from S3Proxy.max_debug_sessions (0 ==
-# unlimited). Enforced inside debug_connect.py so an over-limit viewer gets a
-# readable banner in the terminal rather than ttyd's bare reconnect button.
+# Global concurrent-session cap, enforced in debug_connect.py (see there).
 Environment=PRAKTIKA_DEBUG_MAX_SESSIONS=__MAX_DEBUG_SESSIONS__
 # -a: pass the URL ?arg= query to the command; -W: writable (interactive);
 # -b /term: base path fronted by Caddy; bound to loopback (Caddy owns TLS/auth).
@@ -163,9 +171,11 @@ cat > /etc/caddy/Caddyfile <<CADDY
 	}
 }
 :8080 {
+	bind ${TS_BIND}
 	import handlers
 }
 ${TS_FQDN}:443 {
+	bind ${TS_BIND}
 	tls /etc/caddy/tls/${TS_FQDN}.crt /etc/caddy/tls/${TS_FQDN}.key
 	import handlers
 }

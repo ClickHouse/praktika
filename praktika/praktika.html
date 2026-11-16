@@ -2050,22 +2050,32 @@
                     // (nest_level === 1) and only while RUNNING — the id is
                     // cleared when the row leaves RUNNING, so the link goes away.
                     const debugProxyBase = localStorage.getItem('privateBaseUrl');
-                    // instance_id is runner/report-controlled data; only ever treat
-                    // it as safe to embed in a URL or (worse) a copy-pasted shell
-                    // command once it matches the strict EC2 instance-id shape
-                    // enforced server-side by debug_connect.py's _INSTANCE_ID_RE.
-                    const rawInstanceId = result.ext?.instance_id;
-                    const validInstanceId = typeof rawInstanceId === 'string' && /^i-[0-9a-f]{8,}$/.test(rawInstanceId);
-                    if (nest_level === 1 && value_ === 'running'
-                            && validInstanceId && debugProxyBase) {
+                    // instance_id is runner-supplied report data; validate it
+                    // against the strict EC2 id pattern before putting it in a URL
+                    // or (especially) a shell command the user pastes — otherwise a
+                    // value like "i-x; rm -rf ~" would be command injection on copy.
+                    const debugId = result.ext?.instance_id;
+                    const debugIdOk = typeof debugId === 'string' && /^i-[0-9a-f]{8,}$/.test(debugId);
+                    // The proxy base URL points at a bucket path (https://proxy/bucket)
+                    // for report fetches; the terminal lives at the proxy ORIGIN, since
+                    // Caddy only routes root-level /term*. Derive origin/host from it.
+                    let proxyOrigin = null, proxyHost = null;
+                    if (debugProxyBase) {
+                        try {
+                            const u = new URL(debugProxyBase);
+                            proxyOrigin = u.origin;
+                            proxyHost = u.host;
+                        } catch (e) { /* malformed base URL -> no debug actions */ }
+                    }
+                    if (nest_level === 1 && value_ === 'running' && debugIdOk && proxyOrigin) {
                         const debugLink = document.createElement('a');
-                        debugLink.href = `${debugProxyBase}/term/?arg=${encodeURIComponent(rawInstanceId)}`;
+                        debugLink.href = `${proxyOrigin}/term/?arg=${encodeURIComponent(debugId)}`;
                         debugLink.target = '_blank';
                         debugLink.rel = 'noopener noreferrer';
                         // Bare terminal emoji, inline with the status text: same
                         // line, inherits its font-size, no link underline.
                         debugLink.textContent = '🖥️';
-                        debugLink.title = `Open debug terminal on runner ${rawInstanceId}`;
+                        debugLink.title = `Open debug terminal on runner ${debugId}`;
                         debugLink.style.textDecoration = 'none';
                         debugLink.style.marginLeft = '6px';
                         debugLink.style.cursor = 'pointer';
@@ -2074,13 +2084,10 @@
 
                         // Copy-paste terminal equivalent: Tailscale-SSH into the
                         // proxy and run the same jump-host wrapper, for people who
-                        // want a real terminal instead of the browser. The proxy
-                        // FQDN is the configured base URL minus its scheme.
-                        // rawInstanceId is already validated above against the
-                        // strict instance-id pattern, so it cannot carry shell
-                        // metacharacters here.
-                        const proxyFqdn = debugProxyBase.replace(/^https?:\/\//, '').replace(/\/+$/, '');
-                        const sshCmd = `ssh -t ec2-user@${proxyFqdn} -- /usr/bin/python3 /opt/praktika-debug/debug_connect.py ${rawInstanceId}`;
+                        // want a real terminal instead of the browser. Host is the
+                        // proxy origin's host (no bucket path); debugId is validated
+                        // above, so no shell metacharacters can reach this string.
+                        const sshCmd = `ssh -t ec2-user@${proxyHost} -- /usr/bin/python3 /opt/praktika-debug/debug_connect.py ${debugId}`;
                         const copyBtn = document.createElement('span');
                         copyBtn.textContent = '⧉';
                         copyBtn.title = `Copy terminal command:\n${sshCmd}`;
@@ -2708,15 +2715,29 @@
     // Fetch downstream (private sync) results via proxy.
     // Returns { data: [...results], error: null } or { data: null, error: "message" }
     async function fetchDownstreamData(sha, privateBaseUrl) {
-        // Step 1: Fetch sync metadata
+        // Proxy liveness: a no-cors ping resolves if the proxy answered at all
+        // (any status, even 403), and only rejects on a real connection failure.
+        // This is the sole source of the "proxy unreachable" banner — it is immune
+        // to CORS and to the base URL doubling as the live-debug jump host, so a
+        // reachable proxy is never flagged as down.
+        try {
+            await fetch(privateBaseUrl, { mode: 'no-cors', cache: 'no-cache' });
+        } catch (e) {
+            return { data: null, error: 'Downstream: proxy unreachable' };
+        }
+
+        // Step 1: Fetch sync metadata. The proxy is up (ping passed above), so a
+        // failure to READ this (CORS on a cross-origin report page, or simply no
+        // sync data) just means "no downstream here" — stay silent rather than
+        // posting a misleading "proxy unreachable" banner.
         let metaResult;
         try {
             metaResult = await fetchJson(`${privateBaseUrl}/sync_metadata/${sha}.json`);
         } catch (e) {
-            return { data: null, error: 'Downstream: proxy unreachable' };
+            return { data: null, error: null };
         }
         if (metaResult.status === 0) {
-            return { data: null, error: 'Downstream: proxy unreachable' };
+            return { data: null, error: null };
         }
         if (metaResult.status === 403 || !metaResult.data) {
             return { data: null, error: 'Downstream: no sync metadata for this commit' };
@@ -2727,17 +2748,19 @@
             return { data: null, error: 'Downstream: invalid sync metadata' };
         }
 
-        // Step 2: Fetch private PR result
+        // Step 2: Fetch private PR result. Metadata already loaded, so the proxy
+        // demonstrably answered — a failure here is "results not ready", not an
+        // unreachable proxy.
         let resultResult;
         try {
             resultResult = await fetchJson(
                 `${privateBaseUrl}/PRs/${encodeURIComponent(private_pr_number)}/${encodeURIComponent(private_sha)}/pr/result_pr.json`
             );
         } catch (e) {
-            return { data: null, error: 'Downstream: proxy unreachable' };
+            return { data: null, error: 'Downstream: sync PR results not available yet' };
         }
         if (resultResult.status === 0) {
-            return { data: null, error: 'Downstream: proxy unreachable' };
+            return { data: null, error: 'Downstream: sync PR results not available yet' };
         }
         if (resultResult.status === 403 || !resultResult.data) {
             return { data: null, error: 'Downstream: sync PR results not available yet' };

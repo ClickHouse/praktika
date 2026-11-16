@@ -139,6 +139,18 @@ execution (with passwordless `sudo`) on CI runners**. Controls in place:
 
 - **Tailnet-only exposure.** Caddy serves `/term*` only on the tailnet FQDN
   (:443) / :8080 — the same reachability as private reports. No public exposure.
+- **Runners cannot reach the proxy's terminal (the reverse path).** This matters
+  because runners execute untrusted PR code. Two independent layers stop a runner
+  from using the jump host against other runners:
+  1. The proxy's security group does **not** open 8080/443 to the VPC (its only
+     same-SG inbound ports are 22/9000/8123, and nothing listens on 9000/8123;
+     sshd on 22 has no runner-usable credentials). So a runner hitting the
+     proxy's private IP on the terminal's ports is dropped at the SG.
+  2. Caddy `bind`s its `:8080` and `:443` listeners to the node's **Tailscale IP
+     only**, so even if a future broad SG rule opened those ports, the terminal
+     is still physically unreachable from the VPC ENI — reachable solely over the
+     tailnet overlay, which runners are not on. ttyd and the signer additionally
+     bind to `127.0.0.1`.
 - **Target allow-listing.** `debug_connect.py` refuses any instance that is not
   `state=running` with `praktika_role=job_runner`, and validates the id format.
   The IAM `SendSSHPublicKey` grant is `Condition`-scoped to the same tag, so the

@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """Per-session jump-host wrapper for the Praktika live-debug shell.
 
-ttyd (or a direct ssh) runs this per connection with the target runner's EC2
-instance id as argv[1] (from the untrusted ``/term/?arg=<id>`` URL). It: checks
-the id format; confirms via ``ec2:DescribeInstances`` the target is a *running*
-``praktika_role=job_runner`` (refusing the proxy/CIDB/anything else); mints an
-ephemeral (~60s) ed25519 key, pushes it with EC2 Instance Connect, and ssh's
-into the runner's private IP over the shared VPC. Login user varies by pool AMI
-(AL2023 => ec2-user, Ubuntu => ubuntu), so we push+probe each candidate and use
-the first that authenticates. Runs on the S3 proxy box; the instance role's two
-scoped grants (see ``S3Proxy._refresh``) are all it needs.
+Run per connection by ttyd (or a direct ssh) with the target runner's instance
+id as argv[1] (untrusted ``/term/?arg=<id>``). Validates the id, confirms via
+``ec2:DescribeInstances`` it is a running ``praktika_role=job_runner``, pushes an
+ephemeral EC2 Instance Connect key, and ssh's in over the VPC as the first login
+user that authenticates (AL2023 => ec2-user, Ubuntu => ubuntu). See
+``S3Proxy._refresh`` for the scoped IAM grants.
 """
+import fcntl
 import os
 import re
 import subprocess
@@ -22,12 +20,31 @@ import boto3
 
 _INSTANCE_ID_RE = re.compile(r"^i-[0-9a-f]{8,}$")
 _RUNNER_ROLE_TAG = "job_runner"
-# Max concurrent sessions on this jump host (from the ttyd unit, set from
-# S3Proxy.max_debug_sessions). 0/unset => no cap. Enforced here (not via ttyd -m)
-# so an over-limit viewer gets a readable banner, not ttyd's bare reconnect
-# button. Every live session's ssh argv carries the temp key dir, so we count it.
-_MAX_SESSIONS = int(os.environ.get("PRAKTIKA_DEBUG_MAX_SESSIONS") or 0)
 _KEYDIR_PREFIX = "praktika-debug-"
+# Concurrent-session cap (S3Proxy.max_debug_sessions; 0 == unlimited). Enforced
+# here (not ttyd -m) since this script runs in BOTH the browser and direct-SSH
+# paths; the cap value comes from the ttyd unit's env, else a file user_data
+# writes (so the direct-SSH path, outside the unit, still sees it).
+_MAX_SESSIONS_FILE = "/opt/praktika-debug/max_sessions"
+# N flock'd slot files ARE the live-session count: each session holds its slot fd
+# for its lifetime (the lock survives the exec into ssh, auto-released by the
+# kernel when ssh exits) -> atomic, no race, no stale cleanup. Shared across users
+# (ttyd=root, direct-ssh=ec2-user), so dir 0777 / files 0666.
+_SLOT_DIR = "/tmp/praktika-debug-slots"
+
+
+def _max_sessions():
+    value = os.environ.get("PRAKTIKA_DEBUG_MAX_SESSIONS")
+    if value is None:
+        try:
+            with open(_MAX_SESSIONS_FILE) as f:
+                value = f.read().strip()
+        except OSError:
+            value = ""
+    try:
+        return int(value or 0)
+    except ValueError:
+        return 0
 # Login user by pool AMI; first whose pushed key authenticates wins.
 _CANDIDATE_USERS = ("ec2-user", "ubuntu")
 # No host-key pinning: ephemeral VPC-internal runners recycle IPs (trust is the
@@ -37,12 +54,10 @@ _SSH_OPTS = [
     "-o", "UserKnownHostsFile=/dev/null",
     "-o", "ConnectTimeout=10",
 ]
-# Open in the job checkout (/opt/praktika/work/repo; Settings.RUN_LOG lives at
-# ci/tmp/job.log there) and auto-tail the live log. The tail is the rcfile
-# startup command of an INTERACTIVE shell, so Ctrl-C stops the tail and returns
-# to a prompt (a non-interactive "tail; exec bash" would be killed whole by
-# SIGINT). rcfile also sources ~/.bashrc. Falls back to $HOME. NB: bash wants
-# --rcfile before -i.
+# Open in the job checkout and auto-tail ci/tmp/job.log. The tail runs as the
+# rcfile startup command of an INTERACTIVE shell, so Ctrl-C stops the tail and
+# returns to a prompt (a non-interactive "tail; exec bash" dies whole on SIGINT).
+# NB: bash wants --rcfile before -i.
 _REMOTE_CMD = (
     "cd /opt/praktika/work/repo 2>/dev/null || cd ~; "
     "exec bash --rcfile <("
@@ -61,36 +76,44 @@ def _die(msg):
     sys.exit(1)
 
 
-def _active_sessions():
-    """Count live sessions via pgrep over the temp-key-dir prefix in each
-    session's ssh argv. This process has no key dir yet, so it isn't counted."""
+def _acquire_slot():
+    """Atomically claim one of N session slots, or show a banner and exit if all
+    are taken. Returns the held slot fd (kept open for the session lifetime) or
+    None when uncapped. The fd is made inheritable so it survives the exec into
+    ssh and the kernel-held flock is released only when that ssh exits."""
+    n = _max_sessions()
+    if n <= 0:
+        return None  # uncapped
     try:
-        out = subprocess.run(
-            ["pgrep", "-f", _KEYDIR_PREFIX],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-        )
-        return len([ln for ln in out.stdout.splitlines() if ln.strip()])
-    except Exception:  # noqa: BLE001
-        return 0
-
-
-def _enforce_cap():
-    """At the concurrent-session cap, print a visible banner and exit."""
-    if _MAX_SESSIONS <= 0:
-        return
-    active = _active_sessions()
-    if active >= _MAX_SESSIONS:
-        bar = "=" * 56
-        sys.stdout.write(
-            f"\r\n{bar}\r\n"
-            f"  Too many live debug sessions on this jump host\r\n"
-            f"  ({active}/{_MAX_SESSIONS} in use). Close one and reconnect.\r\n"
-            f"{bar}\r\n"
-        )
-        sys.stdout.flush()
-        sys.exit(0)
+        os.makedirs(_SLOT_DIR, exist_ok=True)
+        os.chmod(_SLOT_DIR, 0o777)  # shared by ttyd (root) and direct-ssh (ec2-user)
+    except OSError:
+        return None  # can't set up slots -> fail open rather than block maintainers
+    for i in range(n):
+        try:
+            fd = os.open(os.path.join(_SLOT_DIR, f"slot-{i}"), os.O_CREAT | os.O_RDWR, 0o666)
+        except OSError:
+            continue
+        try:
+            os.fchmod(fd, 0o666)  # creator widens perms so the other user can open it
+        except OSError:
+            pass  # not the creator; already 0666
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            continue  # slot held by a live session
+        os.set_inheritable(fd, True)  # survive exec; released when ssh exits
+        return fd
+    bar = "=" * 56
+    sys.stdout.write(
+        f"\r\n{bar}\r\n"
+        f"  Too many live debug sessions on this jump host\r\n"
+        f"  (all {n} slots in use). Close one and reconnect.\r\n"
+        f"{bar}\r\n"
+    )
+    sys.stdout.flush()
+    sys.exit(0)
 
 
 def _imds(method, path, headers):
@@ -157,8 +180,10 @@ def main():
     if not _INSTANCE_ID_RE.match(instance_id):
         _die(f"invalid instance id: {instance_id!r}")
 
-    # Refuse with a visible message before touching AWS if we are at the cap.
-    _enforce_cap()
+    # Claim a session slot before touching AWS; banners + exits if the jump host
+    # is full. Keep the returned fd bound for the rest of main() so the slot stays
+    # held until we exec into ssh (which then holds it for the session lifetime).
+    _slot_fd = _acquire_slot()  # noqa: F841 - held open on purpose
 
     session = boto3.session.Session(region_name=_resolve_region())
     private_ip, az = _describe_runner(session.client("ec2"), instance_id)
