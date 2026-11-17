@@ -20,6 +20,9 @@ python -m praktika infrastructure --deploy
   managed CI for an equivalent VM size. And it's all *yours*: a feature-rich CI
   stack you own and control, not rented. The model isn't tied to one vendor;
   AWS is the integration implemented today.
+
+## CI features out of the box
+
 - **Deploy the whole project in one command.** RunnerPools, an orchestrator
   pool, S3 for artifacts/reports, SQS queues, SSM/Secrets Manager bindings —
   all declared in `ci/infrastructure/projects.py` and brought up with
@@ -30,9 +33,6 @@ python -m praktika infrastructure --deploy
 - **Structured results, top to bottom.** Workflow → job → test all share the
   same `Result` type, so the whole run is one navigable tree — easy to drill
   into in the HTML report and easy for AI agents to parse and act on.
-
-## CI features out of the box
-
 - **CI cache** that knows which jobs already succeeded and which artifacts can
   be reused, so unaffected and already-passed jobs are skipped natively and
   cached jobs reuse their artifacts instead of rebuilding.
