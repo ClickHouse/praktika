@@ -25,6 +25,10 @@ dnf install -y jq openssh-clients python3.13 python3.13-pip
 python3.13 -m pip install --quiet "praktika[infrastructure] @ __PRAKTIKA_WHL__"
 
 # --- Read the Tailscale OAuth client from SSM (granted by the instance role) ---
+# Stop `set -x` tracing for the credential-handling block below: it would expand
+# the OAuth token / auth key into the trace, which lands in EC2 console output.
+# `set -e` (errexit) stays in effect; only the `x` (xtrace) flag is toggled.
+set +x
 TS_CLIENT_ID=$(aws ssm get-parameter --with-decryption \
   --name "__TS_OAUTH_CLIENT_ID_SSM__" --query Parameter.Value --output text)
 TS_CLIENT_SECRET=$(aws ssm get-parameter --with-decryption \
@@ -52,6 +56,7 @@ done
 # --- Install Tailscale and join the tailnet ---
 curl -fsSL https://tailscale.com/install.sh | sh
 tailscale up --ssh --auth-key="$TS_AUTHKEY" --hostname="__TS_HOSTNAME__"
+set -x  # resume tracing; nothing below handles secrets
 TS_FQDN=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
 
 # --- Deregister on shutdown so the stable hostname is freed for the replacement ---

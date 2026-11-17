@@ -147,6 +147,15 @@ python3 -m praktika infrastructure --restart-instances --only S3Proxy --project 
 > name (or a `-N` variant) before joining and registers a logout-on-shutdown
 > unit, so a roll reclaims the same FQDN instead of drifting to `…-1`.
 
+> **TLS cert rate limit — don't roll more than ~5×/week.** Each fresh node has
+> `tailscale serve` fetch a Let's Encrypt cert for the proxy's FQDN, and LE caps
+> issuance at **5 certs per exact hostname per rolling 7 days**. Normal ops roll
+> the proxy rarely, so this never bites — but rapid iteration can exhaust it, and
+> once hit, `serve` can't get a cert (TLS handshakes hang / time out) until the
+> oldest issuance ages out of the window. Check `journalctl -u tailscaled` for
+> `acme:error:rateLimited … retry after <ts>`. If you must iterate fast, test
+> against a throwaway hostname so the production FQDN keeps its quota.
+
 ## Security considerations
 
 This turns a read-only, tailnet-only report proxy into a path to **remote code
@@ -184,13 +193,8 @@ execution (with passwordless `sudo`) on CI runners**. Controls in place:
   SSM Session Manager remains the compliance-grade alternative if full
   per-principal **session content** recording is ever required.)
 
-### Known gap — credentials in EC2 console output
-
-`s3_proxy_user_data.sh` runs under `set -x`, which traces the `curl` calls that
-carry the Tailscale **OAuth access token** and the minted **auth key**, so both
-land in the instance's EC2 **console output** in cleartext. Both are short-lived
-(single-use auth key with a 600s expiry; ~1h OAuth token) and reading console
-output requires `ec2:GetConsoleOutput` on the account, but this is still an
-avoidable exposure. The fix is to wrap the credential-handling lines in
-`set +x` … `set -x` (the same applies to the DockerProxy bootstrap). Tracked as
-a follow-up.
+- **Boot secrets stay out of console output.** The block in
+  `s3_proxy_user_data.sh` that reads the Tailscale OAuth client and mints the
+  auth key runs under `set +x` (restored to `set -x` right after the tailnet
+  join), so `set -x` tracing never expands the OAuth token or auth key into the
+  instance's EC2 console output. `set -e` stays in effect throughout.
