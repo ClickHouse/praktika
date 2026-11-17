@@ -12,10 +12,16 @@ REGION=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" \
   http://169.254.169.254/latest/meta-data/placement/region)
 export AWS_DEFAULT_REGION="$REGION"
 
-# --- Packages: jq for JSON, pip for boto3 (used by the signer and the live-debug
-#     wrapper), openssh-clients for the ssh/ssh-keygen the wrapper shells out to ---
-dnf install -y jq python3-pip openssh-clients
-pip3 install --quiet boto3
+# --- Packages: jq, openssh-clients (ssh/ssh-keygen for the live-debug wrapper),
+#     and python3.13. The base image's python3 is 3.9, but the praktika package
+#     uses 3.10+ `X | None` type unions, so the signer + jump-host wrapper -- run
+#     as `python3.13 -m praktika...` from the wheel below -- need a newer
+#     interpreter. ---
+dnf install -y jq openssh-clients python3.13 python3.13-pip
+# Install praktika from the wheel with the `infrastructure` extra so the whole
+# praktika.infrastructure.native import chain resolves (boto3 + PyJWT). No inlining
+# into user_data -- the proxy tracks the same versioned wheel as the runners.
+python3.13 -m pip install --quiet "praktika[infrastructure] @ __PRAKTIKA_WHL__"
 
 # --- Read the Tailscale OAuth client from SSM (granted by the instance role) ---
 TS_CLIENT_ID=$(aws ssm get-parameter --with-decryption \
@@ -75,11 +81,8 @@ mkdir -p /etc/caddy/tls
 tailscale cert --cert-file "/etc/caddy/tls/${TS_FQDN}.crt" \
   --key-file "/etc/caddy/tls/${TS_FQDN}.key" "$TS_FQDN"
 
-# --- SigV4 signing proxy: signs with the instance role, streams from S3 ---
-install -d /opt/praktika-s3-proxy
-base64 -d <<'SIGNER_B64' | gunzip > /opt/praktika-s3-proxy/signer.py
-__SIGNER_PY_B64__
-SIGNER_B64
+# --- SigV4 signing proxy (from the praktika wheel): signs with the instance
+#     role, streams from S3 ---
 cat > /etc/systemd/system/praktika-s3-signer.service <<UNIT
 [Unit]
 Description=Praktika S3 SigV4 signing proxy
@@ -88,7 +91,7 @@ Wants=network-online.target
 [Service]
 Environment=PRAKTIKA_S3_PROXY_BUCKETS=__PROXIED_BUCKETS__
 Environment=AWS_DEFAULT_REGION=${REGION}
-ExecStart=/usr/bin/python3 /opt/praktika-s3-proxy/signer.py 127.0.0.1 8081
+ExecStart=/usr/bin/python3.13 -m praktika.infrastructure.native.s3_proxy_signer 127.0.0.1 8081
 Restart=always
 RestartSec=2
 [Install]
@@ -98,22 +101,18 @@ systemctl daemon-reload
 systemctl enable --now praktika-s3-signer
 
 # --- Live job debug: ttyd web terminal + per-session jump-host wrapper ---
-# ttyd spawns a fresh debug_connect.py per browser connection (URL arg = runner
-# instance id). The wrapper validates the target is a running job runner, mints
-# an ephemeral EC2 Instance Connect key, and ssh'es into the runner over the VPC.
-# ttyd ships a fully-static per-arch binary; uname -m matches its release names.
+# ttyd spawns `python3.13 -m praktika.infrastructure.native.debug_connect <id>`
+# per browser connection (URL arg = runner instance id; wrapper installed from the
+# praktika wheel above). ttyd ships a fully-static per-arch binary; uname -m
+# matches its release names.
 TTYD_VERSION=1.7.7
 curl -fsSL -o /usr/local/bin/ttyd \
   "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.$(uname -m)"
 chmod +x /usr/local/bin/ttyd
 
 install -d /opt/praktika-debug
-base64 -d <<'DEBUG_CONNECT_B64' | gunzip > /opt/praktika-debug/debug_connect.py
-__DEBUG_CONNECT_B64__
-DEBUG_CONNECT_B64
-
-# Cap on disk for the direct-SSH path (runs debug_connect.py outside the ttyd
-# unit, so it can't read the unit's PRAKTIKA_DEBUG_MAX_SESSIONS env).
+# Cap on disk for the direct-SSH path (runs debug_connect outside the ttyd unit,
+# so it can't read the unit's PRAKTIKA_DEBUG_MAX_SESSIONS env).
 printf '%s\n' "__MAX_DEBUG_SESSIONS__" > /opt/praktika-debug/max_sessions
 
 cat > /etc/systemd/system/praktika-debug-ttyd.service <<UNIT
@@ -129,7 +128,7 @@ Environment=PRAKTIKA_DEBUG_MAX_SESSIONS=__MAX_DEBUG_SESSIONS__
 # -b /term: base path fronted by Caddy; bound to loopback (Caddy owns TLS/auth).
 ExecStart=/usr/local/bin/ttyd -p 7681 -i 127.0.0.1 -b /term -a -W \
   -t disableLeaveAlert=true \
-  /usr/bin/python3 /opt/praktika-debug/debug_connect.py
+  /usr/bin/python3.13 -m praktika.infrastructure.native.debug_connect
 Restart=always
 RestartSec=2
 [Install]

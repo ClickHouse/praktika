@@ -86,6 +86,18 @@ class S3Proxy:
     # will serve at once, across all runners/users. The N+1th browser connection
     # is refused. 0 == unlimited.
     max_debug_sessions: int = 5
+    # What the node pip-installs at boot so the signer and the live-debug wrapper
+    # can run as modules (no inlining). Passed verbatim to `pip install`, so it
+    # accepts any install spec:
+    #   - an https wheel URL (default below): the version-less "latest" S3 alias,
+    #     so the proxy tracks main like the runners do; swap for a pinned
+    #     ".../praktika-<ver>-py3-none-any.whl" URL for reproducibility;
+    #   - a PyPI requirement, e.g. "praktika==1.2.3" (or "praktika" for latest),
+    #     once praktika is published to PyPI.
+    praktika_wheel: str = (
+        "https://praktika-artifacts-eu-north-1.s3.amazonaws.com"
+        "/packages/latest/praktika-0.0.0-py3-none-any.whl"
+    )
     security_group_ids: List[str] = field(default_factory=list)
     security_group_names: List[str] = field(default_factory=list)
     volume_size_gb: int = 20
@@ -213,6 +225,7 @@ class S3Proxy:
             oauth_client_id_ssm=self.tailscale_oauth_client_id_ssm,
             oauth_client_secret_ssm=self.tailscale_oauth_client_secret_ssm,
             proxied_buckets=self.proxied_buckets,
+            praktika_wheel=self.praktika_wheel,
             max_debug_sessions=self.max_debug_sessions,
         )
 

@@ -2087,7 +2087,7 @@
                         // want a real terminal instead of the browser. Host is the
                         // proxy origin's host (no bucket path); debugId is validated
                         // above, so no shell metacharacters can reach this string.
-                        const sshCmd = `ssh -t ec2-user@${proxyHost} -- /usr/bin/python3 /opt/praktika-debug/debug_connect.py ${debugId}`;
+                        const sshCmd = `ssh -t ec2-user@${proxyHost} -- /usr/bin/python3.13 -m praktika.infrastructure.native.debug_connect ${debugId}`;
                         const copyBtn = document.createElement('span');
                         copyBtn.textContent = '⧉';
                         copyBtn.title = `Copy terminal command:\n${sshCmd}`;

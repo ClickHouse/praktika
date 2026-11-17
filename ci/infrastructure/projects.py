@@ -27,6 +27,12 @@ _PRAKTIKA_CONTROLLER_LATEST_WHL_NAME = "praktika_controller-0.0.0-py3-none-any.w
 _PRAKTIKA_CONTROLLER_WHL = (
     f"{_PRAKTIKA_PACKAGE_BASE_URL}/latest/{_PRAKTIKA_CONTROLLER_LATEST_WHL_NAME}"
 )
+# The S3/debug proxy pip-installs praktika at boot and runs the SigV4 signer +
+# live-debug wrapper as modules (no inlining). Track the version-less "latest"
+# alias so the proxy follows main like the controller runtime does.
+_PRAKTIKA_LATEST_WHL = (
+    f"{_PRAKTIKA_PACKAGE_BASE_URL}/latest/praktika-0.0.0-py3-none-any.whl"
+)
 _RUNTIME_BASE_VENV = "praktika-runtime"
 
 
@@ -440,6 +446,8 @@ _s3_proxy = Components.S3Proxy(
     tailscale_tag="tag:svc-core-ci-github",
     tailscale_oauth_client_id_ssm="/praktika/tailscale/oauth-client-id",
     tailscale_oauth_client_secret_ssm="/praktika/tailscale/oauth-client-secret",
+    # Signer + live-debug wrapper run from this wheel (installed at boot).
+    praktika_wheel=_PRAKTIKA_LATEST_WHL,
     # proxied_buckets defaults to every project Storage bucket.
 )
 
