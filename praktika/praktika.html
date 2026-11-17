@@ -2082,28 +2082,14 @@
                         debugLink.style.verticalAlign = 'middle';
                         td.appendChild(debugLink);
 
-                        // Copy-paste terminal equivalent: Tailscale-SSH into the
-                        // proxy and run the same jump-host wrapper, for people who
-                        // want a real terminal instead of the browser. Host is the
-                        // proxy origin's host (no bucket path); debugId is validated
-                        // above, so no shell metacharacters can reach this string.
-                        const sshCmd = `ssh -t ec2-user@${proxyHost} -- /usr/bin/python3.13 -m praktika.infrastructure.native.debug_connect ${debugId}`;
-                        const copyBtn = document.createElement('span');
-                        copyBtn.textContent = '⧉';
-                        copyBtn.title = `Copy terminal command:\n${sshCmd}`;
-                        copyBtn.style.marginLeft = '6px';
-                        copyBtn.style.cursor = 'pointer';
-                        copyBtn.style.verticalAlign = 'middle';
-                        copyBtn.addEventListener('click', (e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            navigator.clipboard.writeText(sshCmd).then(() => {
-                                const prev = copyBtn.textContent;
-                                copyBtn.textContent = '✓';
-                                setTimeout(() => { copyBtn.textContent = prev; }, 1200);
-                            });
-                        });
-                        td.appendChild(copyBtn);
+                        // NOTE: a direct-SSH "copy terminal command" alternative was
+                        // intentionally removed here: the proxy's ec2-user SSH account
+                        // is not restricted to a forced command, so offering a raw
+                        // `ssh ec2-user@host -- debug_connect <id>` string lets anyone
+                        // who can run it simply drop the trailing command and obtain an
+                        // unrestricted shell on the jump host. Only the ttyd web
+                        // terminal (which always invokes debug_connect.py, with no shell
+                        // fallback) is exposed here.
                     }
                     row.style.display = shouldShowRow(filter, row.dataset.status) ? '' : 'none';
                 } else if (column === 'name') {
