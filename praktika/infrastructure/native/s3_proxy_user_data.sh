@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Praktika S3 report proxy bootstrap (Amazon Linux 2023). Serves PRIVATE S3
-# report buckets to the tailnet (Caddy TLS -> signer.py SigV4 -> S3) and hosts
-# the live-debug ttyd terminal. Joins the tailnet with an ephemeral SSM-minted
-# auth key; no static credentials on disk.
+# report buckets to the tailnet and hosts the live-debug ttyd terminal. Path:
+# tailscale serve (TLS :443 + Tailscale-User identity headers) -> Caddy (loopback
+# router, JSON access log) -> signer.py SigV4 -> S3, and -> ttyd for /term. Joins
+# the tailnet with an ephemeral SSM-minted auth key; no static credentials on disk.
 set -xeuo pipefail
 
 # --- Resolve region from IMDSv2 (launch template forces HttpTokens=required) ---
@@ -52,13 +53,6 @@ done
 curl -fsSL https://tailscale.com/install.sh | sh
 tailscale up --ssh --auth-key="$TS_AUTHKEY" --hostname="__TS_HOSTNAME__"
 TS_FQDN=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
-# The node's tailnet IPs (v4 + v6). Caddy binds ONLY these below, so the report
-# signer and -- critically -- the /term debug terminal are reachable solely over
-# the tailnet overlay, never on the VPC ENI. This is defense in depth: the SG
-# already does not open 8080/443 to the VPC, but binding here means a future
-# broad self-referencing SG rule can't accidentally expose the jump host to
-# (untrusted) runners.
-TS_BIND=$(tailscale ip | tr '\n' ' ')
 
 # --- Deregister on shutdown so the stable hostname is freed for the replacement ---
 cat > /etc/systemd/system/tailscale-logout.service <<'UNIT'
@@ -75,11 +69,6 @@ WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
 systemctl enable --now tailscale-logout.service
-
-# --- TLS certificate from Tailscale (renewed by a daily systemd timer below) ---
-mkdir -p /etc/caddy/tls
-tailscale cert --cert-file "/etc/caddy/tls/${TS_FQDN}.crt" \
-  --key-file "/etc/caddy/tls/${TS_FQDN}.key" "$TS_FQDN"
 
 # --- SigV4 signing proxy (from the praktika wheel): signs with the instance
 #     role, streams from S3 ---
@@ -137,7 +126,11 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now praktika-debug-ttyd
 
-# --- Caddy (static binary) fronting the signer: TLS :443 + HTTP :8080, GET/HEAD only ---
+# --- Caddy: loopback router behind `tailscale serve`. Routes /term* -> ttyd and
+#     report GETs -> the signer, and ACCESS-LOGS every request as JSON (including
+#     the Tailscale-User-Login header that `tailscale serve` injects) for per-user
+#     attribution. TLS + identity live in `tailscale serve` below, so Caddy
+#     listens only on loopback and terminates no TLS. ---
 case "$(uname -m)" in
   aarch64) CADDY_ARCH=arm64 ;;
   x86_64)  CADDY_ARCH=amd64 ;;
@@ -146,16 +139,35 @@ esac
 curl -fsSL -o /usr/local/bin/caddy "https://caddyserver.com/api/download?os=linux&arch=${CADDY_ARCH}"
 chmod +x /usr/local/bin/caddy
 id caddy &>/dev/null || useradd --system --home /var/lib/caddy --shell /sbin/nologin caddy
-chown -R caddy:caddy /etc/caddy/tls
+install -d /etc/caddy
+# Caddy's data dir (home) and log dir, owned by the caddy user. useradd --system
+# does not create the home, and Caddy writes state (e.g. its local CA) there.
+install -d -o caddy -g caddy /var/lib/caddy /var/log/caddy
 
-cat > /etc/caddy/Caddyfile <<CADDY
+cat > /etc/caddy/Caddyfile <<'CADDY'
 {
 	admin off
+	# tailscale serve terminates TLS; Caddy is plain HTTP on loopback. Disable
+	# automatic HTTPS so Caddy neither manages certs nor runs HTTP->HTTPS redirects.
+	auto_https off
 }
-(handlers) {
-	# Live job debug terminal (ttyd). More specific than the method matcher
-	# below, so Caddy routes /term* here first. reverse_proxy upgrades the
-	# WebSocket automatically. Tailnet-only, same reachability as reports.
+:8080 {
+	# Listen on loopback only (tailscale serve proxies here); match ANY Host,
+	# since serve forwards the original FQDN Host, not 127.0.0.1. A `127.0.0.1:8080`
+	# site address would instead host-match 127.0.0.1 and 400 serve's requests.
+	bind 127.0.0.1
+	# Per-request JSON access log. request.uri carries /term?arg=<runner> and
+	# request.headers includes Tailscale-User-Login (who connected) -> one
+	# self-describing audit line per debug session. Shipped to CloudWatch below.
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 20MiB
+			roll_keep 5
+		}
+		format json
+	}
+	# Live job debug terminal (ttyd). More specific than the method matcher, so
+	# /term* routes here first; reverse_proxy upgrades the WebSocket.
 	handle /term* {
 		reverse_proxy 127.0.0.1:7681
 	}
@@ -163,20 +175,10 @@ cat > /etc/caddy/Caddyfile <<CADDY
 	handle @get_head {
 		reverse_proxy 127.0.0.1:8081
 	}
-	# Anything that is not GET/HEAD falls through to this mutually-exclusive
-	# handle block and is rejected.
+	# Anything not GET/HEAD (and not /term) is rejected.
 	handle {
 		respond 405
 	}
-}
-:8080 {
-	bind ${TS_BIND}
-	import handlers
-}
-${TS_FQDN}:443 {
-	bind ${TS_BIND}
-	tls /etc/caddy/tls/${TS_FQDN}.crt /etc/caddy/tls/${TS_FQDN}.key
-	import handlers
 }
 CADDY
 
@@ -192,40 +194,39 @@ ExecStart=/usr/local/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddy
 ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
 Restart=always
 RestartSec=2
-AmbientCapabilities=CAP_NET_BIND_SERVICE
 [Install]
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
 systemctl enable --now caddy
 
-# --- Renew the Tailscale TLS cert daily (certs expire ~90d; ASG also refreshes
-#     the cert whenever it replaces the instance) ---
-cat > /usr/local/bin/praktika-renew-tailscale-cert <<'RENEW'
-#!/usr/bin/env bash
-set -euo pipefail
-TS_FQDN=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
-tailscale cert --cert-file "/etc/caddy/tls/${TS_FQDN}.crt" \
-  --key-file "/etc/caddy/tls/${TS_FQDN}.key" "$TS_FQDN"
-chown -R caddy:caddy /etc/caddy/tls
-systemctl reload caddy
-RENEW
-chmod +x /usr/local/bin/praktika-renew-tailscale-cert
-cat > /etc/systemd/system/praktika-renew-tailscale-cert.service <<UNIT
-[Unit]
-Description=Renew Tailscale TLS certificate for the Praktika S3 proxy
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/praktika-renew-tailscale-cert
-UNIT
-cat > /etc/systemd/system/praktika-renew-tailscale-cert.timer <<UNIT
-[Unit]
-Description=Daily Tailscale TLS certificate renewal
-[Timer]
-OnCalendar=daily
-Persistent=true
-[Install]
-WantedBy=timers.target
-UNIT
-systemctl daemon-reload
-systemctl enable --now praktika-renew-tailscale-cert.timer
+# --- Expose on the tailnet via `tailscale serve`: terminates TLS on :443 with a
+#     Tailscale-managed cert (nothing to renew) and injects verified
+#     Tailscale-User-* identity headers into each request proxied to Caddy, which
+#     Caddy logs above. Tailnet-only -- serve never listens on the VPC ENI. ---
+tailscale serve --bg 8080
+
+# --- Ship the Caddy access log (the per-user /term audit trail) to CloudWatch via
+#     the instance role (CloudWatchAgentServerPolicy) ---
+dnf install -y amazon-cloudwatch-agent
+cat > /etc/praktika-cw-agent.json <<CWCFG
+{
+	"agent": { "region": "${REGION}" },
+	"logs": {
+		"logs_collected": {
+			"files": {
+				"collect_list": [
+					{
+						"file_path": "/var/log/caddy/access.log",
+						"log_group_name": "__CW_LOG_GROUP__",
+						"log_stream_name": "{instance_id}",
+						"retention_in_days": 90
+					}
+				]
+			}
+		}
+	}
+}
+CWCFG
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+  -a fetch-config -m ec2 -c file:/etc/praktika-cw-agent.json -s

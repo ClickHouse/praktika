@@ -507,7 +507,7 @@ def _verify_s3_proxy(name: str, proxy, region: str) -> List[CheckResult]:
     import urllib.error
     import urllib.request
 
-    url = f"http://{fqdn}:8080/{bucket}/{key}"
+    url = f"https://{fqdn}/{bucket}/{key}"
     request = urllib.request.Request(url, headers={"Range": range_header})
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
@@ -518,7 +518,7 @@ def _verify_s3_proxy(name: str, proxy, region: str) -> List[CheckResult]:
             CheckResult(
                 f"{name} serves",
                 False,
-                f"proxy returned HTTP {e.code} for {bucket}/{key} at {fqdn}:8080",
+                f"proxy returned HTTP {e.code} for {bucket}/{key} at {fqdn}",
             )
         ]
     except Exception as e:  # noqa: BLE001 - DNS/connection failure => unreachable
@@ -526,7 +526,7 @@ def _verify_s3_proxy(name: str, proxy, region: str) -> List[CheckResult]:
             CheckResult(
                 f"{name} serves",
                 False,
-                f"unreachable at {fqdn}:8080 ({type(e).__name__}: {e}); "
+                f"unreachable at {fqdn} ({type(e).__name__}: {e}); "
                 f"ensure Tailscale is connected and the proxy node is up",
             )
         ]
@@ -544,7 +544,7 @@ def _verify_s3_proxy(name: str, proxy, region: str) -> List[CheckResult]:
         CheckResult(
             f"{name} serves",
             True,
-            f"served {len(served)} bytes of s3://{bucket}/{key} via {fqdn}:8080, "
+            f"served {len(served)} bytes of s3://{bucket}/{key} via {fqdn}, "
             f"bytes match S3 (HTTP {status})",
         )
     ]
@@ -552,7 +552,7 @@ def _verify_s3_proxy(name: str, proxy, region: str) -> List[CheckResult]:
     # Live-debug web terminal: ttyd serves its index page at /term/. A 200 here
     # confirms the ttyd unit is up and Caddy routes /term* to it (the SSH jump
     # only happens on the WebSocket, so the index load needs no runner).
-    term_url = f"http://{fqdn}:8080/term/"
+    term_url = f"https://{fqdn}/term/"
     try:
         with urllib.request.urlopen(term_url, timeout=15) as response:
             term_status = response.status
@@ -560,7 +560,7 @@ def _verify_s3_proxy(name: str, proxy, region: str) -> List[CheckResult]:
             CheckResult(
                 f"{name} debug-terminal",
                 term_status == 200,
-                f"ttyd answered HTTP {term_status} at {fqdn}:8080/term/",
+                f"ttyd answered HTTP {term_status} at {fqdn}/term/",
             )
         )
     except urllib.error.HTTPError as e:
@@ -568,7 +568,7 @@ def _verify_s3_proxy(name: str, proxy, region: str) -> List[CheckResult]:
             CheckResult(
                 f"{name} debug-terminal",
                 False,
-                f"ttyd returned HTTP {e.code} at {fqdn}:8080/term/",
+                f"ttyd returned HTTP {e.code} at {fqdn}/term/",
             )
         )
     except Exception as e:  # noqa: BLE001 - connection failure => unreachable
@@ -576,7 +576,7 @@ def _verify_s3_proxy(name: str, proxy, region: str) -> List[CheckResult]:
             CheckResult(
                 f"{name} debug-terminal",
                 False,
-                f"ttyd unreachable at {fqdn}:8080/term/ "
+                f"ttyd unreachable at {fqdn}/term/ "
                 f"({type(e).__name__}: {e})",
             )
         )

@@ -930,8 +930,15 @@ class CloudInfrastructure:
                 # Storages are already namespaced above, so their names are final.
                 if not proxy.proxied_buckets:
                     proxy.proxied_buckets = [config.name for config in self.storages]
+                # Derive the CloudWatch log group (attribution trail) from the
+                # project slug unless set explicitly, mirroring the controller's
+                # /{project}/praktika-controller.
+                if not proxy.cloudwatch_log_group:
+                    proxy.cloudwatch_log_group = (
+                        f"/{self._project_prefix()}/praktika-s3-proxy"
+                    )
                 # Re-derive the S3 IAM statement + user_data from the final
-                # hostname and bucket names.
+                # hostname, bucket names, and log group.
                 proxy._refresh()
 
             if self.docker_proxy:

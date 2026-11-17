@@ -15,9 +15,11 @@ served by the proxy, and the proxy SSHes into the runner over the private VPC.
 viewer (tailnet member)
   │  HTTPS over the tailnet (same trust boundary as private reports)
   ▼
-praktika-ci.<tailnet>.ts.net   (S3 proxy EC2 box, Caddy :443)
-  ├── /<bucket>/<key>   → SigV4 signer (GET/HEAD, private S3 reports)
-  └── /term/?arg=<id>   → ttyd ──runs──▶ debug_connect.py <instance_id>
+praktika-ci.<tailnet>.ts.net   (S3 proxy EC2 box)
+  tailscale serve :443  — TLS + injects the Tailscale-User-Login identity header
+    └─▶ Caddy (127.0.0.1:8080)  — routes + JSON access log → CloudWatch (audit)
+          ├── /<bucket>/<key>   → SigV4 signer (GET/HEAD, private S3 reports)
+          └── /term/?arg=<id>   → ttyd ──runs──▶ debug_connect <instance_id>
                                            │ 1. ec2:DescribeInstances → verify the
                                            │    target is a RUNNING job_runner;
                                            │    read its private IP + AZ
@@ -58,29 +60,34 @@ All under `praktika/infrastructure/native/` unless noted.
   `UserKnownHostsFile=/dev/null`): runners are ephemeral and recycle private IPs,
   and trust comes from EC2 Instance Connect + the tag scoping, not host keys.
 
-- **Caddy — the front door.** Caddy is the only process exposed on the tailnet;
-  both backends (ttyd and the SigV4 signer) bind to `127.0.0.1` and are reachable
-  *only* through it. Its job:
-  - **TLS termination** on `:443` using the Tailscale-issued certificate for the
-    node's FQDN (plus plain HTTP on `:8080`). The cert is renewed daily by a
-    systemd timer and re-issued whenever the ASG replaces the instance.
+- **`tailscale serve` — the TLS + identity front.** `tailscale serve --bg 8080`
+  owns the node's `:443` on the tailnet: it terminates TLS with a
+  Tailscale-managed certificate (nothing to renew) and injects verified
+  `Tailscale-User-Login` / `Tailscale-User-Name` headers into every proxied
+  request. It only ever listens on the tailnet interface, never the VPC ENI.
+
+- **Caddy — the loopback router + audit log.** Behind `tailscale serve`, Caddy
+  listens on `127.0.0.1:8080` only (`:8080 { bind 127.0.0.1 }` — any Host, since
+  serve forwards the original FQDN). Its job:
   - **Path routing** (reverse proxy): `/term*` → ttyd (`127.0.0.1:7681`),
     upgrading the WebSocket for the interactive terminal; `GET`/`HEAD` on
     `/<bucket>/<key>` → the signer (`127.0.0.1:8081`) for private S3 reports.
-  - **Method gating** — everything that is not `/term*` and not a `GET`/`HEAD`
-    falls through to a `405`, so the signer only ever sees read requests. The
-    `/term*` matcher is more specific than the method matcher, so Caddy evaluates
-    it first.
+  - **Method gating** — anything not `/term*` and not a `GET`/`HEAD` falls
+    through to a `405` (the `/term*` matcher is more specific, so it wins first).
+  - **Access logging** — a JSON access log records each request's `uri`
+    (`/term/?arg=<runner>`) and the `Tailscale-User-Login` header, shipped to
+    CloudWatch for a per-user audit trail (see Attribution below).
 
-  In short: Caddy is the TLS endpoint + router that fronts the two loopback
-  services; it is *not* in the SSH path (that is ttyd → `debug_connect.py`).
+  Caddy is `auto_https off` (serve does TLS) and is *not* in the SSH path.
 
-- **`s3_proxy_user_data.sh`** — extended to install a static `ttyd` binary and
-  `openssh-clients`, inline `debug_connect.py`, run it under a
-  `praktika-debug-ttyd` systemd unit (`ttyd -b /term -a -W -m <N>`), and add the
-  `handle /term*` route to the Caddyfile described above (Caddy upgrades the
-  WebSocket automatically). `-m` is a **global** cap on concurrent sessions
-  (see `max_debug_sessions`).
+- **`s3_proxy_user_data.sh`** — installs `python3.13` + the praktika wheel (the
+  signer and `debug_connect` run as `python3.13 -m
+  praktika.infrastructure.native.{s3_proxy_signer,debug_connect}`, not inlined —
+  the base AL2023 python3 is 3.9, too old for praktika's `X | None` unions),
+  installs a static `ttyd` binary and `openssh-clients`, runs ttyd under a
+  `praktika-debug-ttyd` unit (`ttyd -b /term -a -W`), writes the Caddyfile +
+  `tailscale serve` + the CloudWatch agent, and writes the session cap to
+  `/opt/praktika-debug/max_sessions`.
 
 - **`s3_proxy.py`** (`S3Proxy`):
   - `_refresh()` adds two IAM statements: `ec2:DescribeInstances` (Resource `*`,
@@ -88,7 +95,15 @@ All under `praktika/infrastructure/native/` unless noted.
     **`Condition`-scoped to `ec2:ResourceTag/praktika_role = job_runner`**;
   - `deploy()` authorizes the proxy→runner `tcp/22` ingress (self-referencing
     rule on the shared `{vpc}-sg`, mirroring `DockerProxy.deploy`);
-  - `max_debug_sessions` (default 5; 0 = unlimited) sets ttyd's `-m`.
+  - `praktika_wheel` — the `pip install` spec the node installs at boot (defaults
+    to the version-less `latest` S3 alias; also accepts a pinned wheel URL or a
+    PyPI requirement like `praktika==x.y.z`);
+  - `cloudwatch_log_group` — where the Caddy access log (the attribution trail)
+    is shipped (empty default → CloudInfrastructure derives
+    `/{project}/praktika-s3-proxy` from the slug during namespacing);
+  - `max_debug_sessions` (default 5; 0 = unlimited) — the global concurrent
+    session cap, enforced in `debug_connect` via `flock` slots (atomic across both
+    the browser and direct-SSH entry points), not `ttyd -m`.
 
 - **`cloud.py`** — wires `S3Proxy.deploy()` into the deploy orchestration with its
   own manifest key, and adds an `--only S3Proxy` branch to `restart_instances`
@@ -137,20 +152,19 @@ python3 -m praktika infrastructure --restart-instances --only S3Proxy --project 
 This turns a read-only, tailnet-only report proxy into a path to **remote code
 execution (with passwordless `sudo`) on CI runners**. Controls in place:
 
-- **Tailnet-only exposure.** Caddy serves `/term*` only on the tailnet FQDN
-  (:443) / :8080 — the same reachability as private reports. No public exposure.
+- **Tailnet-only exposure.** `tailscale serve` exposes `:443` only on the tailnet
+  FQDN — the same reachability as private reports. No public exposure.
 - **Runners cannot reach the proxy's terminal (the reverse path).** This matters
   because runners execute untrusted PR code. Two independent layers stop a runner
   from using the jump host against other runners:
-  1. The proxy's security group does **not** open 8080/443 to the VPC (its only
+  1. The proxy's security group does **not** open 443/8080 to the VPC (its only
      same-SG inbound ports are 22/9000/8123, and nothing listens on 9000/8123;
-     sshd on 22 has no runner-usable credentials). So a runner hitting the
-     proxy's private IP on the terminal's ports is dropped at the SG.
-  2. Caddy `bind`s its `:8080` and `:443` listeners to the node's **Tailscale IP
-     only**, so even if a future broad SG rule opened those ports, the terminal
-     is still physically unreachable from the VPC ENI — reachable solely over the
-     tailnet overlay, which runners are not on. ttyd and the signer additionally
-     bind to `127.0.0.1`.
+     sshd on 22 has no runner-usable credentials).
+  2. `tailscale serve` only listens on the node's tailnet interface, and Caddy +
+     ttyd + the signer all bind to `127.0.0.1`. So nothing in the terminal path
+     listens on the VPC ENI at all — it is reachable solely over the tailnet
+     overlay, which runners are not on. Also forces every `/term` request through
+     `tailscale serve`, so none can skip the identity header.
 - **Target allow-listing.** `debug_connect.py` refuses any instance that is not
   `state=running` with `praktika_role=job_runner`, and validates the id format.
   The IAM `SendSSHPublicKey` grant is `Condition`-scoped to the same tag, so the
@@ -159,25 +173,16 @@ execution (with passwordless `sudo`) on CI runners**. Controls in place:
   minted per session; nothing persistent lands on the proxy or the runners.
 - **Ephemeral targets.** Runner pools scale from zero — the instance exists only
   while the job runs, so the shell is unavailable before/after.
-- **Concurrency cap.** `max_debug_sessions` bounds simultaneous sessions
-  (ttyd `-m`), limiting blast radius and resource use on the proxy.
-
-### Known gap — no per-user identity / attribution
-
-Plain Caddy does **not** know *which* tailnet user opened a terminal. Every
-session reaches the runner as the same OS user via the proxy's single IAM role,
-so there is currently **no attribution**: the audit trail stops at "someone on
-the tailnet". Given this grants `sudo` RCE on runners, that is the most important
-limitation to close before broad rollout. Options, in rough order of effort:
-
-- inject Tailscale identity headers (`tailscale serve` adds
-  `Tailscale-User-Login`) and log them per session;
-- add ttyd basic auth (`-c user:pass`);
-- move the backend to **AWS SSM Session Manager**, which gives fully-audited,
-  per-principal session logging (kept as the compliance-grade alternative).
-
-Until one of these lands, treat tailnet membership itself as the authorization
-boundary and keep the tailnet ACL for the proxy tight.
+- **Concurrency cap.** `max_debug_sessions` bounds simultaneous sessions,
+  enforced in `debug_connect` via `flock` slots, limiting blast radius and
+  resource use on the proxy.
+- **Per-user attribution.** `tailscale serve` authenticates the tailnet peer and
+  injects a verified `Tailscale-User-Login` header; Caddy's JSON access log
+  records it alongside the request `uri` (`/term/?arg=<runner>`) and ships to
+  CloudWatch (`cloudwatch_log_group`). So every debug session — and every report
+  fetch — is attributed to a specific person: *who → which runner → when*. (AWS
+  SSM Session Manager remains the compliance-grade alternative if full
+  per-principal **session content** recording is ever required.)
 
 ### Known gap — credentials in EC2 console output
 

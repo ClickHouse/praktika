@@ -98,6 +98,14 @@ class S3Proxy:
         "https://praktika-artifacts-eu-north-1.s3.amazonaws.com"
         "/packages/latest/praktika-0.0.0-py3-none-any.whl"
     )
+    # CloudWatch log group the Caddy access log ships to, giving a per-user audit
+    # trail of debug sessions (tailscale serve injects the Tailscale-User-Login
+    # header; Caddy logs it alongside the /term?arg=<runner> request). The instance
+    # role's CloudWatchAgentServerPolicy creates the group/stream on first write.
+    # Left empty: CloudInfrastructure derives "/{project}/praktika-s3-proxy" during
+    # namespacing (mirroring the controller's "/{project}/praktika-controller").
+    # Set explicitly to override.
+    cloudwatch_log_group: str = ""
     security_group_ids: List[str] = field(default_factory=list)
     security_group_names: List[str] = field(default_factory=list)
     volume_size_gb: int = 20
@@ -226,6 +234,7 @@ class S3Proxy:
             oauth_client_secret_ssm=self.tailscale_oauth_client_secret_ssm,
             proxied_buckets=self.proxied_buckets,
             praktika_wheel=self.praktika_wheel,
+            cloudwatch_log_group=self.cloudwatch_log_group,
             max_debug_sessions=self.max_debug_sessions,
         )
 

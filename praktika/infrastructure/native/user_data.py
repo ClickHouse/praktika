@@ -43,6 +43,7 @@ def s3_proxy_user_data(
     oauth_client_secret_ssm,
     proxied_buckets,
     praktika_wheel,
+    cloudwatch_log_group,
     max_debug_sessions=5,
 ):
     """Render the S3 report proxy bootstrap script.
@@ -64,6 +65,7 @@ def s3_proxy_user_data(
         "__TS_HOSTNAME__",
         "__PROXIED_BUCKETS__",
         "__PRAKTIKA_WHL__",
+        "__CW_LOG_GROUP__",
         "__MAX_DEBUG_SESSIONS__",
     )
     for ph in placeholders:
@@ -77,6 +79,7 @@ def s3_proxy_user_data(
         .replace("__TS_HOSTNAME__", hostname)
         .replace("__PROXIED_BUCKETS__", " ".join(proxied_buckets))
         .replace("__PRAKTIKA_WHL__", praktika_wheel)
+        .replace("__CW_LOG_GROUP__", cloudwatch_log_group)
         .replace("__MAX_DEBUG_SESSIONS__", str(int(max_debug_sessions)))
     )
     # EC2 caps user_data at 16 KiB raw (pre-base64). With the Python payloads now
