@@ -78,9 +78,10 @@ def _die(msg):
 
 def _acquire_slot():
     """Atomically claim one of N session slots, or show a banner and exit if all
-    are taken. Returns the held slot fd (kept open for the session lifetime) or
-    None when uncapped. The fd is made inheritable so it survives the exec into
-    ssh and the kernel-held flock is released only when that ssh exits."""
+    are taken. Returns the held slot fd (or None when uncapped). This process
+    keeps the fd open and supervises ssh as a child (it does NOT exec ssh), so the
+    kernel-held flock lasts the whole session and is released only when this
+    process exits after ssh does."""
     n = _max_sessions()
     if n <= 0:
         return None  # uncapped
@@ -103,8 +104,7 @@ def _acquire_slot():
         except OSError:
             os.close(fd)
             continue  # slot held by a live session
-        os.set_inheritable(fd, True)  # survive exec; released when ssh exits
-        return fd
+        return fd  # held by this process for the session (see main(): ssh is a child)
     bar = "=" * 56
     sys.stdout.write(
         f"\r\n{bar}\r\n"
@@ -181,9 +181,9 @@ def main():
         _die(f"invalid instance id: {instance_id!r}")
 
     # Claim a session slot before touching AWS; banners + exits if the jump host
-    # is full. Keep the returned fd bound for the rest of main() so the slot stays
-    # held until we exec into ssh (which then holds it for the session lifetime).
-    _slot_fd = _acquire_slot()  # noqa: F841 - held open on purpose
+    # is full. This process holds the fd for the whole session (it supervises ssh
+    # as a child below, not exec), so the slot stays held until ssh exits.
+    _slot_fd = _acquire_slot()
 
     session = boto3.session.Session(region_name=_resolve_region())
     private_ip, az = _describe_runner(session.client("ec2"), instance_id)
@@ -236,19 +236,27 @@ def main():
     )
     sys.stderr.flush()
 
-    # Refresh the ~60s Instance Connect key right before handing over, then exec
-    # so ttyd's TTY is passed straight to the interactive session.
+    # Refresh the ~60s Instance Connect key right before handing over.
     try:
         _push_key(chosen)
     except Exception as e:  # noqa: BLE001
         _die(f"send-ssh-public-key failed for {chosen}: {e}")
-    # -tt forces a remote PTY even though a command is given, so bash stays
-    # interactive after the tail is interrupted. ttyd already handed us a PTY.
-    os.execvp(
-        "ssh",
-        ["ssh", "-tt", "-i", key_path, *_SSH_OPTS,
-         f"{chosen}@{private_ip}", _REMOTE_CMD],
-    )
+    # Run ssh as a CHILD and wait — do NOT exec() it. OpenSSH closes inherited
+    # fds > 2 at startup, so exec'ing would drop the flock slot (_slot_fd) the
+    # instant the session began, defeating the concurrency cap. As the parent we
+    # keep _slot_fd open for the whole session; it (and the lock) are released
+    # when this process exits after ssh. ssh inherits our stdio = ttyd's PTY, so
+    # the terminal is still fully interactive. -tt forces a remote PTY so bash
+    # stays interactive after the tail is Ctrl-C'd.
+    try:
+        result = subprocess.run(
+            ["ssh", "-tt", "-i", key_path, *_SSH_OPTS,
+             f"{chosen}@{private_ip}", _REMOTE_CMD]
+        )
+    finally:
+        if _slot_fd is not None:
+            os.close(_slot_fd)
+    sys.exit(result.returncode)
 
 
 if __name__ == "__main__":
