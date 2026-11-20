@@ -27,6 +27,12 @@ _PRAKTIKA_CONTROLLER_LATEST_WHL_NAME = "praktika_controller-0.0.0-py3-none-any.w
 _PRAKTIKA_CONTROLLER_WHL = (
     f"{_PRAKTIKA_PACKAGE_BASE_URL}/latest/{_PRAKTIKA_CONTROLLER_LATEST_WHL_NAME}"
 )
+# The S3/debug proxy pip-installs praktika at boot and runs the SigV4 signer +
+# live-debug wrapper as modules (no inlining). Track the version-less "latest"
+# alias so the proxy follows main like the controller runtime does.
+_PRAKTIKA_LATEST_WHL = (
+    f"{_PRAKTIKA_PACKAGE_BASE_URL}/latest/praktika-0.0.0-py3-none-any.whl"
+)
 _RUNTIME_BASE_VENV = "praktika-runtime"
 
 
@@ -423,6 +429,28 @@ _cidb_cluster = Components.CIDBCluster(
     size=1,
 )
 
+# Tailnet report proxy + live-job-debug jump host. A single-instance ASG on the
+# project VPC that (a) serves reports over the tailnet and (b) hosts the ttyd
+# web terminal at /term, SSH-jumping into a running job's runner. VPC / subnet /
+# SG are inherited from the project VPC by _apply_pool_defaults, so only the
+# tailnet identity + OAuth source are set here. The OAuth client SSM params must
+# already exist (created out of band) for the node to join the tailnet at boot.
+_s3_proxy = Components.S3Proxy(
+    # Report / terminal URL: https://praktika-ci.tail983ac.ts.net/...
+    hostname="praktika-ci",
+    instance_type="t4g.large",
+    # Must match a tag the OAuth client below is authorized for. These creds are
+    # shared with the amber project, whose proxy mints keys under this tag, so
+    # reuse it (a tag the client can't mint fails the tailnet join at boot).
+    tailnet="tail983ac.ts.net",
+    tailscale_tag="tag:svc-core-ci-github",
+    tailscale_oauth_client_id_ssm="/praktika/tailscale/oauth-client-id",
+    tailscale_oauth_client_secret_ssm="/praktika/tailscale/oauth-client-secret",
+    # Signer + live-debug wrapper run from this wheel (installed at boot).
+    praktika_wheel=_PRAKTIKA_LATEST_WHL,
+    # proxied_buckets defaults to every project Storage bucket.
+)
+
 PROJECTS = [
     CloudInfrastructure.Config(
         name="praktika",
@@ -445,5 +473,6 @@ PROJECTS = [
         orchestrator_pools=[_orchestrator_pool, _orchestrator_pool_base],
         runner_pools=_runner_pools,
         cidb_cluster=_cidb_cluster,
+        s3_proxy=_s3_proxy,
     ),
 ]

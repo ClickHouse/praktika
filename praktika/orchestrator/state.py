@@ -1569,6 +1569,13 @@ class WorkflowState:
                 # Stable across loops: the lines only grow as attempts are lost.
                 for line in js._attempt_lines(lost_only=True):
                     _r.add_warning(line)
+                # Surface the current runner's instance id so the report can offer
+                # a live-debug shell (jump-host via the S3 proxy) into the box
+                # while the job runs. Stable once the first heartbeat lands; the
+                # row disappears when the job leaves RUNNING, so the link goes with
+                # it. Absent until the runner first heartbeats.
+                if js.runner_instance_id:
+                    _r.add_ext_key_value("instance_id", js.runner_instance_id)
                 running_rows.append(_r)
 
             top_ext = {}
