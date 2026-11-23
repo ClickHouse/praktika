@@ -2184,14 +2184,22 @@ class CloudInfrastructure:
                                 # left in place with its manifest entry so the
                                 # reminder persists until it drains.
                                 #
-                                # Known gap: a pool with capacity_reserve > 0 whose
-                                # reserved instance never ran a job preserves itself
-                                # (common/try_scale_in_if_idle) and, once out of
-                                # config, is no longer managed by the autoscaler, so
-                                # it never drains on its own — delete(force=False)
-                                # keeps returning False and the pool stays orphaned.
-                                # Such pools must be drained/removed manually (set
-                                # capacity_reserve to 0 or scale the ASG to 0 first).
+                                # Known gap: a retained pool does not auto-converge
+                                # once it is out of config, because the autoscaler no
+                                # longer manages it, so nothing drains it on its own:
+                                #   - capacity_reserve > 0: a reserved instance that
+                                #     never ran a job preserves itself
+                                #     (common/try_scale_in_if_idle), so the ASG stays
+                                #     non-empty and delete(force=False) keeps failing.
+                                #   - queue has work but ASG is idle (the retain path
+                                #     above): no autoscaler tick will ever spin up a
+                                #     runner to consume the message.
+                                # Either way delete(force=False) never succeeds and
+                                # the pool stays orphaned (retain-and-warn, never a
+                                # force-kill). Such pools must be drained/removed
+                                # manually — set capacity_reserve to 0 or scale the
+                                # ASG to 0, or briefly re-add the pool to drain the
+                                # queue, then deploy.
                                 if kind == "autoscaling_group":
                                     retained_pools.add(name)
                                 continue
