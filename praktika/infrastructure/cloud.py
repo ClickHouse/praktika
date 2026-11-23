@@ -2156,6 +2156,29 @@ class CloudInfrastructure:
                                 # the whole pool; its manifest entry stays so the
                                 # next deploy retries once it drains.
                                 continue
+                            # A pool's ASG, queue, launch template and IAM all share
+                            # the pool name (asg/queue = <pool>, plus -lt/-role/
+                            # -profile), and the ASG is pruned before the queue. An
+                            # idle pool can have desired_capacity=0 yet a job just
+                            # queued awaiting the next autoscaler tick; deleting its
+                            # empty ASG here would then let the launch template / IAM
+                            # be pruned too (the queue is kept, but nothing is left
+                            # to run its message). So before tearing down an ASG,
+                            # check its queue and retain the whole pool if it still
+                            # has work — the queue and the rest are then skipped via
+                            # `owned` above.
+                            if (
+                                kind == "autoscaling_group"
+                                and not SQSQueue.Config(
+                                    name=name, region=region
+                                ).is_empty()
+                            ):
+                                print(
+                                    f"ASG '{name}' is idle but its queue still has "
+                                    f"work - retaining the pool until it drains"
+                                )
+                                retained_pools.add(name)
+                                continue
                             if not self._orphan_teardown(kind, name, region):
                                 # Still busy (running pool / in-flight queue) —
                                 # left in place with its manifest entry so the
