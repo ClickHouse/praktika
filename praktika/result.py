@@ -1032,6 +1032,74 @@ class Result(MetaClasses.Serializable):
         return result
 
     @classmethod
+    def from_junit_report(
+        cls,
+        report_glob=None,
+        name="",
+        stopwatch=None,
+        process_exit_code=0,
+        files=None,
+        info="",
+    ):
+        """Build a Result from already-written JUnit XML report(s), reconciled
+        with the exit code of a test process the caller ran itself.
+
+        This is the "assemble only" half of from_junit_run: use it when the job
+        must run the test command on its own — e.g. to wrap it in environment
+        setup and collect failure diagnostics around it — rather than delegating
+        the run to from_junit_run. Sub-results are the individual test cases, so
+        the report page renders a per-spec table.
+
+        Because the caller runs the process, it also owns timing: pass the
+        job-level `stopwatch` (covering setup + the test run) and the process's
+        `process_exit_code`; `files` are attached alongside the parsed reports.
+
+        Status reconciliation mirrors from_junit_run:
+        - no report / no cases parsed (process killed before writing, OOM, glob
+          miss) -> ERROR.
+        - cases parsed -> status derived from the cases.
+        - all cases green but process_exit_code != 0 (panic or teardown failure
+          after the specs finished) -> force FAIL; a green suite must not mask
+          it.
+
+        :param report_glob: recursive glob matching the JUnit XML report(s);
+            defaults to ResultTranslator.JUNIT_RESULT_FILE.
+        :param name: Result name; defaults to the praktika job name.
+        :param stopwatch: Utils.Stopwatch measuring the job's wall time.
+        :param process_exit_code: exit code of the test process the caller ran.
+        :param files: extra files to attach (e.g. diagnostics archives).
+        :param info: extra info note; a parse error takes precedence.
+        :return: Result
+        """
+        if not name:
+            name = Info().job_name
+
+        base_files = list(files or [])
+        status, results, parse_error, paths = ResultTranslator.from_junit(report_glob)
+        if not results:
+            return cls.create_from(
+                name=name,
+                status=cls.Status.ERROR,
+                stopwatch=stopwatch,
+                info=parse_error or info or "JUnit report contained no test cases",
+                files=base_files + paths,
+            )
+
+        result = cls.create_from(
+            name=name,
+            results=results,
+            stopwatch=stopwatch,
+            files=base_files + paths,
+            info=parse_error or info,
+        )
+        if process_exit_code != 0 and result.is_ok():
+            result.set_status(cls.Status.FAIL)
+            result.set_info(
+                "test process exited with non-zero code despite all parsed cases passing - see logs"
+            )
+        return result
+
+    @classmethod
     def from_commands_run(
         cls,
         name,

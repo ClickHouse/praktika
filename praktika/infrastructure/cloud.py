@@ -2141,6 +2141,18 @@ class CloudInfrastructure:
                             # independent pool that merely shares a prefix (e.g.
                             # retained `arm` vs. a separate `arm-large`) is not
                             # skipped and orphaned along with it.
+                            #
+                            # Known gap: this assumes the default IAM naming
+                            # (<pool>-role / <pool>-profile). A pool with a
+                            # caller-supplied ec2_role/instance_profile, or an
+                            # OrchestratorPool (shared workflow-orchestrator-*
+                            # names), has differently-named IAM that this set
+                            # won't protect — if such a pool is retained busy
+                            # while its role/profile are also orphans, they can
+                            # still be pruned, revoking the live instance's
+                            # access. Protecting those needs pool->dependency
+                            # ownership recorded in the manifest; until then,
+                            # decommission custom/shared-IAM pools manually.
                             owned = {
                                 resource
                                 for base in retained_pools
