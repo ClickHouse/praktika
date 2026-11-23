@@ -2136,10 +2136,22 @@ class CloudInfrastructure:
                     retained_pools: set = set()
                     for kind in deletable:
                         for name in sorted(by_kind[kind]):
-                            if any(
-                                name == base or name.startswith(f"{base}-")
+                            # A retained (busy) pool owns exactly these names;
+                            # match them explicitly rather than by prefix, so an
+                            # independent pool that merely shares a prefix (e.g.
+                            # retained `arm` vs. a separate `arm-large`) is not
+                            # skipped and orphaned along with it.
+                            owned = {
+                                resource
                                 for base in retained_pools
-                            ):
+                                for resource in (
+                                    base,
+                                    f"{base}-lt",
+                                    f"{base}-role",
+                                    f"{base}-profile",
+                                )
+                            }
+                            if name in owned:
                                 # Belongs to a pool whose ASG is still busy — defer
                                 # the whole pool; its manifest entry stays so the
                                 # next deploy retries once it drains.
@@ -2148,6 +2160,15 @@ class CloudInfrastructure:
                                 # Still busy (running pool / in-flight queue) —
                                 # left in place with its manifest entry so the
                                 # reminder persists until it drains.
+                                #
+                                # Known gap: a pool with capacity_reserve > 0 whose
+                                # reserved instance never ran a job preserves itself
+                                # (common/try_scale_in_if_idle) and, once out of
+                                # config, is no longer managed by the autoscaler, so
+                                # it never drains on its own — delete(force=False)
+                                # keeps returning False and the pool stays orphaned.
+                                # Such pools must be drained/removed manually (set
+                                # capacity_reserve to 0 or scale the ASG to 0 first).
                                 if kind == "autoscaling_group":
                                     retained_pools.add(name)
                                 continue
