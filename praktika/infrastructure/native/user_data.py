@@ -42,16 +42,21 @@ def s3_proxy_user_data(
     oauth_client_id_ssm,
     oauth_client_secret_ssm,
     proxied_buckets,
+    praktika_wheel,
+    cloudwatch_log_group,
+    max_debug_sessions=5,
 ):
     """Render the S3 report proxy bootstrap script.
 
-    Inlines the SigV4 signer (base64-encoded) so the instance is self-contained
-    on first boot. The proxied bucket allowlist is passed to the signer via an
+    The SigV4 signer and the live-debug jump-host wrapper are NOT inlined: the
+    node ``pip install``s the praktika wheel (``praktika_wheel``) at boot and runs
+    them as modules (``python3 -m
+    praktika.infrastructure.native.{s3_proxy_signer,debug_connect}``). This keeps
+    user_data small and makes the proxy track the same versioned wheel as the
+    runners/orchestrator — one source of truth instead of a copy frozen into
+    user_data. The proxied bucket allowlist is passed to the signer via an
     environment variable rendered into its systemd unit.
     """
-    import base64
-
-    signer_py = (_HERE / "s3_proxy_signer.py").read_text()
     template = (_HERE / "s3_proxy_user_data.sh").read_text()
     placeholders = (
         "__TS_OAUTH_CLIENT_ID_SSM__",
@@ -59,21 +64,34 @@ def s3_proxy_user_data(
         "__TS_TAG__",
         "__TS_HOSTNAME__",
         "__PROXIED_BUCKETS__",
-        "__SIGNER_PY_B64__",
+        "__PRAKTIKA_WHL__",
+        "__CW_LOG_GROUP__",
+        "__MAX_DEBUG_SESSIONS__",
     )
     for ph in placeholders:
         if ph not in template:
             raise RuntimeError(f"s3_proxy_user_data.sh is missing {ph}")
-    signer_b64 = base64.b64encode(signer_py.encode("utf-8")).decode("ascii")
-    return (
+    rendered = (
         template
         .replace("__TS_OAUTH_CLIENT_ID_SSM__", oauth_client_id_ssm)
         .replace("__TS_OAUTH_CLIENT_SECRET_SSM__", oauth_client_secret_ssm)
         .replace("__TS_TAG__", tailscale_tag)
         .replace("__TS_HOSTNAME__", hostname)
         .replace("__PROXIED_BUCKETS__", " ".join(proxied_buckets))
-        .replace("__SIGNER_PY_B64__", signer_b64)
+        .replace("__PRAKTIKA_WHL__", praktika_wheel)
+        .replace("__CW_LOG_GROUP__", cloudwatch_log_group)
+        .replace("__MAX_DEBUG_SESSIONS__", str(int(max_debug_sessions)))
     )
+    # EC2 caps user_data at 16 KiB raw (pre-base64). With the Python payloads now
+    # installed from the wheel this is comfortable, but keep the guard as cheap
+    # insurance against the bootstrap script growing unbounded.
+    size = len(rendered.encode("utf-8"))
+    if size > 16384:
+        raise RuntimeError(
+            f"s3_proxy user_data is {size} bytes, over EC2's 16384-byte limit; "
+            f"trim s3_proxy_user_data.sh."
+        )
+    return rendered
 
 
 def _docker_proxy_tailscale_setup(tailscale, listen_port):

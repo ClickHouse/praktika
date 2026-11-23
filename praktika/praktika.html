@@ -458,7 +458,7 @@
         <div class="left"></div>
         <div class="right"></div>
         <div class="settings">
-            <span id="proxy-toggle" title="Configure downstream proxy URL">🔗</span>
+            <span id="proxy-toggle" title="Configure report proxy URL">🔗</span>
             <span id="status-filter-toggle" title="Filter by status"></span>
             <span id="sort-toggle" title="Sort by status">🔼</span>
             <span id="theme-toggle" title="Toggle day/night theme">🔆️</span>
@@ -609,7 +609,7 @@
 
     function toggleProxy() {
         const current = localStorage.getItem('privateBaseUrl') || '';
-        const value = prompt('Downstream proxy base URL (leave empty to disable):', current);
+        const value = prompt('Report proxy base URL — serves private reports and the live-debug shell (leave empty to disable):', current);
         if (value === null) return; // cancelled
         if (value.trim()) {
             try {
@@ -632,8 +632,8 @@
         if (toggle) {
             toggle.style.opacity = hasProxy ? '1' : '0.4';
             toggle.title = hasProxy
-                ? 'Downstream proxy: ' + localStorage.getItem('privateBaseUrl')
-                : 'Configure downstream proxy URL';
+                ? 'Report proxy: ' + localStorage.getItem('privateBaseUrl')
+                : 'Configure report proxy URL';
         }
     }
 
@@ -2042,6 +2042,55 @@
                         });
                     }
                     td.appendChild(statusEl);
+                    // Live-debug shell: while a top-level job is RUNNING, the
+                    // orchestrator stamps the runner's instance id onto its row
+                    // ext. If a report proxy base URL is configured, that proxy
+                    // jump-hosts an interactive shell into the runner at
+                    // /term/?arg=<instance_id>. Only at the workflow top level
+                    // (nest_level === 1) and only while RUNNING — the id is
+                    // cleared when the row leaves RUNNING, so the link goes away.
+                    const debugProxyBase = localStorage.getItem('privateBaseUrl');
+                    // instance_id is runner-supplied report data; validate it
+                    // against the strict EC2 id pattern before putting it in a URL
+                    // or (especially) a shell command the user pastes — otherwise a
+                    // value like "i-x; rm -rf ~" would be command injection on copy.
+                    const debugId = result.ext?.instance_id;
+                    const debugIdOk = typeof debugId === 'string' && /^i-[0-9a-f]{8,}$/.test(debugId);
+                    // The proxy base URL points at a bucket path (https://proxy/bucket)
+                    // for report fetches; the terminal lives at the proxy ORIGIN, since
+                    // Caddy only routes root-level /term*. Derive origin/host from it.
+                    let proxyOrigin = null, proxyHost = null;
+                    if (debugProxyBase) {
+                        try {
+                            const u = new URL(debugProxyBase);
+                            proxyOrigin = u.origin;
+                            proxyHost = u.host;
+                        } catch (e) { /* malformed base URL -> no debug actions */ }
+                    }
+                    if (nest_level === 1 && value_ === 'running' && debugIdOk && proxyOrigin) {
+                        const debugLink = document.createElement('a');
+                        debugLink.href = `${proxyOrigin}/term/?arg=${encodeURIComponent(debugId)}`;
+                        debugLink.target = '_blank';
+                        debugLink.rel = 'noopener noreferrer';
+                        // Bare terminal emoji, inline with the status text: same
+                        // line, inherits its font-size, no link underline.
+                        debugLink.textContent = '🖥️';
+                        debugLink.title = `Open debug terminal on runner ${debugId}`;
+                        debugLink.style.textDecoration = 'none';
+                        debugLink.style.marginLeft = '6px';
+                        debugLink.style.cursor = 'pointer';
+                        debugLink.style.verticalAlign = 'middle';
+                        td.appendChild(debugLink);
+
+                        // NOTE: a direct-SSH "copy terminal command" alternative was
+                        // intentionally removed here: the proxy's ec2-user SSH account
+                        // is not restricted to a forced command, so offering a raw
+                        // `ssh ec2-user@host -- debug_connect <id>` string lets anyone
+                        // who can run it simply drop the trailing command and obtain an
+                        // unrestricted shell on the jump host. Only the ttyd web
+                        // terminal (which always invokes debug_connect.py, with no shell
+                        // fallback) is exposed here.
+                    }
                     row.style.display = shouldShowRow(filter, row.dataset.status) ? '' : 'none';
                 } else if (column === 'name') {
                     const statusValue = result["status"] ? result["status"].toLowerCase() : "";
@@ -2652,15 +2701,29 @@
     // Fetch downstream (private sync) results via proxy.
     // Returns { data: [...results], error: null } or { data: null, error: "message" }
     async function fetchDownstreamData(sha, privateBaseUrl) {
-        // Step 1: Fetch sync metadata
+        // Proxy liveness: a no-cors ping resolves if the proxy answered at all
+        // (any status, even 403), and only rejects on a real connection failure.
+        // This is the sole source of the "proxy unreachable" banner — it is immune
+        // to CORS and to the base URL doubling as the live-debug jump host, so a
+        // reachable proxy is never flagged as down.
+        try {
+            await fetch(privateBaseUrl, { mode: 'no-cors', cache: 'no-cache' });
+        } catch (e) {
+            return { data: null, error: 'Downstream: proxy unreachable' };
+        }
+
+        // Step 1: Fetch sync metadata. The proxy is up (ping passed above), so a
+        // failure to READ this (CORS on a cross-origin report page, or simply no
+        // sync data) just means "no downstream here" — stay silent rather than
+        // posting a misleading "proxy unreachable" banner.
         let metaResult;
         try {
             metaResult = await fetchJson(`${privateBaseUrl}/sync_metadata/${sha}.json`);
         } catch (e) {
-            return { data: null, error: 'Downstream: proxy unreachable' };
+            return { data: null, error: null };
         }
         if (metaResult.status === 0) {
-            return { data: null, error: 'Downstream: proxy unreachable' };
+            return { data: null, error: null };
         }
         if (metaResult.status === 403 || !metaResult.data) {
             return { data: null, error: 'Downstream: no sync metadata for this commit' };
@@ -2671,17 +2734,19 @@
             return { data: null, error: 'Downstream: invalid sync metadata' };
         }
 
-        // Step 2: Fetch private PR result
+        // Step 2: Fetch private PR result. Metadata already loaded, so the proxy
+        // demonstrably answered — a failure here is "results not ready", not an
+        // unreachable proxy.
         let resultResult;
         try {
             resultResult = await fetchJson(
                 `${privateBaseUrl}/PRs/${encodeURIComponent(private_pr_number)}/${encodeURIComponent(private_sha)}/pr/result_pr.json`
             );
         } catch (e) {
-            return { data: null, error: 'Downstream: proxy unreachable' };
+            return { data: null, error: 'Downstream: sync PR results not available yet' };
         }
         if (resultResult.status === 0) {
-            return { data: null, error: 'Downstream: proxy unreachable' };
+            return { data: null, error: 'Downstream: sync PR results not available yet' };
         }
         if (resultResult.status === 403 || !resultResult.data) {
             return { data: null, error: 'Downstream: sync PR results not available yet' };

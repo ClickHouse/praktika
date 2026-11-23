@@ -1,29 +1,56 @@
 # praktika
 
-praktika is a self-contained CI system that you configure and deploy on top of
-a cloud provider.
-praktika gives you:
+**Praktika runs your CI on your own cloud account — typically 3–5× cheaper than
+a managed CI, and deployed in one command.**
 
+You describe the whole project — pipelines *and* the infrastructure to run them
+— as plain Python, and Praktika brings it all up for you: runner pools, an
+orchestrator, artifact/report storage, queues, and secret bindings. No clicking
+through a console, no per-minute billing, no vendor lock-in.
+
+```
+python -m praktika infrastructure --deploy
+```
+
+## Why Praktika
+
+- **Self-hosted, cost-efficient.** It's your cloud account and your instances
+  (spot, autoscaled, scaled-to-zero when idle), so you pay only for raw
+  resources — compute and storage — at cloud prices, typically 3–5× less than a
+  managed CI for an equivalent VM size. And it's all *yours*: a feature-rich CI
+  stack you own and control, not rented. The model isn't tied to one vendor;
+  AWS is the integration implemented today.
+
+## CI features out of the box
+
+- **Deploy the whole project in one command.** RunnerPools, an orchestrator
+  pool, S3 for artifacts/reports, SQS queues, SSM/Secrets Manager bindings —
+  all declared in `ci/infrastructure/projects.py` and brought up with
+  `praktika infrastructure --deploy`.
 - **Declarative pipelines.** Jobs, dependencies, artifacts, parametrized runs,
-  caching, secrets, and reports are all expressed as plain Python objects in
-  `ci/workflows/*.py`. Errors in the pipeline config surface at generation
-  time, not in a half-finished CI run.
-- **Unified CI outcome model.** Workflows, jobs, sub-tasks, and tests all
-  produce the same `Result` type. That single shape powers smooth HTML report
-  visualization, telemetry, and consistent navigation for humans and AI
-  agents.
-- **Declarative infrastructure.** RunnerPools, an Orchestrator pool, S3 buckets
-  for artifacts/reports, SQS queues for sync, SSM/Secrets Manager bindings —
-  all defined in a single `ci/infrastructure/projects.py` and brought up with
-  `python -m praktika infrastructure --deploy`.
-- **Standalone-first execution model.** Praktika is designed to run its own CI
-  control plane on cloud infrastructure: the orchestrator polls workflow
-  queues, dispatches jobs to runner pools, and reports status back to the Git
-  hosting system. GitHub Actions YAML generation is available as a compatibility
-  option, but it is not the primary model.
+  caching, secrets, and reports are plain Python objects in `ci/workflows/*.py`.
+  Config errors surface at generation time, not halfway through a CI run.
+- **Structured results, top to bottom.** Workflow → job → test all share the
+  same `Result` type, so the whole run is one navigable tree — easy to drill
+  into in the HTML report and easy for AI agents to parse and act on.
+- **CI cache** that knows which jobs already succeeded and which artifacts can
+  be reused, so unaffected and already-passed jobs are skipped natively and
+  cached jobs reuse their artifacts instead of rebuilding.
+- **Prebaked images** — named runtimes baked into AMIs so instances boot ready
+  to run.
+- **Docker pull-through proxy** for faster, more reliable image pulls that don't
+  hit DockerHub rate limits.
+- **Dynamic pipelines** — the pipeline content can be manipulated at runtime.
 
-Today, Praktika is developed around GitHub and AWS. The overall model is not
-conceptually limited to them, but those are the integrations implemented today.
+## Execution model
+
+Praktika runs its own CI control plane on your cloud: the orchestrator polls
+workflow queues, dispatches jobs to runner pools, and reports status back to the
+Git host. GitHub Actions YAML generation exists as a compatibility option, but
+it is not the primary model.
+
+Today Praktika is developed around GitHub and AWS. The overall model is not
+conceptually limited to them — those are the integrations implemented so far.
 
 ## How to start
 
