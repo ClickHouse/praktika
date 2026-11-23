@@ -120,7 +120,11 @@ Environment=AWS_DEFAULT_REGION=${REGION}
 Environment=PRAKTIKA_DEBUG_MAX_SESSIONS=__MAX_DEBUG_SESSIONS__
 # -a: pass the URL ?arg= query to the command; -W: writable (interactive);
 # -b /term: base path fronted by Caddy; bound to loopback (Caddy owns TLS/auth).
-ExecStart=/usr/local/bin/ttyd -p 7681 -i 127.0.0.1 -b /term -a -W \
+# -O: reject WebSocket upgrades whose Origin != Host, blocking cross-site
+# WebSocket hijacking -- otherwise any page a tailnet member visits could drive a
+# terminal in their browser and get RCE on a runner. serve/Caddy preserve the
+# Host + Origin headers, so the same-origin /term page still connects.
+ExecStart=/usr/local/bin/ttyd -p 7681 -i 127.0.0.1 -b /term -a -W -O \
   -t disableLeaveAlert=true \
   /usr/bin/python3.13 -m praktika.infrastructure.native.debug_connect
 Restart=always
