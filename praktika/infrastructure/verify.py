@@ -49,7 +49,7 @@ def verify_infrastructure(config, only: Optional[List[str]] = None) -> bool:
         for token_minter in config.github_token_minters:
             name = f"GitHubTokenMinter[{token_minter.lambda_config.name}]"
             print(f"Checking {name} ...")
-            results.append(_verify_token_minter(name, token_minter, region))
+            results.extend(_verify_token_minter(name, token_minter, region))
 
     if _wants(
         "SecretParameter",
@@ -109,15 +109,18 @@ def _report(results: List[CheckResult]) -> bool:
     return True
 
 
-def _verify_token_minter(name: str, token_minter, region: str) -> CheckResult:
-    """Invoke a GitHub token minter Lambda and confirm it returns a token."""
+def _verify_token_minter(name: str, token_minter, region: str) -> List[CheckResult]:
+    """Invoke a GitHub token minter Lambda and confirm it returns a token, then
+    use that token to report the App installation's current API rate-limit
+    consumption (all orchestrators/lambdas/runners of a project share one
+    installation bucket — see docs/gh-app-rate-limits.md)."""
     import json
 
     from ._utils import aws_client
 
     lambda_region = token_minter.lambda_config.region or region
     if not lambda_region:
-        return CheckResult(name, False, "no region configured (set Settings.AWS_REGION)")
+        return [CheckResult(name, False, "no region configured (set Settings.AWS_REGION)")]
     try:
         client = aws_client("lambda", lambda_region, context="token-minter-verify")
         response = client.invoke(
@@ -126,35 +129,90 @@ def _verify_token_minter(name: str, token_minter, region: str) -> CheckResult:
             Payload=b"{}",
         )
     except Exception as e:  # noqa: BLE001 - report any probe failure as FAIL
-        return CheckResult(name, False, f"lambda invoke failed: {e}")
+        return [CheckResult(name, False, f"lambda invoke failed: {e}")]
 
     payload_raw = response["Payload"].read().decode("utf-8", errors="replace")
     if response.get("FunctionError"):
-        return CheckResult(name, False, f"lambda FunctionError: {payload_raw[:300]}")
+        return [CheckResult(name, False, f"lambda FunctionError: {payload_raw[:300]}")]
     try:
         result = json.loads(payload_raw)
     except json.JSONDecodeError as e:
-        return CheckResult(name, False, f"non-JSON lambda payload [{payload_raw[:200]}]: {e}")
+        return [CheckResult(name, False, f"non-JSON lambda payload [{payload_raw[:200]}]: {e}")]
 
     status_code = result.get("statusCode")
     if status_code != 200:
-        return CheckResult(name, False, f"lambda returned statusCode={status_code}: {result}")
+        return [CheckResult(name, False, f"lambda returned statusCode={status_code}: {result}")]
     body = result.get("body", {})
     if isinstance(body, str):
         try:
             body = json.loads(body)
         except json.JSONDecodeError as e:
-            return CheckResult(name, False, f"invalid lambda body [{body[:200]}]: {e}")
+            return [CheckResult(name, False, f"invalid lambda body [{body[:200]}]: {e}")]
     token = (body or {}).get("token")
     if not token:
-        return CheckResult(name, False, "lambda returned no token")
+        return [CheckResult(name, False, "lambda returned no token")]
     expires_at = body.get("expires_at", "?")
     cached = body.get("cached", False)
-    return CheckResult(
-        name,
-        True,
-        f"minted token (len={len(token)}, expires_at={expires_at}, cached={cached})",
+    results = [
+        CheckResult(
+            name,
+            True,
+            f"minted token (len={len(token)}, expires_at={expires_at}, cached={cached})",
+        )
+    ]
+    results.append(_verify_gh_app_rate_limit(f"{name} rate-limit", token))
+    return results
+
+
+def _verify_gh_app_rate_limit(name: str, token: str) -> CheckResult:
+    """Report the GitHub App installation's current core API rate-limit usage.
+
+    Querying GET /rate_limit does not itself consume the rate limit (per GitHub
+    docs), so this is a free probe: it surfaces how many of the installation's
+    shared hourly API calls are already spent and when the window resets. An
+    exhausted bucket (remaining == 0) is a FAIL — check writes would be
+    rejected with 403/429 — otherwise PASS with the used/limit figures."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(
+        "https://api.github.com/rate_limit",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
     )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")[:200] if hasattr(e, "read") else ""
+        return CheckResult(name, False, f"GET /rate_limit returned HTTP {e.code}: {detail}")
+    except Exception as e:  # noqa: BLE001 - any probe failure is a FAIL, not an abort
+        return CheckResult(name, False, f"cannot query /rate_limit: {e}")
+
+    core = (payload.get("resources") or {}).get("core") or payload.get("rate") or {}
+    limit = core.get("limit")
+    used = core.get("used")
+    remaining = core.get("remaining")
+    reset = core.get("reset")
+    if limit is None or remaining is None:
+        return CheckResult(name, False, f"unexpected /rate_limit shape: {str(payload)[:200]}")
+
+    import datetime
+
+    reset_str = (
+        datetime.datetime.utcfromtimestamp(reset).strftime("%H:%M:%SZ")
+        if isinstance(reset, (int, float))
+        else "?"
+    )
+    detail = (
+        f"core API calls: {used}/{limit} used, {remaining} remaining "
+        f"(hourly bucket resets at {reset_str})"
+    )
+    return CheckResult(name, remaining > 0, detail)
 
 
 def _collect_secret_references(config):

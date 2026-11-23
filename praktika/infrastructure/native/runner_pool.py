@@ -380,6 +380,11 @@ class RunnerPool:
     security_group_ids: List[str] = field(default_factory=list)
     security_group_names: List[str] = field(default_factory=list)
     volume_size_gb: int = 30
+    # Provisioned EBS IO for the runner root volume. 0 keeps the gp3 baseline
+    # (3000 IOPS / 125 MiB/s); raise for IO-bound pools. gp3 accepts 3000-16000
+    # IOPS and 125-1000 MiB/s (AWS caps throughput at IOPS/4).
+    volume_iops: int = 0
+    volume_throughput: int = 0
     capacity_reserve: int = 0
     ext: Dict[str, Any] = field(default_factory=dict)
 
@@ -635,6 +640,8 @@ class RunnerPool:
             user_data=self.user_data,
             root_volume_size_gb=self.volume_size_gb,
             root_volume_type="gp3",
+            root_volume_iops=self.volume_iops,
+            root_volume_throughput=self.volume_throughput,
             tags=runtime_tags,
             praktika_resource_tag="runner",
         )

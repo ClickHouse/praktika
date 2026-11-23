@@ -2149,7 +2149,22 @@
 
                 } else if (column === 'duration') {
                     td.classList.add('dur-column');
-                    td.textContent = value ? formatDuration(value, true) : '';
+                    const statusValue = result["status"] ? result["status"].toLowerCase() : "";
+                    if (value) {
+                        td.textContent = formatDuration(value, true);
+                    } else if (statusValue.includes('running') && result.start_time != null) {
+                        // Running job: no final duration yet, so tick the elapsed
+                        // time (now - start_time) once per second, like the sidebar
+                        // status widget does.
+                        let seconds = Math.floor(Date.now() / 1000 - result.start_time);
+                        td.textContent = formatDuration(seconds, true);
+                        activeTimers.addInterval(setInterval(() => {
+                            seconds++;
+                            td.textContent = formatDuration(seconds, true);
+                        }, 1000));
+                    } else {
+                        td.textContent = '';
+                    }
                 }
 
                 row.appendChild(td);

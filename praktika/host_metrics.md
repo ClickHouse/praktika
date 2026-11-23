@@ -50,7 +50,7 @@ than `HOST_METRICS_MIN_LABEL_MEM_GB` (15 GB) of RAM — and never to skipped job
 
 | Label | Trigger |
 |---|---|
-| `under-utilized RAM` | peak RAM < 40% (provision for the peak) |
+| `under-utilized RAM` | peak RAM < 40% (provision for the peak) **and** VM has > 2 GB/vCPU (cpu:mem steeper than 1:2) |
 | `under-utilized CPU` | whole-run avg CPU < 20% (bursts don't justify more cores) |
 | `ram-pressure` | peak RAM ≥ 95% **or** memory full-stall > 2% of runtime |
 | `cpu-bound` | CPU stall > 50% of runtime |

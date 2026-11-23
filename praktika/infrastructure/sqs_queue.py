@@ -107,6 +107,30 @@ class SQSQueue:
             )["Attributes"]
             return attrs["QueueArn"]
 
+        def is_empty(self) -> bool:
+            """True if the main queue holds no visible or in-flight messages
+            (a missing queue counts as empty). Used to avoid tearing down a
+            queue that still has work waiting for a runner to pick it up."""
+
+            sqs = aws_client("sqs", self.region, self.name)
+
+            try:
+                url = sqs.get_queue_url(QueueName=self.name)["QueueUrl"]
+            except sqs.exceptions.QueueDoesNotExist:
+                return True
+
+            attrs = sqs.get_queue_attributes(
+                QueueUrl=url,
+                AttributeNames=[
+                    "ApproximateNumberOfMessages",
+                    "ApproximateNumberOfMessagesNotVisible",
+                ],
+            )["Attributes"]
+            return (
+                int(attrs.get("ApproximateNumberOfMessages", 0)) == 0
+                and int(attrs.get("ApproximateNumberOfMessagesNotVisible", 0)) == 0
+            )
+
         def shutdown(self, force: bool = True):
             """Delete the queue and its DLQ."""
 

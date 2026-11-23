@@ -2126,10 +2126,31 @@ class CloudInfrastructure:
                     print("\n" + "=" * 60)
                     print("Pruning components removed from config")
                     print("=" * 60)
+                    # Runner-pool resources all share the pool name (asg/queue =
+                    # <pool>, plus <pool>-lt / -role / -profile). autoscaling_group
+                    # is torn down first (reverse-dependency order), so when its
+                    # ASG is retained as busy we record the pool name here and skip
+                    # the pool's other resources below — tearing down the launch
+                    # template / role / queue out from under a live ASG would break
+                    # the running pool.
+                    retained_pools: set = set()
                     for kind in deletable:
                         for name in sorted(by_kind[kind]):
-                            print(f"Deleting {kind} '{name}' (removed from config)")
-                            self._orphan_delete_config(kind, name, region).delete()
+                            if any(
+                                name == base or name.startswith(f"{base}-")
+                                for base in retained_pools
+                            ):
+                                # Belongs to a pool whose ASG is still busy — defer
+                                # the whole pool; its manifest entry stays so the
+                                # next deploy retries once it drains.
+                                continue
+                            if not self._orphan_teardown(kind, name, region):
+                                # Still busy (running pool / in-flight queue) —
+                                # left in place with its manifest entry so the
+                                # reminder persists until it drains.
+                                if kind == "autoscaling_group":
+                                    retained_pools.add(name)
+                                continue
                             # Drop from the manifest only after a successful
                             # delete, writing incrementally so an interrupted
                             # prune resumes cleanly.
@@ -2332,13 +2353,15 @@ class CloudInfrastructure:
         # is in the manifest but no longer in `all_keys`. These are torn down in
         # reverse-dependency order on the next full deploy. delete() only reads
         # name+region, so a minimal reconstructed Config suffices; the required
-        # positional fields below are dummies delete() never looks at. Kinds whose
-        # delete() needs more than name+region to be complete are absent here and
-        # get a manual-removal warning instead: those with no delete() at all
-        # (sqs_queue, ec2_instance, dedicated_host) and image_builder (its
-        # delete() matches recipes by version and owns inline components).
+        # positional fields below are dummies the teardown never looks at. Kinds
+        # whose teardown needs more than name+region to be complete are absent
+        # here and get a manual-removal warning instead: those with no teardown at
+        # all (ec2_instance, dedicated_host) and image_builder (its delete()
+        # matches recipes by version and owns inline components). sqs_queue is
+        # reconstructable (shutdown() only reads name+region), so it prunes too.
         _ORPHAN_DELETE_ORDER = (
             "autoscaling_group",
+            "sqs_queue",
             "launch_template",
             "lambda_function",
             "iam_instance_profile",
@@ -2360,6 +2383,8 @@ class CloudInfrastructure:
 
             if kind == "autoscaling_group":
                 return AutoScalingGroup.Config(name=name, region=region)
+            if kind == "sqs_queue":
+                return SQSQueue.Config(name=name, region=region)
             if kind == "launch_template":
                 return LaunchTemplate.Config(name=name, region=region)
             # image_builder is intentionally NOT auto-deleted: ImageBuilder.delete()
@@ -2388,6 +2413,38 @@ class CloudInfrastructure:
             if kind == "vpc":
                 return VPC.Config(name=name, region=region)
             return None
+
+        def _orphan_teardown(self, kind: str, name: str, region: str) -> bool:
+            """Tear down one orphaned component. Returns True once it's gone (so
+            the caller drops its manifest entry), False if it was intentionally
+            left intact because it is still busy (so the entry stays and the
+            prune retries on the next deploy).
+
+            Two kinds can be busy and must not be force-killed mid-work: an
+            autoscaling_group with live instances / an in-flight scaling activity
+            (``delete(force=False)`` refuses and returns False), and an sqs_queue
+            that still holds messages waiting for a runner to pick them up
+            (``is_empty()`` is False). Every other kind tears down
+            unconditionally via its ``delete()``."""
+            cfg = self._orphan_delete_config(kind, name, region)
+            if cfg is None:
+                # Not name-reconstructable (classified undeletable upstream) —
+                # nothing torn down, keep the manifest entry.
+                return False
+            print(f"Deleting {kind} '{name}' (removed from config)")
+            if kind == "autoscaling_group":
+                return cfg.delete(force=False)
+            if kind == "sqs_queue":
+                if not cfg.is_empty():
+                    print(
+                        f"SQS queue '{name}' still has messages in flight - "
+                        f"leaving intact until it drains"
+                    )
+                    return False
+                cfg.shutdown()
+                return True
+            cfg.delete()
+            return True
 
         def _load_manifest(self, ssm) -> Tuple[Dict[str, str], Optional[str]]:
             """Return (components-map, schema_fingerprint) from the SSM manifest.

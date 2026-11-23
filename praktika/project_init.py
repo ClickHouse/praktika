@@ -457,17 +457,15 @@ def _settings_template(answers: InitAnswers) -> str:
     return textwrap.dedent(
         f"""\
         class RunnerLabels:
-            SMALL_ARM = "arm-small"
-            SMALL_AMD = "amd-small"
-            MEDIUM_ARM = "arm-medium"
-            MEDIUM_AMD = "amd-medium"
+            ARM_2CPU_4G = "arm_2cpu_4g"
+            AMD_2CPU_4G = "amd_2cpu_4g"
 
 
         PROJECT_NAME = "{answers.project_name}"
         PROJECT_SLUG = "{answers.project_slug}"
         MAIN_BRANCH = "{answers.main_branch}"
 
-        CI_CONFIG_RUNS_ON = [RunnerLabels.SMALL_ARM]
+        CI_CONFIG_RUNS_ON = [RunnerLabels.ARM_2CPU_4G]
 
         AWS_REGION = "{answers.aws_region}"
         AWS_PROFILE = "{answers.aws_profile}"
@@ -532,7 +530,7 @@ def _pull_request_workflow_template(answers: InitAnswers) -> str:
                 jobs=[
                     Job.Config(
                         name="Smoke Test",
-                        runs_on=[RunnerLabels.SMALL_ARM],
+                        runs_on=[RunnerLabels.ARM_2CPU_4G],
                         command={command!r},
                     ),
                 ],
@@ -562,7 +560,7 @@ def _main_ci_workflow_template(answers: InitAnswers) -> str:
                 jobs=[
                     Job.Config(
                         name="Smoke Test",
-                        runs_on=[RunnerLabels.SMALL_ARM],
+                        runs_on=[RunnerLabels.ARM_2CPU_4G],
                         command={command!r},
                     ),
                 ],
@@ -697,7 +695,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                     controller_package=_PRAKTIKA_CONTROLLER_WHL,
                     prebuilt_venvs=prebuilt_venvs,
                     components=custom_image_tests,
-                    instance_types=["t4g.small"],
+                    instance_types=["c8g.large"],
                 ),
                 Components.{answers.image_builder_factory}(
                     name="ci-x86_64-image",
@@ -705,7 +703,7 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                     controller_package=_PRAKTIKA_CONTROLLER_WHL,
                     prebuilt_venvs=prebuilt_venvs,
                     components=custom_image_tests,
-                    instance_types=["t3.small"],
+                    instance_types=["c7a.large"],
                 ),
             ]
 
@@ -757,18 +755,23 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                     scaling=Components.OrchestratorPool.Scaling.Auto,
                     size=0,
                     max_size=50,
-                    volume_size_gb=100,
+                    volume_size_gb=30,
+                    # Warm orchestrator kept ready on top of whatever runs request,
+                    # so the first queued run skips cold-start boot time.
                     capacity_reserve=1,
                     image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],{orchestrator_ext}
                 ),
                 runner_pools=[
                     Components.RunnerPool(
-                        name="arm-small",
-                        instance_type="t4g.medium",
+                        name="arm_2cpu_4g",
+                        instance_type="c8g.large",
                         scaling=Components.RunnerPool.Scaling.Auto,
                         size=0,
                         max_size=50,
-                        volume_size_gb=100,
+                        volume_size_gb=60,
+                        # Warm runner kept ready on top of whatever jobs request,
+                        # so the first queued job skips cold-start boot time.
+                        capacity_reserve=1,
                         image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
                         allowed_ssm_parameters=[],
                         allowed_secrets=[],
@@ -784,54 +787,15 @@ def _infrastructure_template(answers: InitAnswers) -> str:
                         ext={{"system_logs": False, "host_metrics": False}},
                     ),
                     Components.RunnerPool(
-                        name="amd-small",
-                        instance_type="t3.medium",
+                        name="amd_2cpu_4g",
+                        instance_type="c7a.large",
                         scaling=Components.RunnerPool.Scaling.Auto,
                         size=0,
                         max_size=50,
-                        volume_size_gb=100,
-                        image_builder=_IMAGE_BUILDERS_BY_NAME["ci-x86_64-image"],
-                        allowed_ssm_parameters=[],
-                        allowed_secrets=[],
-                        allowed_s3_prefixes=_PROJECT_S3_PREFIXES,
-                        allow_all_ssm_parameters={not answers.is_oss},
-                        allow_all_secrets={not answers.is_oss},
-                        allow_all_s3_prefixes={not answers.is_oss},
-                        allow_ssm_debug=False,
-                        # Opt-in CloudWatch observability, off by default (both
-                        # cost money when on): system_logs = kernel/OOM/systemd
-                        # evidence; host_metrics = CPU/mem/disk curve for a dead
-                        # runner. See the RunnerPool docstring.
-                        ext={{"system_logs": False, "host_metrics": False}},
-                    ),
-                    Components.RunnerPool(
-                        name="arm-medium",
-                        instance_type="c7g.4xlarge",
-                        scaling=Components.RunnerPool.Scaling.Auto,
-                        size=0,
-                        max_size=50,
-                        volume_size_gb=100,
-                        image_builder=_IMAGE_BUILDERS_BY_NAME["ci-arm64-image"],
-                        allowed_ssm_parameters=[],
-                        allowed_secrets=[],
-                        allowed_s3_prefixes=_PROJECT_S3_PREFIXES,
-                        allow_all_ssm_parameters={not answers.is_oss},
-                        allow_all_secrets={not answers.is_oss},
-                        allow_all_s3_prefixes={not answers.is_oss},
-                        allow_ssm_debug=False,
-                        # Opt-in CloudWatch observability, off by default (both
-                        # cost money when on): system_logs = kernel/OOM/systemd
-                        # evidence; host_metrics = CPU/mem/disk curve for a dead
-                        # runner. See the RunnerPool docstring.
-                        ext={{"system_logs": False, "host_metrics": False}},
-                    ),
-                    Components.RunnerPool(
-                        name="amd-medium",
-                        instance_type="c7a.4xlarge",
-                        scaling=Components.RunnerPool.Scaling.Auto,
-                        size=0,
-                        max_size=50,
-                        volume_size_gb=100,
+                        volume_size_gb=60,
+                        # Warm runner kept ready on top of whatever jobs request,
+                        # so the first queued job skips cold-start boot time.
+                        capacity_reserve=1,
                         image_builder=_IMAGE_BUILDERS_BY_NAME["ci-x86_64-image"],
                         allowed_ssm_parameters=[],
                         allowed_secrets=[],

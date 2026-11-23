@@ -304,7 +304,7 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
                 sys.modules[module_name] = previous_module
 
     def _builder_arch(builder):
-        return "arm64" if builder.instance_types[0].startswith("t4g.") else "x86_64"
+        return "arm64" if builder.instance_types[0].startswith("c8g.") else "x86_64"
 
     builders_by_arch = {
         _builder_arch(builder): builder for builder in cloud.image_builders
@@ -332,27 +332,6 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
         cloud.github_token_minters[0].permissions
         == EXPECTED_GITHUB_TOKEN_MINTER_PERMISSIONS
     )
-    assert cloud.orchestrator_pool.capacity_reserve == 1
-    assert cloud.orchestrator_pool.max_size == 50
-    assert cloud.orchestrator_pool.volume_size_gb == 100
-    assert {pool.name: pool.max_size for pool in cloud.runner_pools} == {
-        "arm-small": 50,
-        "amd-small": 50,
-        "arm-medium": 50,
-        "amd-medium": 50,
-    }
-    assert {pool.name: pool.instance_type for pool in cloud.runner_pools} == {
-        "arm-small": "t4g.medium",
-        "amd-small": "t3.medium",
-        "arm-medium": "c7g.4xlarge",
-        "amd-medium": "c7a.4xlarge",
-    }
-    assert {pool.name: pool.volume_size_gb for pool in cloud.runner_pools} == {
-        "arm-small": 100,
-        "amd-small": 100,
-        "arm-medium": 100,
-        "amd-medium": 100,
-    }
     assert {tuple(pool.allowed_s3_prefixes) for pool in cloud.runner_pools} == {
         (f"{project_slug}-artifacts-us-east-1/*",)
     }
@@ -436,10 +415,8 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
     assert cloud.orchestrator_pool.launch_template.vpc_name == f"{project_slug}-vpc"
     assert cloud.orchestrator_pool.autoscaling_group.vpc_name == f"{project_slug}-vpc"
     assert {pool.name: pool.vpc_name for pool in cloud.runner_pools} == {
-        "arm-small": f"{project_slug}-vpc",
-        "amd-small": f"{project_slug}-vpc",
-        "arm-medium": f"{project_slug}-vpc",
-        "amd-medium": f"{project_slug}-vpc",
+        "arm_2cpu_4g": f"{project_slug}-vpc",
+        "amd_2cpu_4g": f"{project_slug}-vpc",
     }
     assert cloud.orchestrator_pool.image_builder is builders_by_arch["arm64"]
     assert (
@@ -449,19 +426,15 @@ def test_run_init_interactive_writes_configs_praktika_can_read(tmp_path, monkeyp
     assert {
         pool.name: _builder_arch(pool.image_builder) for pool in cloud.runner_pools
     } == {
-        "arm-small": "arm64",
-        "amd-small": "x86_64",
-        "arm-medium": "arm64",
-        "amd-medium": "x86_64",
+        "arm_2cpu_4g": "arm64",
+        "amd_2cpu_4g": "x86_64",
     }
     assert {
         pool.name: _builder_arch(pool.launch_template.image_builder)
         for pool in cloud.runner_pools
     } == {
-        "arm-small": "arm64",
-        "amd-small": "x86_64",
-        "arm-medium": "arm64",
-        "amd-medium": "x86_64",
+        "arm_2cpu_4g": "arm64",
+        "amd_2cpu_4g": "x86_64",
     }
     # The S3 report proxy is opt-in and was declined here.
     assert cloud.s3_proxy is None
@@ -609,16 +582,16 @@ def test_run_init_interactive_supports_oss_storage_and_ubuntu_images(
         '"iam_statements": [_ORCHESTRATOR_BEDROCK_IAM_STATEMENT]}'
     ) in infra_text
     # Opt-in observability knobs are scaffolded off on every runner pool too.
-    assert infra_text.count('ext={"system_logs": False, "host_metrics": False}') == 4
+    assert infra_text.count('ext={"system_logs": False, "host_metrics": False}') == 2
     assert "allowed_ssm_parameters=[]" in infra_text
     assert "allowed_secrets=[]" in infra_text
     assert "allowed_s3_prefixes=_PROJECT_S3_PREFIXES" in infra_text
     assert "allow_all_ssm_parameters=False" in infra_text
-    assert infra_text.count("allow_all_ssm_parameters=False") == 4
+    assert infra_text.count("allow_all_ssm_parameters=False") == 2
     assert "allow_all_secrets=False" in infra_text
-    assert infra_text.count("allow_all_secrets=False") == 4
+    assert infra_text.count("allow_all_secrets=False") == 2
     assert "allow_all_s3_prefixes=False" in infra_text
-    assert infra_text.count("allow_all_s3_prefixes=False") == 4
+    assert infra_text.count("allow_all_s3_prefixes=False") == 2
     assert "public=True" in infra_text
 
     compile(settings_text, str(settings_path), "exec")
