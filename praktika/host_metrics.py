@@ -66,6 +66,9 @@ class HostMetricsCollector:
 
     # Utilization label thresholds (see classify). Percentages unless noted.
     _UNDER_MEM_PCT = 40.0  # peak RAM below this -> RAM over-provisioned
+    _UNDER_MEM_MIN_GB_PER_CPU = 2.0  # only flag under-utilized RAM on RAM-heavy
+    # VMs (more than this many GB per vCPU, i.e. cpu:mem steeper than 1:2) - a
+    # balanced/CPU-heavy VM can't shed RAM without also shedding cores
     _UNDER_CPU_PCT = 20.0  # average CPU below this -> CPU over-provisioned
     _RAM_PRESSURE_PCT = 95.0  # peak RAM at/above this -> RAM under-provisioned
     _MEM_STALL_RATIO = 0.02  # mem full-stall / duration above this -> RAM pressure
@@ -591,6 +594,7 @@ class HostMetricsCollector:
 
         duration = metrics.get("duration") or 0
         mem_gb = metrics.get("mem_total_gb") or 0
+        cpu_count = metrics.get("cpu_count") or 0
         peaks = metrics.get("peaks", {})
         averages = metrics.get("averages", {})
         psi = metrics.get("psi", {})
@@ -614,11 +618,17 @@ class HostMetricsCollector:
                     f"Peak RAM {mem_peak}% of {mem_gb}GB, memory stalled {mem_full_s}s ({round(100 * mem_full_ratio)}% of runtime) - consider more RAM",
                 )
             )
-        elif mem_peak is not None and mem_peak < cls._UNDER_MEM_PCT:
+        elif (
+            mem_peak is not None
+            and mem_peak < cls._UNDER_MEM_PCT
+            and cpu_count
+            and mem_gb / cpu_count > cls._UNDER_MEM_MIN_GB_PER_CPU
+        ):
             labels.append(
                 (
                     "under-utilized RAM",
-                    f"Peak RAM only {mem_peak}% of {mem_gb}GB - consider a smaller runner",
+                    f"Peak RAM only {mem_peak}% of {mem_gb}GB "
+                    f"({round(mem_gb / cpu_count, 1)}GB/vCPU) - consider a smaller runner",
                 )
             )
 

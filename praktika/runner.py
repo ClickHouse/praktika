@@ -978,6 +978,16 @@ class Runner:
                 info=f"Failed to read Result json, ex: [{e}]",
             ).dump()
 
+        # The result just loaded is this job's result (from_fs is keyed by
+        # job.name — the normalized filename can collide even when the name the
+        # job's script wrote differs). The workflow report keys each job's row by
+        # exact name, so a mismatched top-level name would never update the row,
+        # leaving it stuck RUNNING even though the job's check goes green. Reset
+        # it to the authoritative job name.
+        if result.name != job.name:
+            result.name = job.name
+            result.dump()
+
         if not result.is_completed():
             if enable_exit_code_result:
                 status = Result.Status.OK if run_exit_code == 0 else Result.Status.FAIL

@@ -406,15 +406,31 @@ class AutoScalingGroup:
                     raise
             return self
 
-        def delete(self):
+        def delete(self, force: bool = True) -> bool:
+            """Delete the ASG. Returns True once it's gone (or was already
+            absent). With force=False, AWS refuses to delete while the group
+            still has instances or an in-flight scaling activity, so a busy pool
+            is left intact and this returns False instead of force-killing the
+            runners mid-job. Any other error still propagates."""
             client = aws_client("autoscaling", self.region, self.name)
             try:
                 client.delete_auto_scaling_group(
-                    AutoScalingGroupName=self.name, ForceDelete=True
+                    AutoScalingGroupName=self.name, ForceDelete=force
                 )
                 print(f"Deleted Auto Scaling Group '{self.name}'")
+                return True
             except client.exceptions.ClientError as e:
                 if "not found" in str(e).lower():
                     print(f"Auto Scaling Group '{self.name}' does not exist, skipping")
-                else:
-                    raise
+                    return True
+                code = ""
+                try:
+                    code = e.response.get("Error", {}).get("Code", "")
+                except AttributeError:
+                    pass
+                if not force and code in (
+                    "ResourceInUse",
+                    "ScalingActivityInProgress",
+                ):
+                    return False
+                raise

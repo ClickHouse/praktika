@@ -2126,10 +2126,95 @@ class CloudInfrastructure:
                     print("\n" + "=" * 60)
                     print("Pruning components removed from config")
                     print("=" * 60)
+                    # Runner-pool resources all share the pool name (asg/queue =
+                    # <pool>, plus <pool>-lt / -role / -profile). autoscaling_group
+                    # is torn down first (reverse-dependency order), so when its
+                    # ASG is retained as busy we record the pool name here and skip
+                    # the pool's other resources below — tearing down the launch
+                    # template / role / queue out from under a live ASG would break
+                    # the running pool.
+                    retained_pools: set = set()
                     for kind in deletable:
                         for name in sorted(by_kind[kind]):
-                            print(f"Deleting {kind} '{name}' (removed from config)")
-                            self._orphan_delete_config(kind, name, region).delete()
+                            # A retained (busy) pool owns exactly these names;
+                            # match them explicitly rather than by prefix, so an
+                            # independent pool that merely shares a prefix (e.g.
+                            # retained `arm` vs. a separate `arm-large`) is not
+                            # skipped and orphaned along with it.
+                            #
+                            # Known gap: this assumes the default IAM naming
+                            # (<pool>-role / <pool>-profile). A pool with a
+                            # caller-supplied ec2_role/instance_profile, or an
+                            # OrchestratorPool (shared workflow-orchestrator-*
+                            # names), has differently-named IAM that this set
+                            # won't protect — if such a pool is retained busy
+                            # while its role/profile are also orphans, they can
+                            # still be pruned, revoking the live instance's
+                            # access. Protecting those needs pool->dependency
+                            # ownership recorded in the manifest; until then,
+                            # decommission custom/shared-IAM pools manually.
+                            owned = {
+                                resource
+                                for base in retained_pools
+                                for resource in (
+                                    base,
+                                    f"{base}-lt",
+                                    f"{base}-role",
+                                    f"{base}-profile",
+                                )
+                            }
+                            if name in owned:
+                                # Belongs to a pool whose ASG is still busy — defer
+                                # the whole pool; its manifest entry stays so the
+                                # next deploy retries once it drains.
+                                continue
+                            # A pool's ASG, queue, launch template and IAM all share
+                            # the pool name (asg/queue = <pool>, plus -lt/-role/
+                            # -profile), and the ASG is pruned before the queue. An
+                            # idle pool can have desired_capacity=0 yet a job just
+                            # queued awaiting the next autoscaler tick; deleting its
+                            # empty ASG here would then let the launch template / IAM
+                            # be pruned too (the queue is kept, but nothing is left
+                            # to run its message). So before tearing down an ASG,
+                            # check its queue and retain the whole pool if it still
+                            # has work — the queue and the rest are then skipped via
+                            # `owned` above.
+                            if (
+                                kind == "autoscaling_group"
+                                and not SQSQueue.Config(
+                                    name=name, region=region
+                                ).is_empty()
+                            ):
+                                print(
+                                    f"ASG '{name}' is idle but its queue still has "
+                                    f"work - retaining the pool until it drains"
+                                )
+                                retained_pools.add(name)
+                                continue
+                            if not self._orphan_teardown(kind, name, region):
+                                # Still busy (running pool / in-flight queue) —
+                                # left in place with its manifest entry so the
+                                # reminder persists until it drains.
+                                #
+                                # Known gap: a retained pool does not auto-converge
+                                # once it is out of config, because the autoscaler no
+                                # longer manages it, so nothing drains it on its own:
+                                #   - capacity_reserve > 0: a reserved instance that
+                                #     never ran a job preserves itself
+                                #     (common/try_scale_in_if_idle), so the ASG stays
+                                #     non-empty and delete(force=False) keeps failing.
+                                #   - queue has work but ASG is idle (the retain path
+                                #     above): no autoscaler tick will ever spin up a
+                                #     runner to consume the message.
+                                # Either way delete(force=False) never succeeds and
+                                # the pool stays orphaned (retain-and-warn, never a
+                                # force-kill). Such pools must be drained/removed
+                                # manually — set capacity_reserve to 0 or scale the
+                                # ASG to 0, or briefly re-add the pool to drain the
+                                # queue, then deploy.
+                                if kind == "autoscaling_group":
+                                    retained_pools.add(name)
+                                continue
                             # Drop from the manifest only after a successful
                             # delete, writing incrementally so an interrupted
                             # prune resumes cleanly.
@@ -2332,13 +2417,15 @@ class CloudInfrastructure:
         # is in the manifest but no longer in `all_keys`. These are torn down in
         # reverse-dependency order on the next full deploy. delete() only reads
         # name+region, so a minimal reconstructed Config suffices; the required
-        # positional fields below are dummies delete() never looks at. Kinds whose
-        # delete() needs more than name+region to be complete are absent here and
-        # get a manual-removal warning instead: those with no delete() at all
-        # (sqs_queue, ec2_instance, dedicated_host) and image_builder (its
-        # delete() matches recipes by version and owns inline components).
+        # positional fields below are dummies the teardown never looks at. Kinds
+        # whose teardown needs more than name+region to be complete are absent
+        # here and get a manual-removal warning instead: those with no teardown at
+        # all (ec2_instance, dedicated_host) and image_builder (its delete()
+        # matches recipes by version and owns inline components). sqs_queue is
+        # reconstructable (shutdown() only reads name+region), so it prunes too.
         _ORPHAN_DELETE_ORDER = (
             "autoscaling_group",
+            "sqs_queue",
             "launch_template",
             "lambda_function",
             "iam_instance_profile",
@@ -2360,6 +2447,8 @@ class CloudInfrastructure:
 
             if kind == "autoscaling_group":
                 return AutoScalingGroup.Config(name=name, region=region)
+            if kind == "sqs_queue":
+                return SQSQueue.Config(name=name, region=region)
             if kind == "launch_template":
                 return LaunchTemplate.Config(name=name, region=region)
             # image_builder is intentionally NOT auto-deleted: ImageBuilder.delete()
@@ -2388,6 +2477,38 @@ class CloudInfrastructure:
             if kind == "vpc":
                 return VPC.Config(name=name, region=region)
             return None
+
+        def _orphan_teardown(self, kind: str, name: str, region: str) -> bool:
+            """Tear down one orphaned component. Returns True once it's gone (so
+            the caller drops its manifest entry), False if it was intentionally
+            left intact because it is still busy (so the entry stays and the
+            prune retries on the next deploy).
+
+            Two kinds can be busy and must not be force-killed mid-work: an
+            autoscaling_group with live instances / an in-flight scaling activity
+            (``delete(force=False)`` refuses and returns False), and an sqs_queue
+            that still holds messages waiting for a runner to pick them up
+            (``is_empty()`` is False). Every other kind tears down
+            unconditionally via its ``delete()``."""
+            cfg = self._orphan_delete_config(kind, name, region)
+            if cfg is None:
+                # Not name-reconstructable (classified undeletable upstream) —
+                # nothing torn down, keep the manifest entry.
+                return False
+            print(f"Deleting {kind} '{name}' (removed from config)")
+            if kind == "autoscaling_group":
+                return cfg.delete(force=False)
+            if kind == "sqs_queue":
+                if not cfg.is_empty():
+                    print(
+                        f"SQS queue '{name}' still has messages in flight - "
+                        f"leaving intact until it drains"
+                    )
+                    return False
+                cfg.shutdown()
+                return True
+            cfg.delete()
+            return True
 
         def _load_manifest(self, ssm) -> Tuple[Dict[str, str], Optional[str]]:
             """Return (components-map, schema_fingerprint) from the SSM manifest.

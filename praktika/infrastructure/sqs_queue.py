@@ -107,6 +107,37 @@ class SQSQueue:
             )["Attributes"]
             return attrs["QueueArn"]
 
+        def is_empty(self) -> bool:
+            """True if neither the main queue nor its DLQ holds any visible,
+            in-flight, or delayed messages (a missing queue counts as empty).
+            Used to avoid tearing down a queue that still has work waiting for a
+            runner to pick it up. shutdown() deletes both the queue and its DLQ,
+            so the DLQ must be checked too — otherwise failed jobs parked in the
+            DLQ would be silently lost when the drained main queue is pruned."""
+
+            sqs = aws_client("sqs", self.region, self.name)
+
+            def _queue_empty(queue_name: str) -> bool:
+                try:
+                    url = sqs.get_queue_url(QueueName=queue_name)["QueueUrl"]
+                except sqs.exceptions.QueueDoesNotExist:
+                    return True
+                attrs = sqs.get_queue_attributes(
+                    QueueUrl=url,
+                    AttributeNames=[
+                        "ApproximateNumberOfMessages",
+                        "ApproximateNumberOfMessagesNotVisible",
+                        "ApproximateNumberOfMessagesDelayed",
+                    ],
+                )["Attributes"]
+                return (
+                    int(attrs.get("ApproximateNumberOfMessages", 0)) == 0
+                    and int(attrs.get("ApproximateNumberOfMessagesNotVisible", 0)) == 0
+                    and int(attrs.get("ApproximateNumberOfMessagesDelayed", 0)) == 0
+                )
+
+            return _queue_empty(self.name) and _queue_empty(f"{self.name}-dlq")
+
         def shutdown(self, force: bool = True):
             """Delete the queue and its DLQ."""
 

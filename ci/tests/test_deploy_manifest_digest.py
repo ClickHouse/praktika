@@ -101,19 +101,21 @@ _orphan = CloudInfrastructure.Config._orphan_delete_config
 
 
 def test_orphan_reconstructs_deletable_kinds_by_name():
-    # Every deletable kind rebuilds from kind+name+region alone (delete() reads
-    # only those), so orphan teardown works without the original config object.
+    # Every deletable kind rebuilds from kind+name+region alone (its teardown
+    # reads only those), so orphan teardown works without the original config
+    # object. Most expose delete(); sqs_queue tears down via shutdown().
     for kind in CloudInfrastructure.Config._ORPHAN_DELETE_ORDER:
         cfg = _orphan(kind, "praktika-gone", "eu-north-1")
         assert cfg is not None, kind
         assert cfg.name == "praktika-gone"
         assert cfg.region == "eu-north-1"
-        assert hasattr(cfg, "delete")
+        assert hasattr(cfg, "delete") or hasattr(cfg, "shutdown"), kind
 
 
 def test_orphan_returns_none_for_non_name_reconstructable_kinds():
-    # sqs/ec2/dedicated_host have no delete(); image_builder has one but it can't
-    # be fully driven from name alone (recipe version + owned components). All
-    # must fall through to the manual warning, never a partial delete.
-    for kind in ("sqs_queue", "ec2_instance", "dedicated_host", "image_builder"):
+    # ec2/dedicated_host have no delete(); image_builder has one but it can't be
+    # fully driven from name alone (recipe version + owned components). All must
+    # fall through to the manual warning, never a partial delete. (sqs_queue is
+    # name-reconstructable and prunes via shutdown(), so it is NOT in this set.)
+    for kind in ("ec2_instance", "dedicated_host", "image_builder"):
         assert _orphan(kind, "praktika-gone", "eu-north-1") is None

@@ -18,7 +18,7 @@ job command with no new config classes::
 
     Job.Config(
         name="Code Review",
-        runs_on=RunnerLabels.SMALL_ARM,
+        runs_on=RunnerLabels.ARM_2CPU_4G,
         command="praktika review --provider bedrock-openai "
                 "--model openai.gpt-oss-120b-1:0 --prompt ./ci/prompts/code_review.md",
         allow_failure=True,

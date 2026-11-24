@@ -48,6 +48,11 @@ class LaunchTemplate:
         root_volume_size_gb: int = 0
         root_volume_type: str = "gp3"
         root_volume_delete_on_termination: bool = True
+        # Provisioned EBS IO for the root volume. 0 leaves the volume at its
+        # type's baseline (gp3: 3000 IOPS / 125 MiB/s). gp3 accepts 3000-16000
+        # IOPS and 125-1000 MiB/s (throughput capped at IOPS/4 by AWS).
+        root_volume_iops: int = 0
+        root_volume_throughput: int = 0
 
         # Extra block device mappings (passed through as LaunchTemplateData.BlockDeviceMappings).
         # Example: [{"DeviceName": "/dev/xvda",
@@ -303,6 +308,10 @@ class LaunchTemplate:
                 }
                 if self.root_volume_type:
                     ebs["VolumeType"] = self.root_volume_type
+                if self.root_volume_iops:
+                    ebs["Iops"] = int(self.root_volume_iops)
+                if self.root_volume_throughput:
+                    ebs["Throughput"] = int(self.root_volume_throughput)
                 block_device_mappings.append(
                     {
                         "DeviceName": self._resolve_root_device_name(

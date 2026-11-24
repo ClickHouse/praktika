@@ -2,6 +2,7 @@ import copy
 import dataclasses
 import datetime
 import errno
+import glob
 import io
 import json
 import os
@@ -10,6 +11,7 @@ import re
 import sys
 import time
 import traceback
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
@@ -939,6 +941,162 @@ class Result(MetaClasses.Serializable):
                         break
             result.info = sanitizer_info or info
             result.set_status(Result.Status.FAIL)
+        return result
+
+    @classmethod
+    def from_junit_run(
+        cls,
+        command,
+        report_glob=None,
+        name="",
+        with_log=True,
+        workdir=None,
+        env=None,
+    ):
+        """Runs a test command that emits JUnit XML and builds a Result whose
+        sub-results are the individual test cases.
+
+        Unlike gtest/pytest, the many JUnit producers (Ginkgo, go-junit-report,
+        surefire, ...) each take their own report flag, so the caller passes the
+        full `command` (str or list) already wired to write XML, plus a
+        `report_glob` that matches the file(s) it produces. `report_glob`
+        defaults to ResultTranslator.JUNIT_RESULT_FILE.
+
+        Status reconciliation mirrors from_gtest_run:
+        - no report / no cases parsed (process killed before writing, OOM, glob
+          miss) -> ERROR.
+        - cases parsed -> status derived from the cases.
+        - all cases green but the process exited non-zero (panic or teardown
+          failure after the specs finished) -> force FAIL; a green suite must
+          not mask it.
+
+        :param command: shell command (str) or list of commands to run.
+        :param report_glob: recursive glob matching the JUnit XML report(s).
+        :param name: Result name; defaults to the praktika job name.
+        :param with_log: capture command output to a log file attached to the Result.
+        :param workdir: optional working directory for the command.
+        :param env: optional environment dict for the command.
+        :return: Result
+        """
+        if not name:
+            name = Info().job_name
+
+        if not report_glob:
+            report_glob = str(ResultTranslator.JUNIT_RESULT_FILE)
+        # The command runs inside workdir, but from_commands_run restores cwd
+        # before we parse, so a relative glob would miss files the command wrote
+        # under workdir — anchor it to workdir now.
+        if workdir and not os.path.isabs(report_glob):
+            report_glob = os.path.join(workdir, report_glob)
+
+        # Clear reports left by a prior invocation so a command that fails to
+        # (re)write XML can't have stale cases parsed as this run's output
+        # (mirrors from_gtest_run's rm of its report file).
+        for stale in glob.glob(report_glob, recursive=True):
+            try:
+                os.remove(stale)
+            except OSError:
+                pass
+
+        # fail_fast (default) so a failing command's non-zero exit is reflected in
+        # the status: with a command list, from_commands_run otherwise reports only
+        # the LAST command's result, which would let a failing test followed by a
+        # passing cleanup produce a green result.
+        result = Result.from_commands_run(
+            name=name,
+            command=command if isinstance(command, list) else [command],
+            with_log=with_log,
+            workdir=workdir,
+            env=env,
+        )
+        process_failed = not result.is_ok()
+
+        status, results, info, files = ResultTranslator.from_junit(report_glob)
+        if files:
+            result.set_files(files)
+
+        if not results:
+            # report missing or empty — the process likely died before writing
+            result.set_status(Result.Status.ERROR)
+            result.set_info(info or "JUnit report contained no test cases")
+            return result
+
+        result.set_results(results).set_status(status)
+        if info:
+            result.set_info(info)
+        if process_failed and result.is_ok():
+            result.set_status(Result.Status.FAIL)
+            result.set_info(
+                "test process exited with non-zero code despite all parsed cases passing - see logs"
+            )
+        return result
+
+    @classmethod
+    def from_junit_report(
+        cls,
+        report_glob=None,
+        name="",
+        stopwatch=None,
+        process_exit_code=0,
+        files=None,
+        info="",
+    ):
+        """Build a Result from already-written JUnit XML report(s), reconciled
+        with the exit code of a test process the caller ran itself.
+
+        This is the "assemble only" half of from_junit_run: use it when the job
+        must run the test command on its own — e.g. to wrap it in environment
+        setup and collect failure diagnostics around it — rather than delegating
+        the run to from_junit_run. Sub-results are the individual test cases, so
+        the report page renders a per-spec table.
+
+        Because the caller runs the process, it also owns timing: pass the
+        job-level `stopwatch` (covering setup + the test run) and the process's
+        `process_exit_code`; `files` are attached alongside the parsed reports.
+
+        Status reconciliation mirrors from_junit_run:
+        - no report / no cases parsed (process killed before writing, OOM, glob
+          miss) -> ERROR.
+        - cases parsed -> status derived from the cases.
+        - all cases green but process_exit_code != 0 (panic or teardown failure
+          after the specs finished) -> force FAIL; a green suite must not mask
+          it.
+
+        :param report_glob: recursive glob matching the JUnit XML report(s);
+            defaults to ResultTranslator.JUNIT_RESULT_FILE.
+        :param name: Result name; defaults to the praktika job name.
+        :param stopwatch: Utils.Stopwatch measuring the job's wall time.
+        :param process_exit_code: exit code of the test process the caller ran.
+        :param files: extra files to attach (e.g. diagnostics archives).
+        :param info: extra info note; a parse error takes precedence.
+        :return: Result
+        """
+        if not name:
+            name = Info().job_name
+
+        base_files = list(files or [])
+        status, results, parse_error, paths = ResultTranslator.from_junit(report_glob)
+        if not results:
+            return cls.create_from(
+                name=name,
+                status=cls.Status.ERROR,
+                stopwatch=stopwatch,
+                info=parse_error or info or "JUnit report contained no test cases",
+                files=base_files + paths,
+            )
+
+        result = cls.create_from(
+            name=name,
+            results=results,
+            stopwatch=stopwatch,
+            files=base_files + paths,
+            info=parse_error or info,
+        )
+        if process_exit_code != 0 and result.is_ok():
+            result.set_status(cls.Status.FAIL)
+            result.set_info(
+                "test process exited with non-zero code despite all parsed cases passing - see logs"
+            )
         return result
 
     @classmethod
@@ -1901,6 +2059,115 @@ class _ResultS3:
 class ResultTranslator:
     GTEST_RESULT_FILE = Path("./ci/tmp/gtest.json").absolute()
     PYTEST_RESULT_FILE = Path("./ci/tmp/pytest.jsonl").absolute()
+    JUNIT_RESULT_FILE = Path("./ci/tmp/junit.xml").absolute()
+
+    # JUnit child tag -> praktika status. A <testcase> carries at most one of
+    # these; its absence means the case passed.
+    _JUNIT_TAG_STATUS = (
+        ("failure", Result.Status.FAIL),
+        ("error", Result.Status.ERROR),
+        ("skipped", Result.Status.SKIPPED),
+    )
+
+    @classmethod
+    def _junit_case_status(cls, testcase):
+        for tag, status in cls._JUNIT_TAG_STATUS:
+            if testcase.find(tag) is not None:
+                return status
+        return Result.Status.OK
+
+    @classmethod
+    def _junit_case_info(cls, testcase):
+        """Failure/error/skip message + body, for Result.info."""
+        for tag, _ in cls._JUNIT_TAG_STATUS:
+            el = testcase.find(tag)
+            if el is not None:
+                msg = (el.get("message") or "").strip()
+                body = (el.text or "").strip()
+                return "\n".join(p for p in (msg, body) if p)
+        return ""
+
+    @staticmethod
+    def _junit_case_duration(testcase):
+        try:
+            return float(testcase.get("time") or 0)
+        except ValueError:
+            return None
+
+    @classmethod
+    def _parse_junit_file(cls, path):
+        """Parse one JUnit XML file into a list of per-testcase Results."""
+        results = []
+        root = ET.parse(path).getroot()
+        # root may be <testsuites> (wrapping many) or a lone <testsuite>;
+        # iter() yields the element itself too, so both shapes are covered.
+        for suite in root.iter("testsuite"):
+            suite_name = suite.get("name", "")
+            for tc in suite.findall("testcase"):
+                # Many emitters (Ginkgo, go-junit-report) put the spec text in
+                # name and the suite/package in classname; join them for a
+                # readable, stable row label.
+                prefix = tc.get("classname", "") or suite_name
+                name = tc.get("name", "")
+                full = " :: ".join(p for p in (prefix, name) if p) or name or "(unnamed)"
+                results.append(
+                    Result(
+                        name=full,
+                        status=cls._junit_case_status(tc),
+                        duration=cls._junit_case_duration(tc),
+                        info=cls._junit_case_info(tc),
+                    )
+                )
+        return results
+
+    @classmethod
+    def from_junit(cls, report_glob=None):
+        """Parse JUnit XML report(s) into per-testcase Results.
+
+        `report_glob` is a (recursive) glob pattern; suites that emit one file
+        per run pass a concrete path, Ginkgo-style suites that shard across many
+        files pass e.g. `./ci/tmp/**/junit*.xml`. Defaults to JUNIT_RESULT_FILE.
+
+        Mirrors `from_gtest`: returns ``(status, results, info, files)`` where
+        `files` are the JUnit reports actually matched (for attaching to the
+        Result). A missing report / no test cases yields ERROR.
+        """
+        if not report_glob:
+            report_glob = str(cls.JUNIT_RESULT_FILE)
+
+        paths = sorted(glob.glob(str(report_glob), recursive=True))
+        if not paths:
+            info = f"No JUnit report matched [{report_glob}]"
+            print(f"ERROR: {info}")
+            return Result.Status.ERROR, [], info, []
+
+        results = []  # type: List[Result]
+        parse_error = ""
+        for p in paths:
+            try:
+                results.extend(cls._parse_junit_file(p))
+            except Exception as e:  # malformed / truncated XML
+                parse_error = f"Failed to parse JUnit report [{p}]: {e}"
+                print(f"ERROR: {parse_error}")
+                break
+
+        if not results:
+            info = parse_error or "JUnit report contained no test cases"
+            return Result.Status.ERROR, [], info, paths
+
+        status = Result.Status.OK
+        for r in results:
+            if r.status == Result.Status.ERROR:
+                status = Result.Status.ERROR
+                break
+            if r.status == Result.Status.FAIL:
+                status = Result.Status.FAIL
+        # A partial parse failure (some files parsed, one broke) must NOT report
+        # green off the cases that did parse: an entire shard was dropped, so the
+        # aggregate is ERROR. Parsed cases are still returned for the report.
+        if parse_error:
+            status = Result.Status.ERROR
+        return status, results, parse_error, paths
 
     @staticmethod
     def _render_chain(chain):

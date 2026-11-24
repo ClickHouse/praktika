@@ -1,76 +1,133 @@
 # Getting Started
 
-## 1. Initialize CI configuration
+This walks you from an empty repo to a working Praktika CI deployed on your own
+AWS account, driven by a GitHub App. Commands run from your repo root.
 
-> TODO: describe `python3 -m praktika init` or equivalent scaffold command to generate `ci/` structure
+Throughout, `<slug>` is your `PROJECT_SLUG` (set in `ci/settings/settings.py`,
+default `praktika`); AWS resource names are prefixed with it.
 
-## 2. Create GitHub App secrets in AWS Secrets Manager
-
-The orchestrator and runners authenticate to GitHub via a GitHub App.
-
-### 2a. Create a GitHub App
-
-1. Go to **GitHub → Settings → Developer settings → GitHub Apps → New GitHub App**
-2. Set permissions: `Actions: Read & Write`, `Contents: Read`, `Checks: Read & Write`, `Pull requests: Read`
-3. Generate a **private key** (PEM file) and note the **App ID**
-4. Install the app into your org/account and note the **Installation ID**
-   (visible in the URL after installing: `github.com/organizations/<org>/settings/installations/<id>`)
-
-### 2b. Store secrets in AWS Secrets Manager
-
-The secret names below are **fixed** — the runner IAM policy grants access to
-the `praktika-gh-app*` prefix, so the secrets must be named exactly as shown:
+## 1. Install
 
 ```bash
-AWS_REGION=<your-region>
-
-# Private key (paste PEM contents, including header/footer lines)
-aws secretsmanager create-secret \
-  --region "$AWS_REGION" \
-  --name praktika-gh-app.app-key \
-  --secret-string file://path/to/private-key.pem
-
-# Installation ID (numeric string, e.g. "12345678")
-aws secretsmanager create-secret \
-  --region "$AWS_REGION" \
-  --name praktika-gh-app.app-installation-id \
-  --secret-string "<INSTALLATION_ID>"
+pip install 'praktika[infrastructure]'   # [infrastructure] pulls in the deploy deps
 ```
 
+## 2. Set up AWS access
 
-## 3. Deploy AWS infrastructure
+Create / get access to an AWS account and add a profile to `~/.aws/config` so
+you can log in with:
+
+```bash
+aws sso login --profile <ProfileName>
+```
+
+Note `<ProfileName>` — you'll put it in the generated settings in step 4.
+
+## 3. Scaffold the project
+
+```bash
+python3 -m praktika init
+```
+
+This generates a starter project you can run as-is or edit:
+
+- `ci/workflows/` — your pipelines (jobs, triggers)
+- `ci/infrastructure/projects.py` — AWS infra config (VPC, runner/orchestrator pools, proxies, …)
+- `ci/settings/settings.py` — project-wide settings (slug, region, profile, sizing)
+
+## 4. Review the config
+
+Open `ci/settings/settings.py` and set `AWS_PROFILE` to the `<ProfileName>` from
+step 2 and `AWS_REGION` to your region — Praktika uses them for every AWS call.
+Then skim it and `ci/infrastructure/projects.py` and adjust naming and instance
+sizing. The scaffold is deployable unchanged if you just want to see it work.
+
+## 5. Deploy the infrastructure
 
 ```bash
 python3 -m praktika infrastructure --deploy
 ```
 
-This will:
-- Create the SSM secret `praktika_gh_trigger_webhook_secret` (auto-generated, written to `ci/infrastructure/praktika_gh_trigger_webhook_secret.secret`)
-- Create the IAM role `praktika-gh-trigger-role` with `AWSLambdaBasicExecutionRole` and SQS send permissions
-- Create the SQS queue `praktika-workflows` (workflow trigger inbox)
-- Deploy the `praktika-gh-trigger` Lambda (GitHub webhook receiver)
-- Create the API Gateway endpoint — URL is written to `ci/infrastructure/praktika-gh-trigger_api_gateway.txt`
-- Create the workflow orchestrator Launch Template and Auto Scaling Group
-- Create runner pool Launch Template, Auto Scaling Group, and SQS queue
+**Expect to run this twice.** Runner/orchestrator pools (ASGs) launch from AMIs
+that the deploy builds via **EC2 Image Builder**, which takes a while. The first
+deploy kicks off the image pipelines and then can't finish the pools that depend
+on them. Wait for the pipelines to go green (AWS console → **EC2 Image Builder →
+Image pipelines**), then run `--deploy` again and let it complete.
 
-## 4. Configure GitHub Webhook
+The deploy also drops two files under `ci/infrastructure/` that you need next
+(it prints their exact paths):
 
-In your GitHub repository or organization go to **Settings → Webhooks → Add webhook** and set:
+- `*_api_gateway.txt` — the webhook **Payload URL**
+- `*.secret` — the auto-generated webhook **HMAC secret** (keep it safe)
 
-| Field | Value |
+…and creates an **empty** GitHub App secret `<slug>-gh-token` in AWS Secrets
+Manager, with placeholder keys `app-id`, `app-key`, `app-installation-id` for you
+to fill in at step 7.
+
+## 6. Create and install the GitHub App
+
+Create a GitHub App **in your org** (GitHub → org **Settings → Developer
+settings → GitHub Apps → New**). Install it **only in that org**, granting access
+to the target repo(s) — installing it anywhere else serves no purpose.
+
+**Permissions** (minimum for CI):
+
+| Permission | Access |
 |---|---|
-| Payload URL | URL from `ci/infrastructure/praktika-gh-trigger_api_gateway.txt` |
-| Content type | `application/json` |
-| Secret | Value from `ci/infrastructure/praktika_gh_trigger_webhook_secret.secret` |
-| SSL verification | Enabled |
+| Checks | Read & write |
+| Contents | Read |
+| Pull requests | Read |
 
-**Events to enable** (select individual events):
-- Pull requests
-- Pushes
-- Check runs
-- Check suites
-- Merge groups *(skip if not used as a trigger)*
+Add more only for what your CI actually does — e.g. **Contents: write** (commits,
+GitHub Pages), **Actions**, **Pages**.
 
-## 5. Next steps
+**Webhook** — point it at the deploy output from step 5:
 
-> TODO: describe how to define workflows in `ci/workflows/`, add jobs, configure runner labels, etc.
+- **Payload URL**: contents of `*_api_gateway.txt`
+- **Content type**: `application/json`
+- **Secret**: contents of `*.secret`
+
+Save, then confirm GitHub shows a successful delivery (green check in the App's
+**Advanced** tab). Once the webhook verifies, subscribe to these **events**:
+**Check run**, **Check suite**, **Pull request**, **Push**.
+
+Finally, note the App's **App ID**, generate and download its **private key
+(PEM)**, and note the **Installation ID** (in the install URL:
+`…/settings/installations/<id>`).
+
+## 7. Fill in the GitHub App secret
+
+Put the three values from step 6 into the `<slug>-gh-token` secret created at
+step 5 (AWS Secrets Manager), as JSON keys:
+
+- `app-id` — the App ID **or** Client ID (GitHub accepts either as the JWT
+  issuer; newer App settings show the **Client ID**, e.g. `Iv23li…`, and
+  recommend it)
+- `app-key` — the full PEM private key (including the header/footer lines)
+- `app-installation-id` — the Installation ID
+
+## 8. Verify
+
+```bash
+python3 -m praktika infrastructure --verify
+```
+
+Everything should report green. This mints a token through the App secret, probes
+the deployed components, and reports the App installation's current API
+rate-limit usage.
+
+You're set — open a PR and Praktika CI runs against it.
+
+---
+
+### Tip: test safely without affecting other users' PRs
+
+To try Praktika CI on your own PRs only, set a temporary allow-list on the
+orchestrator pool in `ci/infrastructure/projects.py` and redeploy:
+
+```python
+OrchestratorPool(..., ext={"allowed_users": ["your-gh-handle"]})
+```
+
+With this set, `pull_request` events trigger CI only for the listed GitHub
+logins. Remove it to open CI up to everyone.
