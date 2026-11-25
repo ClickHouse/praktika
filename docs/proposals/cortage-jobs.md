@@ -31,14 +31,15 @@ etc., `job.py:211`):
 
 ```python
 job_b.attach_to(job_a)                         # or attach_to("job_a_name")
-job_c.attach_to(job_b, promote_runner=True)    # chain A<-B<-C, runs on C's runner
+job_c.attach_to(job_b, promote_runs_on=True)    # chain A<-B<-C, runs on C's runner
 ```
 
-- New field `attached_to: str = ""` (goes **before `ext`** — keep `ext` the last
-  init field). Accepts a `Job.Config` or a name; stores the predecessor's name.
-- Optional `promote_runner: bool = False` arg → new field
-  `promote_runner: bool = False` (also before `ext`). When set, this member
-  promotes **its own `runs_on`** as the cortage's runner.
+- New field `attached_to: str = ""` on `Job.Config` (appended after `post_hooks`;
+  `Job.Config` has no `ext` field). Accepts a `Job.Config` or a name; stores the
+  predecessor's name.
+- Optional `promote_runs_on: bool = False` arg → new field
+  `promote_runs_on: bool = False`. When set, this member promotes **its own
+  `runs_on`** as the cortage's runner.
 - **One attachment per job** (single `str`, structurally enforced) and **at most
   one job may attach to a given predecessor** — the chain stays a linked list,
   never a tree (validator asserts the second).
@@ -46,7 +47,7 @@ job_c.attach_to(job_b, promote_runner=True)    # chain A<-B<-C, runs on C's runn
   `attached_to` to `""`; all jobs sharing a head are one cortage. Execution order
   = head → tail.
 - **Which `runs_on` the cortage uses:** the `runs_on` of the **last member in
-  chain order with `promote_runner=True`**; if no member promotes, the **head's**
+  chain order with `promote_runs_on=True`**; if no member promotes, the **head's**
   `runs_on`. This lets a lightweight head run a chain on a heavier runner a later
   member needs. The effective `runs_on` is what routes the SQS message and picks
   the pool (`_queue_for_runs_on`); all other members' `runs_on` are informational.
@@ -137,6 +138,36 @@ cortage member is allowed — that is req #3's early-unblock case, handled below
   an infra rerun: the runner handles cascade/skip locally, and the failed
   member's final-state cancels its dependents (intra- and cross-cortage) via the
   normal CANCELLED cascade; later members that don't depend on it still run.
+- **External-dep stall (new, revised req #4).** When the runner reaches a member
+  whose external `requires` aren't done yet, the member **stalls** instead of
+  failing. This holds the runner idle — accepted, in exchange for zero config
+  friction.
+  - **Signal: poll `runs/<run_id>/state.json`.** The orchestrator already writes
+    this authoritative all-jobs snapshot every ~10 s (`save_snapshot`,
+    `state.py:1878`), and the runner already receives its key as
+    `task["state_s3_key"]` (the controller already reads it in `_run_is_finalized`,
+    `controller.py:336`). The stalling member polls it and reads
+    `jobs[<dep>]["status"]`: `SUCCESS` → proceed; `FAILURE`/`CANCELLED`/`SKIPPED`/
+    `ERROR` → fail the cortage; `PENDING`/`QUEUED`/`RUNNING` → keep waiting.
+    - *Not* each dep's `final.json`: cancelled/dropped/liveness-killed deps never
+      write one (`job_runner.py` writes `final.json` only for jobs that ran to
+      completion), so they'd look pending forever. `state.json` covers every
+      terminal reason. The runner resolves a member's external dep job names from
+      `ci_config` (same artifact→provider logic as `_pre_run`); the snapshot is
+      keyed by plain job name, no normalization needed.
+  - **Warn in the workflow report.** While stalled, surface a non-fatal warning
+    (`ext.warnings`) naming **what it is stalling on** (the blocking dep job name)
+    and **for how long** (seconds stalled). The runner emits it via heartbeat
+    phase/`ext`; the orchestrator renders it. User-visible signal a cortage is
+    parked.
+  - **Fail the cortage if a stalled-on dep fails.** When the snapshot shows the dep
+    in a terminal non-success state, the cortage **fails**: the stalling member and
+    the rest of the chain are marked failed, the runner aborts and is released.
+    Already-finalized earlier members keep their results.
+  - **Bounded by `Settings.CORTAGE_MAX_STALL_SEC` (15 min default).** If a member
+    stalls longer than this on a single dep, the member (and chain) is failed and
+    the runner released — a safety net so a wedged dep can't hold a runner forever.
+    The stall also ends early on dep success/failure or whole-run cancel/finalize.
 
 ## Controller (`controller.py`, `common.py`)
 
@@ -176,11 +207,13 @@ cortage member is allowed — that is req #3's early-unblock case, handled below
   disk" — it must cope with both.
 
 ## Implementation checklist
-- [ ] `job.py`: `attached_to` + `promote_runner` fields (before `ext`) +
-      `attach_to(job, promote_runner=False)` builder.
-- [ ] `validator.py`: engine reject, name/chain/fork/cycle asserts,
-      runs_on-mismatch WARNING, collapsed-DAG cross-cortage cycle check.
-- [ ] `orchestrator/__init__.py`: cortage grouping + super-node collapse in
+- [x] `job.py`: `attached_to` + `promote_runs_on` fields (after `post_hooks`) +
+      `attach_to(job, promote_runs_on=False)` builder.
+- [x] `settings.py`: `CORTAGE_MAX_STALL_SEC` (15 min) + export entry.
+- [x] `validator.py`: engine reject, missing/self/fork/attach-cycle asserts,
+      sequential-edge deadlock-cycle assert, runs_on-mismatch + stray-promote
+      WARNINGs (`validate_cortages`).
+- [ ] `orchestrator/__init__.py`: cortage grouping + sequential chain edges in
       `build_job_dag` / execution-plan print.
 - [ ] `orchestrator/state.py`: cortage-aware readiness, head-only `_dispatch`,
       mark-tail-head-handled + keep watching keys, per-member final-state unblock,
