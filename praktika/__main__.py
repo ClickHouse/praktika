@@ -361,8 +361,9 @@ def create_parser():
         action="store_true",
         default=False,
         help=(
-            "Submit a GitHub APPROVE review when the verdict is clean "
-            "(`no_issues`). Default off (the job never approves)."
+            "Submit a GitHub APPROVE review when the review is clean: verdict "
+            "`no_issues` or `nits_only` and the investigation budget was not "
+            "exhausted. Default off (the job never approves)."
         ),
     )
     return parser

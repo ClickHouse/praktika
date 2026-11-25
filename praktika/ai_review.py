@@ -601,12 +601,23 @@ def _apply_thread_actions(actions, threads, dry_run):
     return errors
 
 
-def _apply_approve(verdict, commit_id, dry_run):
+_APPROVABLE_VERDICTS = ("no_issues", "nits_only")
+
+
+def _apply_approve(verdict, commit_id, dry_run, exhausted=False):
     """Submit a GitHub APPROVE review when --enable-approve is set and the
-    verdict is clean (``no_issues``). Any verdict with findings is left
-    un-approved. Returns a list of write-error strings (empty on success)."""
-    if verdict != "no_issues":
-        print(f"Not approving: verdict is {verdict or '(none)'} (only no_issues approves)")
+    review is clean: the verdict is ``no_issues`` or ``nits_only`` (nits are
+    advisory, not blocking) and the model did not exhaust its investigation
+    budget. An exhausted review is incomplete, so it never approves even on a
+    clean verdict. Returns a list of write-error strings (empty on success)."""
+    if verdict not in _APPROVABLE_VERDICTS:
+        print(
+            f"Not approving: verdict is {verdict or '(none)'} "
+            f"(only {' or '.join(_APPROVABLE_VERDICTS)} approve)"
+        )
+        return []
+    if exhausted:
+        print("Not approving: review was incomplete (investigation budget exhausted)")
         return []
     if dry_run:
         print("[dry-run] would submit APPROVE review")
@@ -680,7 +691,10 @@ def review(args):
     )
     if getattr(args, "enable_approve", False):
         errors += _apply_approve(
-            review_data.get("verdict") or "", info.sha, args.dry_run
+            review_data.get("verdict") or "",
+            info.sha,
+            args.dry_run,
+            exhausted=usage.exhausted,
         )
 
     rounds = ""
