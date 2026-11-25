@@ -30,21 +30,28 @@ A new builder on `Job.Config` (deep-copy + return self, like `set_requires`
 etc., `job.py:211`):
 
 ```python
-job_b.attach_to(job_a)          # or attach_to("job_a_name")
-job_c.attach_to(job_b)          # chains: A <- B <- C, all on A's runner
+job_b.attach_to(job_a)                         # or attach_to("job_a_name")
+job_c.attach_to(job_b, promote_runner=True)    # chain A<-B<-C, runs on C's runner
 ```
 
 - New field `attached_to: str = ""` (goes **before `ext`** — keep `ext` the last
   init field). Accepts a `Job.Config` or a name; stores the predecessor's name.
+- Optional `promote_runner: bool = False` arg → new field
+  `promote_runner: bool = False` (also before `ext`). When set, this member
+  promotes **its own `runs_on`** as the cortage's runner.
 - **One attachment per job** (single `str`, structurally enforced) and **at most
   one job may attach to a given predecessor** — the chain stays a linked list,
   never a tree (validator asserts the second).
 - **Cortage** = the maximal chain. *Head* = the job reached by following
   `attached_to` to `""`; all jobs sharing a head are one cortage. Execution order
   = head → tail.
-- `runs_on` is taken from the **head**. Members keep their own `requires` /
-  `provides` / `command` / `timeout`; they remain first-class jobs in the DAG and
-  in reporting.
+- **Which `runs_on` the cortage uses:** the `runs_on` of the **last member in
+  chain order with `promote_runner=True`**; if no member promotes, the **head's**
+  `runs_on`. This lets a lightweight head run a chain on a heavier runner a later
+  member needs. The effective `runs_on` is what routes the SQS message and picks
+  the pool (`_queue_for_runs_on`); all other members' `runs_on` are informational.
+- Members keep their own `requires` / `provides` / `command` / `timeout`; they
+  remain first-class jobs in the DAG and in reporting.
 
 Naming chosen: `attach_to` reads as "attach this job onto <predecessor>", mirrors
 the existing `set_*`/`*_after` builder vocabulary, and the stored field
@@ -55,8 +62,9 @@ the existing `set_*`/`*_after` builder vocabulary, and the stored field
 New non-fatal **warning** path (today everything is `evaluate_check`/`assert` →
 `sys.exit(1)`; add a `print("WARNING: ...")` that lets validation pass):
 
-- **WARNING** — a member's `runs_on` differs from the head's. Ignored; head wins.
-  (req #2)
+- **WARNING** — a member's `runs_on` differs from the cortage's effective
+  `runs_on` (the last-promoted member's, else the head's). Ignored; the effective
+  runner wins. (req #2)
 
 New **errors** (`evaluate_check` / assert):
 
@@ -64,28 +72,33 @@ New **errors** (`evaluate_check` / assert):
 - `attached_to` names a job not in the same workflow.
 - Two jobs attach to the same predecessor (would fork the chain).
 - A cycle in `attached_to` links.
-- **Cross-cortage dependency between overlapping cortages** (req #3/#4): collapse
-  each cortage chain to a single super-node (merge every member's *external*
-  `requires`/`run_after` onto it). **If the collapsed DAG has a cycle → error.**
-  This is exactly "a job from one cortage requires a job from another cortage
-  that runs in parallel": two cortages overlap unless one fully precedes the
-  other, and a cross edge that breaks that ordering shows up as a cycle in the
-  collapsed graph. It also catches the single-job interleave
-  (`cortageA-member → X → cortageA-member`) that would deadlock a one-runner
-  block.
+- **Only a genuine deadlock cycle is an error** (revised req #4 — cross-deps to
+  jobs *outside* the cortage are now **supported**, see below). Build the full job
+  DAG and add each cortage's **sequential edges** (`head → m2 → … → mN`, since the
+  runner executes members strictly in order). Run normal cycle detection. A cycle
+  means a member waits — directly or transitively — on a job that can only run
+  *after* it on the same runner → **error**. Everything else is allowed.
+  - Why sequential edges, not super-node collapse: with stall-and-wait semantics
+    (below), member `m_j` may be required by external `X` which is required by a
+    *later* member `m_k` (`j < k`) — that is **not** a deadlock (`m_j` finalizes,
+    `X` runs, `m_k` stalls then runs), and the old collapse check wrongly rejected
+    it. The deadlock is only when the back-edge lands on the same-or-later member
+    (`m_j → X → m_k` with `k ≤ j`), which the sequential edges turn into a cycle.
 
 A plain job (or an *external* cortage member) requiring an **intermediate**
 cortage member is allowed — that is req #3's early-unblock case, handled below.
 
 ## Orchestrator (`orchestrator/state.py`, `orchestrator/__init__.py`)
 
-- **Readiness via super-node collapse.** `build_job_dag`
-  (`orchestrator/__init__.py:129`) groups members by head. A cortage dispatches
-  only when the **union of all members' external deps** is satisfied — because
-  the whole chain ships as one message and inner members can't wait on anything
-  that isn't already done. (This is why cross-cortage cycles are illegal.)
+- **Readiness on the head's own deps.** `build_job_dag`
+  (`orchestrator/__init__.py:129`) groups members by head and adds the sequential
+  chain edges. The cortage dispatches as soon as the **head's own** `requires` are
+  satisfied — it does **not** wait for later members' external deps. Those are
+  enforced at runtime by the runner stalling (below). This reduces config friction:
+  the user needn't arrange deps so the whole chain is ready up front.
 - **Head-only dispatch.** `kick`/`_dispatch` (`state.py:670`, `:2602`) send a
-  single ordinary task for the **head** to the head's runs_on queue. No batched
+  single ordinary task for the **head** to the **effective cortage runs_on** queue
+  (the last-promoted member's `runs_on`, else the head's — see API). No batched
   payload, no intra-cortage dep map in the message — the runner reads the chain
   from `ci_config`. (No SQS 256 KB concern.)
 - **Mark the tail as head-handled, keep watching.** When the head is kicked, the
@@ -109,7 +122,8 @@ cortage member is allowed — that is req #3's early-unblock case, handled below
 - **Rerun on infra failure resumes at the failed member.** A stale heartbeat on
   member K — with members `<K` already finalized — reruns **member K**,
   re-dispatched as the head of the remaining chain `K..N` and routed to the
-  **cortage's pool** (the *original head's* `runs_on`, not member K's). Already
+  **cortage's effective pool** (the last-promoted member's `runs_on`, else the
+  original head's — not member K's own, unless K is itself the promoted one). Already
   finalized members are **not** re-run: their `provides` are in S3, so the fresh
   runner restores the snapshot and member K's `_pre_run` pulls them from S3 as
   normal, then continues `K+1..N` locally. Restart from the original head happens
@@ -162,7 +176,8 @@ cortage member is allowed — that is req #3's early-unblock case, handled below
   disk" — it must cope with both.
 
 ## Implementation checklist
-- [ ] `job.py`: `attached_to` field (before `ext`) + `attach_to()` builder.
+- [ ] `job.py`: `attached_to` + `promote_runner` fields (before `ext`) +
+      `attach_to(job, promote_runner=False)` builder.
 - [ ] `validator.py`: engine reject, name/chain/fork/cycle asserts,
       runs_on-mismatch WARNING, collapsed-DAG cross-cortage cycle check.
 - [ ] `orchestrator/__init__.py`: cortage grouping + super-node collapse in
@@ -177,9 +192,11 @@ cortage member is allowed — that is req #3's early-unblock case, handled below
 - [ ] `yaml_generator.py`: unaffected (native-only); confirm no leakage.
 
 ## Hard constraints
-1. **Head's `runs_on` is law.** The batched message routes by the head only
-   (`_queue_for_runs_on`, `state.py:268`); member `runs_on` is informational and
-   only warned on.
+1. **The effective `runs_on` is law.** The message routes by the last-promoted
+   member's `runs_on` (else the head's) via `_queue_for_runs_on`
+   (`state.py:268`); every other member's `runs_on` is informational and only
+   warned on. The effective runner must be resolved **once, statically**, before
+   dispatch — it determines the pool for the whole chain and every rerun of it.
 2. **Collapsed-DAG acyclicity is the safety property.** Get the super-node
    collapse right or a cortage can deadlock waiting on a dep that can only run
    after it. The validator cycle check is the guard — do not ship without it.

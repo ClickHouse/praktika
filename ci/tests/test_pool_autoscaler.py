@@ -34,18 +34,18 @@ def test_pool_autoscaler_builds_scheduled_lambda():
     )
 
 
-def test_pool_autoscaler_wires_eager_mode_from_runner_pool():
+def test_pool_autoscaler_wires_scale_coefficient_from_runner_pool():
     eager_pool = RunnerPool(
         name="arm-eager",
         instance_type="t4g.small",
         vpc_name="praktika-ci",
         scaling=RunnerPool.Scaling.Auto,
-        scale_mode=RunnerPool.ScaleMode.Eager,
+        scale_coefficient=1.0,
         size=0,
         max_size=50,
     )
-    gradual_pool = RunnerPool(
-        name="arm-gradual",
+    default_pool = RunnerPool(
+        name="arm-default",
         instance_type="t4g.small",
         vpc_name="praktika-ci",
         scaling=RunnerPool.Scaling.Auto,
@@ -53,17 +53,19 @@ def test_pool_autoscaler_wires_eager_mode_from_runner_pool():
         max_size=50,
     )
 
-    autoscaler = PoolAutoscaler.from_pools([eager_pool, gradual_pool])
+    autoscaler = PoolAutoscaler.from_pools([eager_pool, default_pool])
     env = autoscaler.lambda_config.environments["POOLS_CONFIG_JSON"]
-    assert '"mode":"eager"' in env
-    assert '"mode":"gradual"' in env
+    assert '"scale_coefficient":1.0' in env
+    assert '"scale_coefficient":0.3' in env
 
 
-def test_pool_autoscaler_rejects_unknown_mode():
+def test_pool_autoscaler_rejects_out_of_range_coefficient():
     import pytest
 
-    with pytest.raises(ValueError, match="unknown mode"):
-        PoolAutoscaler(pools=[PoolAutoscaler.Pool(name="arm", mode="turbo")])
+    with pytest.raises(ValueError, match="scale_coefficient"):
+        PoolAutoscaler(pools=[PoolAutoscaler.Pool(name="arm", scale_coefficient=0)])
+    with pytest.raises(ValueError, match="scale_coefficient"):
+        PoolAutoscaler(pools=[PoolAutoscaler.Pool(name="arm", scale_coefficient=1.5)])
 
 
 def test_rate_expression_clamps_to_minute():
@@ -182,20 +184,20 @@ def test_calculate_desired_capacity_steps_by_30_percent_of_gap():
     )
 
 
-def test_calculate_desired_capacity_eager_closes_whole_gap_at_once():
-    # Eager mode provisions one instance per queued/in-flight task in a single
-    # invocation instead of the 30% ramp, capped only at max_size.
+def test_calculate_desired_capacity_coefficient_one_closes_whole_gap_at_once():
+    # scale_coefficient=1.0 provisions one instance per queued/in-flight task in a
+    # single invocation instead of the 30% ramp, capped only at max_size.
     assert (
         _calculate_desired_capacity(
             current_desired=0,
             max_size=1000,
             visible_messages=100,
             in_flight_messages=0,
-            mode="eager",
+            scale_coefficient=1.0,
         )
         == 100
     )
-    # Reserve sits on top of the per-task capacity, same as gradual mode.
+    # Reserve sits on top of the per-task capacity, same as the default ramp.
     assert (
         _calculate_desired_capacity(
             current_desired=2,
@@ -203,7 +205,7 @@ def test_calculate_desired_capacity_eager_closes_whole_gap_at_once():
             visible_messages=10,
             in_flight_messages=5,
             capacity_reserve=2,
-            mode="eager",
+            scale_coefficient=1.0,
         )
         == 17
     )
@@ -214,9 +216,35 @@ def test_calculate_desired_capacity_eager_closes_whole_gap_at_once():
             max_size=5,
             visible_messages=100,
             in_flight_messages=0,
-            mode="eager",
+            scale_coefficient=1.0,
         )
         == 5
+    )
+
+
+def test_calculate_desired_capacity_coefficient_sets_step_fraction():
+    # An intermediate coefficient covers that fraction of the outstanding gap,
+    # rounded up. Half of a 100-task gap -> 50.
+    assert (
+        _calculate_desired_capacity(
+            current_desired=0,
+            max_size=1000,
+            visible_messages=100,
+            in_flight_messages=0,
+            scale_coefficient=0.5,
+        )
+        == 50
+    )
+    # The fraction floors to at least +1 near the target so it still converges.
+    assert (
+        _calculate_desired_capacity(
+            current_desired=0,
+            max_size=1000,
+            visible_messages=2,
+            in_flight_messages=0,
+            scale_coefficient=0.1,
+        )
+        == 1
     )
 
 
