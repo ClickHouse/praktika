@@ -601,6 +601,22 @@ def _apply_thread_actions(actions, threads, dry_run):
     return errors
 
 
+def _apply_approve(verdict, commit_id, dry_run):
+    """Submit a GitHub APPROVE review when --enable-approve is set and the
+    verdict is clean (``no_issues``). Any verdict with findings is left
+    un-approved. Returns a list of write-error strings (empty on success)."""
+    if verdict != "no_issues":
+        print(f"Not approving: verdict is {verdict or '(none)'} (only no_issues approves)")
+        return []
+    if dry_run:
+        print("[dry-run] would submit APPROVE review")
+        return []
+    if not GH.approve_pr(commit_id=commit_id):
+        return ["failed to submit approve review"]
+    print("Submitted APPROVE review")
+    return []
+
+
 def review(args):
     """Gather PR context, consult the model, and apply the structured result."""
     info = Info()
@@ -662,6 +678,10 @@ def review(args):
     errors += _apply_thread_actions(
         review_data.get("thread_actions"), threads, args.dry_run
     )
+    if getattr(args, "enable_approve", False):
+        errors += _apply_approve(
+            review_data.get("verdict") or "", info.sha, args.dry_run
+        )
 
     rounds = ""
     if usage.max_tool_rounds:

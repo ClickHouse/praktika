@@ -355,6 +355,16 @@ def create_parser():
             "address them. Default off (verdict stays advisory)."
         ),
     )
+    review_parser.add_argument(
+        "--enable-approve",
+        dest="enable_approve",
+        action="store_true",
+        default=False,
+        help=(
+            "Submit a GitHub APPROVE review when the verdict is clean "
+            "(`no_issues`). Default off (the job never approves)."
+        ),
+    )
     return parser
 
 
