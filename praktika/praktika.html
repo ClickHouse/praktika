@@ -1908,8 +1908,7 @@
                     hoveredTask.name,
                     hoveredTask.status,
                     hoveredTask.start_time,
-                    hoveredTask.duration,
-                    requires
+                    hoveredTask.duration
                 );
             }
         });
@@ -1951,7 +1950,7 @@
         }
 
         // Make widget re-usable by external updates
-        widget.update = function (name, status, start_time, duration, requires) {
+        widget.update = function (name, status, start_time, duration) {
             widget.innerHTML = '';
 
             // Create name line with fixed height for two lines
@@ -1982,14 +1981,6 @@
                 widget.appendChild(durationLine);
             } else {
                 addLine("--s");
-            }
-
-            // List of jobs this one depends on (needs to finish first) is shown
-            // as a hover tooltip on the name, so it doesn't change the widget
-            // height / shift the page on hover.
-            if (Array.isArray(requires) && requires.length > 0) {
-                nameLine.title = "needs: " + requires.join(", ");
-                nameLine.style.cursor = "help";
             }
         };
 

@@ -364,8 +364,6 @@ class RunnerPool:
     scaling: str
     size: int
     max_size: int
-    # Scale-up pacing for auto-scaled pools; ignored when scaling is Disabled.
-    scale_mode: str = ScaleMode.Gradual
     vpc_name: str = ""
     ami_id: str = ""  # resolved at deploy time via SSM if empty
     image_builder: ImageBuilder.Config | None = None
@@ -397,6 +395,8 @@ class RunnerPool:
     volume_iops: int = 0
     volume_throughput: int = 0
     capacity_reserve: int = 0
+    # Scale-up pacing for auto-scaled pools; ignored when scaling is Disabled.
+    scale_mode: str = ScaleMode.Gradual
     ext: Dict[str, Any] = field(default_factory=dict)
 
     launch_template: LaunchTemplate.Config = field(init=False)
