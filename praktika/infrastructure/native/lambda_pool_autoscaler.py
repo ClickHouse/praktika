@@ -10,6 +10,12 @@ import boto3
 # both sides (see praktika.orchestrator.throttle.CAPACITY_S3_KEY).
 CAPACITY_S3_KEY = "pool_capacity.json"
 
+# Scale-up pacing modes a pool can request (see _calculate_desired_capacity).
+# Mirrored by RunnerPool.ScaleMode on the config side; new strategies get added
+# here and there without changing the pool-config wire shape.
+SCALE_MODE_GRADUAL = "gradual"  # default: close ~30% of the outstanding gap/min
+SCALE_MODE_EAGER = "eager"  # close the whole gap at once (one instance per task)
+
 # S3 key prefix (under the project artifact bucket) where this autoscaler
 # publishes each ASG's current target AMI. Must match the consumer side in
 # bootstrap/src/praktika_controller/common.py (AMI_TARGET_S3_PREFIX). Runners
@@ -83,6 +89,7 @@ def _calculate_desired_capacity(
     visible_messages: int,
     in_flight_messages: int,
     capacity_reserve: int = 0,
+    mode: str = SCALE_MODE_GRADUAL,
 ) -> int:
     # Scheduled autoscaling is scale-up only. Scale-in is owned by the VMs
     # themselves after they observe sustained queue idleness from inside the
@@ -96,15 +103,22 @@ def _calculate_desired_capacity(
     if target_work_capacity <= current_work_capacity:
         return min(max_size, max(current_desired, capacity_reserve))
 
-    # Grow toward the target by max(30% of the OUTSTANDING gap, 1) per
-    # invocation (the schedule fires once a minute). The gap is backlog not yet
-    # covered by current_desired, which already includes instances we requested
-    # on earlier runs but that are still booting. Stepping off the gap (rather
-    # than the raw backlog) means each minute decelerates as pending capacity
-    # ramps up, instead of slamming in another big batch for a backlog that is
-    # already being provisioned for and just hasn't been picked up yet.
+    # Grow toward the target. In the default (dampened) mode step by
+    # max(30% of the OUTSTANDING gap, 1) per invocation (the schedule fires once
+    # a minute). The gap is backlog not yet covered by current_desired, which
+    # already includes instances we requested on earlier runs but that are still
+    # booting. Stepping off the gap (rather than the raw backlog) means each
+    # minute decelerates as pending capacity ramps up, instead of slamming in
+    # another big batch for a backlog that is already being provisioned for and
+    # just hasn't been picked up yet.
+    #
+    # In eager mode we close the whole gap in one invocation — one instance per
+    # queued/in-flight task, capped only by max_size. This is for pools that must
+    # minimize queue latency and are willing to pay for the transient
+    # over-provisioning while the batch boots (the backlog is still counted as
+    # outstanding until a runner picks each job up).
     gap = target_work_capacity - current_work_capacity
-    step = max(1, math.ceil(gap * 0.3))
+    step = gap if mode == SCALE_MODE_EAGER else max(1, math.ceil(gap * 0.3))
     new_work_capacity = min(target_work_capacity, current_work_capacity + step)
     target_capacity = min(max_size, capacity_reserve + new_work_capacity)
     if target_capacity <= current_desired:
@@ -131,6 +145,7 @@ def lambda_handler(event, context):
         queue_name = str(pool.get("queue_name") or pool_name)
         asg_name = str(pool.get("asg_name") or pool_name)
         capacity_reserve = max(0, int(pool.get("capacity_reserve") or 0))
+        mode = str(pool.get("mode") or SCALE_MODE_GRADUAL)
 
         # A single pool whose SQS queue or ASG is missing (e.g. not deployed
         # yet, renamed, or not covered by this role's IAM scope) must not abort
@@ -180,6 +195,7 @@ def lambda_handler(event, context):
                 visible_messages=visible_messages,
                 in_flight_messages=in_flight_messages,
                 capacity_reserve=capacity_reserve,
+                mode=mode,
             )
             # Defensive clamp: even if future _calculate_desired_capacity changes,
             # this autoscaler must never scale a pool down. VM self-termination is
@@ -217,6 +233,7 @@ def lambda_handler(event, context):
                 "current_desired": current_desired,
                 "max_size": max_size,
                 "capacity_reserve": capacity_reserve,
+                "mode": mode,
                 "new_desired": new_desired,
                 "scaled": scaled,
             }

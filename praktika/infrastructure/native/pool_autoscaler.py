@@ -8,7 +8,15 @@ from praktika.infrastructure.lambda_function import Lambda
 from praktika.settings import Settings
 
 from . import iam_scope
-from .lambda_pool_autoscaler import CAPACITY_S3_KEY
+from .lambda_pool_autoscaler import (
+    CAPACITY_S3_KEY,
+    SCALE_MODE_EAGER,
+    SCALE_MODE_GRADUAL,
+)
+
+# Valid scale-up modes a pool can request; validated at config build time so a
+# typo fails the deploy rather than silently falling back at runtime.
+_SCALE_MODES = frozenset({SCALE_MODE_GRADUAL, SCALE_MODE_EAGER})
 
 # S3 key prefix (under the project artifact bucket) where this autoscaler
 # publishes each ASG's target AMI for its runners to read. Must match
@@ -31,6 +39,9 @@ class PoolAutoscaler:
         queue_name: str = ""
         asg_name: str = ""
         capacity_reserve: int = 0
+        # Scale-up pacing: "gradual" (default 30%/min ramp) or "eager" (close the
+        # whole backlog gap in one invocation). See lambda_pool_autoscaler.
+        mode: str = SCALE_MODE_GRADUAL
         ext: Dict[str, Any] = field(default_factory=dict)
 
     name: str = "pool-autoscaler"
@@ -53,6 +64,12 @@ class PoolAutoscaler:
                 raise ValueError(
                     f"PoolAutoscaler pool {pool.name!r} has negative capacity_reserve"
                 )
+            pool.mode = pool.mode or SCALE_MODE_GRADUAL
+            if pool.mode not in _SCALE_MODES:
+                raise ValueError(
+                    f"PoolAutoscaler pool {pool.name!r} has unknown mode "
+                    f"{pool.mode!r}; expected one of {sorted(_SCALE_MODES)}"
+                )
 
         pool_config_json = json.dumps(
             [
@@ -61,6 +78,7 @@ class PoolAutoscaler:
                     "queue_name": pool.queue_name,
                     "asg_name": pool.asg_name,
                     "capacity_reserve": pool.capacity_reserve,
+                    "mode": pool.mode,
                 }
                 for pool in self.pools
             ],
@@ -188,6 +206,7 @@ class PoolAutoscaler:
                 queue_name=getattr(getattr(pool, "queue", None), "name", ""),
                 asg_name=getattr(getattr(pool, "autoscaling_group", None), "name", ""),
                 capacity_reserve=getattr(pool, "capacity_reserve", 0),
+                mode=getattr(pool, "scale_mode", SCALE_MODE_GRADUAL),
             )
             for pool in pools
             if getattr(pool, "scaling", "") == "auto"

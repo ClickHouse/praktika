@@ -140,10 +140,15 @@ class HtmlRunnerHooks:
         # Job dependency graph (job name -> list of jobs it needs to finish),
         # kept on the summary ext so the report timeline can show it on hover.
         # Lives on the summary (not per-job rows, which get replaced as jobs
-        # complete), so it survives every subsequent report update.
+        # complete), so it survives every subsequent report update. Use the
+        # parsed workflow `needs` (resolved to job names) rather than the raw
+        # `requires`, which lists artifact names — those would never match a
+        # timeline row.
+        parsed_jobs = WorkflowConfigParser(_workflow).parse().workflow_yaml_config.job_to_config
         job_requires = {
-            job.name: list(getattr(job, "requires", []) or [])
+            job.name: list(parsed_jobs[job.name].needs)
             for job in _workflow.jobs
+            if job.name in parsed_jobs
         }
         summary_result.add_ext_key_value("job_requires", job_requires)
         info = Info()

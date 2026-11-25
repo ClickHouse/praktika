@@ -34,6 +34,38 @@ def test_pool_autoscaler_builds_scheduled_lambda():
     )
 
 
+def test_pool_autoscaler_wires_eager_mode_from_runner_pool():
+    eager_pool = RunnerPool(
+        name="arm-eager",
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        scaling=RunnerPool.Scaling.Auto,
+        scale_mode=RunnerPool.ScaleMode.Eager,
+        size=0,
+        max_size=50,
+    )
+    gradual_pool = RunnerPool(
+        name="arm-gradual",
+        instance_type="t4g.small",
+        vpc_name="praktika-ci",
+        scaling=RunnerPool.Scaling.Auto,
+        size=0,
+        max_size=50,
+    )
+
+    autoscaler = PoolAutoscaler.from_pools([eager_pool, gradual_pool])
+    env = autoscaler.lambda_config.environments["POOLS_CONFIG_JSON"]
+    assert '"mode":"eager"' in env
+    assert '"mode":"gradual"' in env
+
+
+def test_pool_autoscaler_rejects_unknown_mode():
+    import pytest
+
+    with pytest.raises(ValueError, match="unknown mode"):
+        PoolAutoscaler(pools=[PoolAutoscaler.Pool(name="arm", mode="turbo")])
+
+
 def test_rate_expression_clamps_to_minute():
     assert _rate_expression_for_seconds(0) == "rate(1 minute)"
     assert _rate_expression_for_seconds(60) == "rate(1 minute)"
@@ -147,6 +179,44 @@ def test_calculate_desired_capacity_steps_by_30_percent_of_gap():
             in_flight_messages=0,
         )
         == 100
+    )
+
+
+def test_calculate_desired_capacity_eager_closes_whole_gap_at_once():
+    # Eager mode provisions one instance per queued/in-flight task in a single
+    # invocation instead of the 30% ramp, capped only at max_size.
+    assert (
+        _calculate_desired_capacity(
+            current_desired=0,
+            max_size=1000,
+            visible_messages=100,
+            in_flight_messages=0,
+            mode="eager",
+        )
+        == 100
+    )
+    # Reserve sits on top of the per-task capacity, same as gradual mode.
+    assert (
+        _calculate_desired_capacity(
+            current_desired=2,
+            max_size=1000,
+            visible_messages=10,
+            in_flight_messages=5,
+            capacity_reserve=2,
+            mode="eager",
+        )
+        == 17
+    )
+    # Still capped at max_size and still scale-up only.
+    assert (
+        _calculate_desired_capacity(
+            current_desired=0,
+            max_size=5,
+            visible_messages=100,
+            in_flight_messages=0,
+            mode="eager",
+        )
+        == 5
     )
 
 

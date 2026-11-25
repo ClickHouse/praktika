@@ -350,11 +350,22 @@ class RunnerPool:
         Disabled = "disabled"
         Auto = "auto"
 
+    class ScaleMode:
+        # How an auto-scaled pool paces scale-up (ignored when scaling is
+        # Disabled). Gradual closes ~30% of the outstanding backlog gap per
+        # autoscaler tick; Eager provisions one instance per queued/in-flight
+        # task at once, trading transient over-provisioning for lowest queue
+        # latency. See native.lambda_pool_autoscaler._calculate_desired_capacity.
+        Gradual = "gradual"
+        Eager = "eager"
+
     name: str
     instance_type: str
     scaling: str
     size: int
     max_size: int
+    # Scale-up pacing for auto-scaled pools; ignored when scaling is Disabled.
+    scale_mode: str = ScaleMode.Gradual
     vpc_name: str = ""
     ami_id: str = ""  # resolved at deploy time via SSM if empty
     image_builder: ImageBuilder.Config | None = None
@@ -404,6 +415,10 @@ class RunnerPool:
         assert self.scaling in (self.Scaling.Disabled, self.Scaling.Auto), (
             f"RunnerPool scaling={self.scaling!r} is not supported; "
             f"use Scaling.Disabled or Scaling.Auto"
+        )
+        assert self.scale_mode in (self.ScaleMode.Gradual, self.ScaleMode.Eager), (
+            f"RunnerPool scale_mode={self.scale_mode!r} is not supported; "
+            f"use ScaleMode.Gradual or ScaleMode.Eager"
         )
         min_size = 0 if self.scaling == self.Scaling.Auto else 1
         assert self.size >= min_size, (

@@ -1746,6 +1746,10 @@
         // Move taskRects to outer scope so event handlers can access it
         let taskRects = [];
         let hoveredIndex = -1;
+        // Jobs the hovered row depends on (needs), and the opposite — jobs that
+        // depend on the hovered row. Highlighted in different colors in drawTimeline.
+        let hoveredRequires = new Set();
+        let hoveredRequiredBy = new Set();
 
         function resizeCanvas() {
             canvas.width = widget.clientWidth;
@@ -1781,6 +1785,23 @@
                 const isDark = document.body.classList.contains('night-theme');
                 ctx.fillStyle = isDark ? 'rgba(255, 255, 255, 0.15)' : 'rgba(0, 0, 0, 0.1)';
                 ctx.fillRect(0, hy, canvas.width, lineWidth + 2 * padding);
+            }
+
+            // Highlight related rows: jobs the hovered row needs in one color,
+            // jobs that depend on the hovered row (the opposite direction) in another.
+            if (hoveredRequires.size > 0 || hoveredRequiredBy.size > 0) {
+                results.forEach((task, index) => {
+                    let color = null;
+                    if (hoveredRequires.has(task.name)) {
+                        color = 'rgba(255, 180, 0, 0.35)';   // needs (upstream)
+                    } else if (hoveredRequiredBy.has(task.name)) {
+                        color = 'rgba(0, 160, 255, 0.35)';   // needed by (downstream)
+                    }
+                    if (!color) return;
+                    const ry = index * (lineWidth + padding) - padding;
+                    ctx.fillStyle = color;
+                    ctx.fillRect(0, ry, canvas.width, lineWidth + 2 * padding);
+                });
             }
 
             results.forEach((task, index) => {
@@ -1835,34 +1856,64 @@
 
             let hoveredTask = null;
             let newHoveredIndex = -1;
+            // Hit the whole row stride (line + gap), not just the thin line, so
+            // the row is easy to hover.
+            const stride = lineWidth + padding;
             for (let i = 0; i < taskRects.length; i++) {
-                const { y, height, task } = taskRects[i];
-                if (mouseY >= y && mouseY <= y + height) {
+                const { y, task } = taskRects[i];
+                if (mouseY >= y && mouseY < y + stride) {
                     hoveredTask = task;
                     newHoveredIndex = i;
                     break;
                 }
             }
 
+            const requiresMap = runtimeCache.json0?.ext?.job_requires || {};
+            const requires = hoveredTask ? requiresMap[hoveredTask.name] : null;
+
             if (newHoveredIndex !== hoveredIndex) {
                 hoveredIndex = newHoveredIndex;
+                // Recompute related rows: the hovered job's needs, and the jobs
+                // that list the hovered job among their needs (the opposite).
+                hoveredRequires = new Set(Array.isArray(requires) ? requires : []);
+                hoveredRequiredBy = new Set();
+                if (hoveredTask) {
+                    for (const [jobName, deps] of Object.entries(requiresMap)) {
+                        if (Array.isArray(deps) && deps.includes(hoveredTask.name)) {
+                            hoveredRequiredBy.add(jobName);
+                        }
+                    }
+                }
                 drawTimeline();
+                // Native tooltip shown right on the hovered line: always the job
+                // name, plus the jobs it needs to finish first (one per line) when
+                // any. Set only on row change so it doesn't flicker on mousemove.
+                if (hoveredTask) {
+                    let tip = hoveredTask.name;
+                    if (Array.isArray(requires) && requires.length > 0) {
+                        tip += "\nneeds:\n" + requires.map(r => "  " + r).join("\n");
+                    }
+                    canvas.title = tip;
+                } else {
+                    canvas.title = "";
+                }
             }
 
             if (hoveredTask && statusWidget?.update) {
-                const requiresMap = runtimeCache.json0?.ext?.job_requires || {};
                 statusWidget.update(
                     hoveredTask.name,
                     hoveredTask.status,
                     hoveredTask.start_time,
                     hoveredTask.duration,
-                    requiresMap[hoveredTask.name]
+                    requires
                 );
             }
         });
 
         activeListeners.add(canvas, "mouseleave", () => {
             hoveredIndex = -1;
+            hoveredRequires = new Set();
+            hoveredRequiredBy = new Set();
             drawTimeline();
             if (statusWidget?.update && originalTask) {
                 statusWidget.update(
@@ -1929,16 +1980,12 @@
                 addLine("--s");
             }
 
-            // List of jobs this one depends on (needs to finish first).
+            // List of jobs this one depends on (needs to finish first) is shown
+            // as a hover tooltip on the name, so it doesn't change the widget
+            // height / shift the page on hover.
             if (Array.isArray(requires) && requires.length > 0) {
-                const needsLine = document.createElement('div');
-                needsLine.style.marginTop = "0.4em";
-                needsLine.style.whiteSpace = "normal";
-                needsLine.style.textAlign = "left";
-                needsLine.style.fontSize = "0.85em";
-                needsLine.style.opacity = "0.8";
-                needsLine.textContent = "needs: " + requires.join(", ");
-                widget.appendChild(needsLine);
+                nameLine.title = "needs: " + requires.join(", ");
+                nameLine.style.cursor = "help";
             }
         };
 
