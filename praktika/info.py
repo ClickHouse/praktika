@@ -2,7 +2,6 @@ import json
 import os
 import traceback
 import urllib.parse
-from pathlib import Path
 from typing import Optional
 
 from .settings import Settings

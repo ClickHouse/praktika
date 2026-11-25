@@ -22,7 +22,10 @@ def _write_file_from_base64(path: str, content: str) -> str:
 # RUNNER AMIs exclusively: a crashed runner is terminated and replaced, its job
 # re-run, artifacts live in S3. NOT for stateful hosts (e.g. the CIDB server).
 _ROOT_FAST_MOUNT_COMMAND = (
-    'tune2fs -o journal_data_writeback,nobarrier "$(findmnt -no SOURCE /)"'
+    'case "$(findmnt -no FSTYPE /)" in '
+    'ext2|ext3|ext4) tune2fs -o journal_data_writeback,nobarrier "$(findmnt -no SOURCE /)" ;; '
+    '*) ;; '
+    'esac'
 )
 
 
