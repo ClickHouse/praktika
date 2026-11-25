@@ -137,6 +137,15 @@ class HtmlRunnerHooks:
             results.append(result)
         summary_result = Result.create_new(_workflow.name, Result.Status.RUNNING, results=results)
         summary_result.start_time = Utils.timestamp()
+        # Job dependency graph (job name -> list of jobs it needs to finish),
+        # kept on the summary ext so the report timeline can show it on hover.
+        # Lives on the summary (not per-job rows, which get replaced as jobs
+        # complete), so it survives every subsequent report update.
+        job_requires = {
+            job.name: list(getattr(job, "requires", []) or [])
+            for job in _workflow.jobs
+        }
+        summary_result.add_ext_key_value("job_requires", job_requires)
         info = Info()
         report_url_current_sha = info.get_report_url(latest=False)
         summary_result.add_ext_key_value("pr_title", info.pr_title).add_ext_key_value("git_branch", info.git_branch).add_ext_key_value("report_url", report_url_current_sha).add_ext_key_value(

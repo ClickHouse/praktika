@@ -10,8 +10,25 @@ def _write_file_from_base64(path: str, content: str) -> str:
     return f"printf '%s' '{payload}' | base64 -d > {path}"
 
 
+# Relax ext4 fsync cost on the runner root fs (~10x faster fsync, measured).
+# Set as superblock DEFAULT mount options via tune2fs so they apply on the next
+# boot of every instance from this AMI (root fstab uses `defaults`), no boot hook:
+#   - journal_data_writeback: still journal metadata, but stop forcing file DATA
+#     to disk ahead of it. Can't be weakened on a mounted root, hence build time.
+#   - nobarrier: stop the device cache flush on every journal commit (the durable
+#     EBS round-trip that dominates fsync); fsync returns once the write is acked.
+# Durability trade-off (journal/data lost or stale on unclean power loss) is safe
+# ONLY for disposable, single-tenant, never-resurrected hosts. These recipes bake
+# RUNNER AMIs exclusively: a crashed runner is terminated and replaced, its job
+# re-run, artifacts live in S3. NOT for stateful hosts (e.g. the CIDB server).
+_ROOT_FAST_MOUNT_COMMAND = (
+    'tune2fs -o journal_data_writeback,nobarrier "$(findmnt -no SOURCE /)"'
+)
+
+
 def _setup_component(name: str, *, with_docker: bool):
     commands = [
+        _ROOT_FAST_MOUNT_COMMAND,
         # AL2023 ships curl-minimal, but Git-related dependencies can require
         # full curl. Allow dnf to replace the minimal package so Python does
         # not get skipped by a curl/curl-minimal solver conflict.
@@ -46,6 +63,7 @@ def _setup_component(name: str, *, with_docker: bool):
 
 def _ubuntu_setup_component(name: str, *, with_docker: bool):
     commands = [
+        _ROOT_FAST_MOUNT_COMMAND,
         "export DEBIAN_FRONTEND=noninteractive",
         # Stop stock Ubuntu background apt/snap upgrades from holding the dpkg
         # lock -- both during this build (racing our own apt-get) and, once the
@@ -427,6 +445,14 @@ def _image_test_component(
         "python3.12 -m pip --version",
         "python3.12 -m pip show praktika-controller",
         'python3.12 -c "import boto3, jwt, cryptography, requests"',
+        # Fast-mount flags from _ROOT_FAST_MOUNT_COMMAND must be baked into the
+        # root fs superblock of this AMI. We read them back with `tune2fs -l`
+        # rather than `findmnt`/`/proc/mounts`: ext4 omits any mount option that
+        # equals the superblock default from the live options string, so a
+        # successful bake makes these invisible there. `tune2fs -l` lists them
+        # literally on the "Default mount options" line.
+        'tune2fs -l "$(findmnt -no SOURCE /)" | grep -i "^Default mount options:" | grep -q journal_data_writeback',
+        'tune2fs -l "$(findmnt -no SOURCE /)" | grep -i "^Default mount options:" | grep -q nobarrier',
     ]
     if with_docker:
         commands.extend(

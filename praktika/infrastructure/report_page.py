@@ -10,7 +10,9 @@ class ReportPage:
         """An HTML report page uploaded to S3 on deploy.
 
         Reads the file at `path`, uploads it to Settings.S3_REPORT_BUCKET
-        compressed with gzip. The uploaded filename matches the source filename.
+        compressed with gzip. The uploaded object name comes from
+        Settings.get_report_page_name() (e.g. "{PROJECT_SLUG}.html"), not the
+        source filename.
 
         Idempotent: re-uploading overwrites the existing file.
         """
@@ -38,14 +40,18 @@ class ReportPage:
 
             bucket_name = self.bucket_name or Settings.S3_REPORT_BUCKET
 
+            page_name = Settings.get_report_page_name()
+            if is_test:
+                page_name = page_name.removesuffix(".html") + "_test.html"
+
             S3.copy_file_to_s3(
-                s3_path=str(Path(bucket_name) / Path(page_file).name),
+                s3_path=str(Path(bucket_name) / page_name),
                 local_path=compressed,
                 content_type="text/html",
                 content_encoding="gzip",
                 with_rename=True,
             )
-            print(f"Uploaded report page '{Path(page_file).name}' to s3://{bucket_name}")
+            print(f"Uploaded report page '{page_name}' to s3://{bucket_name}")
 
             # Optional per-project favicon. The report page loads "favicon.png"
             # from the bucket root next to itself and falls back to a generated

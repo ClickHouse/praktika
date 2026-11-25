@@ -1722,8 +1722,11 @@
             return;
         }
 
-        const lineWidth = 1;
-        const padding = 1;
+        // Below 100 jobs there is plenty of vertical room, so draw each
+        // row (and the gap between rows) twice as thick for readability.
+        const rowScale = results.length < 100 ? 2 : 1;
+        const lineWidth = rowScale;
+        const padding = rowScale;
         const totalHeight = (lineWidth + padding) * results.length;
 
         const widget = document.createElement("div");
@@ -1847,11 +1850,13 @@
             }
 
             if (hoveredTask && statusWidget?.update) {
+                const requiresMap = runtimeCache.json0?.ext?.job_requires || {};
                 statusWidget.update(
                     hoveredTask.name,
                     hoveredTask.status,
                     hoveredTask.start_time,
-                    hoveredTask.duration
+                    hoveredTask.duration,
+                    requiresMap[hoveredTask.name]
                 );
             }
         });
@@ -1891,7 +1896,7 @@
         }
 
         // Make widget re-usable by external updates
-        widget.update = function (name, status, start_time, duration) {
+        widget.update = function (name, status, start_time, duration, requires) {
             widget.innerHTML = '';
 
             // Create name line with fixed height for two lines
@@ -1922,6 +1927,18 @@
                 widget.appendChild(durationLine);
             } else {
                 addLine("--s");
+            }
+
+            // List of jobs this one depends on (needs to finish first).
+            if (Array.isArray(requires) && requires.length > 0) {
+                const needsLine = document.createElement('div');
+                needsLine.style.marginTop = "0.4em";
+                needsLine.style.whiteSpace = "normal";
+                needsLine.style.textAlign = "left";
+                needsLine.style.fontSize = "0.85em";
+                needsLine.style.opacity = "0.8";
+                needsLine.textContent = "needs: " + requires.join(", ");
+                widget.appendChild(needsLine);
             }
         };
 
