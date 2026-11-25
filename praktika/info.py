@@ -262,7 +262,7 @@ class Info:
                 path = path.replace(bucket, endpoint)
                 break
         workflow_name = workflow_name or self.env.WORKFLOW_NAME
-        res = f"https://{path}/{Settings.get_report_page_name()}?{ref_param}&sha={sha}&name_0={urllib.parse.quote(workflow_name, safe='')}"
+        res = f"https://{path}/{Settings.HTML_PAGE_NAME}?{ref_param}&sha={sha}&name_0={urllib.parse.quote(workflow_name, safe='')}"
         if job_name:
             res += f"&name_1={urllib.parse.quote(job_name, safe='')}"
         return res
@@ -281,7 +281,7 @@ class Info:
             if bucket in path:
                 path = path.replace(bucket, endpoint)
                 break
-        res = f"https://{path}/{Settings.get_report_page_name()}?{ref_param}&sha={sha}&name_0={urllib.parse.quote(workflow_name, safe='')}"
+        res = f"https://{path}/{Settings.HTML_PAGE_NAME}?{ref_param}&sha={sha}&name_0={urllib.parse.quote(workflow_name, safe='')}"
         if job_name:
             res += f"&name_1={urllib.parse.quote(job_name, safe='')}"
         return res

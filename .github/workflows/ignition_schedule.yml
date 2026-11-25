@@ -43,6 +43,6 @@ jobs:
             --data "$BODY"
       - name: Report link
         run: |
-          URL='https://praktika-artifacts-eu-north-1.s3.amazonaws.com/praktika.html?REF=${{ github.ref_name }}&sha=${{ github.sha }}&name_0=Ignition%20Nightly%20Style'
+          URL='https://praktika-artifacts-eu-north-1.s3.amazonaws.com/report.html?REF=${{ github.ref_name }}&sha=${{ github.sha }}&name_0=Ignition%20Nightly%20Style'
           echo "::notice title=Praktika report::$URL"
           echo "[Praktika report]($URL)" >> "$GITHUB_STEP_SUMMARY"

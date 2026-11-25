@@ -198,11 +198,12 @@ class _Settings:
     S3_REPORT_BUCKET: str = ""
     # Optional: upstream report bucket to merge issue catalogs from (e.g. "clickhouse-test-reports")
     S3_UPSTREAM_REPORT_BUCKET: str = ""
+    # Local source file for the report viewer page.
     HTML_PAGE_FILE: str = "./ci/praktika/praktika.html"
-    # Object name the report viewer page is uploaded under (and referenced by
-    # in report URLs). Empty -> defaults to "{PROJECT_SLUG}.html" (see
-    # get_report_page_name).
-    HTML_PAGE_NAME: str = ""
+    # Fixed object name the report viewer page is uploaded under (and referenced
+    # by in report URLs) across all projects. A single constant keeps cross-project
+    # (downstream) links valid without carrying a per-project name around.
+    HTML_PAGE_NAME: str = "report.html"
     S3_BUCKET_TO_HTTP_ENDPOINT: Optional[Dict[str, str]] = None
     TEXT_CONTENT_EXTENSIONS: Iterable[str] = frozenset([".txt", ".log"])
     # Compress if text file size exceeds this threshold (in MB, 0 - disable compression)
@@ -254,18 +255,6 @@ class _Settings:
     # The selected env is expected to already contain praktika.
     PRAKTIKA_BASE_VENV: str = ""
 
-    def get_report_page_name(self) -> str:
-        """Object name the report viewer page is served as.
-
-        HTML_PAGE_NAME takes precedence; otherwise it is "{PROJECT_SLUG}.html",
-        falling back to the local HTML_PAGE_FILE basename when no slug is set.
-        """
-        if self.HTML_PAGE_NAME:
-            return self.HTML_PAGE_NAME
-        if self.PROJECT_SLUG:
-            return f"{self.PROJECT_SLUG}.html"
-        return Path(self.HTML_PAGE_FILE).name
-
 
 _USER_DEFINED_SETTINGS = [
     "PROJECT_NAME",
@@ -278,7 +267,6 @@ _USER_DEFINED_SETTINGS = [
     "CACHE_S3_PATH",
     "S3_REPORT_BUCKET",
     "S3_UPSTREAM_REPORT_BUCKET",
-    "HTML_PAGE_NAME",
     "CLOUD_INFRASTRUCTURE_CONFIG_PATH",
     "EVENT_FEED_S3_PATH",
     "AWS_REGION",

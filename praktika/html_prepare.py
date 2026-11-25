@@ -24,7 +24,7 @@ class Html:
 
         compressed_file = Utils.compress_gz(page_file)
 
-        page_name = Settings.get_report_page_name()
+        page_name = Settings.HTML_PAGE_NAME
         if is_test:
             page_name = page_name.removesuffix(".html") + "_test.html"
 

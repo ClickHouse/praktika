@@ -10,9 +10,8 @@ class ReportPage:
         """An HTML report page uploaded to S3 on deploy.
 
         Reads the file at `path`, uploads it to Settings.S3_REPORT_BUCKET
-        compressed with gzip. The uploaded object name comes from
-        Settings.get_report_page_name() (e.g. "{PROJECT_SLUG}.html"), not the
-        source filename.
+        compressed with gzip. The uploaded object name is the fixed
+        Settings.HTML_PAGE_NAME (e.g. "report.html"), not the source filename.
 
         Idempotent: re-uploading overwrites the existing file.
         """
@@ -40,7 +39,7 @@ class ReportPage:
 
             bucket_name = self.bucket_name or Settings.S3_REPORT_BUCKET
 
-            page_name = Settings.get_report_page_name()
+            page_name = Settings.HTML_PAGE_NAME
             if is_test:
                 page_name = page_name.removesuffix(".html") + "_test.html"
 
