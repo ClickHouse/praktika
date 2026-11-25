@@ -448,14 +448,19 @@ def _image_test_component(
         "python3.12 -m pip --version",
         "python3.12 -m pip show praktika-controller",
         'python3.12 -c "import boto3, jwt, cryptography, requests"',
-        # Fast-mount flags from _ROOT_FAST_MOUNT_COMMAND must be baked into the
-        # root fs superblock of this AMI. We read them back with `tune2fs -l`
-        # rather than `findmnt`/`/proc/mounts`: ext4 omits any mount option that
-        # equals the superblock default from the live options string, so a
-        # successful bake makes these invisible there. `tune2fs -l` lists them
-        # literally on the "Default mount options" line.
-        'tune2fs -l "$(findmnt -no SOURCE /)" | grep -i "^Default mount options:" | grep -q journal_data_writeback',
-        'tune2fs -l "$(findmnt -no SOURCE /)" | grep -i "^Default mount options:" | grep -q nobarrier',
+        # Verify the fast-mount flags, but only on ext2/3/4 roots -- the bake is a
+        # no-op on XFS (AL2023), where tune2fs cannot run and these options do not
+        # exist, so an unguarded `tune2fs -l` would fail the build there. We read
+        # them back with `tune2fs -l` rather than `findmnt`/`/proc/mounts`: ext4
+        # omits any mount option that equals the superblock default from the live
+        # options string, so a successful bake makes these invisible there.
+        # `tune2fs -l` lists them literally on the "Default mount options" line.
+        'case "$(findmnt -no FSTYPE /)" in '
+        'ext2|ext3|ext4) '
+        'tune2fs -l "$(findmnt -no SOURCE /)" | grep -i "^Default mount options:" | grep -q journal_data_writeback && '
+        'tune2fs -l "$(findmnt -no SOURCE /)" | grep -i "^Default mount options:" | grep -q nobarrier ;; '
+        '*) echo "root fs is $(findmnt -no FSTYPE /); fast-mount check skipped" ;; '
+        'esac',
     ]
     if with_docker:
         commands.extend(
