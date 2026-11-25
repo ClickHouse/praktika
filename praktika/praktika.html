@@ -1886,12 +1886,16 @@
                 }
                 drawTimeline();
                 // Native tooltip shown right on the hovered line: always the job
-                // name, plus the jobs it needs to finish first (one per line) when
-                // any. Set only on row change so it doesn't flicker on mousemove.
+                // name, plus the jobs it needs to finish first and the jobs that
+                // depend on it (one per line). Set only on row change so it
+                // doesn't flicker on mousemove.
                 if (hoveredTask) {
                     let tip = hoveredTask.name;
                     if (Array.isArray(requires) && requires.length > 0) {
                         tip += "\nneeds:\n" + requires.map(r => "  " + r).join("\n");
+                    }
+                    if (hoveredRequiredBy.size > 0) {
+                        tip += "\nrequired by:\n" + [...hoveredRequiredBy].map(r => "  " + r).join("\n");
                     }
                     canvas.title = tip;
                 } else {
