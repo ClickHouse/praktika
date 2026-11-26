@@ -95,7 +95,7 @@ class _Settings:
     # the chain — is failed and the runner released. This is a safety net; a
     # stall is also ended early by the dependency finishing (proceed), the
     # dependency failing/being cancelled (fail the cortage), or the whole run
-    # being cancelled/finalized. See docs/proposals/cortage-jobs.md.
+    # being cancelled/finalized. See docs/cortage-jobs.md.
     CORTAGE_MAX_STALL_SEC: int = 15 * 60
 
     ######################################

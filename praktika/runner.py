@@ -359,7 +359,7 @@ class Runner:
         # Cortage: announce that this job runs as part of a chain pinned to one
         # runner with a shared, un-cleaned ci/tmp. Logged once per member at its
         # start (each member runs as its own `praktika orchestrate job`).
-        # See docs/proposals/cortage-jobs.md.
+        # See docs/cortage-jobs.md.
         cortage_chain = workflow.get_cortage_chain(
             workflow.cortage_head_name(job.name)
         )
@@ -426,7 +426,7 @@ class Runner:
             # clean between members) — reuse it and skip the S3 download. If it is
             # NOT on local disk, the provider was cache-hit/skipped (its output
             # lives only in S3) or we infra-resumed on a fresh ci/tmp, so we fall
-            # through to the normal S3 download. See docs/proposals/cortage-jobs.md.
+            # through to the normal S3 download. See docs/cortage-jobs.md.
             idx = cortage_chain.index(job.name) if job.name in cortage_chain else 0
             cortage_predecessors = set(cortage_chain[:idx])
             # Provenance manifest: {artifact_name: [local_paths]} written by each
@@ -434,7 +434,7 @@ class Runner:
             # invocation. Reuse an artifact only when its producer recorded it here
             # (not merely because a same-named/same-basename file happens to exist),
             # so a cache-skipped or infra-resumed producer correctly falls back to
-            # S3. See docs/proposals/cortage-jobs.md.
+            # S3. See docs/cortage-jobs.md.
             cortage_produced = {}
             if cortage_predecessors:
                 manifest_path = Path(Settings.TEMP_DIR) / "cortage_produced.json"

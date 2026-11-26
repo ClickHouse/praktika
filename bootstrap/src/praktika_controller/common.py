@@ -741,12 +741,10 @@ class Heartbeat:
         self._thread = None
         self._log = log or logging.getLogger(__name__)
         self._lock = threading.Lock()
-        # Cortage: when the job runner walks a chain of members in a single
-        # `orchestrate job` invocation, it writes this pointer file naming the
-        # CURRENT member's heartbeat key (+ phase); the heartbeat then follows it
-        # so the orchestrator sees per-member heartbeats from the one controller
-        # writer (keeping instance_id/attempt). Absent for normal jobs → the
-        # task's own key is used. See docs/proposals/cortage-jobs.md.
+        # Cortage: the job runner writes this pointer file naming the current
+        # member's heartbeat key (+ phase) so the heartbeat follows it, giving
+        # per-member heartbeats from the one controller writer. Absent for normal
+        # jobs → the task's own key is used.
         self._pointer_file = pointer_file
 
     def set_pointer_file(self, path):

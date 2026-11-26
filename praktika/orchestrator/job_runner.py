@@ -338,7 +338,7 @@ def run_job(task, gh_token=None, local=False, timestamp=False):
     ``Runner.run``. Returns the job exit code (0 = success).
 
     If the resolved job is the head of a cortage (chained jobs on one runner,
-    see docs/proposals/cortage-jobs.md), this drives the whole chain in-process:
+    see docs/cortage-jobs.md), this drives the whole chain in-process:
     run the head, then each attached member in order (resume-skipping already
     finalized members, block-skipping members whose data deps failed, stalling on
     external deps), reusing the same checkout/ci_tmp with no clean in between.
@@ -599,7 +599,7 @@ def _run_single(task, workflow, job, gh_token=None, local=False, timestamp=False
 
 
 # --------------------------------------------------------------------------
-# Cortage chain driver (see docs/proposals/cortage-jobs.md)
+# Cortage chain driver (see docs/cortage-jobs.md)
 # --------------------------------------------------------------------------
 
 # Filename (in the shared ci/tmp) of the heartbeat pointer the controller's
@@ -625,17 +625,37 @@ def _s3_client():
 
 
 def _load_final(s3, bucket, key):
-    """Return the ``final.json`` payload if it exists (the member already reached a
-    TERMINAL state on a prior runner — success OR failure), else None. On resume we
-    must not re-run EITHER: re-running a failed member repeats side effects and can
-    flip it to success while the orchestrator already finalized it as FAILURE and
-    cancelled its dependents. A re-run (not a resume) deletes final.json via
-    _reset_job, so reset members correctly return None here and do re-run."""
-    try:
-        obj = s3.get_object(Bucket=bucket, Key=key)
-        return json.loads(obj["Body"].read())
-    except Exception:
-        return None
+    """Return the ``final.json`` payload if the member already reached a TERMINAL
+    state on a prior runner (success OR failure), or None only when the object is
+    CONFIRMED ABSENT (the member has not finalized). On resume we must not re-run
+    EITHER a success or a failure: re-running repeats side effects and can flip a
+    finalized failure to success while the orchestrator already cancelled its
+    dependents. A re-run (not a resume) deletes final.json via _reset_job, so reset
+    members correctly read as absent and do re-run.
+
+    A transient/permission S3 error is NOT "absent": returning None on those would
+    re-run an already-finalized member. Retry a few times and, if the error
+    persists, RAISE so the chain aborts rather than silently re-running — far safer
+    than repeating a finalized member's side effects."""
+    from .state import _is_missing_s3_key_error
+
+    attempts = 5
+    last_err = None
+    for attempt in range(attempts):
+        try:
+            obj = s3.get_object(Bucket=bucket, Key=key)
+            return json.loads(obj["Body"].read())
+        except Exception as e:
+            if _is_missing_s3_key_error(e):
+                return None  # confirmed not finalized -> the member should run
+            last_err = e
+            if attempt + 1 < attempts:
+                time.sleep(min(2 ** attempt, 10))
+    raise RuntimeError(
+        f"could not read cortage member final state s3://{bucket}/{key} after "
+        f"{attempts} attempts; aborting the chain instead of risking a re-run of an "
+        f"already-finalized member: {type(last_err).__name__}: {last_err}"
+    )
 
 
 def _payload_is_blocking_failure(payload):

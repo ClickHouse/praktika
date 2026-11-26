@@ -694,7 +694,7 @@ class JobState:
 
         ws = self._workflow_state
 
-        # Cortage dispatch (see docs/proposals/cortage-jobs.md). A member is normally
+        # Cortage dispatch (see docs/cortage-jobs.md). A member is normally
         # run by the chain driver — the runner that picked up an EARLIER member — and
         # must NOT get its own SQS task. But if no earlier member was ever dispatched
         # (e.g. the head was cache/filter-SKIPPED), this member is the chain entry and
@@ -1151,7 +1151,7 @@ class WorkflowState:
         # ALSO explicitly depends on its predecessor (requires / run_after, incl.
         # via an artifact the predecessor provides), that is a real data dep and is
         # left to normal handling (wait for SUCCESS + cascade), so we do NOT record
-        # it here. See docs/proposals/cortage-jobs.md.
+        # it here. See docs/cortage-jobs.md.
         _artifact_provider = {}
         for job in workflow.jobs:
             for _art in getattr(job, "provides", None) or []:

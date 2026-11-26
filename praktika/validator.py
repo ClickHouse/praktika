@@ -606,7 +606,7 @@ class Validator:
         """
         Validate "cortage" chains (Job.Config.attach_to). A cortage is a linked
         list of jobs pinned to one runner and run back-to-back. See
-        docs/proposals/cortage-jobs.md.
+        docs/cortage-jobs.md.
 
         Errors (fatal): cortage on GH_ACTIONS; attach_to to a missing job or to
         self; two jobs attaching to the same predecessor (fork); a cycle in the

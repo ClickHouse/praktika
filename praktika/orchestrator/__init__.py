@@ -154,7 +154,7 @@ def build_job_dag(workflow):
         # same runner, so the predecessor must complete first. This keeps the
         # topological levels and the cancellation cascade correct (a failed/dead
         # head cancels the rest of its chain). The validator already rejects any
-        # cycle this introduces. See docs/proposals/cortage-jobs.md.
+        # cycle this introduces. See docs/cortage-jobs.md.
         attached_to = getattr(job, "attached_to", "")
         if attached_to and attached_to in jobs_by_name:
             job_deps[job.name].add(attached_to)

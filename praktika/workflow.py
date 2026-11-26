@@ -238,7 +238,7 @@ class Workflow:
         def is_cortage_member(self, job_name) -> bool:
             """True if this job is attached to a predecessor (a non-head cortage
             member that the orchestrator must not dispatch on its own — its head's
-            runner runs it). See docs/proposals/cortage-jobs.md."""
+            runner runs it). See docs/cortage-jobs.md."""
             jobs = self.find_jobs(job_name)
             return bool(jobs and getattr(jobs[0], "attached_to", ""))
 
@@ -259,7 +259,7 @@ class Workflow:
         def is_cortage_head(self, job_name) -> bool:
             """True if this job is the head of a cortage (not attached to anything
             itself, and at least one job attaches to it). The head is dispatched;
-            its runner runs the whole chain. See docs/proposals/cortage-jobs.md."""
+            its runner runs the whole chain. See docs/cortage-jobs.md."""
             if self.is_cortage_member(job_name):
                 return False
             return len(self.get_cortage_chain(job_name)) > 1

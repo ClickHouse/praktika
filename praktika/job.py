@@ -131,7 +131,7 @@ class Job:
         # Cortage: name of the job this one is attached to (its predecessor in
         # the chain). A cortage is a chain of jobs pinned to a single runner and
         # run back-to-back with no cleanup in between. Empty = not attached.
-        # Native engines only (not GH_ACTIONS). See docs/proposals/cortage-jobs.md.
+        # Native engines only (not GH_ACTIONS). See docs/cortage-jobs.md.
         attached_to: str = ""
 
         # Cortage: if True, this member promotes its own `runs_on` as the whole
