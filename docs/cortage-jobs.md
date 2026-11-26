@@ -58,13 +58,17 @@ differ.
   sibling's failure (`_cortage_pred`).
 
 **Job runner** (`praktika/orchestrator/job_runner.py`)
-- The controller dispatches the head task as usual; `run_job` detects a cortage
-  head and `_run_cortage_chain` walks the members **in one invocation** (so the
-  checkout and `ci/tmp` persist, nothing is cleaned). Per member it:
+- The controller dispatches the entry task as usual; `run_job` detects a cortage and
+  `_run_cortage_chain` walks the members **from the dispatched entry through the
+  tail, in one invocation** (so the checkout and `ci/tmp` persist, nothing is
+  cleaned). The entry is the head on the normal path, or a later member when the
+  head was cache/filter-skipped (see `kick`). Per member it:
   **resume-skips** members already finalized OK (infra redelivery resumes at the
-  first incomplete one); **block-skips** members whose failed data-dep is an
-  earlier member; **stalls** on external deps; runs it (`_run_single`) and writes
-  its `final.json`; hands its env off to the next member.
+  first incomplete one, restoring that member's `environment`); **skips**
+  Config-Workflow cache/filter-`SKIPPED` members (their outputs are in S3);
+  **block-skips** members whose failed data-dep is an earlier member; **stalls** on
+  external deps; runs it (`_run_single`) and writes its `final.json`; hands its env
+  off to the next member.
 
 **Controller** (`bootstrap/src/praktika_controller/`)
 - Unchanged except heartbeats: `Heartbeat` follows a **pointer file** the job
@@ -85,18 +89,26 @@ differ.
 
 The head is dispatched on its own deps only, so a later member may reach an
 external dep that isn't done yet. The member **stalls**, polling
-`runs/<run_id>/state.json`: all deps `success`/`skipped` → run; any
-`failure`/`cancelled` → the member is skipped (orchestrator cancels it); otherwise
-wait up to `CORTAGE_MAX_STALL_SEC`, then fail. The wait is surfaced via the
-heartbeat phase.
+`runs/<run_id>/state.json`: all deps `success`/`skipped` (or a `failure` flagged
+`non_blocking`, which `get_ready` treats as success-equivalent) → run; any blocking
+`failure`/`cancelled` → the member is skipped (the orchestrator cancels it via
+cascade); otherwise wait up to `CORTAGE_MAX_STALL_SEC`, then **publish a terminal
+failure** for the member (the orchestrator hasn't cancelled it, so this avoids a
+long liveness-timeout hang) and fail the chain for its dependents. The wait is
+surfaced via the heartbeat phase.
 
 ### Failure & resume
 
 - A member's job failure cancels only its **dependents**; independent later
   members still run (req: critical path keeps going where possible).
-- On infra loss mid-chain the head's SQS message is redelivered; the fresh runner
+- On infra loss mid-chain the entry SQS message is redelivered; the fresh runner
   resume-skips finalized members and resumes at the first incomplete one, re-using
   the normal attempt-bump retry path.
+- If the **head is cache/filter-skipped**, the orchestrator dispatches the first
+  member that must run as the chain entry (`kick` dispatches a member only when no
+  earlier member was dispatched). _Known gap:_ a partial **re-run** of a middle
+  member whose predecessors are already `SUCCESS` is still suppressed (the original
+  driver is gone) — cortage re-runs need dedicated handling (TODO in `kick`).
 
 ## Validation (`praktika/validator.py` `validate_cortages`)
 

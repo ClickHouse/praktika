@@ -177,6 +177,41 @@ workflow = Workflow.Config(
             allow_failure=True,
             enable_gh_auth=True,
         ),
+        # --- Mock cortage: 5 sleep-10 jobs chained onto one runner. ---
+        # A cortage pins its members to a single runner / checkout / ci/tmp and
+        # runs them back-to-back with no cleanup in between (see
+        # docs/cortage-jobs.md). The head runs after "Config Workflow"
+        # automatically (every job gets run_after the config job), so this chain
+        # hangs right off it. Both runs_on used below (pr-arm-2xsmall,
+        # pr-amd-2xsmall) have capacity_reserve=1 so the warm runner is available.
+        #
+        # "Cortage Sleep 3" promotes its runs_on, so the whole chain runs on
+        # SMALL_AMD (the last promoted member wins) instead of the head's SMALL_ARM.
+        Job.Config(
+            name="Cortage Sleep 1",
+            runs_on=[RunnerLabels.SMALL_ARM],
+            command="sleep 10",
+        ),
+        Job.Config(
+            name="Cortage Sleep 2",
+            runs_on=[RunnerLabels.SMALL_ARM],
+            command="sleep 10",
+        ).attach_to("Cortage Sleep 1"),
+        Job.Config(
+            name="Cortage Sleep 3",
+            runs_on=[RunnerLabels.SMALL_AMD],
+            command="sleep 10",
+        ).attach_to("Cortage Sleep 2", promote_runs_on=True),
+        Job.Config(
+            name="Cortage Sleep 4",
+            runs_on=[RunnerLabels.SMALL_AMD],
+            command="sleep 10",
+        ).attach_to("Cortage Sleep 3"),
+        Job.Config(
+            name="Cortage Sleep 5",
+            runs_on=[RunnerLabels.SMALL_AMD],
+            command="sleep 10",
+        ).attach_to("Cortage Sleep 4"),
     ],
     artifacts=[artifact],
     dockers=[

@@ -694,32 +694,42 @@ class JobState:
 
         ws = self._workflow_state
 
-        # Cortage member (non-head): the chain's head runner runs it in order
-        # with no separate SQS dispatch. Mark it QUEUED so the completion/liveness
-        # sweeps watch its own heartbeat/final-state keys (it stays first-class in
-        # reporting), but do NOT dispatch a task. Not applicable in local mode,
-        # where every job runs as its own subprocess in the shared TEMP_DIR.
-        # See docs/proposals/cortage-jobs.md.
-        if (
-            ws is not None
-            and not ws.local_mode
-            and ws.workflow.is_cortage_member(self.name)
-        ):
-            print(
-                f"[KICK ] {self.name:70s} runs_on={runs_on}  "
-                f"-> (cortage member, run by head's runner)"
-            )
-            return
-
-        # A cortage head routes to the chain's EFFECTIVE runs_on (the last
-        # promoted member's, else its own); every other job routes to its own.
+        # Cortage dispatch (see docs/proposals/cortage-jobs.md). A member is normally
+        # run by the chain driver — the runner that picked up an EARLIER member — and
+        # must NOT get its own SQS task. But if no earlier member was ever dispatched
+        # (e.g. the head was cache/filter-SKIPPED), this member is the chain entry and
+        # must be dispatched itself, on the cortage's effective pool, so the runner
+        # drives the rest of the chain from here.
         route_runs_on = self.job.runs_on
-        if (
-            ws is not None
-            and not ws.local_mode
-            and ws.workflow.is_cortage_head(self.name)
-        ):
-            route_runs_on = ws.workflow.cortage_effective_runs_on(self.name)
+        if ws is not None and not ws.local_mode:
+            head = ws.workflow.cortage_head_name(self.name)
+            chain = ws.workflow.get_cortage_chain(head)
+            if len(chain) > 1:  # this job belongs to a cortage
+                earlier = chain[: chain.index(self.name)]
+                driver_dispatched = any(
+                    ws.jobs[e].status
+                    in (
+                        JobStatus.QUEUED,
+                        JobStatus.RUNNING,
+                        JobStatus.SUCCESS,
+                        JobStatus.FAILURE,
+                    )
+                    for e in earlier
+                    if e in ws.jobs
+                )
+                if driver_dispatched:
+                    print(
+                        f"[KICK ] {self.name:70s} runs_on={runs_on}  "
+                        f"-> (cortage member, run by chain driver)"
+                    )
+                    return
+                # Chain entry (the head, or the first member after a skipped head):
+                # dispatch it on the effective pool; the runner drives the rest.
+                # TODO(cortage): a partial re-run of a middle member whose
+                # predecessors are already SUCCESS is still suppressed above (the
+                # original driver is gone) — reruns of cortages need dedicated
+                # handling (reset/redispatch the chain from the earliest reset member).
+                route_runs_on = ws.workflow.cortage_effective_runs_on(head)
 
         target = (
             "local"
