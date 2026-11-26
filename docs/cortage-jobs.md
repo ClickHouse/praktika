@@ -106,9 +106,12 @@ surfaced via the heartbeat phase.
   the normal attempt-bump retry path.
 - If the **head is cache/filter-skipped**, the orchestrator dispatches the first
   member that must run as the chain entry (`kick` dispatches a member only when no
-  earlier member was dispatched). _Known gap:_ a partial **re-run** of a middle
-  member whose predecessors are already `SUCCESS` is still suppressed (the original
-  driver is gone) — cortage re-runs need dedicated handling (TODO in `kick`).
+  earlier member was dispatched).
+- A partial **re-run** resets the member (and failed downstream) to PENDING and
+  deletes its `final.json` (`_reset_job`); the original driver is gone. `kick`
+  dispatches the **earliest reset member** as a fresh entry (its chain predecessor
+  wasn't part of the re-run), and the runner resumes the chain from it —
+  resume-skipping the still-green members and re-running the reset ones.
 
 ## Validation (`praktika/validator.py` `validate_cortages`)
 

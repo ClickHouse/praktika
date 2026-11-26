@@ -705,7 +705,8 @@ class JobState:
             head = ws.workflow.cortage_head_name(self.name)
             chain = ws.workflow.get_cortage_chain(head)
             if len(chain) > 1:  # this job belongs to a cortage
-                earlier = chain[: chain.index(self.name)]
+                idx = chain.index(self.name)
+                earlier = chain[:idx]
                 driver_dispatched = any(
                     ws.jobs[e].status
                     in (
@@ -717,18 +718,26 @@ class JobState:
                     for e in earlier
                     if e in ws.jobs
                 )
-                if driver_dispatched:
+                # A re-run resets a member (and its failed downstream) to PENDING and
+                # deletes its final.json (_reset_job); the original chain driver is
+                # already gone. The EARLIEST reset member — its chain predecessor was
+                # NOT part of this re-run — must be dispatched as a fresh entry so a
+                # runner resumes the chain from it; later reset members are then
+                # covered by that new driver and stay suppressed.
+                pred = chain[idx - 1] if idx > 0 else None
+                is_rerun_entry = self.rerun_count > 0 and (
+                    pred is None
+                    or getattr(ws.jobs.get(pred), "rerun_count", 0) < self.rerun_count
+                )
+                if driver_dispatched and not is_rerun_entry:
                     print(
                         f"[KICK ] {self.name:70s} runs_on={runs_on}  "
                         f"-> (cortage member, run by chain driver)"
                     )
                     return
-                # Chain entry (the head, or the first member after a skipped head):
-                # dispatch it on the effective pool; the runner drives the rest.
-                # TODO(cortage): a partial re-run of a middle member whose
-                # predecessors are already SUCCESS is still suppressed above (the
-                # original driver is gone) — reruns of cortages need dedicated
-                # handling (reset/redispatch the chain from the earliest reset member).
+                # Chain entry: the head, the first member after a cache/filter-skipped
+                # head, or the earliest member of a re-run. Dispatch it on the
+                # effective pool; the runner drives the rest of the chain from here.
                 route_runs_on = ws.workflow.cortage_effective_runs_on(head)
 
         target = (
