@@ -1822,18 +1822,18 @@
                     if (!hoveredCortage.has(task.name)) return;
                     const ry = index * (lineWidth + padding) - padding;
                     const rh = lineWidth + 2 * padding;
-                    ctx.fillStyle = 'rgba(0, 200, 150, 0.22)';   // cortage tint
+                    ctx.fillStyle = 'rgba(0, 230, 160, 0.5)';   // cortage tint
                     ctx.fillRect(0, ry, canvas.width, rh);
                     // Solid accent bar on the left edge of each member.
-                    ctx.fillStyle = 'rgba(0, 200, 150, 0.95)';
-                    ctx.fillRect(0, ry, 3, rh);
+                    ctx.fillStyle = 'rgba(0, 255, 170, 1)';
+                    ctx.fillRect(0, ry, 4, rh);
                     memberYs.push(ry + rh / 2);
                 });
                 // Thin connector joining the members in row order.
                 if (memberYs.length > 1) {
                     memberYs.sort((a, b) => a - b);
-                    ctx.strokeStyle = 'rgba(0, 200, 150, 0.95)';
-                    ctx.lineWidth = 1.5;
+                    ctx.strokeStyle = 'rgba(0, 255, 170, 1)';
+                    ctx.lineWidth = 2;
                     ctx.beginPath();
                     ctx.moveTo(1.5, memberYs[0]);
                     ctx.lineTo(1.5, memberYs[memberYs.length - 1]);
