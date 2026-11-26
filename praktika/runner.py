@@ -429,19 +429,38 @@ class Runner:
             # through to the normal S3 download. See docs/proposals/cortage-jobs.md.
             idx = cortage_chain.index(job.name) if job.name in cortage_chain else 0
             cortage_predecessors = set(cortage_chain[:idx])
+            # Provenance manifest: {artifact_name: [local_paths]} written by each
+            # producing member's _post_run for what it ACTUALLY materialized this
+            # invocation. Reuse an artifact only when its producer recorded it here
+            # (not merely because a same-named/same-basename file happens to exist),
+            # so a cache-skipped or infra-resumed producer correctly falls back to
+            # S3. See docs/proposals/cortage-jobs.md.
+            cortage_produced = {}
+            if cortage_predecessors:
+                manifest_path = Path(Settings.TEMP_DIR) / "cortage_produced.json"
+                if manifest_path.is_file():
+                    try:
+                        with open(manifest_path, "r", encoding="utf-8") as f:
+                            cortage_produced = json.load(f) or {}
+                    except Exception:
+                        cortage_produced = {}
             for artifact, prefix in zip(required_artifacts, prefixes):
-                if (
-                    artifact._provided_by in cortage_predecessors
-                    and not isinstance(artifact.path, (tuple, list))
-                    and "*" not in str(artifact.path)
-                    and (Path(Settings.INPUT_DIR) / Path(artifact.path).name).exists()
-                ):
-                    print(
-                        f"NOTE: artifact [{artifact.name}] from cortage member "
-                        f"[{artifact._provided_by}] present in the shared ci/tmp — "
-                        f"skipping S3 download"
-                    )
-                    continue
+                if artifact._provided_by in cortage_predecessors and not artifact.compress_zst:
+                    produced = cortage_produced.get(artifact.name) or []
+                    # Reuse only a single concrete file the producer recorded and
+                    # that still exists; otherwise fall through to the S3 download.
+                    if len(produced) == 1 and Path(produced[0]).is_file():
+                        src = Path(produced[0])
+                        dest = Path(Settings.INPUT_DIR) / src.name
+                        if src.resolve() != dest.resolve():
+                            dest.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(src, dest)
+                        print(
+                            f"NOTE: artifact [{artifact.name}] materialized by cortage "
+                            f"member [{artifact._provided_by}] at [{src}] — reusing, "
+                            f"skipping S3 download"
+                        )
+                        continue
                 if artifact.compress_zst:
                     assert not isinstance(
                         artifact.path, (tuple, list)
@@ -1127,6 +1146,11 @@ class Runner:
                 # rule. Default to short retention; per-artifact tags (e.g.
                 # retention=long) override on the "retention" key.
                 default_tags = {"retention": "default"}
+                # Cortage provenance: record the local files this producer actually
+                # materialized THIS invocation, so a later member on the same runner
+                # can reuse them instead of downloading from S3 — keyed by exact
+                # artifact, not a coincidental same-basename file. See _pre_run.
+                produced_local = {}
                 for artifact in providing_artifacts:
                     if artifact.compress_zst:
                         if isinstance(artifact.path, (tuple, list)):
@@ -1165,12 +1189,33 @@ class Runner:
                                 )
                                 result.set_link(link)
                                 artifact_links.append(link)
+                            if not artifact.compress_zst:
+                                produced_local.setdefault(artifact.name, []).extend(
+                                    matched
+                                )
                         except Exception as e:
                             error = f"Failed to upload artifact [{artifact.name}:{artifact_path}], ex [{e}]"
                             print(f"ERROR: {error}")
                             env.add_workflow_error(error)
                             result.set_status(Result.Status.ERROR)
                             is_ok = False
+                if produced_local:
+                    try:
+                        manifest_path = (
+                            Path(Settings.TEMP_DIR) / "cortage_produced.json"
+                        )
+                        existing = {}
+                        if manifest_path.is_file():
+                            with open(manifest_path, "r", encoding="utf-8") as f:
+                                existing = json.load(f) or {}
+                        existing.update(produced_local)
+                        with open(manifest_path, "w", encoding="utf-8") as f:
+                            json.dump(existing, f)
+                    except Exception as e:
+                        print(
+                            f"  [warn] could not record cortage-produced artifacts: "
+                            f"{type(e).__name__}: {e}"
+                        )
                 # Written even when empty: consumers take the report as the list of
                 # this run's files, so an older report must not survive.
                 artifact_report = {"build_urls": artifact_links}

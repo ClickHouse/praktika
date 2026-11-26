@@ -176,21 +176,41 @@ workflow = Workflow.Config(
             ),
             allow_failure=True,
             enable_gh_auth=True,
-        ),
-        # --- Mock cortage: 5 sleep-10 jobs chained onto one runner. ---
+            # Joined to the mock cortage after Sleep 5 as the promoting member and
+            # the chain tail: promote_runs_on pins the WHOLE chain to
+            # pr-arm-2xsmall-bedrock, the only pool with the scoped
+            # bedrock:InvokeModel grant this job needs. That pool is arm with
+            # capacity_reserve=0, so the chain's Docker member is the arm build
+            # (arch-matched) and the chain gives up reserved capacity.
+            #
+            # Finish Workflow is NOT chained here: it summarizes the whole run from
+            # the orchestrator-written state and must run after every job is
+            # finalized, so it can't be a cortage member (mangle rejects it).
+        ).attach_to("Cortage Sleep 5", promote_runs_on=True),
+        # --- Mock cortage: native jobs + sleeps + Code Review on one runner. ---
         # A cortage pins its members to a single runner / checkout / ci/tmp and
         # runs them back-to-back with no cleanup in between (see
-        # docs/cortage-jobs.md). The head runs after "Config Workflow"
-        # automatically (every job gets run_after the config job), so this chain
-        # hangs right off it. Both runs_on used below (pr-arm-2xsmall,
-        # pr-amd-2xsmall) have capacity_reserve=1 so the warm runner is available.
+        # docs/cortage-jobs.md). The whole chain is:
+        #   Config Workflow -> Dockers Build (arm) -> Sleep 1..5 -> Code Review -> Finish Workflow
+        # configured entirely from the member declarations: Sleep 1 pulls the
+        # native Config + arm Docker build in front of it (predecessor prefix),
+        # and Code Review pulls Finish in as the tail (see its attach_to above).
+        # Config/Docker/Finish are injected during mangle and can't call
+        # attach_to() themselves.
         #
-        # "Cortage Sleep 3" promotes its runs_on, so the whole chain runs on
-        # SMALL_AMD (the last promoted member wins) instead of the head's SMALL_ARM.
+        # Code Review is the promoting member, so the WHOLE chain runs on
+        # pr-arm-2xsmall-bedrock (the only pool with the bedrock grant it needs);
+        # the arm Docker build is arch-matched to that arm pool.
         Job.Config(
             name="Cortage Sleep 1",
             runs_on=[RunnerLabels.SMALL_ARM],
             command="sleep 10",
+            # Head of the user part, but not the chain head: attach the native
+            # Config job and the arm Docker build in front (ordered prefix), so
+            # Config Workflow becomes the cortage head and the build runs on the
+            # same warm runner right before the sleeps.
+        ).attach_to(
+            [Settings.CI_CONFIG_JOB_NAME, Settings.DOCKER_BUILD_ARM_LINUX_JOB_NAME]
         ),
         Job.Config(
             name="Cortage Sleep 2",
@@ -199,17 +219,17 @@ workflow = Workflow.Config(
         ).attach_to("Cortage Sleep 1"),
         Job.Config(
             name="Cortage Sleep 3",
-            runs_on=[RunnerLabels.SMALL_AMD],
+            runs_on=[RunnerLabels.SMALL_ARM],
             command="sleep 10",
-        ).attach_to("Cortage Sleep 2", promote_runs_on=True),
+        ).attach_to("Cortage Sleep 2"),
         Job.Config(
             name="Cortage Sleep 4",
-            runs_on=[RunnerLabels.SMALL_AMD],
+            runs_on=[RunnerLabels.SMALL_ARM],
             command="sleep 10",
         ).attach_to("Cortage Sleep 3"),
         Job.Config(
             name="Cortage Sleep 5",
-            runs_on=[RunnerLabels.SMALL_AMD],
+            runs_on=[RunnerLabels.SMALL_ARM],
             command="sleep 10",
         ).attach_to("Cortage Sleep 4"),
     ],

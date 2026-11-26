@@ -618,6 +618,8 @@ class Validator:
         """
         from collections import Counter
 
+        from .native_jobs import _native_job_names
+
         jobs_by_name = {job.name: job for job in workflow.jobs}
         attached_jobs = [j for j in workflow.jobs if getattr(j, "attached_to", "")]
         any_promote = any(
@@ -642,7 +644,10 @@ class Validator:
                 )
             return
 
-        # attach_to must name another existing job in this workflow.
+        # attach_to must name another existing job in this workflow, or a
+        # Praktika-native job (Config/Docker/Finish) that mangle injects later —
+        # those aren't in `jobs` here but are valid cortage targets.
+        native_names = _native_job_names()
         for job in attached_jobs:
             cls.evaluate_check(
                 job.attached_to != job.name,
@@ -651,9 +656,10 @@ class Validator:
                 job.name,
             )
             cls.evaluate_check(
-                job.attached_to in jobs_by_name,
+                job.attached_to in jobs_by_name or job.attached_to in native_names,
                 f"Job [{job.name}] attaches to unknown job [{job.attached_to}]; "
-                f"attach_to must name another job in the same workflow.",
+                f"attach_to must name another job in the same workflow (or a "
+                f"Praktika-native job).",
                 workflow.name,
                 job.name,
             )
@@ -761,7 +767,12 @@ class Validator:
                 )
 
         for head_name in successor:
-            head_job = jobs_by_name[head_name]
+            head_job = jobs_by_name.get(head_name)
+            # A chain whose head (or any node) is a Praktika-native job isn't fully
+            # materialized at validation time; its effective runs_on is resolved on
+            # the mangled workflow, so skip the advisory runs_on-mismatch warning.
+            if head_job is None:
+                continue
             if getattr(head_job, "attached_to", ""):
                 continue  # middle of a chain, not a head
             chain_names = [head_name]
@@ -769,6 +780,8 @@ class Validator:
             while cur in successor:
                 cur = successor[cur]
                 chain_names.append(cur)
+            if any(nm not in jobs_by_name for nm in chain_names):
+                continue
             effective = head_job.runs_on
             for nm in chain_names:
                 if getattr(jobs_by_name[nm], "promote_runs_on", False):

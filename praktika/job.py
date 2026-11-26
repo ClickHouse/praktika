@@ -139,6 +139,15 @@ class Job:
         # member promotes, the head's `runs_on` is used.
         promote_runs_on: bool = False
 
+        # Cortage: additional (job_name, attach_to_name, promote_runs_on) links
+        # declared by this member's `attach_to(...)` call for predecessors earlier
+        # than the immediate one (a multi-level prefix). They let the whole
+        # predecessor chain, including Praktika-native jobs (Config/Docker) that
+        # aren't in `jobs` and can't call attach_to() themselves, be configured
+        # from a single member. Applied to the mangled workflow by mangle.py once
+        # the native jobs exist. Empty for a plain single-predecessor attach.
+        cortage_links: List[tuple] = field(default_factory=list)
+
         def __post_init__(self):
             # `enable_gh_auth` pre-authenticates `gh` before the job command
             # starts, which recreates exactly the credential exposure that
@@ -252,23 +261,44 @@ class Job:
         def attach_to(self, job, promote_runs_on=False):
             """
             Attach this job to `job` so both run on the same runner, back-to-back,
-            with no cleanup in between (a "cortage"). `job` may be a Job.Config or
-            a job name, and becomes this job's predecessor in the chain.
+            with no cleanup in between (a "cortage"). This one call can configure
+            the whole predecessor chain from a single member — including
+            Praktika-native jobs (Config Workflow, the Docker builds) that are
+            injected during mangle and so can't call attach_to() themselves.
+
+            `job` — this job's predecessor(s). A single Job.Config/name is the
+            immediate predecessor. An ordered LIST [head, ..., immediate_pred] also
+            wires the earlier links (prefix[i] attaches to prefix[i-1]), so a
+            member can pull native predecessors in front of it, e.g.
+            attach_to(["Config Workflow", "Dockers Build (arm)"]) ->
+            Config -> Docker -> self.
 
             `promote_runs_on=True` promotes this member's `runs_on` as the whole
             cortage's runner; the last promoted member in chain order wins, and if
             no member promotes the head's `runs_on` is used.
 
-            Native engines only (not GH_ACTIONS). See docs/proposals/cortage-jobs.md.
+            Native engines only (not GH_ACTIONS). See docs/cortage-jobs.md.
             """
+
+            def _name(j):
+                if isinstance(j, Job.Config):
+                    return j.name
+                if isinstance(j, str):
+                    return j
+                Utils.raise_with_error(f"Invalid attach_to target [{j}]")
+
             res = copy.deepcopy(self)
-            if isinstance(job, Job.Config):
-                res.attached_to = job.name
-            elif isinstance(job, str):
-                res.attached_to = job
-            else:
-                Utils.raise_with_error(f"Invalid attach_to target [{job}]")
+            preds = [_name(j) for j in (job if isinstance(job, list) else [job])]
+            if not preds:
+                Utils.raise_with_error(f"Job [{res.name}]: attach_to needs a target")
+            # The immediate predecessor is the last element; earlier ones form an
+            # ordered prefix chained among themselves.
+            res.attached_to = preds[-1]
             res.promote_runs_on = promote_runs_on
+            links = list(res.cortage_links)
+            for i in range(1, len(preds)):
+                links.append((preds[i], preds[i - 1], False))
+            res.cortage_links = links
             return res
 
         def set_provides(self, artifact_name, reset=False):

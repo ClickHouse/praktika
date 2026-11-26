@@ -73,6 +73,21 @@ _final_job = Job.Config(
 )
 
 
+def _native_job_names():
+    """Names of the Praktika-injected jobs. These are added during mangle and are
+    not present in a workflow's authored `jobs` list, so the validator (which runs
+    on the un-mangled workflow) treats them as valid attach_to()/cortage targets
+    even though it can't see them yet."""
+    return {
+        Settings.CI_CONFIG_JOB_NAME,
+        Settings.DOCKER_BUILD_MANIFEST_JOB_NAME,
+        Settings.DOCKER_BUILD_ARM_LINUX_JOB_NAME,
+        Settings.DOCKER_BUILD_AMD_LINUX_JOB_NAME,
+        Settings.DOCKER_BUILD_AMD_LINUX_AND_MERGE_JOB_NAME,
+        Settings.FINISH_WORKFLOW_JOB_NAME,
+    }
+
+
 def _is_praktika_job(job_name):
     if job_name in (
         Settings.CI_CONFIG_JOB_NAME,

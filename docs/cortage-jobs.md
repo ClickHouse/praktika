@@ -79,11 +79,13 @@ differ.
   (one `orchestrate job` invocation).
 
 **Artifacts** (`praktika/runner.py` `_pre_run`)
-- An artifact from an earlier member is read from the shared `ci/tmp` — the S3
-  download is skipped **when the file is present locally**. If it is absent (the
-  producer was a cache-hit skip, or an infra-rerun resumed on a fresh `ci/tmp`),
-  it falls back to the normal S3 download. Producers still upload to S3 for
-  external consumers.
+- An artifact from an earlier member is reused from the shared `ci/tmp` — the S3
+  download is skipped when the producing member's file is present at its **configured
+  `artifact.path`** (its provenance, not a same-basename file another step may have
+  left in `INPUT_DIR`); it's copied to where a download would place it so the
+  consumer finds it identically. If it's absent (the producer was a cache-hit skip,
+  or an infra-rerun resumed on a fresh `ci/tmp`), it falls back to the normal S3
+  download. Producers still upload to S3 for external consumers.
 
 ### Stalling (external deps)
 
@@ -102,8 +104,11 @@ surfaced via the heartbeat phase.
 - A member's job failure cancels only its **dependents**; independent later
   members still run (req: critical path keeps going where possible).
 - On infra loss mid-chain the entry SQS message is redelivered; the fresh runner
-  resume-skips finalized members and resumes at the first incomplete one, re-using
-  the normal attempt-bump retry path.
+  resume-skips **any already-finalized member** (success *or* failure — never
+  re-running one the orchestrator already finalized), restores its environment, and
+  resumes at the first incomplete one via the normal attempt-bump retry path. An
+  already-finalized **blocking** failure is re-recorded so its dependents stay
+  block-skipped, matching the orchestrator's cascade.
 - If the **head is cache/filter-skipped**, the orchestrator dispatches the first
   member that must run as the chain entry (`kick` dispatches a member only when no
   earlier member was dispatched).

@@ -368,6 +368,99 @@ def _update_workflow_with_native_jobs(workflow):
             aux_job.run_after.append(job.name)
         workflow.jobs.append(aux_job)
 
+    # Apply deferred cortage links now that all native jobs exist in the mangled
+    # workflow. A member's attach_to(...) may configure the whole chain from one
+    # place — multi-level predecessors and `then=` successors — including
+    # Praktika-native jobs (Config/Docker/Finish) injected above that can't call
+    # attach_to() themselves. Those extra (job, attach_to, promote) links are
+    # carried on Job.Config.cortage_links and wired here. The validator's
+    # deadlock/fork checks run on the un-mangled workflow and don't see native
+    # jobs, so the structural checks for these links live here.
+    jobs_by_name = {job.name: job for job in workflow.jobs}
+    for src in workflow.jobs:
+        for link in getattr(src, "cortage_links", None) or []:
+            link_job, link_attach_to, link_promote = link
+            if link_job not in jobs_by_name:
+                Utils.raise_with_error(
+                    f"Workflow [{workflow.name}]: job [{src.name}] attach_to wires "
+                    f"unknown job [{link_job}] (jobs present: {sorted(jobs_by_name)})."
+                )
+            if link_attach_to not in jobs_by_name:
+                Utils.raise_with_error(
+                    f"Workflow [{workflow.name}]: job [{src.name}] attach_to wires "
+                    f"[{link_job}] onto unknown job [{link_attach_to}]."
+                )
+            if link_job == link_attach_to:
+                Utils.raise_with_error(
+                    f"Workflow [{workflow.name}]: job [{src.name}] attach_to wires "
+                    f"[{link_job}] onto itself."
+                )
+            target = jobs_by_name[link_job]
+            # A later link must not silently contradict an earlier one (e.g. two
+            # members both claiming the same native job with a different predecessor).
+            if target.attached_to and target.attached_to != link_attach_to:
+                Utils.raise_with_error(
+                    f"Workflow [{workflow.name}]: conflicting cortage links for "
+                    f"[{link_job}] — attached to both [{target.attached_to}] and "
+                    f"[{link_attach_to}]."
+                )
+            target.attached_to = link_attach_to
+            if link_promote:
+                target.promote_runs_on = True
+
+    # Finish Workflow is the orchestrator-owned summarizer: it reads the workflow
+    # summary the orchestrator writes to S3 only once every job's row is finalized,
+    # so it must run strictly after the orchestrator has observed every job
+    # complete. Colocating it as a cortage member runs it on the chain driver right
+    # after its predecessor — before the orchestrator's completion sweep has
+    # recorded that predecessor — so Finish sees that job as not-finalized and
+    # wrongly stamps it. Reject Finish anywhere in a cortage (as a member, or as a
+    # predecessor something attaches to). Config and Docker builds colocate fine.
+    finish_name = Settings.FINISH_WORKFLOW_JOB_NAME
+    for job in workflow.jobs:
+        if job.name == finish_name and getattr(job, "attached_to", ""):
+            Utils.raise_with_error(
+                f"Workflow [{workflow.name}]: [{finish_name}] cannot be a cortage "
+                f"member (attached to [{job.attached_to}]). Finish summarizes the "
+                f"whole run from the orchestrator-written state and must run after "
+                f"every job is finalized; colocating it on a runner races that."
+            )
+        if getattr(job, "attached_to", "") == finish_name:
+            Utils.raise_with_error(
+                f"Workflow [{workflow.name}]: job [{job.name}] cannot attach to "
+                f"[{finish_name}] — nothing may run after Finish on a shared runner; "
+                f"Finish is the final orchestrator-owned summarizer."
+            )
+
+    # Structural cortage checks on the MANGLED graph. validate_cortages() runs on
+    # the un-mangled workflow, so it can't see native jobs or applied cortage_links;
+    # re-check the parts that only become visible here. The attach-target existence
+    # check matters because the validator accepts any _native_job_names() member,
+    # but a native job is only injected when its enabling conditions hold (e.g. a
+    # Docker build needs workflow.dockers) — attaching to one that was never
+    # injected would otherwise crash later (cortage_effective_runs_on KeyError).
+    # TODO(cortage): also re-run the attach-cycle / dependency-cycle checks on the
+    # mangled graph for links that close a cycle through native jobs.
+    attached = [j for j in workflow.jobs if getattr(j, "attached_to", "")]
+    for job in attached:
+        if job.attached_to not in jobs_by_name:
+            Utils.raise_with_error(
+                f"Workflow [{workflow.name}]: job [{job.name}] attaches to "
+                f"[{job.attached_to}], which is not a job in this workflow. A native "
+                f"job (Config/Docker/Finish) is only a valid target when it is "
+                f"actually injected here (e.g. a Docker build needs workflow.dockers)."
+            )
+    from collections import Counter
+
+    for pred, count in Counter(j.attached_to for j in attached).items():
+        if count > 1:
+            forks = [j.name for j in attached if j.attached_to == pred]
+            Utils.raise_with_error(
+                f"Workflow [{workflow.name}]: jobs {forks} all attach to [{pred}]; a "
+                f"cortage is a linked list, so at most one job may attach to a given "
+                f"predecessor."
+            )
+
     if workflow.runs_on_label_prefix:
         prefix = workflow.runs_on_label_prefix
         for job in workflow.jobs:

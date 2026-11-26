@@ -624,16 +624,37 @@ def _s3_client():
     return boto3.client("s3", region_name=Settings.AWS_REGION or None)
 
 
-def _load_final_if_success(s3, bucket, key):
-    """Return the ``final.json`` payload if it exists and reports rc == 0 (member
-    already completed on a prior runner — resume skips it, and the payload carries
-    its ``environment`` so the next member inherits it). None otherwise."""
+def _load_final(s3, bucket, key):
+    """Return the ``final.json`` payload if it exists (the member already reached a
+    TERMINAL state on a prior runner — success OR failure), else None. On resume we
+    must not re-run EITHER: re-running a failed member repeats side effects and can
+    flip it to success while the orchestrator already finalized it as FAILURE and
+    cancelled its dependents. A re-run (not a resume) deletes final.json via
+    _reset_job, so reset members correctly return None here and do re-run."""
     try:
         obj = s3.get_object(Bucket=bucket, Key=key)
-        payload = json.loads(obj["Body"].read())
-        return payload if int(payload.get("rc", 1)) == 0 else None
+        return json.loads(obj["Body"].read())
     except Exception:
         return None
+
+
+def _payload_is_blocking_failure(payload):
+    """True if a final.json payload is a BLOCKING failure (rc != 0 and its Result is
+    not do_not_block_pipeline_on_failure). Used on resume so an already-finalized
+    blocking failure still block-skips its dependents, matching the orchestrator."""
+    try:
+        if int(payload.get("rc", 1)) == 0:
+            return False
+        from copy import deepcopy
+
+        from ..result import Result
+
+        rd = payload.get("result")
+        if not isinstance(rd, dict):
+            return True
+        return not Result.from_dict(deepcopy(rd)).do_not_block_pipeline_on_failure()
+    except Exception:
+        return True
 
 
 def _is_blocking_failure(job_name):
@@ -690,6 +711,19 @@ def _load_state_jobs(s3, bucket, key):
         return (json.loads(obj["Body"].read()) or {}).get("jobs", {}) or {}
     except Exception:
         return {}
+
+
+def _config_skipped_names(carried_env):
+    """Job names Config Workflow marked cache-hit/filtered, read from the carried
+    WORKFLOW_CONFIG. Authoritative the instant Config Workflow finishes (it is often
+    the cortage entry), without waiting for the orchestrator to apply it to
+    state.json. See apply_workflow_config in orchestrator/state.py."""
+    names = set()
+    wc = carried_env.get("WORKFLOW_CONFIG") if isinstance(carried_env, dict) else None
+    if isinstance(wc, dict):
+        names |= set(wc.get("filtered_jobs") or {})
+        names |= set(wc.get("cache_success") or [])
+    return names
 
 
 def _artifact_provider_map(workflow):
@@ -855,8 +889,6 @@ def _run_cortage_chain(task, workflow, start_name, gh_token=None, timestamp=Fals
     s3 = _s3_client()
     provider_map = _artifact_provider_map(workflow)
     all_job_names = {j.name for j in workflow.jobs}
-    # Authoritative statuses (Config Workflow's cache/filter skips land here).
-    state_jobs = _load_state_jobs(s3, bucket, state_key)
 
     failed_or_skipped = set()
     overall_rc = 0
@@ -875,21 +907,46 @@ def _run_cortage_chain(task, workflow, start_name, gh_token=None, timestamp=Fals
             else _member_task(task, member_name, run_id, bucket, carried_env)
         )
 
-        # Resume: a member already finalized OK on a prior runner (infra redelivery
-        # re-runs the entry task). Skip it, and restore its environment so the next
-        # member inherits WORKFLOW_CONFIG/JOB_KV_DATA/etc. produced before the death.
-        done = _load_final_if_success(s3, bucket, member_task["final_state_s3_key"])
+        # Resume: a member already finalized on a prior runner (infra redelivery
+        # re-runs the entry task). Do NOT re-run it — whether it succeeded OR failed
+        # — and restore its environment so the next member inherits
+        # WORKFLOW_CONFIG/JOB_KV_DATA/etc. If it was a BLOCKING failure, record it so
+        # its data-dependents are block-skipped, exactly as the orchestrator cascades
+        # (re-running it could flip it to success and wrongly unblock them). A
+        # re-run instead deletes final.json (_reset_job), so reset members are not
+        # seen here and do re-run.
+        done = _load_final(s3, bucket, member_task["final_state_s3_key"])
         if done is not None:
-            print(f"Cortage: member [{member_name}] already finalized OK — skipping")
             env = done.get("environment")
             if isinstance(env, dict):
                 carried_env = env
+            if _payload_is_blocking_failure(done):
+                failed_or_skipped.add(member_name)
+                print(
+                    f"Cortage: member [{member_name}] already finalized as a "
+                    f"blocking failure — not re-running; its dependents will be skipped"
+                )
+            else:
+                print(
+                    f"Cortage: member [{member_name}] already finalized "
+                    f"(rc={int(done.get('rc', 1))}) — skipping"
+                )
             continue
 
         # Config Workflow marked this member cache-hit/filtered: do NOT run it. Its
         # outputs (for a cache hit) live in S3, so downstream members fetch them via
-        # the normal artifact path.
-        if str(state_jobs.get(member_name, {}).get("status", "")).lower() == "skipped":
+        # the normal artifact path. Two authoritative sources, checked per member:
+        #   - the freshly carried WORKFLOW_CONFIG (available the instant Config
+        #     Workflow — possibly the cortage entry — finishes, with no orchestrator
+        #     lag); and
+        #   - state.json reloaded each iteration (skips the orchestrator has applied).
+        state_jobs = _load_state_jobs(s3, bucket, state_key)
+        config_skipped = _config_skipped_names(carried_env)
+        if (
+            member_name in config_skipped
+            or str(state_jobs.get(member_name, {}).get("status", "")).lower()
+            == "skipped"
+        ):
             print(
                 f"Cortage: member [{member_name}] is SKIPPED (cache/filter) — not running"
             )
