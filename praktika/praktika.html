@@ -1754,6 +1754,10 @@
         // depend on the hovered row. Highlighted in different colors in drawTimeline.
         let hoveredRequires = new Set();
         let hoveredRequiredBy = new Set();
+        // Members of the cortage (jobs colocated on one runner, run back-to-back)
+        // the hovered row belongs to. Empty when the hovered job isn't in a
+        // cortage. ext.cortages is a list of ordered [head, ..., tail] chains.
+        let hoveredCortage = new Set();
 
         function resizeCanvas() {
             canvas.width = widget.clientWidth;
@@ -1806,6 +1810,35 @@
                     ctx.fillStyle = color;
                     ctx.fillRect(0, ry, canvas.width, lineWidth + 2 * padding);
                 });
+            }
+
+            // Highlight the whole cortage the hovered row belongs to: a faint
+            // full-row tint on every member plus a solid left-edge accent bar,
+            // and a connector down the left margin between consecutive members
+            // so the chain reads as one group even when rows aren't adjacent.
+            if (hoveredCortage.size > 0) {
+                const memberYs = [];
+                results.forEach((task, index) => {
+                    if (!hoveredCortage.has(task.name)) return;
+                    const ry = index * (lineWidth + padding) - padding;
+                    const rh = lineWidth + 2 * padding;
+                    ctx.fillStyle = 'rgba(0, 200, 150, 0.22)';   // cortage tint
+                    ctx.fillRect(0, ry, canvas.width, rh);
+                    // Solid accent bar on the left edge of each member.
+                    ctx.fillStyle = 'rgba(0, 200, 150, 0.95)';
+                    ctx.fillRect(0, ry, 3, rh);
+                    memberYs.push(ry + rh / 2);
+                });
+                // Thin connector joining the members in row order.
+                if (memberYs.length > 1) {
+                    memberYs.sort((a, b) => a - b);
+                    ctx.strokeStyle = 'rgba(0, 200, 150, 0.95)';
+                    ctx.lineWidth = 1.5;
+                    ctx.beginPath();
+                    ctx.moveTo(1.5, memberYs[0]);
+                    ctx.lineTo(1.5, memberYs[memberYs.length - 1]);
+                    ctx.stroke();
+                }
             }
 
             results.forEach((task, index) => {
@@ -1926,6 +1959,13 @@
             const requiresMap = runtimeCache.json0?.ext?.job_requires || {};
             const requires = hoveredTask ? requiresMap[hoveredTask.name] : null;
 
+            // The cortage chain (ordered [head, ..., tail]) the hovered job is a
+            // member of, if any — used for the highlight and the tooltip below.
+            const cortages = runtimeCache.json0?.ext?.cortages || [];
+            const hoveredChain = hoveredTask
+                ? (cortages.find(c => Array.isArray(c) && c.includes(hoveredTask.name)) || null)
+                : null;
+
             if (newHoveredIndex !== hoveredIndex) {
                 hoveredIndex = newHoveredIndex;
                 // Recompute related rows: the hovered job's needs, and the jobs
@@ -1939,6 +1979,7 @@
                         }
                     }
                 }
+                hoveredCortage = new Set(hoveredChain || []);
                 drawTimeline();
                 // Native tooltip shown right on the hovered line: always the job
                 // name, plus the jobs it needs to finish first and the jobs that
@@ -1951,6 +1992,13 @@
                     }
                     if (hoveredRequiredBy.size > 0) {
                         tip += "\nrequired by:\n" + [...hoveredRequiredBy].map(r => "  " + r).join("\n");
+                    }
+                    if (hoveredChain && hoveredChain.length > 1) {
+                        // Show the chain in execution order, marking the hovered
+                        // member so it's clear where it sits on the shared runner.
+                        tip += "\ncortage (runs on one runner):\n" + hoveredChain
+                            .map(r => (r === hoveredTask.name ? "> " : "  ") + r)
+                            .join("\n");
                     }
                     canvas.title = tip;
                 } else {
@@ -1977,6 +2025,7 @@
             hoverX = -1;
             hoveredRequires = new Set();
             hoveredRequiredBy = new Set();
+            hoveredCortage = new Set();
             drawTimeline();
             if (statusWidget?.update && originalTask) {
                 statusWidget.update(
