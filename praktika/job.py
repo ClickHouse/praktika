@@ -277,6 +277,12 @@ class Job:
             cortage's runner; the last promoted member in chain order wins, and if
             no member promotes the head's `runs_on` is used.
 
+            A cortage is a single trust domain: members share one home / `gh`
+            credential store with no cleanup between them, so once any member sets
+            `enable_gh_auth=True` every later member can use that token. Only chain
+            members you'd grant the same GitHub credentials (accepted limitation —
+            see docs/cortage-jobs.md).
+
             Native engines only (not GH_ACTIONS). See docs/cortage-jobs.md.
             """
 

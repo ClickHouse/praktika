@@ -26,7 +26,9 @@ pkg   = Job.Config(name="Pkg",   runs_on=["big"], ...).attach_to(test)
 
 - A cortage is a **linked list**: each job attaches to one predecessor; the
   **head** (not attached to anything) runs first. Execution order = head → tail.
-- Fields: `attached_to: str` and `promote_runs_on: bool` on `Job.Config`.
+- Fields: `attached_to: str`, `promote_runs_on: bool`, and `cortage_links` on
+  `Job.Config` (`cortage_links` carries the extra links a multi-level `attach_to`
+  declares for jobs other than the immediate predecessor — see below).
 - **`runs_on`**: the chain runs on the head's `runs_on`, unless a member sets
   `attach_to(prev, promote_runs_on=True)` — then the **last** promoted member's
   `runs_on` is used for the whole chain (e.g. a cheap head feeding a GPU member).
@@ -36,6 +38,34 @@ pkg   = Job.Config(name="Pkg",   runs_on=["big"], ...).attach_to(test)
 - **Cross-deps are allowed**: a member may `require`/`run_after` a job outside the
   cortage, and an outside job may require a member. Only a dependency **cycle**
   with the chain order is rejected (would deadlock).
+
+### Chaining native jobs (Config / Docker)
+
+The Praktika-native jobs — **Config Workflow** and the **Docker build** jobs — are
+injected during mangle and aren't in the workflow's authored `jobs` list, so they
+can't call `attach_to()` themselves. A single member configures the whole
+predecessor chain, native jobs included, by passing an **ordered list** to
+`attach_to` (`[head, …, immediate_pred]`; consecutive entries are chained):
+
+```python
+Job.Config(name="Member", runs_on=["arm"], command="…").attach_to(
+    ["Config Workflow", "Dockers Build (arm)"]   # Config -> Docker -> Member
+)
+```
+
+- Those extra (non-immediate) links ride on `cortage_links` and are applied to the
+  **mangled** workflow by `mangle.py` once the native jobs exist.
+- A native job is only a valid target when it is actually **injected** in this
+  workflow (e.g. a Docker build needs `workflow.dockers`; Config needs the config
+  job enabled). Attaching to one that isn't injected is rejected during mangle (it
+  would otherwise crash resolving the chain's `runs_on`).
+- **Finish Workflow cannot be a cortage member** (neither attached, nor attached
+  to). It is the orchestrator-owned summarizer: it reads the workflow summary the
+  orchestrator writes to S3 only once every job's row is finalized, so it must run
+  **after** the orchestrator has observed every job complete. Colocating it on a
+  runner runs it on the chain driver right after its predecessor — before the
+  orchestrator records that predecessor — so it would mis-stamp jobs as
+  `NOT_FINALIZED`. `mangle.py` rejects it.
 
 ## How it works
 
@@ -99,6 +129,12 @@ failure** for the member (the orchestrator hasn't cancelled it, so this avoids a
 long liveness-timeout hang) and fail the chain for its dependents. The wait is
 surfaced via the heartbeat phase.
 
+An **`always_run`** member is never cancelled by the orchestrator, so it mirrors
+that here: a failed/cancelled dep does **not** skip it (the dep counts as settled),
+and it does **not** time out — it waits until every dep is terminal, then runs
+regardless of upstream outcome. It is also never block-skipped by a failed in-chain
+data dep.
+
 ### Failure & resume
 
 - A member's job failure cancels only its **dependents**; independent later
@@ -118,9 +154,34 @@ surfaced via the heartbeat phase.
   wasn't part of the re-run), and the runner resumes the chain from it —
   resume-skipping the still-green members and re-running the reset ones.
 
-## Validation (`praktika/validator.py` `validate_cortages`)
+## Limitations
 
-Errors: `attach_to` on `GH_ACTIONS`; attach to a missing job or self; two jobs
-attaching to the same predecessor (fork); a cycle in the attach links; a
-dependency cycle once sequential edges are added (deadlock). Warnings: a member
-`runs_on` differing from the effective one; `promote_runs_on` on a non-cortage job.
+- **GitHub credentials are not isolated per member.** A cortage shares one process
+  home and one `~/.config/gh` across its members, with no cleanup between
+  `_run_single` calls. Once any member runs with `enable_gh_auth=True`,
+  `GHAuth.auth()` persists its token there and **every later member in the chain can
+  use `gh` with that token**, even one that didn't set `enable_gh_auth`. This is an
+  accepted limitation — per-member credential sandboxing is not done. Treat a
+  cortage as a **single trust domain**: only chain members you'd grant the same
+  GitHub credentials, and don't mix trust levels within one chain.
+
+## Validation
+
+`praktika/validator.py` `validate_cortages` runs on the **un-mangled** workflow, so
+it can't see native jobs or applied `cortage_links`. It errors on: `attach_to` on
+`GH_ACTIONS`; attach to self; two jobs attaching to the same predecessor (fork); a
+cycle in the attach links; a dependency cycle once sequential edges are added
+(deadlock). A Praktika-native job name (Config/Docker/Finish) is **accepted** as an
+`attach_to` target here even though it isn't in `jobs` yet. Warnings: a member
+`runs_on` differing from the effective one (skipped for native-involved chains,
+whose effective `runs_on` is only known after mangle); `promote_runs_on` on a
+non-cortage job.
+
+`praktika/mangle.py` re-runs the **full** structural validation on the **mangled**
+graph, once native jobs are injected and `cortage_links` applied — this is the
+authoritative pass. The existence / self-attach / fork / attach-cycle /
+dependency-deadlock checks are shared with the validator via
+`_cortage_structural_errors`, so link-introduced forks and cycles through native
+jobs are caught here even though they're invisible pre-mangle. mangle also: gives
+the "attached to a native job that wasn't injected" case a clearer message than the
+generic "unknown job", and rejects Finish Workflow as a cortage member.

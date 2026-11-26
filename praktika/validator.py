@@ -616,8 +616,7 @@ class Validator:
         Warnings (non-fatal print): a member whose runs_on differs from the
         cortage's effective runs_on; promote_runs_on on a job that is in no cortage.
         """
-        from collections import Counter
-
+        from .mangle import _cortage_structural_errors
         from .native_jobs import _native_job_names
 
         jobs_by_name = {job.name: job for job in workflow.jobs}
@@ -644,113 +643,16 @@ class Validator:
                 )
             return
 
-        # attach_to must name another existing job in this workflow, or a
-        # Praktika-native job (Config/Docker/Finish) that mangle injects later —
-        # those aren't in `jobs` here but are valid cortage targets.
-        native_names = _native_job_names()
-        for job in attached_jobs:
-            cls.evaluate_check(
-                job.attached_to != job.name,
-                f"Job [{job.name}] cannot attach_to itself.",
-                workflow.name,
-                job.name,
-            )
-            cls.evaluate_check(
-                job.attached_to in jobs_by_name or job.attached_to in native_names,
-                f"Job [{job.name}] attaches to unknown job [{job.attached_to}]; "
-                f"attach_to must name another job in the same workflow (or a "
-                f"Praktika-native job).",
-                workflow.name,
-                job.name,
-            )
-
-        # At most one job may attach to a given predecessor — the chain is a
-        # linked list, never a tree.
-        pred_counts = Counter(job.attached_to for job in attached_jobs)
-        for pred, count in pred_counts.items():
-            cls.evaluate_check(
-                count == 1,
-                f"Jobs {[j.name for j in attached_jobs if j.attached_to == pred]} "
-                f"all attach to [{pred}]; a cortage is a linked list, so at most "
-                f"one job may attach to a given predecessor.",
-                workflow.name,
-            )
-
-        # No cycle in the attach_to links themselves.
-        for job in attached_jobs:
-            seen = []
-            cur = job.name
-            while cur and cur in jobs_by_name:
-                if cur in seen:
-                    cls.evaluate_check(
-                        False,
-                        f"attach_to chain has a cycle: {' -> '.join(seen + [cur])}.",
-                        workflow.name,
-                    )
-                seen.append(cur)
-                cur = getattr(jobs_by_name[cur], "attached_to", "")
-
-        # Deadlock check: build the "A must run before B" graph from requires
-        # (job names and artifact producers), run_after, AND the chain's
-        # execution-order edges (attached_to: predecessor before member). A cycle
-        # means a member waits — directly or transitively — on a job that can only
-        # run after it on the same runner. Cross-deps on jobs *outside* the cortage
-        # are allowed; only ones that close a cycle with the chain order are not.
-        provider_of = {}
-        for job in workflow.jobs:
-            for artifact_name in job.provides or []:
-                provider_of[artifact_name] = job.name
-
-        edges = {job.name: set() for job in workflow.jobs}
-
-        def _add_edge(before, after):
-            if before in edges and after in edges and before != after:
-                edges[before].add(after)
-
-        for job in workflow.jobs:
-            for req in job.requires or []:
-                if req in jobs_by_name:
-                    _add_edge(req, job.name)
-                elif req in provider_of:
-                    _add_edge(provider_of[req], job.name)
-            for ra in job.run_after or []:
-                if ra in jobs_by_name:
-                    _add_edge(ra, job.name)
-            if getattr(job, "attached_to", ""):
-                _add_edge(job.attached_to, job.name)
-
-        WHITE, GRAY, BLACK = 0, 1, 2
-        color = {name: WHITE for name in edges}
-        path = []
-
-        def _find_cycle(node):
-            color[node] = GRAY
-            path.append(node)
-            for nxt in edges[node]:
-                if color[nxt] == GRAY:
-                    return path[path.index(nxt):] + [nxt]
-                if color[nxt] == WHITE:
-                    found = _find_cycle(nxt)
-                    if found:
-                        return found
-            path.pop()
-            color[node] = BLACK
-            return None
-
-        for name in edges:
-            if color[name] == WHITE:
-                cycle = _find_cycle(name)
-                if cycle:
-                    cls.evaluate_check(
-                        False,
-                        f"Dependency cycle through a cortage (deadlock): "
-                        f"{' -> '.join(cycle)}. A cortage member would wait on a "
-                        f"job that can only run after it on the same runner. "
-                        f"Cross-dependencies on jobs outside the cortage are "
-                        f"allowed, but not ones that close a cycle with the chain's "
-                        f"execution order.",
-                        workflow.name,
-                    )
+        # Structural checks (existence, self-attach, fork, attach-cycle, dependency
+        # deadlock) are shared with mangle via _cortage_structural_errors. Here
+        # (pre-mangle) Praktika-native targets aren't in `jobs` yet, so pass them as
+        # valid extras; mangle re-runs the same checks post-mangle on the fully
+        # materialized graph, which is the authoritative pass for native jobs and
+        # applied cortage_links.
+        for msg in _cortage_structural_errors(
+            workflow.name, workflow.jobs, _native_job_names()
+        ):
+            cls.evaluate_check(False, msg, workflow.name)
 
         # --- Non-fatal warnings ---
         successor = {job.attached_to: job.name for job in attached_jobs}
