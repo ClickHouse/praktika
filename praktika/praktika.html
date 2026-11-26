@@ -1746,6 +1746,10 @@
         // Move taskRects to outer scope so event handlers can access it
         let taskRects = [];
         let hoveredIndex = -1;
+        // Horizontal cursor position inside the canvas (device px). Drives the
+        // vertical time-cursor guide and the "+Nh Mm Ss" offset label drawn in
+        // drawTimeline. -1 means the pointer is outside the widget.
+        let hoverX = -1;
         // Jobs the hovered row depends on (needs), and the opposite — jobs that
         // depend on the hovered row. Highlighted in different colors in drawTimeline.
         let hoveredRequires = new Set();
@@ -1848,11 +1852,62 @@
                 ctx.strokeStyle = "#ff3333";
                 ctx.stroke();
             });
+
+            // Vertical time-cursor: a guide line at the pointer's horizontal
+            // position with a floating "+Nh Mm Ss" label showing how far into
+            // the run that column is. Drawn on the canvas only, so it never
+            // reflows the page.
+            if (hoverX >= 0 && hoverX <= canvas.width) {
+                const isDark = document.body.classList.contains('night-theme');
+                // Guide line.
+                ctx.save();
+                ctx.beginPath();
+                ctx.moveTo(hoverX + 0.5, 0);
+                ctx.lineTo(hoverX + 0.5, canvas.height);
+                ctx.lineWidth = 1;
+                ctx.strokeStyle = isDark ? 'rgba(255, 255, 255, 0.55)' : 'rgba(0, 0, 0, 0.45)';
+                ctx.stroke();
+
+                // Offset label. maxTime/scaleX are in seconds from run start.
+                const offset = hoverX / scaleX;
+                const label = '+' + formatDuration(offset, true);
+                ctx.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+                ctx.textBaseline = 'top';
+                const padX = 5, padY = 3;
+                const tw = ctx.measureText(label).width;
+                const boxW = tw + padX * 2;
+                const boxH = 11 + padY * 2;
+                // Flip the label to the left of the cursor when it would overflow
+                // the right edge, so it stays fully visible.
+                let boxX = hoverX + 6;
+                if (boxX + boxW > canvas.width) boxX = hoverX - 6 - boxW;
+                if (boxX < 0) boxX = 0;
+                const boxY = 2;
+                ctx.fillStyle = isDark ? 'rgba(20, 20, 20, 0.88)' : 'rgba(255, 255, 255, 0.92)';
+                ctx.strokeStyle = isDark ? 'rgba(255, 255, 255, 0.35)' : 'rgba(0, 0, 0, 0.25)';
+                ctx.lineWidth = 1;
+                if (ctx.roundRect) {
+                    ctx.beginPath();
+                    ctx.roundRect(boxX, boxY, boxW, boxH, 3);
+                    ctx.fill();
+                    ctx.stroke();
+                } else {
+                    ctx.fillRect(boxX, boxY, boxW, boxH);
+                    ctx.strokeRect(boxX, boxY, boxW, boxH);
+                }
+                ctx.fillStyle = isDark ? '#f0f0f0' : '#222';
+                ctx.fillText(label, boxX + padX, boxY + padY);
+                ctx.restore();
+            }
         }
 
         activeListeners.add(canvas, "mousemove", (event) => {
             const rect = canvas.getBoundingClientRect();
             const mouseY = event.clientY - rect.top;
+            // Map CSS px to the canvas's internal coordinate space so the time
+            // label lines up with the bars even if the two widths drift.
+            const prevHoverX = hoverX;
+            hoverX = (event.clientX - rect.left) * (canvas.width / rect.width);
 
             let hoveredTask = null;
             let newHoveredIndex = -1;
@@ -1901,6 +1956,10 @@
                 } else {
                     canvas.title = "";
                 }
+            } else if (Math.round(hoverX) !== Math.round(prevHoverX)) {
+                // Row unchanged but the pointer moved horizontally — redraw so
+                // the time cursor and its "+Nh Mm Ss" label follow the pointer.
+                drawTimeline();
             }
 
             if (hoveredTask && statusWidget?.update) {
@@ -1915,6 +1974,7 @@
 
         activeListeners.add(canvas, "mouseleave", () => {
             hoveredIndex = -1;
+            hoverX = -1;
             hoveredRequires = new Set();
             hoveredRequiredBy = new Set();
             drawTimeline();
