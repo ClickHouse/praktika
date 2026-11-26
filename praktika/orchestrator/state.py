@@ -730,6 +730,35 @@ class JobState:
                     or getattr(ws.jobs.get(pred), "rerun_count", 0) < self.rerun_count
                 )
                 if driver_dispatched and not is_rerun_entry:
+                    # The chain driver runs this member back-to-back on the shared
+                    # runner — there is no queue wait — so show it in_progress right
+                    # away instead of flashing a misleading queued/pending check
+                    # (members often finish before the first heartbeat lands).
+                    # Internal status stays QUEUED so the pickup-timeout still guards
+                    # a member the driver never reaches; a heartbeat then flips it to
+                    # RUNNING (sweep_liveness) as usual.
+                    # All members share one runner, so adopt the chain driver's
+                    # instance id (from the nearest earlier member that recorded one)
+                    # for the check summary and the member's report row now, rather
+                    # than waiting for this member's own first heartbeat.
+                    driver_instance = ""
+                    for e in reversed(earlier):
+                        inst = getattr(ws.jobs.get(e), "runner_instance_id", "") or ""
+                        if inst:
+                            driver_instance = inst
+                            break
+                    if driver_instance:
+                        self.runner_instance_id = driver_instance
+                    summary = (
+                        f"RUNNING on runner `{driver_instance}` (cortage)."
+                        if driver_instance
+                        else "RUNNING: running on the cortage runner."
+                    )
+                    self._update_check(
+                        lambda c, s=summary: c.set_in_progress(
+                            output={"title": "RUNNING", "summary": s}
+                        )
+                    )
                     print(
                         f"[KICK ] {self.name:70s} runs_on={runs_on}  "
                         f"-> (cortage member, run by chain driver)"

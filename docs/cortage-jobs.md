@@ -100,9 +100,17 @@ differ.
   external deps; runs it (`_run_single`) and writes its `final.json`; hands its env
   off to the next member.
 
+**Member check lifecycle.** A member runs back-to-back on the shared runner with
+no queue wait, so `kick` posts its check as **in_progress immediately** (skipping
+the queued/pending flash), reusing the chain driver's `instance_id` (all members
+share one runner). Internal status stays QUEUED so the pickup-timeout still guards
+a member the driver never reaches; a heartbeat then flips it to RUNNING normally.
+
 **Controller** (`bootstrap/src/praktika_controller/`)
 - Unchanged except heartbeats: `Heartbeat` follows a **pointer file** the job
-  runner writes in `ci/tmp` naming the current member's heartbeat key. The
+  runner writes in `ci/tmp` naming the current member's heartbeat key, and beats
+  **immediately when the pointer flips to a new member** (short tick) so a member
+  that finishes within one interval still gets a heartbeat under its own key. The
   controller stays the sole heartbeat writer, so member heartbeats keep
   `instance_id` and the SQS attempt — orchestrator liveness/retry works unchanged.
   No clean between members and SQS visibility across the whole chain are automatic
