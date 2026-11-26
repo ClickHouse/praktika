@@ -356,6 +356,21 @@ class Runner:
             print("NOTE: Repo state is clean before job start")
         env = _Environment.get()
 
+        # Cortage: announce that this job runs as part of a chain pinned to one
+        # runner with a shared, un-cleaned ci/tmp. Logged once per member at its
+        # start (each member runs as its own `praktika orchestrate job`).
+        # See docs/proposals/cortage-jobs.md.
+        cortage_chain = workflow.get_cortage_chain(
+            workflow.cortage_head_name(job.name)
+        )
+        if len(cortage_chain) > 1:
+            role = "head" if workflow.is_cortage_head(job.name) else "member"
+            print(
+                f"NOTE: job [{job.name}] is a cortage {role} "
+                f"(chain: {' -> '.join(cortage_chain)}); runs on the head's "
+                f"runner with a shared ci/tmp and no cleanup between members"
+            )
+
         result = Result(
             name=job.name,
             status=Result.Status.RUNNING,
@@ -406,7 +421,27 @@ class Runner:
             else:
                 prefixes = [env.get_s3_prefix()] * len(required_artifacts)
             missing_artifacts = []
+            # Cortage: an artifact produced by an EARLIER member of this job's
+            # cortage is already in the shared, un-cleaned ci/tmp (same runner, no
+            # clean between members) — reuse it and skip the S3 download. If it is
+            # NOT on local disk, the provider was cache-hit/skipped (its output
+            # lives only in S3) or we infra-resumed on a fresh ci/tmp, so we fall
+            # through to the normal S3 download. See docs/proposals/cortage-jobs.md.
+            idx = cortage_chain.index(job.name) if job.name in cortage_chain else 0
+            cortage_predecessors = set(cortage_chain[:idx])
             for artifact, prefix in zip(required_artifacts, prefixes):
+                if (
+                    artifact._provided_by in cortage_predecessors
+                    and not isinstance(artifact.path, (tuple, list))
+                    and "*" not in str(artifact.path)
+                    and (Path(Settings.INPUT_DIR) / Path(artifact.path).name).exists()
+                ):
+                    print(
+                        f"NOTE: artifact [{artifact.name}] from cortage member "
+                        f"[{artifact._provided_by}] present in the shared ci/tmp — "
+                        f"skipping S3 download"
+                    )
+                    continue
                 if artifact.compress_zst:
                     assert not isinstance(
                         artifact.path, (tuple, list)

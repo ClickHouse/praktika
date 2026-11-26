@@ -317,9 +317,31 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
     return env
 
 
+def _resolve_job(workflow, job_name):
+    """Find the single Job.Config for ``job_name`` in ``workflow`` (lazy match,
+    as the controller passes the dispatched name). Returns the job or None."""
+    jobs = workflow.find_jobs(job_name, lazy=True)
+    if not jobs:
+        print(f"Job [{job_name}] not found in workflow [{workflow.name}]")
+        return None
+    if len(jobs) > 1:
+        print(
+            f"Ambiguous job name [{job_name}] in workflow [{workflow.name}]: "
+            f"{[j.name for j in jobs]}"
+        )
+        return None
+    return jobs[0]
+
+
 def run_job(task, gh_token=None, local=False, timestamp=False):
     """Resolve the praktika Workflow + Job from ``task`` and invoke
     ``Runner.run``. Returns the job exit code (0 = success).
+
+    If the resolved job is the head of a cortage (chained jobs on one runner,
+    see docs/proposals/cortage-jobs.md), this drives the whole chain in-process:
+    run the head, then each attached member in order (resume-skipping already
+    finalized members, block-skipping members whose data deps failed, stalling on
+    external deps), reusing the same checkout/ci_tmp with no clean in between.
 
     ``gh_token`` is accepted for compatibility with the controller call site,
     but the runner does not mutate GitHub checks directly. It publishes final
@@ -352,8 +374,6 @@ def run_job(task, gh_token=None, local=False, timestamp=False):
         print(f"Invalid task: missing workflow_name or job_name: {task}")
         return 1
 
-    instance_id = _current_instance_id()
-
     # Pre-populate ci/tmp/environment.json BEFORE calling _get_workflows(), because
     # _get_workflows() triggers Info() -> _Environment.get() and would fall back to
     # the dummy from_env() path if the file doesn't exist yet.
@@ -369,15 +389,32 @@ def run_job(task, gh_token=None, local=False, timestamp=False):
         return 1
     workflow = workflows[0]
 
-    jobs = workflow.find_jobs(job_name, lazy=True)
-    if not jobs:
-        print(f"Job [{job_name}] not found in workflow [{workflow_name}]")
+    # Cortage head (CI mode only): drive the whole chain in this one invocation.
+    # In local mode the orchestrator dispatches each job as its own subprocess, so
+    # there is no chain to walk here (colocation is implicit in the shared dir).
+    if not local and workflow.is_cortage_head(job_name):
+        return _run_cortage_chain(
+            task, workflow, job_name, gh_token=gh_token, timestamp=timestamp
+        )
+
+    job = _resolve_job(workflow, job_name)
+    if job is None:
         return 1
-    if len(jobs) > 1:
-        print(f"Ambiguous job name [{job_name}] in workflow [{workflow_name}]: "
-              f"{[j.name for j in jobs]}")
-        return 1
-    job = jobs[0]
+    return _run_single(
+        task, workflow, job, gh_token=gh_token, local=local, timestamp=timestamp
+    )
+
+
+def _run_single(task, workflow, job, gh_token=None, local=False, timestamp=False):
+    """Run one resolved job through ``Runner.run`` and publish its ``final.json``.
+    Returns the job exit code (0 = success)."""
+    # Rebuild environment.json for THIS job (JOB_NAME etc.) — cheap and idempotent;
+    # necessary per-member when driving a cortage chain.
+    _build_ci_environment(task, job_name=job.name, local_run=local)
+    if local:
+        os.environ["PRAKTIKA_LOCAL_RUN"] = "1"
+
+    instance_id = _current_instance_id()
 
     # _build_ci_environment dumped environment.json before the job was resolved,
     # so it carries no per-job Job.Config. Set it now (the local_orchestrator_run
@@ -397,6 +434,7 @@ def run_job(task, gh_token=None, local=False, timestamp=False):
     # branch only when there's no pr_number (push-triggered workflows).
     pr = task.get("pr_number")
     branch = None if pr else task.get("head_ref")
+    job_name = job.name
     # Orchestrator-dispatched jobs always go through the full pipeline
     # (pre-run, hooks, post-run, artifact upload) — what differs between
     # `--ci` and local mode is the S3 backend, not the runner shape.
@@ -556,3 +594,249 @@ def run_job(task, gh_token=None, local=False, timestamp=False):
             )
 
     return rc
+
+
+# --------------------------------------------------------------------------
+# Cortage chain driver (see docs/proposals/cortage-jobs.md)
+# --------------------------------------------------------------------------
+
+# Filename (in the shared ci/tmp) of the heartbeat pointer the controller's
+# Heartbeat follows. Must match controller.py's set_pointer_file path.
+_HB_POINTER_NAME = "cortage_heartbeat.json"
+_STALL_POLL_INTERVAL_S = 10
+_DEP_SUCCESS_STATUSES = {"success", "skipped"}
+_DEP_FAIL_STATUSES = {"failure", "cancelled", "error", "dropped"}
+
+
+def _normalize_job_name_for_s3(name):
+    """S3-safe path segment for a job name. Mirrors the orchestrator's
+    _normalize_job_name_for_s3 (state.py) so member keys match byte-for-byte."""
+    return name.replace(" ", "_").replace("/", "_")
+
+
+def _s3_client():
+    import boto3
+
+    from ..settings import Settings
+
+    return boto3.client("s3", region_name=Settings.AWS_REGION or None)
+
+
+def _final_exists_success(s3, bucket, key):
+    """True if ``final.json`` at key exists and reports rc == 0 (member already
+    completed on a prior runner — resume skips it)."""
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        payload = json.loads(obj["Body"].read())
+        return int(payload.get("rc", 1)) == 0
+    except Exception:
+        return False
+
+
+def _load_state_jobs(s3, bucket, key):
+    """Return the ``jobs`` map from runs/<run_id>/state.json, or {} if unreadable."""
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        return (json.loads(obj["Body"].read()) or {}).get("jobs", {}) or {}
+    except Exception:
+        return {}
+
+
+def _artifact_provider_map(workflow):
+    provider = {}
+    for job in workflow.jobs:
+        for artifact_name in getattr(job, "provides", None) or []:
+            provider[artifact_name] = job.name
+    return provider
+
+
+def _dep_job_names(job, provider_map, all_job_names):
+    """Resolve a job's requires/run_after to the set of job names it depends on
+    (requires may name an artifact → its producing job, or a job directly)."""
+    names = set()
+    for req in getattr(job, "requires", None) or []:
+        if req in provider_map:
+            names.add(provider_map[req])
+        elif req in all_job_names:
+            names.add(req)
+    for ra in getattr(job, "run_after", None) or []:
+        if ra in all_job_names:
+            names.add(ra)
+    return names
+
+
+def _write_hb_pointer(heartbeat_s3_key, phase):
+    """Point the controller's Heartbeat at the current member's key + phase."""
+    from ..settings import Settings
+
+    try:
+        Path(Settings.TEMP_DIR).mkdir(parents=True, exist_ok=True)
+        with open(
+            Path(Settings.TEMP_DIR) / _HB_POINTER_NAME, "w", encoding="utf-8"
+        ) as f:
+            json.dump({"heartbeat_s3_key": heartbeat_s3_key, "phase": phase}, f)
+    except Exception as e:
+        print(f"  [warn] could not write heartbeat pointer: {type(e).__name__}: {e}")
+
+
+def _clear_hb_pointer():
+    from ..settings import Settings
+
+    try:
+        (Path(Settings.TEMP_DIR) / _HB_POINTER_NAME).unlink()
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"  [warn] could not clear heartbeat pointer: {type(e).__name__}: {e}")
+
+
+def _wait_external_deps(s3, bucket, state_key, external_deps, member_name, hb_key):
+    """Block until every external (non-cortage) dep of a member reaches a terminal
+    state, polling runs/<run_id>/state.json. Returns "ok" (all success/skipped),
+    or "failed" (a dep ended in failure/cancelled, or the stall exceeded
+    Settings.CORTAGE_MAX_STALL_SEC). No-op → "ok" when there are no external deps.
+    While stalled it keeps the heartbeat pointer on this member with a phase that
+    names what it waits on, so the controller's heartbeat surfaces the stall.
+    """
+    if not external_deps:
+        return "ok"
+    from ..settings import Settings
+
+    deadline = time.time() + max(1, int(Settings.CORTAGE_MAX_STALL_SEC))
+    while True:
+        jobs = _load_state_jobs(s3, bucket, state_key)
+        pending = []
+        for dep in external_deps:
+            status = str((jobs.get(dep) or {}).get("status", "")).lower()
+            if status in _DEP_SUCCESS_STATUSES:
+                continue
+            if status in _DEP_FAIL_STATUSES:
+                print(
+                    f"Cortage: member [{member_name}] external dep [{dep}] is "
+                    f"[{status}] — the cortage cannot proceed"
+                )
+                return "failed"
+            pending.append(dep)
+        if not pending:
+            return "ok"
+        if time.time() >= deadline:
+            print(
+                f"Cortage: member [{member_name}] stall timed out after "
+                f"{Settings.CORTAGE_MAX_STALL_SEC}s waiting on {pending}"
+            )
+            return "failed"
+        waited = int(time.time() - (deadline - Settings.CORTAGE_MAX_STALL_SEC))
+        print(
+            f"Cortage: member [{member_name}] stalling on {pending} "
+            f"({waited}s elapsed)"
+        )
+        _write_hb_pointer(
+            hb_key, phase=f"stalling: waiting on {','.join(pending)} ({waited}s)"
+        )
+        time.sleep(_STALL_POLL_INTERVAL_S)
+
+
+def _member_task(task, member_name, run_id, bucket, carried_env):
+    """A per-member copy of the head task: same event/ci_config/snapshot, but the
+    member's own job_name, deterministic heartbeat/final keys, and the environment
+    handed off from the previous member. check_run_id is dropped (the orchestrator
+    owns the member's check; the job just loses a self-link)."""
+    norm = _normalize_job_name_for_s3(member_name)
+    member_task = dict(task)
+    member_task["job_name"] = member_name
+    member_task["heartbeat_s3_bucket"] = bucket
+    member_task["heartbeat_s3_key"] = f"runs/{run_id}/{norm}/heartbeat.json"
+    member_task["final_state_s3_bucket"] = bucket
+    member_task["final_state_s3_key"] = f"runs/{run_id}/{norm}/final.json"
+    member_task["check_run_id"] = None
+    if carried_env is not None:
+        member_task["environment"] = carried_env
+    return member_task
+
+
+def _run_cortage_chain(task, workflow, head_name, gh_token=None, timestamp=False):
+    """Run a cortage head and its attached members in order on this one runner,
+    reusing the shared checkout/ci_tmp with no clean in between. Returns the max
+    exit code across the members that actually ran."""
+    from ..settings import Settings
+
+    chain = workflow.get_cortage_chain(head_name)
+    chain_set = set(chain)
+    print(f"Cortage head [{head_name}] driving chain: {' -> '.join(chain)}")
+
+    run_id = task.get("run_id") or ""
+    bucket = (
+        task.get("final_state_s3_bucket")
+        or task.get("cancel_s3_bucket")
+        or Settings.S3_ARTIFACT_BUCKET
+    )
+    state_key = task.get("state_s3_key") or f"runs/{run_id}/state.json"
+    s3 = _s3_client()
+    provider_map = _artifact_provider_map(workflow)
+    all_job_names = {j.name for j in workflow.jobs}
+
+    failed_or_skipped = set()
+    overall_rc = 0
+    carried_env = task.get("environment")
+
+    for member_name in chain:
+        is_head = member_name == head_name
+        member = _resolve_job(workflow, member_name)
+        if member is None:
+            print(f"ERROR: cortage member [{member_name}] not found — aborting chain")
+            overall_rc = 1
+            break
+        member_task = (
+            task if is_head else _member_task(task, member_name, run_id, bucket, carried_env)
+        )
+
+        # Resume: a member already finalized OK on a prior runner (infra redelivery
+        # re-runs the head task) is skipped — pick up at the first incomplete one.
+        if _final_exists_success(s3, bucket, member_task["final_state_s3_key"]):
+            print(f"Cortage: member [{member_name}] already finalized OK — skipping")
+            continue
+
+        deps = _dep_job_names(member, provider_map, all_job_names)
+        # Req #6: a member whose DATA dep (an earlier member) failed/was-skipped is
+        # blocked; the orchestrator cancels it via cascade, so we just skip it (and
+        # mark it so its own dependents skip too). Members not data-blocked run.
+        blocked_by = (deps & chain_set) & failed_or_skipped
+        if blocked_by:
+            print(
+                f"Cortage: member [{member_name}] blocked by failed member(s) "
+                f"{sorted(blocked_by)} — skipping (orchestrator cancels it)"
+            )
+            failed_or_skipped.add(member_name)
+            continue
+
+        if not is_head:
+            # External (non-cortage) deps weren't a dispatch gate — stall until they
+            # finish, or skip this member if one of them failed (orchestrator cancels).
+            _write_hb_pointer(member_task["heartbeat_s3_key"], phase="queued")
+            verdict = _wait_external_deps(
+                s3,
+                bucket,
+                state_key,
+                sorted(deps - chain_set),
+                member_name,
+                member_task["heartbeat_s3_key"],
+            )
+            if verdict == "failed":
+                failed_or_skipped.add(member_name)
+                continue
+            _write_hb_pointer(member_task["heartbeat_s3_key"], phase="running_job")
+
+        rc = _run_single(
+            member_task, workflow, member, gh_token=gh_token, local=False, timestamp=timestamp
+        )
+        overall_rc = max(overall_rc, rc)
+        if rc != 0:
+            failed_or_skipped.add(member_name)
+        # Hand this member's environment.json off to the next member (WORKFLOW_CONFIG,
+        # JOB_KV_DATA, ...), mirroring how the orchestrator relays env between jobs.
+        snapshot = _read_env_file()
+        if snapshot is not None:
+            carried_env = snapshot
+
+    _clear_hb_pointer()
+    return overall_rc

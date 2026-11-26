@@ -128,6 +128,17 @@ class Job:
         # List of commands to call after job completes
         post_hooks: List[str] = field(default_factory=list)
 
+        # Cortage: name of the job this one is attached to (its predecessor in
+        # the chain). A cortage is a chain of jobs pinned to a single runner and
+        # run back-to-back with no cleanup in between. Empty = not attached.
+        # Native engines only (not GH_ACTIONS). See docs/proposals/cortage-jobs.md.
+        attached_to: str = ""
+
+        # Cortage: if True, this member promotes its own `runs_on` as the whole
+        # cortage's runner. The last promoted member in chain order wins; if no
+        # member promotes, the head's `runs_on` is used.
+        promote_runs_on: bool = False
+
         def __post_init__(self):
             # `enable_gh_auth` pre-authenticates `gh` before the job command
             # starts, which recreates exactly the credential exposure that
@@ -236,6 +247,28 @@ class Job:
                     res.run_after.append(job_.name)
                 else:
                     Utils.raise_with_error(f"Invalid dependency type [{job_}]")
+            return res
+
+        def attach_to(self, job, promote_runs_on=False):
+            """
+            Attach this job to `job` so both run on the same runner, back-to-back,
+            with no cleanup in between (a "cortage"). `job` may be a Job.Config or
+            a job name, and becomes this job's predecessor in the chain.
+
+            `promote_runs_on=True` promotes this member's `runs_on` as the whole
+            cortage's runner; the last promoted member in chain order wins, and if
+            no member promotes the head's `runs_on` is used.
+
+            Native engines only (not GH_ACTIONS). See docs/proposals/cortage-jobs.md.
+            """
+            res = copy.deepcopy(self)
+            if isinstance(job, Job.Config):
+                res.attached_to = job.name
+            elif isinstance(job, str):
+                res.attached_to = job
+            else:
+                Utils.raise_with_error(f"Invalid attach_to target [{job}]")
+            res.promote_runs_on = promote_runs_on
             return res
 
         def set_provides(self, artifact_name, reset=False):

@@ -150,6 +150,14 @@ def build_job_dag(workflow):
         for dep_name in job.run_after:
             if dep_name in jobs_by_name:
                 job_deps[job.name].add(dep_name)
+        # Cortage sequential edge: a member runs after its predecessor on the
+        # same runner, so the predecessor must complete first. This keeps the
+        # topological levels and the cancellation cascade correct (a failed/dead
+        # head cancels the rest of its chain). The validator already rejects any
+        # cycle this introduces. See docs/proposals/cortage-jobs.md.
+        attached_to = getattr(job, "attached_to", "")
+        if attached_to and attached_to in jobs_by_name:
+            job_deps[job.name].add(attached_to)
         # Ensure every job appears in the dict
         job_deps.setdefault(job.name, set())
 
@@ -202,7 +210,9 @@ def print_execution_plan(workflow, levels, job_deps):
             runs_on = ", ".join(job.runs_on) if job.runs_on else "default"
             dep_str = f" <- [{', '.join(sorted(deps))}]" if deps else ""
             provides_str = f" -> [{', '.join(job.provides)}]" if job.provides else ""
-            print(f"  {name}")
+            attached_to = getattr(job, "attached_to", "")
+            cortage_str = f" (cortage: attached to [{attached_to}])" if attached_to else ""
+            print(f"  {name}{cortage_str}")
             print(f"    runner: {runs_on}{dep_str}{provides_str}")
 
     print(f"\n{'='*80}\n")

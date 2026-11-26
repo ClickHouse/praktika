@@ -894,6 +894,13 @@ def handle_task(task, log, queue_name: str, receive_count: int = 1):
             )
 
         if cm_heartbeat is not None:
+            # Cortage: the job runner may walk chained members in this single
+            # invocation, writing a pointer file (in the clone's ci/tmp) that names
+            # the current member's heartbeat key; the heartbeat follows it. Absent
+            # for normal jobs. See docs/proposals/cortage-jobs.md.
+            cm_heartbeat.set_pointer_file(
+                os.path.join(clone_dir, "ci", "tmp", "cortage_heartbeat.json")
+            )
             cm_heartbeat.update(phase="resolving_runtime")
         with profile_step(log, "runtime: resolve venv + install praktika"):
             # ci_config was frozen into run metadata by the orchestrator and rides

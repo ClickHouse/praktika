@@ -181,7 +181,12 @@ def test_dispatch_failure_to_undeployed_pool_gives_clear_message(monkeypatch):
     fake_check = _FakeCheck()
     ws = types.SimpleNamespace(
         can_post_checks=True,
-        workflow=types.SimpleNamespace(name="CI"),
+        workflow=types.SimpleNamespace(
+            name="CI",
+            # Non-cortage job: kick() consults these to decide dispatch routing.
+            is_cortage_member=lambda name: False,
+            is_cortage_head=lambda name: False,
+        ),
         _gh_token="token",
         _repo="org/repo",
         _head_sha="sha",

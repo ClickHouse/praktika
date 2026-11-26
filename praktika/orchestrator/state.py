@@ -693,13 +693,41 @@ class JobState:
         self._create_check()
 
         ws = self._workflow_state
+
+        # Cortage member (non-head): the chain's head runner runs it in order
+        # with no separate SQS dispatch. Mark it QUEUED so the completion/liveness
+        # sweeps watch its own heartbeat/final-state keys (it stays first-class in
+        # reporting), but do NOT dispatch a task. Not applicable in local mode,
+        # where every job runs as its own subprocess in the shared TEMP_DIR.
+        # See docs/proposals/cortage-jobs.md.
+        if (
+            ws is not None
+            and not ws.local_mode
+            and ws.workflow.is_cortage_member(self.name)
+        ):
+            print(
+                f"[KICK ] {self.name:70s} runs_on={runs_on}  "
+                f"-> (cortage member, run by head's runner)"
+            )
+            return
+
+        # A cortage head routes to the chain's EFFECTIVE runs_on (the last
+        # promoted member's, else its own); every other job routes to its own.
+        route_runs_on = self.job.runs_on
+        if (
+            ws is not None
+            and not ws.local_mode
+            and ws.workflow.is_cortage_head(self.name)
+        ):
+            route_runs_on = ws.workflow.cortage_effective_runs_on(self.name)
+
         target = (
             "local"
             if ws is not None and ws.local_mode
-            else _queue_for_runs_on(self.job.runs_on)
+            else _queue_for_runs_on(route_runs_on)
         )
         assert target is not None, (
-            f"Job {self.name!r} has no dispatch target: runs_on={self.job.runs_on!r} "
+            f"Job {self.name!r} has no dispatch target: runs_on={route_runs_on!r} "
             f"and orchestrator is not in local mode"
         )
 
@@ -1096,6 +1124,18 @@ class WorkflowState:
         for name, deps in job_deps.items():
             for dep in deps:
                 self._dependents[dep].add(name)
+
+        # Cortage: each member's predecessor in its chain. This edge is in
+        # `_deps` (so levels serialize the chain and a member waits for its
+        # predecessor to reach a terminal state), but get_ready treats it as an
+        # *ordering-only* dep — a failed predecessor does NOT cascade-cancel the
+        # member, so a later member not blocked by a *data* dep still runs
+        # (req #6). See docs/proposals/cortage-jobs.md.
+        self._cortage_pred = {
+            job.name: job.attached_to
+            for job in workflow.jobs
+            if getattr(job, "attached_to", "")
+        }
 
     @property
     def can_post_checks(self):
@@ -2804,23 +2844,39 @@ class WorkflowState:
                         js.status = JobStatus.READY
                         ready.append(js)
                 continue
+            # Cortage ordering edge: the chain predecessor gates *order* only (the
+            # runner reaches this member after it finishes, whatever the outcome),
+            # it does NOT cascade. Split it out of the cascade/readiness checks so a
+            # failed predecessor can't cancel a member that no *data* dep blocks
+            # (req #6); it is still required to be terminal before the member runs.
+            pred_name = getattr(self, "_cortage_pred", {}).get(name)
+            data_deps = [d for d in deps if d.name != pred_name]
+            pred_js = self.jobs[pred_name] if pred_name else None
             # A dep that FAILED but is non_blocking
             # (do_not_block_pipeline_on_failure) counts as success-equivalent
             # for dependency resolution: its failure is advisory, so it must
             # neither cancel dependents nor hold them back.
             if any(
                 d.status == JobStatus.FAILURE and not getattr(d, "non_blocking", False)
-                for d in deps
+                for d in data_deps
             ):
                 js.cancel(reason="upstream failed")
                 continue
-            if any(d.status == JobStatus.CANCELLED for d in deps):
+            if any(d.status == JobStatus.CANCELLED for d in data_deps):
                 js.cancel(reason="upstream cancelled")
                 continue
-            if all(
-                d.status in (JobStatus.SUCCESS, JobStatus.SKIPPED)
-                or (d.status == JobStatus.FAILURE and getattr(d, "non_blocking", False))
-                for d in deps
+            if (
+                all(
+                    d.status in (JobStatus.SUCCESS, JobStatus.SKIPPED)
+                    or (
+                        d.status == JobStatus.FAILURE
+                        and getattr(d, "non_blocking", False)
+                    )
+                    for d in data_deps
+                )
+                # The cortage predecessor only needs to be terminal (any outcome);
+                # the runner has moved past it on the shared runner.
+                and (pred_js is None or pred_js.status in _TERMINAL)
             ):
                 js.status = JobStatus.READY
                 ready.append(js)

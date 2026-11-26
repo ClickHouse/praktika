@@ -325,6 +325,7 @@ class Validator:
             cls.validate_file_paths_in_digest_configs(workflow)
             cls.validate_dockers(workflow)
             cls.validate_job_names(workflow)
+            cls.validate_cortages(workflow)
 
             if workflow.event == Workflow.Event.SCHEDULE:
                 cls.evaluate_check(
@@ -599,6 +600,189 @@ class Validator:
                     workflow_name=workflow.name,
                 )
             names_lower[job_name_lower] = job.name
+
+    @classmethod
+    def validate_cortages(cls, workflow: Workflow.Config):
+        """
+        Validate "cortage" chains (Job.Config.attach_to). A cortage is a linked
+        list of jobs pinned to one runner and run back-to-back. See
+        docs/proposals/cortage-jobs.md.
+
+        Errors (fatal): cortage on GH_ACTIONS; attach_to to a missing job or to
+        self; two jobs attaching to the same predecessor (fork); a cycle in the
+        attach_to links; a dependency cycle once the chain's execution-order edges
+        are added (a deadlock).
+
+        Warnings (non-fatal print): a member whose runs_on differs from the
+        cortage's effective runs_on; promote_runs_on on a job that is in no cortage.
+        """
+        from collections import Counter
+
+        jobs_by_name = {job.name: job for job in workflow.jobs}
+        attached_jobs = [j for j in workflow.jobs if getattr(j, "attached_to", "")]
+        any_promote = any(
+            getattr(j, "promote_runs_on", False) for j in workflow.jobs
+        )
+        if not attached_jobs and not any_promote:
+            return
+
+        # Cortage is a native-engine concept: on GH_ACTIONS every job runs on its
+        # own GitHub-hosted runner, so colocation is meaningless. Reject outright.
+        if workflow.engine == Workflow.Engine.GH_ACTIONS:
+            for job in workflow.jobs:
+                cls.evaluate_check(
+                    not getattr(job, "attached_to", "")
+                    and not getattr(job, "promote_runs_on", False),
+                    f"Job [{job.name}] uses attach_to()/promote_runs_on, which is "
+                    f"not supported on the '{Workflow.Engine.GH_ACTIONS}' engine: "
+                    f"cortages are native-engine only (each GH job runs on its own "
+                    f"runner).",
+                    workflow.name,
+                    job.name,
+                )
+            return
+
+        # attach_to must name another existing job in this workflow.
+        for job in attached_jobs:
+            cls.evaluate_check(
+                job.attached_to != job.name,
+                f"Job [{job.name}] cannot attach_to itself.",
+                workflow.name,
+                job.name,
+            )
+            cls.evaluate_check(
+                job.attached_to in jobs_by_name,
+                f"Job [{job.name}] attaches to unknown job [{job.attached_to}]; "
+                f"attach_to must name another job in the same workflow.",
+                workflow.name,
+                job.name,
+            )
+
+        # At most one job may attach to a given predecessor — the chain is a
+        # linked list, never a tree.
+        pred_counts = Counter(job.attached_to for job in attached_jobs)
+        for pred, count in pred_counts.items():
+            cls.evaluate_check(
+                count == 1,
+                f"Jobs {[j.name for j in attached_jobs if j.attached_to == pred]} "
+                f"all attach to [{pred}]; a cortage is a linked list, so at most "
+                f"one job may attach to a given predecessor.",
+                workflow.name,
+            )
+
+        # No cycle in the attach_to links themselves.
+        for job in attached_jobs:
+            seen = []
+            cur = job.name
+            while cur and cur in jobs_by_name:
+                if cur in seen:
+                    cls.evaluate_check(
+                        False,
+                        f"attach_to chain has a cycle: {' -> '.join(seen + [cur])}.",
+                        workflow.name,
+                    )
+                seen.append(cur)
+                cur = getattr(jobs_by_name[cur], "attached_to", "")
+
+        # Deadlock check: build the "A must run before B" graph from requires
+        # (job names and artifact producers), run_after, AND the chain's
+        # execution-order edges (attached_to: predecessor before member). A cycle
+        # means a member waits — directly or transitively — on a job that can only
+        # run after it on the same runner. Cross-deps on jobs *outside* the cortage
+        # are allowed; only ones that close a cycle with the chain order are not.
+        provider_of = {}
+        for job in workflow.jobs:
+            for artifact_name in job.provides or []:
+                provider_of[artifact_name] = job.name
+
+        edges = {job.name: set() for job in workflow.jobs}
+
+        def _add_edge(before, after):
+            if before in edges and after in edges and before != after:
+                edges[before].add(after)
+
+        for job in workflow.jobs:
+            for req in job.requires or []:
+                if req in jobs_by_name:
+                    _add_edge(req, job.name)
+                elif req in provider_of:
+                    _add_edge(provider_of[req], job.name)
+            for ra in job.run_after or []:
+                if ra in jobs_by_name:
+                    _add_edge(ra, job.name)
+            if getattr(job, "attached_to", ""):
+                _add_edge(job.attached_to, job.name)
+
+        WHITE, GRAY, BLACK = 0, 1, 2
+        color = {name: WHITE for name in edges}
+        path = []
+
+        def _find_cycle(node):
+            color[node] = GRAY
+            path.append(node)
+            for nxt in edges[node]:
+                if color[nxt] == GRAY:
+                    return path[path.index(nxt):] + [nxt]
+                if color[nxt] == WHITE:
+                    found = _find_cycle(nxt)
+                    if found:
+                        return found
+            path.pop()
+            color[node] = BLACK
+            return None
+
+        for name in edges:
+            if color[name] == WHITE:
+                cycle = _find_cycle(name)
+                if cycle:
+                    cls.evaluate_check(
+                        False,
+                        f"Dependency cycle through a cortage (deadlock): "
+                        f"{' -> '.join(cycle)}. A cortage member would wait on a "
+                        f"job that can only run after it on the same runner. "
+                        f"Cross-dependencies on jobs outside the cortage are "
+                        f"allowed, but not ones that close a cycle with the chain's "
+                        f"execution order.",
+                        workflow.name,
+                    )
+
+        # --- Non-fatal warnings ---
+        successor = {job.attached_to: job.name for job in attached_jobs}
+        member_names = {job.name for job in attached_jobs}
+        in_cortage = member_names | set(successor.keys())
+
+        for job in workflow.jobs:
+            if getattr(job, "promote_runs_on", False) and job.name not in in_cortage:
+                print(
+                    f"WARNING: Workflow [{workflow.name}], job [{job.name}]: "
+                    f"promote_runs_on=True has no effect — this job is not part of "
+                    f"any cortage (nothing attaches to it and it attaches to "
+                    f"nothing)."
+                )
+
+        for head_name in successor:
+            head_job = jobs_by_name[head_name]
+            if getattr(head_job, "attached_to", ""):
+                continue  # middle of a chain, not a head
+            chain_names = [head_name]
+            cur = head_name
+            while cur in successor:
+                cur = successor[cur]
+                chain_names.append(cur)
+            effective = head_job.runs_on
+            for nm in chain_names:
+                if getattr(jobs_by_name[nm], "promote_runs_on", False):
+                    effective = jobs_by_name[nm].runs_on
+            for nm in chain_names:
+                if jobs_by_name[nm].runs_on != effective:
+                    print(
+                        f"WARNING: Workflow [{workflow.name}], cortage headed by "
+                        f"[{head_name}]: job [{nm}] runs_on "
+                        f"{jobs_by_name[nm].runs_on} differs from the cortage's "
+                        f"effective runs_on {effective} (the last promoted member, "
+                        f"else the head); it is ignored — the whole chain runs on "
+                        f"{effective}."
+                    )
 
     @classmethod
     def evaluate_check(cls, check_ok, message, workflow_name, job_name=""):

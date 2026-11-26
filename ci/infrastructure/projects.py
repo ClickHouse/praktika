@@ -12,7 +12,7 @@ _PRAKTIKA_PACKAGE_BASE_URL = (
 # so image builds are reproducible and a bump forces a fresh AMI (see
 # _image_builders). This is deliberately frozen (it lags head) and only moves on
 # an AMI rebake — don't auto-track the head pyproject version.
-_PRAKTIKA_BASE_VERSION = "0.1.17"
+_PRAKTIKA_BASE_VERSION = "0.1.31"
 _PRAKTIKA_BASE_WHL = (
     f"{_PRAKTIKA_PACKAGE_BASE_URL}/praktika-{_PRAKTIKA_BASE_VERSION}-py3-none-any.whl"
 )

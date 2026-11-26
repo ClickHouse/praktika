@@ -89,6 +89,14 @@ class _Settings:
     # before this timeout. The gap above visibility_timeout budgets that
     # redelivery plus a cold ASG launch and boot.
     HEARTBEAT_TIMEOUT_S = 900
+    # Cortage (chained jobs on one runner): the maximum time, in seconds, a
+    # cortage member may stall waiting for an external dependency (a job outside
+    # its cortage) to reach a terminal state before the member — and the rest of
+    # the chain — is failed and the runner released. This is a safety net; a
+    # stall is also ended early by the dependency finishing (proceed), the
+    # dependency failing/being cancelled (fail the cortage), or the whole run
+    # being cancelled/finalized. See docs/proposals/cortage-jobs.md.
+    CORTAGE_MAX_STALL_SEC: int = 15 * 60
 
     ######################################
     #     CI capacity throttle (backpressure)   #
@@ -292,6 +300,7 @@ _USER_DEFINED_SETTINGS = [
     "RUNNER_PICKUP_TIMEOUT_S",
     "HEARTBEAT_STALL_S",
     "HEARTBEAT_TIMEOUT_S",
+    "CORTAGE_MAX_STALL_SEC",
     "TOP_CHECK_MIN_PATCH_INTERVAL_S",
     "JOB_CHECKS_MODE",
     "VALIDATE_FILE_PATHS",

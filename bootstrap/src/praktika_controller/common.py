@@ -729,6 +729,7 @@ class Heartbeat:
         status="running",
         fields=None,
         log=None,
+        pointer_file=None,
     ):
         self._s3 = s3_client
         self._bucket = bucket
@@ -740,6 +741,40 @@ class Heartbeat:
         self._thread = None
         self._log = log or logging.getLogger(__name__)
         self._lock = threading.Lock()
+        # Cortage: when the job runner walks a chain of members in a single
+        # `orchestrate job` invocation, it writes this pointer file naming the
+        # CURRENT member's heartbeat key (+ phase); the heartbeat then follows it
+        # so the orchestrator sees per-member heartbeats from the one controller
+        # writer (keeping instance_id/attempt). Absent for normal jobs → the
+        # task's own key is used. See docs/proposals/cortage-jobs.md.
+        self._pointer_file = pointer_file
+
+    def set_pointer_file(self, path):
+        self._pointer_file = path
+
+    def _resolve_target(self):
+        """Return (key, extra_fields): the cortage pointer's member key + phase
+        when the pointer file is present and valid, else the task's own key."""
+        key = self._key
+        extra = {}
+        pf = self._pointer_file
+        if pf:
+            try:
+                with open(pf, "r", encoding="utf-8") as f:
+                    ptr = json.load(f)
+                hk = ptr.get("heartbeat_s3_key")
+                if hk:
+                    key = hk
+                    phase = ptr.get("phase")
+                    if phase:
+                        extra["phase"] = phase
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                self._log.warning(
+                    "heartbeat pointer read failed: %s: %s", type(e).__name__, e
+                )
+        return key, extra
 
     def start(self):
         self._beat()
@@ -760,12 +795,14 @@ class Heartbeat:
 
     def _beat(self):
         try:
+            key, extra = self._resolve_target()
             with self._lock:
                 body = {"ts": time.time(), "status": self._status}
                 body.update(self._fields)
+            body.update(extra)
             self._s3.put_object(
                 Bucket=self._bucket,
-                Key=self._key,
+                Key=key,
                 Body=json.dumps(body).encode(),
                 ContentType="application/json",
             )

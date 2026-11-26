@@ -169,42 +169,68 @@ cortage member is allowed — that is req #3's early-unblock case, handled below
     the runner released — a safety net so a wedged dep can't hold a runner forever.
     The stall also ends early on dep success/failure or whole-run cancel/finalize.
 
-## Controller (`controller.py`, `common.py`)
+## Where the chain is driven — the job runner, not the controller
 
-- Receive an ordinary head task. If the head job has attached members (read from
-  `ci_config`), enter cortage mode. Run `_prepare_runner_for_task` →
-  `clean_work_root` (`controller.py:1147`, `common.py:548`) **once** before the
-  head, restore/clone into one `clone_dir`. Each member heartbeats under its own
-  key while it runs (as a standalone job does).
-- Enumerate the chain (head → tail via `attached_to`) and loop members in order:
-  synthesize each member's task locally (shared `snapshot_sha`/`repo_snapshot_key`
-  + per-member `job_name` and the deterministic final-state key), write
-  `ci/tmp/task.json`, run `praktika orchestrate job <task> --ci`, upload that
-  member's final-state — **no `clean_work_root`, no re-clone, no `ci/tmp` wipe
-  between members** (req #4/#5: no clean at all within a cortage). Normal cleanup
-  resumes when the next unrelated task arrives.
-- Skip a member whose intra-cortage predecessor dep failed; report it CANCELLED
-  so the orchestrator cascades correctly. (req #6)
+The controller stays generic: it receives the **head** task and runs one
+`praktika orchestrate job` as today. The **job_runner** (`job_runner.py`, praktika
+package — it has `Workflow.Config`, S3, `_normalize_job_name_for_s3`) walks the
+chain **in-process**: after the head job finishes it checks `ci_config`, and if the
+job is a cortage head it loops the remaining members. Consequences, all free:
+- **No clean between members** — `clean_work_root` runs only *before* the single
+  `orchestrate job` invocation (`controller.py:1147`), so the shared `ci/tmp` and
+  checkout persist across the whole chain automatically (req #4/#5).
+- **SQS visibility** already extends for the whole invocation, so it covers the
+  whole chain — no duplicate-runner mid-chain.
+
+### Controller (`controller.py`, `common.py`) — minimal change
+- **Heartbeat follows the current member via a pointer file.** The `Heartbeat`
+  thread (`common.py:720`) reads an optional pointer file in the shared `ci/tmp`
+  (written by the job_runner, naming the current member's heartbeat key + phase)
+  and writes to that key; absent pointer → the task's own key (normal jobs). This
+  keeps **the controller the sole heartbeat writer**, so member heartbeats carry
+  the controller-owned `instance_id` and SQS **attempt/receive-count** — the
+  orchestrator's `sweep_liveness` (QUEUED→RUNNING, `[STALE]`, attempt-bump
+  `[RETRY]`) and infra-rerun detection then work on members with **no change** and
+  the orchestrator treats members exactly like normal jobs.
+
+### Job runner (`job_runner.py`) — the chain loop
+- After the head job completes, if it is a cortage head, iterate members in order.
+  For each member (reusing the same cwd/`ci/tmp`, nothing cleaned):
+  - **Resume skip:** if the member already has a successful `final.json` in S3,
+    skip it (resume-at-first-incomplete after an infra redelivery; the head is
+    skipped too when it already finalized).
+  - **Req #6 block skip:** if any **data** dep (`requires`/`run_after`) that is an
+    earlier member failed or was block-skipped, skip this member (it cascades);
+    members not data-blocked still run even if an earlier member failed.
+  - **External-dep stall:** poll `runs/<run_id>/state.json` for this member's
+    external (non-cortage) deps — proceed on all-success, fail the chain on any
+    terminal failure, else stall up to `Settings.CORTAGE_MAX_STALL_SEC` (writing a
+    stall phase into the pointer so the controller's heartbeat surfaces it).
+  - Update the heartbeat pointer to this member, run it, write its `final.json`.
+- The orchestrator already marks each member QUEUED (via `kick`, no dispatch) when
+  its predecessor finalizes, then watches its heartbeat/`final.json` keys — so
+  member completion unblocks external dependents and member failure cascades, all
+  through the existing sweeps.
 
 ## Artifacts (`runner.py`)
 
-- Members share `ci/tmp` + checkout, so a producer's `provides` are already on
-  local disk for a later member — `_pre_run` (`runner.py:349`) can short-circuit
-  the S3 download when the provider is an earlier member of the same cortage and
-  the path exists. S3 upload still happens for **external** consumers; S3 remains
-  the fallback. (req #5, "former": local-passing is the default for cortages,
-  since nothing is cleaned.)
-- **It is the job's responsibility to work with a local artifact instead of
-  downloading it.** When `_pre_run` short-circuits the S3 download, the framework
-  does **not** re-materialize the artifact into the path a standalone run would
-  download it to — the file is wherever the earlier member left it in `ci/tmp`. A
-  later member that `requires` it must be written to **find it locally** and not
-  assume a fresh download happened. And the inverse case must be handled too: if
-  the artifact is **not** in `ci/tmp` (e.g. the producer was a cache-hit skip, or
-  this is an infra-rerun resume on a fresh runner), the requiring member must know
-  to fall back to the normal S3 download. In short, a cortage member cannot assume
-  "my inputs are always freshly downloaded" nor "my inputs are always on local
-  disk" — it must cope with both.
+- **Reuse from the shared `ci/tmp` when present, else S3.** Members share `ci/tmp`
+  + checkout (no clean between them), so a producer's `provides` are already on
+  local disk for a later member. `_pre_run` (`runner.py:349`) therefore **skips the
+  S3 download** for a required artifact whose provider is an earlier member of this
+  cortage **when the file is already on local disk**. If it is *not* local — the
+  provider was **cache-hit/skipped** (its output lives only in S3) or this is an
+  **infra-rerun on a fresh `ci/tmp`** — it falls through to the normal S3 download.
+  Local-file existence is the signal (no state.json read needed). S3 upload still
+  happens for **external** consumers. (req #5, "former": local-passing is the
+  default for cortages, since nothing is cleaned.)
+  - Implemented for the common single-file case; glob/list/compressed intra-cortage
+    deps fall through to S3 (always correct, just not optimized).
+- **The job works with whatever is in `ci/tmp`.** The framework does not
+  re-materialize a reused artifact into any particular path — it is wherever the
+  earlier member left it (which, since `INPUT_DIR == OUTPUT_DIR == TEMP_DIR`, is the
+  same path a download would target). A member reading an earlier member's
+  `provides` must find it there.
 
 ## Implementation checklist
 - [x] `job.py`: `attached_to` + `promote_runs_on` fields (after `post_hooks`) +
@@ -213,15 +239,33 @@ cortage member is allowed — that is req #3's early-unblock case, handled below
 - [x] `validator.py`: engine reject, missing/self/fork/attach-cycle asserts,
       sequential-edge deadlock-cycle assert, runs_on-mismatch + stray-promote
       WARNINGs (`validate_cortages`).
-- [ ] `orchestrator/__init__.py`: cortage grouping + sequential chain edges in
-      `build_job_dag` / execution-plan print.
-- [ ] `orchestrator/state.py`: cortage-aware readiness, head-only `_dispatch`,
-      mark-tail-head-handled + keep watching keys, per-member final-state unblock,
-      resume-at-failed-member rerun, failure cascade.
-- [ ] `controller.py` / `common.py`: head task → walk `attached_to`, clean once
-      before head, no clean between members, per-member heartbeat/finalize,
-      CANCELLED-on-dep-fail skip.
-- [ ] `runner.py`: local-provides short-circuit in `_pre_run`.
+- [x] `orchestrator/__init__.py`: sequential chain edges in `build_job_dag`
+      (predecessor → member), cortage annotation in execution-plan print.
+- [x] `orchestrator/state.py`: `kick` skips SQS dispatch for members (marks them
+      QUEUED so the existing completion/liveness sweeps watch their own keys) and
+      routes the head to the effective pool. Readiness, per-member final-state
+      unblock, failure cascade, and **resume-at-failed-member all reuse the
+      existing machinery** — members are ordinary `JobState`s with deterministic
+      per-member keys; infra-rerun = SQS redelivery of the head + attempt-bump,
+      given the runner skips already-finalized members (controller step).
+      Helpers `is_cortage_member`/`is_cortage_head`/`get_cortage_chain`/
+      `cortage_effective_runs_on` live on `Workflow.Config`.
+- [x] `orchestrator/state.py` (req #6): cortage sequential edge is ordering-only —
+      `_cortage_pred` map + `get_ready` waits for the predecessor to be terminal
+      but cascades only on *data* deps, so a member not data-blocked still runs
+      after a sibling's failure. Verified (chain A→B→C→D, B fails: C runs, D cancels).
+- [x] `job_runner.py`: `run_job` detects a cortage head (CI mode) → `_run_cortage_chain`
+      walks the chain in-process (`_run_single` per member): resume-skip finalized
+      members, req-#6 block-skip on failed data-dep members, external-dep stall via
+      `state.json` (bounded by `CORTAGE_MAX_STALL_SEC`), heartbeat-pointer update +
+      stall phase per member, env hand-off between members, each writes its own
+      `final.json`. No clean between members (one `orchestrate job` invocation).
+- [x] `controller.py` / `common.py`: `Heartbeat` gained `set_pointer_file` +
+      `_resolve_target` — follows the job_runner's current-member pointer in the
+      shared `ci/tmp`, else the task key. Sole heartbeat writer, so member heartbeats
+      keep `instance_id` + SQS attempt. No other controller change.
+- [x] `runner.py`: cortage-member start log + local-provides reuse in `_pre_run`
+      (skip S3 for an earlier member's artifact when present locally; else S3).
 - [ ] `yaml_generator.py`: unaffected (native-only); confirm no leakage.
 
 ## Hard constraints
