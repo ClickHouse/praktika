@@ -1135,17 +1135,37 @@ class WorkflowState:
             for dep in deps:
                 self._dependents[dep].add(name)
 
-        # Cortage: each member's predecessor in its chain. This edge is in
-        # `_deps` (so levels serialize the chain and a member waits for its
-        # predecessor to reach a terminal state), but get_ready treats it as an
-        # *ordering-only* dep — a failed predecessor does NOT cascade-cancel the
-        # member, so a later member not blocked by a *data* dep still runs
-        # (req #6). See docs/proposals/cortage-jobs.md.
-        self._cortage_pred = {
-            job.name: job.attached_to
-            for job in workflow.jobs
-            if getattr(job, "attached_to", "")
-        }
+        # Cortage: each member's predecessor in its chain, recorded ONLY as an
+        # *ordering-only* edge — get_ready waits for the predecessor to reach a
+        # terminal state but does NOT cascade-cancel on its failure, so a later
+        # member not blocked by a *data* dep still runs (req #6). If the member
+        # ALSO explicitly depends on its predecessor (requires / run_after, incl.
+        # via an artifact the predecessor provides), that is a real data dep and is
+        # left to normal handling (wait for SUCCESS + cascade), so we do NOT record
+        # it here. See docs/proposals/cortage-jobs.md.
+        _artifact_provider = {}
+        for job in workflow.jobs:
+            for _art in getattr(job, "provides", None) or []:
+                _artifact_provider[_art] = job.name
+        _all_job_names = {job.name for job in workflow.jobs}
+
+        def _explicit_data_deps(job):
+            names = set()
+            for req in getattr(job, "requires", None) or []:
+                if req in _artifact_provider:
+                    names.add(_artifact_provider[req])
+                elif req in _all_job_names:
+                    names.add(req)
+            for ra in getattr(job, "run_after", None) or []:
+                if ra in _all_job_names:
+                    names.add(ra)
+            return names
+
+        self._cortage_pred = {}
+        for job in workflow.jobs:
+            pred = getattr(job, "attached_to", "")
+            if pred and pred not in _explicit_data_deps(job):
+                self._cortage_pred[job.name] = pred
 
     @property
     def can_post_checks(self):

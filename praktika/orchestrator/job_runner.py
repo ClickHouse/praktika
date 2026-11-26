@@ -636,6 +636,19 @@ def _load_final_if_success(s3, bucket, key):
         return None
 
 
+def _is_blocking_failure(job_name):
+    """True if the member's dumped Result represents a BLOCKING failure. A Result
+    with do_not_block_pipeline_on_failure() is advisory (success-equivalent for
+    dependency resolution, as in WorkflowState.get_ready), so it must NOT block
+    downstream members. An unreadable Result defaults to blocking (safe)."""
+    try:
+        from ..result import Result
+
+        return not Result.from_fs(job_name).do_not_block_pipeline_on_failure()
+    except Exception:
+        return True
+
+
 def _write_terminal_failure(s3, member_task, info):
     """Publish a terminal FAILURE ``final.json`` for a member the runner won't run
     (e.g. an external-dep stall that timed out). Without it the orchestrator — which
@@ -727,7 +740,9 @@ def _clear_hb_pointer():
         print(f"  [warn] could not clear heartbeat pointer: {type(e).__name__}: {e}")
 
 
-def _wait_external_deps(s3, bucket, state_key, external_deps, member_name, hb_key):
+def _wait_external_deps(
+    s3, bucket, state_key, external_deps, member_name, hb_key, always_run=False
+):
     """Block until every external (non-cortage) dep of a member reaches a terminal
     state, polling runs/<run_id>/state.json. Returns one of:
       "ok"         — all deps success/skipped (a FAILURE marked non_blocking counts
@@ -740,6 +755,12 @@ def _wait_external_deps(s3, bucket, state_key, external_deps, member_name, hb_ke
     No-op → "ok" when there are no external deps. While stalled it keeps the
     heartbeat pointer on this member with a phase naming what it waits on, so the
     controller's heartbeat surfaces the stall.
+
+    `always_run` members (e.g. Finish Workflow) must run regardless of how the
+    DAG ends: a failed/cancelled dep no longer yields "dep_failed" (it counts as
+    settled), and the stall never times out — the member waits until every dep is
+    terminal, then runs. This matches the orchestrator never cancelling an
+    always_run job.
     """
     if not external_deps:
         return "ok"
@@ -759,6 +780,11 @@ def _wait_external_deps(s3, bucket, state_key, external_deps, member_name, hb_ke
             if status == "failure" and info.get("non_blocking"):
                 continue
             if status in _DEP_FAIL_STATUSES:
+                if always_run:
+                    # A dep ended in failure/cancelled, but this member runs
+                    # regardless — count the dep as settled and keep waiting on
+                    # the rest.
+                    continue
                 print(
                     f"Cortage: member [{member_name}] external dep [{dep}] is "
                     f"[{status}] — the cortage cannot proceed"
@@ -767,7 +793,7 @@ def _wait_external_deps(s3, bucket, state_key, external_deps, member_name, hb_ke
             pending.append(dep)
         if not pending:
             return "ok"
-        if time.time() >= deadline:
+        if not always_run and time.time() >= deadline:
             print(
                 f"Cortage: member [{member_name}] stall timed out after "
                 f"{Settings.CORTAGE_MAX_STALL_SEC}s waiting on {pending}"
@@ -869,12 +895,17 @@ def _run_cortage_chain(task, workflow, start_name, gh_token=None, timestamp=Fals
             )
             continue
 
+        # An always_run member (e.g. Finish Workflow chained as the cortage tail)
+        # runs regardless of how the DAG ends — it is never blocked by a failed
+        # dep and never skipped, mirroring the orchestrator never cancelling it.
+        always_run = getattr(member, "always_run", False)
+
         deps = _dep_job_names(member, provider_map, all_job_names)
         # Req #6: a member whose DATA dep (an earlier member) failed/was-skipped is
         # blocked; the orchestrator cancels it via cascade, so we just skip it (and
         # mark it so its own dependents skip too). Members not data-blocked run.
         blocked_by = (deps & chain_set) & failed_or_skipped
-        if blocked_by:
+        if blocked_by and not always_run:
             print(
                 f"Cortage: member [{member_name}] blocked by failed member(s) "
                 f"{sorted(blocked_by)} — skipping (orchestrator cancels it)"
@@ -893,6 +924,7 @@ def _run_cortage_chain(task, workflow, start_name, gh_token=None, timestamp=Fals
                 sorted(deps - chain_set),
                 member_name,
                 member_task["heartbeat_s3_key"],
+                always_run=always_run,
             )
             if verdict == "dep_failed":
                 # The orchestrator cancels this member via cascade — just skip it.
@@ -918,7 +950,12 @@ def _run_cortage_chain(task, workflow, start_name, gh_token=None, timestamp=Fals
             member_task, workflow, member, gh_token=gh_token, local=False, timestamp=timestamp
         )
         overall_rc = max(overall_rc, rc)
-        if rc != 0:
+        # Only a BLOCKING failure blocks downstream members: a member whose Result
+        # sets do_not_block_pipeline_on_failure is success-equivalent to the
+        # orchestrator (get_ready), which makes its dependents ready — so we must
+        # not block-skip them. Match that here (an unreadable Result → treat as
+        # blocking, the safe default).
+        if rc != 0 and _is_blocking_failure(member_name):
             failed_or_skipped.add(member_name)
         # Hand this member's environment.json off to the next member (WORKFLOW_CONFIG,
         # JOB_KV_DATA, ...), mirroring how the orchestrator relays env between jobs.
