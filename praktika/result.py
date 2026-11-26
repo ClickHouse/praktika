@@ -1092,6 +1092,13 @@ class Result(MetaClasses.Serializable):
             files=base_files + paths,
             info=parse_error or info,
         )
+        # A partial parse failure (parse_error set with some cases parsed) makes
+        # from_junit return ERROR; honor it so a dropped/malformed shard can't
+        # report green off the cases that happened to parse (mirrors from_junit_run,
+        # which applies the parsed-aggregate status). create_from otherwise derives
+        # the status from the parsed cases alone and would go green.
+        if parse_error:
+            result.set_status(status)
         if process_exit_code != 0 and result.is_ok():
             result.set_status(cls.Status.FAIL)
             result.set_info(

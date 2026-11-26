@@ -8,7 +8,7 @@ from praktika.infrastructure.lambda_function import Lambda
 from praktika.settings import Settings
 
 from . import iam_scope
-from .lambda_pool_autoscaler import CAPACITY_S3_KEY
+from .lambda_pool_autoscaler import CAPACITY_S3_KEY, DEFAULT_SCALE_COEFFICIENT
 
 # S3 key prefix (under the project artifact bucket) where this autoscaler
 # publishes each ASG's target AMI for its runners to read. Must match
@@ -31,6 +31,10 @@ class PoolAutoscaler:
         queue_name: str = ""
         asg_name: str = ""
         capacity_reserve: int = 0
+        # Fraction (0, 1] of the outstanding demand gap closed per autoscaler
+        # iteration. 0.3 (default) is the gradual ramp; 1.0 covers the whole gap
+        # at once. See lambda_pool_autoscaler._calculate_desired_capacity.
+        scale_coefficient: float = DEFAULT_SCALE_COEFFICIENT
         ext: Dict[str, Any] = field(default_factory=dict)
 
     name: str = "pool-autoscaler"
@@ -53,6 +57,12 @@ class PoolAutoscaler:
                 raise ValueError(
                     f"PoolAutoscaler pool {pool.name!r} has negative capacity_reserve"
                 )
+            pool.scale_coefficient = float(pool.scale_coefficient)
+            if not 0.0 < pool.scale_coefficient <= 1.0:
+                raise ValueError(
+                    f"PoolAutoscaler pool {pool.name!r} has scale_coefficient "
+                    f"{pool.scale_coefficient!r}; must be in (0, 1]"
+                )
 
         pool_config_json = json.dumps(
             [
@@ -61,6 +71,7 @@ class PoolAutoscaler:
                     "queue_name": pool.queue_name,
                     "asg_name": pool.asg_name,
                     "capacity_reserve": pool.capacity_reserve,
+                    "scale_coefficient": pool.scale_coefficient,
                 }
                 for pool in self.pools
             ],
@@ -188,6 +199,9 @@ class PoolAutoscaler:
                 queue_name=getattr(getattr(pool, "queue", None), "name", ""),
                 asg_name=getattr(getattr(pool, "autoscaling_group", None), "name", ""),
                 capacity_reserve=getattr(pool, "capacity_reserve", 0),
+                scale_coefficient=getattr(
+                    pool, "scale_coefficient", DEFAULT_SCALE_COEFFICIENT
+                ),
             )
             for pool in pools
             if getattr(pool, "scaling", "") == "auto"

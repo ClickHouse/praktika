@@ -10,6 +10,13 @@ import boto3
 # both sides (see praktika.orchestrator.throttle.CAPACITY_S3_KEY).
 CAPACITY_S3_KEY = "pool_capacity.json"
 
+# Default fraction of the outstanding demand gap a pool closes per autoscaler
+# iteration (see _calculate_desired_capacity). A pool can override it per-pool via
+# its scale_coefficient; 0.3 reproduces the historical gradual ramp, 1.0 covers
+# the whole gap at once (one instance per queued/in-flight task). Mirrored by
+# RunnerPool.scale_coefficient on the config side.
+DEFAULT_SCALE_COEFFICIENT = 0.3
+
 # S3 key prefix (under the project artifact bucket) where this autoscaler
 # publishes each ASG's current target AMI. Must match the consumer side in
 # bootstrap/src/praktika_controller/common.py (AMI_TARGET_S3_PREFIX). Runners
@@ -83,6 +90,7 @@ def _calculate_desired_capacity(
     visible_messages: int,
     in_flight_messages: int,
     capacity_reserve: int = 0,
+    scale_coefficient: float = DEFAULT_SCALE_COEFFICIENT,
 ) -> int:
     # Scheduled autoscaling is scale-up only. Scale-in is owned by the VMs
     # themselves after they observe sustained queue idleness from inside the
@@ -96,15 +104,25 @@ def _calculate_desired_capacity(
     if target_work_capacity <= current_work_capacity:
         return min(max_size, max(current_desired, capacity_reserve))
 
-    # Grow toward the target by max(30% of the OUTSTANDING gap, 1) per
-    # invocation (the schedule fires once a minute). The gap is backlog not yet
-    # covered by current_desired, which already includes instances we requested
-    # on earlier runs but that are still booting. Stepping off the gap (rather
-    # than the raw backlog) means each minute decelerates as pending capacity
-    # ramps up, instead of slamming in another big batch for a backlog that is
-    # already being provisioned for and just hasn't been picked up yet.
+    # Grow toward the target by covering max(scale_coefficient of the OUTSTANDING
+    # gap, 1) per invocation (the schedule fires every interval_seconds). The gap
+    # is backlog not yet covered by current_desired, which already includes
+    # instances we requested on earlier runs but that are still booting. Stepping
+    # off the gap (rather than the raw backlog) means each iteration decelerates
+    # as pending capacity ramps up, instead of slamming in another big batch for a
+    # backlog that is already being provisioned for and just hasn't been picked up
+    # yet.
+    #
+    # scale_coefficient is the tuning handle: 0.3 (the default) reproduces the
+    # historical gradual ramp; 1.0 closes the whole gap in one invocation — one
+    # instance per queued/in-flight task, capped only by max_size — trading
+    # transient over-provisioning (while the batch boots and the backlog is still
+    # outstanding) for the lowest queue wait time. Clamped to (0, 1].
+    coefficient = min(1.0, max(0.0, float(scale_coefficient)))
+    if coefficient <= 0.0:
+        coefficient = DEFAULT_SCALE_COEFFICIENT
     gap = target_work_capacity - current_work_capacity
-    step = max(1, math.ceil(gap * 0.3))
+    step = max(1, math.ceil(gap * coefficient))
     new_work_capacity = min(target_work_capacity, current_work_capacity + step)
     target_capacity = min(max_size, capacity_reserve + new_work_capacity)
     if target_capacity <= current_desired:
@@ -131,6 +149,9 @@ def lambda_handler(event, context):
         queue_name = str(pool.get("queue_name") or pool_name)
         asg_name = str(pool.get("asg_name") or pool_name)
         capacity_reserve = max(0, int(pool.get("capacity_reserve") or 0))
+        scale_coefficient = float(
+            pool.get("scale_coefficient") or DEFAULT_SCALE_COEFFICIENT
+        )
 
         # A single pool whose SQS queue or ASG is missing (e.g. not deployed
         # yet, renamed, or not covered by this role's IAM scope) must not abort
@@ -180,6 +201,7 @@ def lambda_handler(event, context):
                 visible_messages=visible_messages,
                 in_flight_messages=in_flight_messages,
                 capacity_reserve=capacity_reserve,
+                scale_coefficient=scale_coefficient,
             )
             # Defensive clamp: even if future _calculate_desired_capacity changes,
             # this autoscaler must never scale a pool down. VM self-termination is
@@ -217,6 +239,7 @@ def lambda_handler(event, context):
                 "current_desired": current_desired,
                 "max_size": max_size,
                 "capacity_reserve": capacity_reserve,
+                "scale_coefficient": scale_coefficient,
                 "new_desired": new_desired,
                 "scaled": scaled,
             }

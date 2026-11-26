@@ -386,6 +386,13 @@ class RunnerPool:
     volume_iops: int = 0
     volume_throughput: int = 0
     capacity_reserve: int = 0
+    # Scale-up pacing for auto-scaled pools (ignored when scaling is Disabled):
+    # the fraction (0, 1] of the outstanding demand gap the autoscaler closes each
+    # iteration. 0.3 (default) is the gradual ramp; 1.0 covers the whole backlog
+    # at once (lowest queue wait, higher chance of transient over-provisioning).
+    # The iteration period is the autoscaler schedule (pool_autoscaler_interval_
+    # seconds, default 60s), which is global across pools.
+    scale_coefficient: float = 0.3
     ext: Dict[str, Any] = field(default_factory=dict)
 
     launch_template: LaunchTemplate.Config = field(init=False)
@@ -404,6 +411,10 @@ class RunnerPool:
         assert self.scaling in (self.Scaling.Disabled, self.Scaling.Auto), (
             f"RunnerPool scaling={self.scaling!r} is not supported; "
             f"use Scaling.Disabled or Scaling.Auto"
+        )
+        assert 0.0 < self.scale_coefficient <= 1.0, (
+            f"RunnerPool scale_coefficient={self.scale_coefficient!r} is invalid; "
+            f"must be in (0, 1]"
         )
         min_size = 0 if self.scaling == self.Scaling.Auto else 1
         assert self.size >= min_size, (

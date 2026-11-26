@@ -198,7 +198,12 @@ class _Settings:
     S3_REPORT_BUCKET: str = ""
     # Optional: upstream report bucket to merge issue catalogs from (e.g. "clickhouse-test-reports")
     S3_UPSTREAM_REPORT_BUCKET: str = ""
+    # Local source file for the report viewer page.
     HTML_PAGE_FILE: str = "./ci/praktika/praktika.html"
+    # Fixed object name the report viewer page is uploaded under (and referenced
+    # by in report URLs) across all projects. A single constant keeps cross-project
+    # (downstream) links valid without carrying a per-project name around.
+    HTML_PAGE_NAME: str = "report.html"
     S3_BUCKET_TO_HTTP_ENDPOINT: Optional[Dict[str, str]] = None
     TEXT_CONTENT_EXTENSIONS: Iterable[str] = frozenset([".txt", ".log"])
     # Compress if text file size exceeds this threshold (in MB, 0 - disable compression)

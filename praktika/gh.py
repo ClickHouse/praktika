@@ -959,6 +959,39 @@ class GH:
             os.unlink(payload_file)
 
     @classmethod
+    def approve_pr(cls, body="", commit_id=None, pr=None, repo=None):
+        """Submit an ``APPROVE`` PR review. Unlike :meth:`post_pr_review`, this
+        is a deliberate approval event and carries no inline comments; the body
+        is optional (GitHub allows an empty-body APPROVE). Returns True on
+        success, False on API failure (does not raise)."""
+        if not repo:
+            repo = _Environment.get().REPOSITORY
+        if not pr:
+            pr = _Environment.get().PR_NUMBER
+
+        payload = {"event": "APPROVE"}
+        if commit_id:
+            payload["commit_id"] = commit_id
+        if body:
+            payload["body"] = body
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as f:
+            json.dump(payload, f)
+            payload_file = f.name
+        try:
+            cmd = (
+                f"gh api -X POST "
+                f'-H "Accept: application/vnd.github.v3+json" '
+                f'"/repos/{repo}/pulls/{pr}/reviews" '
+                f"--input {shlex.quote(payload_file)}"
+            )
+            return cls.do_command_with_retries(cmd)
+        finally:
+            os.unlink(payload_file)
+
+    @classmethod
     def _set_review_thread_resolution(cls, thread_id, resolve, verbose=False):
         mutation_name = "resolveReviewThread" if resolve else "unresolveReviewThread"
         query = (
