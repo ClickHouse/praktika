@@ -49,6 +49,16 @@ class _Settings:
     # workflow plan build) on an infra error before giving up and finalizing
     # the check as failed. The job loop itself is never retried.
     MAX_RETRIES_ORCHESTRATOR = 3
+    # How long the orchestrator blocks between S3 sweeps in wait(). This is the
+    # DAG-handoff reactivity knob: a producer that finalizes mid-interval isn't
+    # noticed — and its dependents aren't dispatched — until the next sweep, so
+    # each non-cortage handoff costs up to one full interval (avg ~half). Lower =
+    # faster handoffs at the cost of proportionally more sweeps. Each sweep is a
+    # handful of S3 GET/HEADs plus one GET per in-flight job (completion +
+    # heartbeat), i.e. ~2 + 2*N requests; even a wide fan-out stays far under
+    # S3's per-prefix request ceiling, so this is cost, not a rate-limit, lever.
+    # (Cortage members run back-to-back on one runner and skip this entirely.)
+    WAIT_POLL_INTERVAL_S = 2
     # Runner controller heartbeat write interval, in seconds. Each runner
     # writes heartbeat.json for its current job at this cadence.
     HEARTBEAT_INTERVAL_S = 30
@@ -63,7 +73,7 @@ class _Settings:
     HEARTBEAT_STALL_S = 300
     # Minimum wall-clock gap, in seconds, between two PATCHes of the top-level
     # workflow GitHub check. The orchestrator re-renders the check body every
-    # WAIT_POLL_INTERVAL_S (10s); regardless of this interval it only PATCHes
+    # WAIT_POLL_INTERVAL_S; regardless of this interval it only PATCHes
     # when the rendered body actually changed (the dominant saving). On a large
     # CI — hundreds of concurrent workflows sharing one GitHub App installation's
     # rate-limit bucket — raise this to further coalesce updates. One-shot
@@ -296,6 +306,7 @@ _USER_DEFINED_SETTINGS = [
     "MAX_RETRIES_S3",
     "MAX_RETRIES_GH",
     "MAX_RETRIES_ORCHESTRATOR",
+    "WAIT_POLL_INTERVAL_S",
     "HEARTBEAT_INTERVAL_S",
     "RUNNER_PICKUP_TIMEOUT_S",
     "HEARTBEAT_STALL_S",

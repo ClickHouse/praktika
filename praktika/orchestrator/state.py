@@ -126,8 +126,11 @@ HEARTBEAT_TIMEOUT_S = int(getattr(Settings, "HEARTBEAT_TIMEOUT_S", 900) or 900)
 
 # wait() blocks for this long between S3 sweeps. Kept short so the
 # orchestrator reacts quickly to cancel signals and finished jobs (no
-# SQS long-poll any more).
-WAIT_POLL_INTERVAL_S = 10
+# SQS long-poll any more): each non-cortage DAG handoff costs up to one
+# interval, so this is the handoff-latency knob. Settings-configurable
+# (default 2s) so a project can trade handoff speed against sweep volume
+# without forking.
+WAIT_POLL_INTERVAL_S = int(getattr(Settings, "WAIT_POLL_INTERVAL_S", 2) or 2)
 
 # Hard cap on how many times one job may be re-run within a single run (per
 # run_id / commit; a new push starts a fresh run at 0). A pure defence backstop:

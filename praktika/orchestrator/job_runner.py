@@ -605,7 +605,6 @@ def _run_single(task, workflow, job, gh_token=None, local=False, timestamp=False
 # Filename (in the shared ci/tmp) of the heartbeat pointer the controller's
 # Heartbeat follows. Must match controller.py's set_pointer_file path.
 _HB_POINTER_NAME = "cortage_heartbeat.json"
-_STALL_POLL_INTERVAL_S = 10
 _DEP_SUCCESS_STATUSES = {"success", "skipped"}
 _DEP_FAIL_STATUSES = {"failure", "cancelled", "error", "dropped"}
 
@@ -821,6 +820,11 @@ def _wait_external_deps(
     from ..settings import Settings
 
     deadline = time.time() + max(1, int(Settings.CORTAGE_MAX_STALL_SEC))
+    # Same handoff-reactivity knob the orchestrator's wait() uses: when an
+    # external dep finalizes mid-interval the member resumes within one poll.
+    # Each poll is a single GET of the run's state.json, so a shorter interval
+    # is a cost (not rate-limit) lever even with many heads stalling at once.
+    poll_interval = int(getattr(Settings, "WAIT_POLL_INTERVAL_S", 2) or 2)
     while True:
         jobs = _load_state_jobs(s3, bucket, state_key)
         pending = []
@@ -861,7 +865,7 @@ def _wait_external_deps(
         _write_hb_pointer(
             hb_key, phase=f"stalling: waiting on {','.join(pending)} ({waited}s)"
         )
-        time.sleep(_STALL_POLL_INTERVAL_S)
+        time.sleep(poll_interval)
 
 
 def _member_task(task, member_name, run_id, bucket, carried_env):
