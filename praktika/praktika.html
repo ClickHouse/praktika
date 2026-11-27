@@ -1795,48 +1795,49 @@
                 ctx.fillRect(0, hy, canvas.width, lineWidth + 2 * padding);
             }
 
-            // Highlight related rows: jobs the hovered row needs in one color,
-            // jobs that depend on the hovered row (the opposite direction) in another.
+            // Mark related rows with solid edge bars instead of tinting the
+            // whole line (which washed out the bars). Each relation gets its own
+            // colour and its own slot so a row can carry several at once:
+            //   needs (upstream)    -> amber bar, left edge
+            //   needed by (downstr.)-> blue bar, right edge
+            //   cortage member      -> teal bar, left edge but offset inward so
+            //                          it sits beside a needs bar without overlap
+            const markW = 4;                 // bar thickness
+            const cortageX = markW + 2;      // offset slot for the cortage bar
             if (hoveredRequires.size > 0 || hoveredRequiredBy.size > 0) {
                 results.forEach((task, index) => {
-                    let color = null;
-                    if (hoveredRequires.has(task.name)) {
-                        color = 'rgba(255, 180, 0, 0.35)';   // needs (upstream)
-                    } else if (hoveredRequiredBy.has(task.name)) {
-                        color = 'rgba(0, 160, 255, 0.35)';   // needed by (downstream)
-                    }
-                    if (!color) return;
                     const ry = index * (lineWidth + padding) - padding;
-                    ctx.fillStyle = color;
-                    ctx.fillRect(0, ry, canvas.width, lineWidth + 2 * padding);
+                    const rh = lineWidth + 2 * padding;
+                    if (hoveredRequires.has(task.name)) {
+                        ctx.fillStyle = 'rgba(255, 180, 0, 1)';   // needs (upstream)
+                        ctx.fillRect(0, ry, markW, rh);
+                    } else if (hoveredRequiredBy.has(task.name)) {
+                        ctx.fillStyle = 'rgba(0, 160, 255, 1)';   // needed by (downstream)
+                        ctx.fillRect(canvas.width - markW, ry, markW, rh);
+                    }
                 });
             }
 
-            // Highlight the whole cortage the hovered row belongs to: a faint
-            // full-row tint on every member plus a solid left-edge accent bar,
-            // and a connector down the left margin between consecutive members
-            // so the chain reads as one group even when rows aren't adjacent.
+            // Mark every member of the hovered row's cortage with a teal bar in
+            // the offset slot, and join the members with a connector so the
+            // chain reads as one group even when the rows aren't adjacent.
             if (hoveredCortage.size > 0) {
                 const memberYs = [];
                 results.forEach((task, index) => {
                     if (!hoveredCortage.has(task.name)) return;
                     const ry = index * (lineWidth + padding) - padding;
                     const rh = lineWidth + 2 * padding;
-                    ctx.fillStyle = 'rgba(0, 230, 160, 0.5)';   // cortage tint
-                    ctx.fillRect(0, ry, canvas.width, rh);
-                    // Solid accent bar on the left edge of each member.
-                    ctx.fillStyle = 'rgba(0, 255, 170, 1)';
-                    ctx.fillRect(0, ry, 4, rh);
+                    ctx.fillStyle = 'rgba(0, 230, 160, 1)';   // cortage member
+                    ctx.fillRect(cortageX, ry, markW, rh);
                     memberYs.push(ry + rh / 2);
                 });
-                // Thin connector joining the members in row order.
                 if (memberYs.length > 1) {
                     memberYs.sort((a, b) => a - b);
-                    ctx.strokeStyle = 'rgba(0, 255, 170, 1)';
+                    ctx.strokeStyle = 'rgba(0, 230, 160, 1)';
                     ctx.lineWidth = 2;
                     ctx.beginPath();
-                    ctx.moveTo(1.5, memberYs[0]);
-                    ctx.lineTo(1.5, memberYs[memberYs.length - 1]);
+                    ctx.moveTo(cortageX + markW / 2, memberYs[0]);
+                    ctx.lineTo(cortageX + markW / 2, memberYs[memberYs.length - 1]);
                     ctx.stroke();
                 }
             }

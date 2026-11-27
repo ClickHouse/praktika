@@ -388,11 +388,12 @@ class RunnerPool:
     capacity_reserve: int = 0
     # Scale-up pacing for auto-scaled pools (ignored when scaling is Disabled):
     # the fraction (0, 1] of the outstanding demand gap the autoscaler closes each
-    # iteration. 0.3 (default) is the gradual ramp; 1.0 covers the whole backlog
-    # at once (lowest queue wait, higher chance of transient over-provisioning).
-    # The iteration period is the autoscaler schedule (pool_autoscaler_interval_
-    # seconds, default 60s), which is global across pools.
-    scale_coefficient: float = 0.3
+    # iteration. 0.8 (default) closes most of the gap each iteration; 0.3 is a
+    # gentler ramp; 1.0 covers the whole backlog at once (lowest queue wait,
+    # higher chance of transient over-provisioning). The iteration period is the
+    # autoscaler schedule (pool_autoscaler_interval_seconds, default 60s), which
+    # is global across pools.
+    scale_coefficient: float = 0.8
     ext: Dict[str, Any] = field(default_factory=dict)
 
     launch_template: LaunchTemplate.Config = field(init=False)

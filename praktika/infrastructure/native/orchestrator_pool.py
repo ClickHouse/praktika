@@ -135,6 +135,14 @@ class OrchestratorPool:
     security_group_names: List[str] = field(default_factory=list)
     volume_size_gb: int = 30
     capacity_reserve: int = 0
+    # Scale-up pacing for auto-scaled pools (ignored when scaling is Disabled):
+    # the fraction (0, 1] of the outstanding demand gap the autoscaler closes each
+    # iteration. 0.8 (default) closes most of the gap each iteration; 0.3 is a
+    # gentler ramp; 1.0 covers the whole backlog at once (lowest queue wait,
+    # higher chance of transient over-provisioning). The iteration period is the
+    # autoscaler schedule (pool_autoscaler_interval_seconds, default 60s), which
+    # is global across pools.
+    scale_coefficient: float = 0.8
     # TODO: Consider updating ext["allowed_push_branches"] automatically from MainCI push workflow branches.
     ext: Dict[str, Any] = field(default_factory=dict)
 
@@ -189,6 +197,10 @@ class OrchestratorPool:
         assert (
             self.capacity_reserve >= 0
         ), f"capacity_reserve={self.capacity_reserve} must be >= 0"
+        assert 0.0 < self.scale_coefficient <= 1.0, (
+            f"OrchestratorPool scale_coefficient={self.scale_coefficient!r} is invalid; "
+            f"must be in (0, 1]"
+        )
         # Default: no push workflow. A pool accepts push events only if it
         # explicitly lists the branches; unset means the Lambda rejects all pushes
         # for this pool (see the class docstring). This keeps a PR-only pool from

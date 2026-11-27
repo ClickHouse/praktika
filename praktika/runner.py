@@ -349,7 +349,16 @@ class Runner:
     def _pre_run(self, workflow, job, local_job_run=False):
         if job.name == Settings.CI_CONFIG_JOB_NAME:
             GH.print_actions_debug_info()
-        dirty = Shell.get_output("git status --short", verbose=False) or ""
+        # --ignore-submodules=dirty: skip the nested per-submodule work-tree scan
+        # (159 submodules / ~700k files in this repo), which added 40-75s to each
+        # build job's state note. Still reports every superproject change and any
+        # submodule whose checked-out commit moved; nothing parses these notes.
+        dirty = (
+            Shell.get_output(
+                "git status --short --ignore-submodules=dirty", verbose=False
+            )
+            or ""
+        )
         if dirty:
             print(f"NOTE: Dirty repo state before job start:\n{dirty}")
         else:
@@ -1496,7 +1505,14 @@ class Runner:
                     traceback.print_exc()
                     print(f"ERROR: failed to notify Slack users: {e}")
 
-        dirty = Shell.get_output("git status --short", verbose=False) or ""
+        # --ignore-submodules=dirty: see _pre_run. This after-job note is a job's
+        # last step, so the scan directly delayed every job that depends on it.
+        dirty = (
+            Shell.get_output(
+                "git status --short --ignore-submodules=dirty", verbose=False
+            )
+            or ""
+        )
         if dirty:
             print(f"NOTE: Dirty repo state after job:\n{dirty}")
         else:
