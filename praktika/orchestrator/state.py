@@ -126,8 +126,11 @@ HEARTBEAT_TIMEOUT_S = int(getattr(Settings, "HEARTBEAT_TIMEOUT_S", 900) or 900)
 
 # wait() blocks for this long between S3 sweeps. Kept short so the
 # orchestrator reacts quickly to cancel signals and finished jobs (no
-# SQS long-poll any more).
-WAIT_POLL_INTERVAL_S = 10
+# SQS long-poll any more): each non-cortage DAG handoff costs up to one
+# interval, so this is the handoff-latency knob. Settings-configurable
+# (default 2s) so a project can trade handoff speed against sweep volume
+# without forking.
+WAIT_POLL_INTERVAL_S = int(getattr(Settings, "WAIT_POLL_INTERVAL_S", 2) or 2)
 
 # Hard cap on how many times one job may be re-run within a single run (per
 # run_id / commit; a new push starts a fresh run at 0). A pure defence backstop:
@@ -693,13 +696,89 @@ class JobState:
         self._create_check()
 
         ws = self._workflow_state
+
+        # Cortage dispatch (see docs/cortage-jobs.md). A member is normally
+        # run by the chain driver — the runner that picked up an EARLIER member — and
+        # must NOT get its own SQS task. But if no earlier member was ever dispatched
+        # (e.g. the head was cache/filter-SKIPPED), this member is the chain entry and
+        # must be dispatched itself, on the cortage's effective pool, so the runner
+        # drives the rest of the chain from here.
+        route_runs_on = self.job.runs_on
+        if ws is not None and not ws.local_mode:
+            head = ws.workflow.cortage_head_name(self.name)
+            chain = ws.workflow.get_cortage_chain(head)
+            if len(chain) > 1:  # this job belongs to a cortage
+                idx = chain.index(self.name)
+                earlier = chain[:idx]
+                driver_dispatched = any(
+                    ws.jobs[e].status
+                    in (
+                        JobStatus.QUEUED,
+                        JobStatus.RUNNING,
+                        JobStatus.SUCCESS,
+                        JobStatus.FAILURE,
+                    )
+                    for e in earlier
+                    if e in ws.jobs
+                )
+                # A re-run resets a member (and its failed downstream) to PENDING and
+                # deletes its final.json (_reset_job); the original chain driver is
+                # already gone. The EARLIEST reset member — its chain predecessor was
+                # NOT part of this re-run — must be dispatched as a fresh entry so a
+                # runner resumes the chain from it; later reset members are then
+                # covered by that new driver and stay suppressed.
+                pred = chain[idx - 1] if idx > 0 else None
+                is_rerun_entry = self.rerun_count > 0 and (
+                    pred is None
+                    or getattr(ws.jobs.get(pred), "rerun_count", 0) < self.rerun_count
+                )
+                if driver_dispatched and not is_rerun_entry:
+                    # The chain driver runs this member back-to-back on the shared
+                    # runner — there is no queue wait — so show it in_progress right
+                    # away instead of flashing a misleading queued/pending check
+                    # (members often finish before the first heartbeat lands).
+                    # Internal status stays QUEUED so the pickup-timeout still guards
+                    # a member the driver never reaches; a heartbeat then flips it to
+                    # RUNNING (sweep_liveness) as usual.
+                    # All members share one runner, so adopt the chain driver's
+                    # instance id (from the nearest earlier member that recorded one)
+                    # for the check summary and the member's report row now, rather
+                    # than waiting for this member's own first heartbeat.
+                    driver_instance = ""
+                    for e in reversed(earlier):
+                        inst = getattr(ws.jobs.get(e), "runner_instance_id", "") or ""
+                        if inst:
+                            driver_instance = inst
+                            break
+                    if driver_instance:
+                        self.runner_instance_id = driver_instance
+                    summary = (
+                        f"RUNNING on runner `{driver_instance}` (cortage)."
+                        if driver_instance
+                        else "RUNNING: running on the cortage runner."
+                    )
+                    self._update_check(
+                        lambda c, s=summary: c.set_in_progress(
+                            output={"title": "RUNNING", "summary": s}
+                        )
+                    )
+                    print(
+                        f"[KICK ] {self.name:70s} runs_on={runs_on}  "
+                        f"-> (cortage member, run by chain driver)"
+                    )
+                    return
+                # Chain entry: the head, the first member after a cache/filter-skipped
+                # head, or the earliest member of a re-run. Dispatch it on the
+                # effective pool; the runner drives the rest of the chain from here.
+                route_runs_on = ws.workflow.cortage_effective_runs_on(head)
+
         target = (
             "local"
             if ws is not None and ws.local_mode
-            else _queue_for_runs_on(self.job.runs_on)
+            else _queue_for_runs_on(route_runs_on)
         )
         assert target is not None, (
-            f"Job {self.name!r} has no dispatch target: runs_on={self.job.runs_on!r} "
+            f"Job {self.name!r} has no dispatch target: runs_on={route_runs_on!r} "
             f"and orchestrator is not in local mode"
         )
 
@@ -1096,6 +1175,38 @@ class WorkflowState:
         for name, deps in job_deps.items():
             for dep in deps:
                 self._dependents[dep].add(name)
+
+        # Cortage: each member's predecessor in its chain, recorded ONLY as an
+        # *ordering-only* edge — get_ready waits for the predecessor to reach a
+        # terminal state but does NOT cascade-cancel on its failure, so a later
+        # member not blocked by a *data* dep still runs (req #6). If the member
+        # ALSO explicitly depends on its predecessor (requires / run_after, incl.
+        # via an artifact the predecessor provides), that is a real data dep and is
+        # left to normal handling (wait for SUCCESS + cascade), so we do NOT record
+        # it here. See docs/cortage-jobs.md.
+        _artifact_provider = {}
+        for job in workflow.jobs:
+            for _art in getattr(job, "provides", None) or []:
+                _artifact_provider[_art] = job.name
+        _all_job_names = {job.name for job in workflow.jobs}
+
+        def _explicit_data_deps(job):
+            names = set()
+            for req in getattr(job, "requires", None) or []:
+                if req in _artifact_provider:
+                    names.add(_artifact_provider[req])
+                elif req in _all_job_names:
+                    names.add(req)
+            for ra in getattr(job, "run_after", None) or []:
+                if ra in _all_job_names:
+                    names.add(ra)
+            return names
+
+        self._cortage_pred = {}
+        for job in workflow.jobs:
+            pred = getattr(job, "attached_to", "")
+            if pred and pred not in _explicit_data_deps(job):
+                self._cortage_pred[job.name] = pred
 
     @property
     def can_post_checks(self):
@@ -2804,23 +2915,39 @@ class WorkflowState:
                         js.status = JobStatus.READY
                         ready.append(js)
                 continue
+            # Cortage ordering edge: the chain predecessor gates *order* only (the
+            # runner reaches this member after it finishes, whatever the outcome),
+            # it does NOT cascade. Split it out of the cascade/readiness checks so a
+            # failed predecessor can't cancel a member that no *data* dep blocks
+            # (req #6); it is still required to be terminal before the member runs.
+            pred_name = getattr(self, "_cortage_pred", {}).get(name)
+            data_deps = [d for d in deps if d.name != pred_name]
+            pred_js = self.jobs[pred_name] if pred_name else None
             # A dep that FAILED but is non_blocking
             # (do_not_block_pipeline_on_failure) counts as success-equivalent
             # for dependency resolution: its failure is advisory, so it must
             # neither cancel dependents nor hold them back.
             if any(
                 d.status == JobStatus.FAILURE and not getattr(d, "non_blocking", False)
-                for d in deps
+                for d in data_deps
             ):
                 js.cancel(reason="upstream failed")
                 continue
-            if any(d.status == JobStatus.CANCELLED for d in deps):
+            if any(d.status == JobStatus.CANCELLED for d in data_deps):
                 js.cancel(reason="upstream cancelled")
                 continue
-            if all(
-                d.status in (JobStatus.SUCCESS, JobStatus.SKIPPED)
-                or (d.status == JobStatus.FAILURE and getattr(d, "non_blocking", False))
-                for d in deps
+            if (
+                all(
+                    d.status in (JobStatus.SUCCESS, JobStatus.SKIPPED)
+                    or (
+                        d.status == JobStatus.FAILURE
+                        and getattr(d, "non_blocking", False)
+                    )
+                    for d in data_deps
+                )
+                # The cortage predecessor only needs to be terminal (any outcome);
+                # the runner has moved past it on the shared runner.
+                and (pred_js is None or pred_js.status in _TERMINAL)
             ):
                 js.status = JobStatus.READY
                 ready.append(js)

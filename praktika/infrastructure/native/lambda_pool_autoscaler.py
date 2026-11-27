@@ -12,10 +12,11 @@ CAPACITY_S3_KEY = "pool_capacity.json"
 
 # Default fraction of the outstanding demand gap a pool closes per autoscaler
 # iteration (see _calculate_desired_capacity). A pool can override it per-pool via
-# its scale_coefficient; 0.3 reproduces the historical gradual ramp, 1.0 covers
-# the whole gap at once (one instance per queued/in-flight task). Mirrored by
+# its scale_coefficient; 0.8 (default) closes most of the gap each iteration,
+# 0.3 reproduces the historical gradual ramp, 1.0 covers the whole gap at once
+# (one instance per queued/in-flight task). Mirrored by
 # RunnerPool.scale_coefficient on the config side.
-DEFAULT_SCALE_COEFFICIENT = 0.3
+DEFAULT_SCALE_COEFFICIENT = 0.8
 
 # S3 key prefix (under the project artifact bucket) where this autoscaler
 # publishes each ASG's current target AMI. Must match the consumer side in
@@ -113,8 +114,9 @@ def _calculate_desired_capacity(
     # backlog that is already being provisioned for and just hasn't been picked up
     # yet.
     #
-    # scale_coefficient is the tuning handle: 0.3 (the default) reproduces the
-    # historical gradual ramp; 1.0 closes the whole gap in one invocation — one
+    # scale_coefficient is the tuning handle: 0.8 (the default) closes most of
+    # the gap each invocation; 0.3 reproduces the historical gradual ramp; 1.0
+    # closes the whole gap in one invocation — one
     # instance per queued/in-flight task, capped only by max_size — trading
     # transient over-provisioning (while the batch boots and the backlog is still
     # outstanding) for the lowest queue wait time. Clamped to (0, 1].

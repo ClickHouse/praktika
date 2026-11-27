@@ -58,8 +58,8 @@ GH_AUTH_LAMBDA_NAME = "praktika-gh-token"
 GH_AUTH_LAMBDA_REGION = AWS_REGION
 
 # GitHub Checks API rate-limit tuning (see docs/gh-app-rate-limits.md).
-TOP_CHECK_MIN_PATCH_INTERVAL_S = 60
-JOB_CHECKS_MODE = "minimal"
+# TOP_CHECK_MIN_PATCH_INTERVAL_S = 60
+# JOB_CHECKS_MODE = "minimal"
 
 CI_DB_DB_NAME = "default"
 CI_DB_TABLE_NAME = "checks"

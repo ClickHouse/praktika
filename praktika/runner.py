@@ -349,12 +349,36 @@ class Runner:
     def _pre_run(self, workflow, job, local_job_run=False):
         if job.name == Settings.CI_CONFIG_JOB_NAME:
             GH.print_actions_debug_info()
-        dirty = Shell.get_output("git status --short", verbose=False) or ""
+        # --ignore-submodules=dirty: skip the nested per-submodule work-tree scan
+        # (159 submodules / ~700k files in this repo), which added 40-75s to each
+        # build job's state note. Still reports every superproject change and any
+        # submodule whose checked-out commit moved; nothing parses these notes.
+        dirty = (
+            Shell.get_output(
+                "git status --short --ignore-submodules=dirty", verbose=False
+            )
+            or ""
+        )
         if dirty:
             print(f"NOTE: Dirty repo state before job start:\n{dirty}")
         else:
             print("NOTE: Repo state is clean before job start")
         env = _Environment.get()
+
+        # Cortage: announce that this job runs as part of a chain pinned to one
+        # runner with a shared, un-cleaned ci/tmp. Logged once per member at its
+        # start (each member runs as its own `praktika orchestrate job`).
+        # See docs/cortage-jobs.md.
+        cortage_chain = workflow.get_cortage_chain(
+            workflow.cortage_head_name(job.name)
+        )
+        if len(cortage_chain) > 1:
+            role = "head" if workflow.is_cortage_head(job.name) else "member"
+            print(
+                f"NOTE: job [{job.name}] is a cortage {role} "
+                f"(chain: {' -> '.join(cortage_chain)}); runs on the head's "
+                f"runner with a shared ci/tmp and no cleanup between members"
+            )
 
         result = Result(
             name=job.name,
@@ -406,7 +430,46 @@ class Runner:
             else:
                 prefixes = [env.get_s3_prefix()] * len(required_artifacts)
             missing_artifacts = []
+            # Cortage: an artifact produced by an EARLIER member of this job's
+            # cortage is already in the shared, un-cleaned ci/tmp (same runner, no
+            # clean between members) — reuse it and skip the S3 download. If it is
+            # NOT on local disk, the provider was cache-hit/skipped (its output
+            # lives only in S3) or we infra-resumed on a fresh ci/tmp, so we fall
+            # through to the normal S3 download. See docs/cortage-jobs.md.
+            idx = cortage_chain.index(job.name) if job.name in cortage_chain else 0
+            cortage_predecessors = set(cortage_chain[:idx])
+            # Provenance manifest: {artifact_name: [local_paths]} written by each
+            # producing member's _post_run for what it ACTUALLY materialized this
+            # invocation. Reuse an artifact only when its producer recorded it here
+            # (not merely because a same-named/same-basename file happens to exist),
+            # so a cache-skipped or infra-resumed producer correctly falls back to
+            # S3. See docs/cortage-jobs.md.
+            cortage_produced = {}
+            if cortage_predecessors:
+                manifest_path = Path(Settings.TEMP_DIR) / "cortage_produced.json"
+                if manifest_path.is_file():
+                    try:
+                        with open(manifest_path, "r", encoding="utf-8") as f:
+                            cortage_produced = json.load(f) or {}
+                    except Exception:
+                        cortage_produced = {}
             for artifact, prefix in zip(required_artifacts, prefixes):
+                if artifact._provided_by in cortage_predecessors and not artifact.compress_zst:
+                    produced = cortage_produced.get(artifact.name) or []
+                    # Reuse only a single concrete file the producer recorded and
+                    # that still exists; otherwise fall through to the S3 download.
+                    if len(produced) == 1 and Path(produced[0]).is_file():
+                        src = Path(produced[0])
+                        dest = Path(Settings.INPUT_DIR) / src.name
+                        if src.resolve() != dest.resolve():
+                            dest.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(src, dest)
+                        print(
+                            f"NOTE: artifact [{artifact.name}] materialized by cortage "
+                            f"member [{artifact._provided_by}] at [{src}] — reusing, "
+                            f"skipping S3 download"
+                        )
+                        continue
                 if artifact.compress_zst:
                     assert not isinstance(
                         artifact.path, (tuple, list)
@@ -1092,6 +1155,11 @@ class Runner:
                 # rule. Default to short retention; per-artifact tags (e.g.
                 # retention=long) override on the "retention" key.
                 default_tags = {"retention": "default"}
+                # Cortage provenance: record the local files this producer actually
+                # materialized THIS invocation, so a later member on the same runner
+                # can reuse them instead of downloading from S3 — keyed by exact
+                # artifact, not a coincidental same-basename file. See _pre_run.
+                produced_local = {}
                 for artifact in providing_artifacts:
                     if artifact.compress_zst:
                         if isinstance(artifact.path, (tuple, list)):
@@ -1130,12 +1198,33 @@ class Runner:
                                 )
                                 result.set_link(link)
                                 artifact_links.append(link)
+                            if not artifact.compress_zst:
+                                produced_local.setdefault(artifact.name, []).extend(
+                                    matched
+                                )
                         except Exception as e:
                             error = f"Failed to upload artifact [{artifact.name}:{artifact_path}], ex [{e}]"
                             print(f"ERROR: {error}")
                             env.add_workflow_error(error)
                             result.set_status(Result.Status.ERROR)
                             is_ok = False
+                if produced_local:
+                    try:
+                        manifest_path = (
+                            Path(Settings.TEMP_DIR) / "cortage_produced.json"
+                        )
+                        existing = {}
+                        if manifest_path.is_file():
+                            with open(manifest_path, "r", encoding="utf-8") as f:
+                                existing = json.load(f) or {}
+                        existing.update(produced_local)
+                        with open(manifest_path, "w", encoding="utf-8") as f:
+                            json.dump(existing, f)
+                    except Exception as e:
+                        print(
+                            f"  [warn] could not record cortage-produced artifacts: "
+                            f"{type(e).__name__}: {e}"
+                        )
                 # Written even when empty: consumers take the report as the list of
                 # this run's files, so an older report must not survive.
                 artifact_report = {"build_urls": artifact_links}
@@ -1416,7 +1505,14 @@ class Runner:
                     traceback.print_exc()
                     print(f"ERROR: failed to notify Slack users: {e}")
 
-        dirty = Shell.get_output("git status --short", verbose=False) or ""
+        # --ignore-submodules=dirty: see _pre_run. This after-job note is a job's
+        # last step, so the scan directly delayed every job that depends on it.
+        dirty = (
+            Shell.get_output(
+                "git status --short --ignore-submodules=dirty", verbose=False
+            )
+            or ""
+        )
         if dirty:
             print(f"NOTE: Dirty repo state after job:\n{dirty}")
         else:

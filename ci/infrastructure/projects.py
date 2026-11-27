@@ -12,7 +12,7 @@ _PRAKTIKA_PACKAGE_BASE_URL = (
 # so image builds are reproducible and a bump forces a fresh AMI (see
 # _image_builders). This is deliberately frozen (it lags head) and only moves on
 # an AMI rebake — don't auto-track the head pyproject version.
-_PRAKTIKA_BASE_VERSION = "0.1.17"
+_PRAKTIKA_BASE_VERSION = "0.1.31"
 _PRAKTIKA_BASE_WHL = (
     f"{_PRAKTIKA_PACKAGE_BASE_URL}/praktika-{_PRAKTIKA_BASE_VERSION}-py3-none-any.whl"
 )
@@ -87,7 +87,7 @@ def _image_builders():
     #
     # Bump on any change to the baked venv contents (_runtime_prebuilt_venvs) or
     # the baked controller component (_praktika_controller_component).
-    recipe_version = "1.0.23"
+    recipe_version = "1.0.24"
 
     return [
         Components.create_awslinux_image_builder_config(
@@ -223,6 +223,10 @@ def _runner_pool(
         size=0,
         max_size=max_size,
         capacity_reserve=capacity_reserve,
+        # Close the whole backlog gap in one autoscaler iteration (one instance
+        # per queued/in-flight task) instead of the gradual 0.3 ramp, trading
+        # transient over-provisioning for the lowest queue wait time.
+        scale_coefficient=1.0,
         image_builder=_IMAGE_BUILDERS_BY_NAME[image_builder],
         allowed_ssm_parameters=list(_RUNNER_ALLOWED_SSM_PARAMETERS),
         allowed_secrets=list(_RUNNER_ALLOWED_SECRETS),
@@ -257,6 +261,7 @@ _runner_pools = [
         instance_type="c7g.medium",
         image_builder="ci-arm64-image",
         host_metrics=True,
+        capacity_reserve=3,
         user_data=_runner_user_data(
             "# Update the controller if changed (to test new version w/o image rebuild)\n"
             f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages"
@@ -298,6 +303,7 @@ _runner_pools = [
         name="pr-arm-2xsmall",
         instance_type="c7g.medium",
         image_builder="ci-arm64-image",
+        capacity_reserve=3,
         untrusted=True,
         user_data=_runner_user_data(
             "# Update the controller if changed (to test new version w/o image rebuild)\n"
@@ -337,7 +343,6 @@ _runner_pools = [
             "# Update the controller if changed (to test new version w/o image rebuild)\n"
             f"python3.12 -m pip install --force-reinstall {_PRAKTIKA_CONTROLLER_WHL} --break-system-packages"
         ),
-        capacity_reserve=0,
     ),
 ]
 

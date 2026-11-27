@@ -232,6 +232,85 @@ class Workflow:
                         res.append(job)
             return res
 
+        def _jobs_by_name(self):
+            return {job.name: job for job in self.jobs}
+
+        def is_cortage_member(self, job_name) -> bool:
+            """True if this job is attached to a predecessor (a non-head cortage
+            member that the orchestrator must not dispatch on its own — its head's
+            runner runs it). See docs/cortage-jobs.md."""
+            jobs = self.find_jobs(job_name)
+            return bool(jobs and getattr(jobs[0], "attached_to", ""))
+
+        def cortage_head_name(self, job_name) -> str:
+            """Follow attach_to links up to the head of the chain. Returns
+            `job_name` itself when it is not attached to anything (a head or a
+            standalone job)."""
+            jobs_by_name = self._jobs_by_name()
+            cur = str(job_name)
+            seen = set()
+            while cur in jobs_by_name and getattr(jobs_by_name[cur], "attached_to", ""):
+                if cur in seen:
+                    break  # defensive: cycle (validator forbids it)
+                seen.add(cur)
+                cur = jobs_by_name[cur].attached_to
+            return cur
+
+        def is_cortage_head(self, job_name) -> bool:
+            """True if this job is the head of a cortage (not attached to anything
+            itself, and at least one job attaches to it). The head is dispatched;
+            its runner runs the whole chain. See docs/cortage-jobs.md."""
+            if self.is_cortage_member(job_name):
+                return False
+            return len(self.get_cortage_chain(job_name)) > 1
+
+        def get_cortage_chain(self, head_name) -> List[str]:
+            """Ordered job names [head, m2, ..., mN] for the chain starting at
+            `head_name`; just [head_name] if nothing attaches to it."""
+            successor = {
+                job.attached_to: job.name
+                for job in self.jobs
+                if getattr(job, "attached_to", "")
+            }
+            chain = [str(head_name)]
+            cur = str(head_name)
+            seen = {cur}
+            while cur in successor:
+                cur = successor[cur]
+                if cur in seen:
+                    break  # defensive: cycle (validator forbids it)
+                seen.add(cur)
+                chain.append(cur)
+            return chain
+
+        def get_cortage_chains(self) -> List[List[str]]:
+            """All cortage chains as ordered job-name lists [head, ..., tail].
+            Only chains with at least one attachment are returned (a standalone
+            job is not a cortage)."""
+            jobs_by_name = self._jobs_by_name()
+            successor = {
+                job.attached_to: job.name
+                for job in self.jobs
+                if getattr(job, "attached_to", "")
+            }
+            chains = []
+            for head in successor:
+                head_job = jobs_by_name.get(head)
+                if head_job is None or getattr(head_job, "attached_to", ""):
+                    continue  # not a head (middle of a chain, or unknown)
+                chains.append(self.get_cortage_chain(head))
+            return chains
+
+        def cortage_effective_runs_on(self, head_name) -> List[str]:
+            """The runs_on the whole cortage runs on: the last member (in chain
+            order) with promote_runs_on=True, else the head's runs_on."""
+            jobs_by_name = self._jobs_by_name()
+            effective = jobs_by_name[str(head_name)].runs_on
+            for nm in self.get_cortage_chain(head_name):
+                if getattr(jobs_by_name[nm], "promote_runs_on", False):
+                    effective = jobs_by_name[nm].runs_on
+            return effective
+
         def get_secret(self, name) -> Optional[Secret.Config]:
             name = str(name)
             names = []

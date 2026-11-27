@@ -278,6 +278,118 @@ def _native_job_runs_on(workflow):
     return copy.deepcopy(workflow.native_job_runs_on or Settings.CI_CONFIG_RUNS_ON)
 
 
+def _cortage_structural_errors(workflow_name, jobs, extra_valid_names=frozenset()):
+    """Return the fatal cortage structural errors for `jobs` (attach-target
+    existence, self-attach, fork, attach-cycle, dependency deadlock) as a list of
+    message strings — empty when the chains are well-formed.
+
+    `extra_valid_names` are attach targets considered valid even though they aren't
+    in `jobs`: used by the validator pre-mangle, where Praktika-native jobs
+    (Config/Docker) are injected only later. mangle calls this post-mangle with no
+    extras, on the fully materialized graph (native jobs + applied cortage_links
+    present) — the authoritative pass that catches forks/cycles the pre-mangle run
+    can't see. See docs/cortage-jobs.md.
+    """
+    from collections import Counter
+
+    jobs_by_name = {j.name: j for j in jobs}
+    valid = set(jobs_by_name) | set(extra_valid_names)
+    attached = [j for j in jobs if getattr(j, "attached_to", "")]
+    errors = []
+
+    # attach_to must name another existing job, and never itself.
+    for j in attached:
+        if j.attached_to == j.name:
+            errors.append(f"Job [{j.name}] cannot attach_to itself.")
+        elif j.attached_to not in valid:
+            errors.append(
+                f"Job [{j.name}] attaches to unknown job [{j.attached_to}]; "
+                f"attach_to must name another job in the same workflow."
+            )
+
+    # At most one job may attach to a given predecessor — a chain is a linked list.
+    for pred, count in Counter(j.attached_to for j in attached).items():
+        if count > 1:
+            forks = [j.name for j in attached if j.attached_to == pred]
+            errors.append(
+                f"Jobs {forks} all attach to [{pred}]; a cortage is a linked list, so "
+                f"at most one job may attach to a given predecessor."
+            )
+
+    # No cycle in the attach_to links themselves.
+    for j in attached:
+        seen = []
+        cur = j.name
+        while cur and cur in jobs_by_name:
+            if cur in seen:
+                errors.append(
+                    f"attach_to chain has a cycle: {' -> '.join(seen + [cur])}."
+                )
+                break
+            seen.append(cur)
+            cur = getattr(jobs_by_name[cur], "attached_to", "")
+
+    # Deadlock: build the "A before B" graph from requires (job names + artifact
+    # producers), run_after, and the chain's execution-order edges (predecessor
+    # before member); a cycle means a member waits on a job that can only run after
+    # it on the same runner. Cross-deps on jobs outside the cortage are fine; only
+    # ones that close a cycle with the chain order are not.
+    provider_of = {}
+    for j in jobs:
+        for artifact_name in j.provides or []:
+            provider_of[artifact_name] = j.name
+    edges = {j.name: set() for j in jobs}
+
+    def _add_edge(before, after):
+        if before in edges and after in edges and before != after:
+            edges[before].add(after)
+
+    for j in jobs:
+        for req in j.requires or []:
+            if req in jobs_by_name:
+                _add_edge(req, j.name)
+            elif req in provider_of:
+                _add_edge(provider_of[req], j.name)
+        for ra in j.run_after or []:
+            if ra in jobs_by_name:
+                _add_edge(ra, j.name)
+        if getattr(j, "attached_to", ""):
+            _add_edge(j.attached_to, j.name)
+
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {name: WHITE for name in edges}
+    path = []
+
+    def _find_cycle(node):
+        color[node] = GRAY
+        path.append(node)
+        for nxt in edges[node]:
+            if color[nxt] == GRAY:
+                return path[path.index(nxt):] + [nxt]
+            if color[nxt] == WHITE:
+                found = _find_cycle(nxt)
+                if found:
+                    return found
+        path.pop()
+        color[node] = BLACK
+        return None
+
+    for name in edges:
+        if color[name] == WHITE:
+            cycle = _find_cycle(name)
+            if cycle:
+                errors.append(
+                    f"Dependency cycle through a cortage (deadlock): "
+                    f"{' -> '.join(cycle)}. A cortage member would wait on a job that "
+                    f"can only run after it on the same runner."
+                )
+                break
+
+    # De-dup while preserving order (a cycle is discovered once per node on it).
+    seen_msgs = set()
+    return [m for m in errors if not (m in seen_msgs or seen_msgs.add(m))]
+
+
 def _update_workflow_with_native_jobs(workflow):
     # Isolate shared Job.Config instances: the same objects are commonly referenced
     # by multiple workflows (one job_configs module), and the steps below mutate
@@ -367,6 +479,92 @@ def _update_workflow_with_native_jobs(workflow):
         for job in workflow.jobs:
             aux_job.run_after.append(job.name)
         workflow.jobs.append(aux_job)
+
+    # Apply deferred cortage links now that all native jobs exist in the mangled
+    # workflow. A member's attach_to(...) may configure a multi-level predecessor
+    # chain from one place — including Praktika-native jobs (Config/Docker) injected
+    # above that can't call attach_to() themselves. Those extra (job, attach_to,
+    # promote) links are carried on Job.Config.cortage_links and wired here. The
+    # validator's deadlock/fork checks run on the un-mangled workflow and don't see
+    # native jobs, so the structural checks for these links live here.
+    jobs_by_name = {job.name: job for job in workflow.jobs}
+    for src in workflow.jobs:
+        for link in getattr(src, "cortage_links", None) or []:
+            link_job, link_attach_to, link_promote = link
+            if link_job not in jobs_by_name:
+                Utils.raise_with_error(
+                    f"Workflow [{workflow.name}]: job [{src.name}] attach_to wires "
+                    f"unknown job [{link_job}] (jobs present: {sorted(jobs_by_name)})."
+                )
+            if link_attach_to not in jobs_by_name:
+                Utils.raise_with_error(
+                    f"Workflow [{workflow.name}]: job [{src.name}] attach_to wires "
+                    f"[{link_job}] onto unknown job [{link_attach_to}]."
+                )
+            if link_job == link_attach_to:
+                Utils.raise_with_error(
+                    f"Workflow [{workflow.name}]: job [{src.name}] attach_to wires "
+                    f"[{link_job}] onto itself."
+                )
+            target = jobs_by_name[link_job]
+            # A later link must not silently contradict an earlier one (e.g. two
+            # members both claiming the same native job with a different predecessor).
+            if target.attached_to and target.attached_to != link_attach_to:
+                Utils.raise_with_error(
+                    f"Workflow [{workflow.name}]: conflicting cortage links for "
+                    f"[{link_job}] — attached to both [{target.attached_to}] and "
+                    f"[{link_attach_to}]."
+                )
+            target.attached_to = link_attach_to
+            if link_promote:
+                target.promote_runs_on = True
+
+    # Finish Workflow is the orchestrator-owned summarizer: it reads the workflow
+    # summary the orchestrator writes to S3 only once every job's row is finalized,
+    # so it must run strictly after the orchestrator has observed every job
+    # complete. Colocating it as a cortage member runs it on the chain driver right
+    # after its predecessor — before the orchestrator's completion sweep has
+    # recorded that predecessor — so Finish sees that job as not-finalized and
+    # wrongly stamps it. Reject Finish anywhere in a cortage (as a member, or as a
+    # predecessor something attaches to). Config and Docker builds colocate fine.
+    finish_name = Settings.FINISH_WORKFLOW_JOB_NAME
+    for job in workflow.jobs:
+        if job.name == finish_name and getattr(job, "attached_to", ""):
+            Utils.raise_with_error(
+                f"Workflow [{workflow.name}]: [{finish_name}] cannot be a cortage "
+                f"member (attached to [{job.attached_to}]). Finish summarizes the "
+                f"whole run from the orchestrator-written state and must run after "
+                f"every job is finalized; colocating it on a runner races that."
+            )
+        if getattr(job, "attached_to", "") == finish_name:
+            Utils.raise_with_error(
+                f"Workflow [{workflow.name}]: job [{job.name}] cannot attach to "
+                f"[{finish_name}] — nothing may run after Finish on a shared runner; "
+                f"Finish is the final orchestrator-owned summarizer."
+            )
+
+    # Full structural cortage validation on the MANGLED graph. validate_cortages()
+    # runs on the un-mangled workflow, so it can't see native jobs or applied
+    # cortage_links; this re-runs the complete existence / fork / attach-cycle /
+    # dependency-deadlock checks once the chain is fully materialized. The existence
+    # check matters because the validator accepts any _native_job_names() member,
+    # but a native job is only injected when its enabling conditions hold (e.g. a
+    # Docker build needs workflow.dockers); attaching to one that was never injected
+    # would otherwise crash later (cortage_effective_runs_on KeyError). A dedicated
+    # pre-check gives that case a clearer message than the generic "unknown job".
+    for job in workflow.jobs:
+        if getattr(job, "attached_to", "") and job.attached_to not in jobs_by_name:
+            Utils.raise_with_error(
+                f"Workflow [{workflow.name}]: job [{job.name}] attaches to "
+                f"[{job.attached_to}], which is not a job in this workflow. A native "
+                f"job (Config/Docker/Finish) is only a valid target when it is "
+                f"actually injected here (e.g. a Docker build needs workflow.dockers)."
+            )
+    cortage_errors = _cortage_structural_errors(workflow.name, workflow.jobs)
+    if cortage_errors:
+        Utils.raise_with_error(
+            f"Workflow [{workflow.name}] cortage: " + cortage_errors[0]
+        )
 
     if workflow.runs_on_label_prefix:
         prefix = workflow.runs_on_label_prefix

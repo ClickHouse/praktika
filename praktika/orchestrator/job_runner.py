@@ -317,9 +317,31 @@ def _build_ci_environment(task, job_name=None, job=None, local_run=False):
     return env
 
 
+def _resolve_job(workflow, job_name):
+    """Find the single Job.Config for ``job_name`` in ``workflow`` (lazy match,
+    as the controller passes the dispatched name). Returns the job or None."""
+    jobs = workflow.find_jobs(job_name, lazy=True)
+    if not jobs:
+        print(f"Job [{job_name}] not found in workflow [{workflow.name}]")
+        return None
+    if len(jobs) > 1:
+        print(
+            f"Ambiguous job name [{job_name}] in workflow [{workflow.name}]: "
+            f"{[j.name for j in jobs]}"
+        )
+        return None
+    return jobs[0]
+
+
 def run_job(task, gh_token=None, local=False, timestamp=False):
     """Resolve the praktika Workflow + Job from ``task`` and invoke
     ``Runner.run``. Returns the job exit code (0 = success).
+
+    If the resolved job is the head of a cortage (chained jobs on one runner,
+    see docs/cortage-jobs.md), this drives the whole chain in-process:
+    run the head, then each attached member in order (resume-skipping already
+    finalized members, block-skipping members whose data deps failed, stalling on
+    external deps), reusing the same checkout/ci_tmp with no clean in between.
 
     ``gh_token`` is accepted for compatibility with the controller call site,
     but the runner does not mutate GitHub checks directly. It publishes final
@@ -352,8 +374,6 @@ def run_job(task, gh_token=None, local=False, timestamp=False):
         print(f"Invalid task: missing workflow_name or job_name: {task}")
         return 1
 
-    instance_id = _current_instance_id()
-
     # Pre-populate ci/tmp/environment.json BEFORE calling _get_workflows(), because
     # _get_workflows() triggers Info() -> _Environment.get() and would fall back to
     # the dummy from_env() path if the file doesn't exist yet.
@@ -369,15 +389,34 @@ def run_job(task, gh_token=None, local=False, timestamp=False):
         return 1
     workflow = workflows[0]
 
-    jobs = workflow.find_jobs(job_name, lazy=True)
-    if not jobs:
-        print(f"Job [{job_name}] not found in workflow [{workflow_name}]")
+    # Cortage (CI mode only): drive the chain from the dispatched job through the
+    # tail in this one invocation. The dispatched job is the head on the normal
+    # path, or a later member when the head was cache/filter-skipped and that member
+    # became the chain entry. In local mode the orchestrator dispatches each job as
+    # its own subprocess, so there is no chain to walk here.
+    if not local and len(workflow.get_cortage_chain(workflow.cortage_head_name(job_name))) > 1:
+        return _run_cortage_chain(
+            task, workflow, job_name, gh_token=gh_token, timestamp=timestamp
+        )
+
+    job = _resolve_job(workflow, job_name)
+    if job is None:
         return 1
-    if len(jobs) > 1:
-        print(f"Ambiguous job name [{job_name}] in workflow [{workflow_name}]: "
-              f"{[j.name for j in jobs]}")
-        return 1
-    job = jobs[0]
+    return _run_single(
+        task, workflow, job, gh_token=gh_token, local=local, timestamp=timestamp
+    )
+
+
+def _run_single(task, workflow, job, gh_token=None, local=False, timestamp=False):
+    """Run one resolved job through ``Runner.run`` and publish its ``final.json``.
+    Returns the job exit code (0 = success)."""
+    # Rebuild environment.json for THIS job (JOB_NAME etc.) — cheap and idempotent;
+    # necessary per-member when driving a cortage chain.
+    _build_ci_environment(task, job_name=job.name, local_run=local)
+    if local:
+        os.environ["PRAKTIKA_LOCAL_RUN"] = "1"
+
+    instance_id = _current_instance_id()
 
     # _build_ci_environment dumped environment.json before the job was resolved,
     # so it carries no per-job Job.Config. Set it now (the local_orchestrator_run
@@ -397,6 +436,7 @@ def run_job(task, gh_token=None, local=False, timestamp=False):
     # branch only when there's no pr_number (push-triggered workflows).
     pr = task.get("pr_number")
     branch = None if pr else task.get("head_ref")
+    job_name = job.name
     # Orchestrator-dispatched jobs always go through the full pipeline
     # (pre-run, hooks, post-run, artifact upload) — what differs between
     # `--ci` and local mode is the S3 backend, not the runner shape.
@@ -556,3 +596,453 @@ def run_job(task, gh_token=None, local=False, timestamp=False):
             )
 
     return rc
+
+
+# --------------------------------------------------------------------------
+# Cortage chain driver (see docs/cortage-jobs.md)
+# --------------------------------------------------------------------------
+
+# Filename (in the shared ci/tmp) of the heartbeat pointer the controller's
+# Heartbeat follows. Must match controller.py's set_pointer_file path.
+_HB_POINTER_NAME = "cortage_heartbeat.json"
+_DEP_SUCCESS_STATUSES = {"success", "skipped"}
+_DEP_FAIL_STATUSES = {"failure", "cancelled", "error", "dropped"}
+
+
+def _normalize_job_name_for_s3(name):
+    """S3-safe path segment for a job name. Mirrors the orchestrator's
+    _normalize_job_name_for_s3 (state.py) so member keys match byte-for-byte."""
+    return name.replace(" ", "_").replace("/", "_")
+
+
+def _s3_client():
+    import boto3
+
+    from ..settings import Settings
+
+    return boto3.client("s3", region_name=Settings.AWS_REGION or None)
+
+
+def _load_final(s3, bucket, key):
+    """Return the ``final.json`` payload if the member already reached a TERMINAL
+    state on a prior runner (success OR failure), or None only when the object is
+    CONFIRMED ABSENT (the member has not finalized). On resume we must not re-run
+    EITHER a success or a failure: re-running repeats side effects and can flip a
+    finalized failure to success while the orchestrator already cancelled its
+    dependents. A re-run (not a resume) deletes final.json via _reset_job, so reset
+    members correctly read as absent and do re-run.
+
+    A transient/permission S3 error is NOT "absent": returning None on those would
+    re-run an already-finalized member. Retry a few times and, if the error
+    persists, RAISE so the chain aborts rather than silently re-running — far safer
+    than repeating a finalized member's side effects."""
+    from .state import _is_missing_s3_key_error
+
+    attempts = 5
+    last_err = None
+    for attempt in range(attempts):
+        try:
+            obj = s3.get_object(Bucket=bucket, Key=key)
+            return json.loads(obj["Body"].read())
+        except Exception as e:
+            if _is_missing_s3_key_error(e):
+                return None  # confirmed not finalized -> the member should run
+            last_err = e
+            if attempt + 1 < attempts:
+                time.sleep(min(2 ** attempt, 10))
+    raise RuntimeError(
+        f"could not read cortage member final state s3://{bucket}/{key} after "
+        f"{attempts} attempts; aborting the chain instead of risking a re-run of an "
+        f"already-finalized member: {type(last_err).__name__}: {last_err}"
+    )
+
+
+def _payload_is_blocking_failure(payload):
+    """True if a final.json payload is a BLOCKING failure (rc != 0 and its Result is
+    not do_not_block_pipeline_on_failure). Used on resume so an already-finalized
+    blocking failure still block-skips its dependents, matching the orchestrator."""
+    try:
+        if int(payload.get("rc", 1)) == 0:
+            return False
+        from copy import deepcopy
+
+        from ..result import Result
+
+        rd = payload.get("result")
+        if not isinstance(rd, dict):
+            return True
+        return not Result.from_dict(deepcopy(rd)).do_not_block_pipeline_on_failure()
+    except Exception:
+        return True
+
+
+def _is_blocking_failure(job_name):
+    """True if the member's dumped Result represents a BLOCKING failure. A Result
+    with do_not_block_pipeline_on_failure() is advisory (success-equivalent for
+    dependency resolution, as in WorkflowState.get_ready), so it must NOT block
+    downstream members. An unreadable Result defaults to blocking (safe)."""
+    try:
+        from ..result import Result
+
+        return not Result.from_fs(job_name).do_not_block_pipeline_on_failure()
+    except Exception:
+        return True
+
+
+def _write_terminal_failure(s3, member_task, info):
+    """Publish a terminal FAILURE ``final.json`` for a member the runner won't run
+    (e.g. an external-dep stall that timed out). Without it the orchestrator — which
+    never cancelled the member — would wait out the much longer liveness timeout."""
+    bucket = member_task.get("final_state_s3_bucket") or ""
+    key = member_task.get("final_state_s3_key") or ""
+    name = member_task.get("job_name") or ""
+    if not (bucket and key):
+        return
+    try:
+        from ..result import Result
+
+        res = Result.create_new(name, Result.Status.ERROR, info=info)
+        body = {
+            "type": "job_completion",
+            "job_name": name,
+            "rc": 1,
+            "ts": time.time(),
+            "result": Result.to_dict(res),
+        }
+        s3.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=json.dumps(body).encode(),
+            ContentType="application/json",
+        )
+        print(f"Cortage: wrote terminal failure for [{name}] (s3://{bucket}/{key}): {info}")
+    except Exception as e:
+        print(
+            f"  [warn] could not write terminal failure for [{name}]: "
+            f"{type(e).__name__}: {e}"
+        )
+
+
+def _load_state_jobs(s3, bucket, key):
+    """Return the ``jobs`` map from runs/<run_id>/state.json, or {} if unreadable."""
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        return (json.loads(obj["Body"].read()) or {}).get("jobs", {}) or {}
+    except Exception:
+        return {}
+
+
+def _config_skipped_names(carried_env):
+    """Job names Config Workflow marked cache-hit/filtered, read from the carried
+    WORKFLOW_CONFIG. Authoritative the instant Config Workflow finishes (it is often
+    the cortage entry), without waiting for the orchestrator to apply it to
+    state.json. See apply_workflow_config in orchestrator/state.py."""
+    names = set()
+    wc = carried_env.get("WORKFLOW_CONFIG") if isinstance(carried_env, dict) else None
+    if isinstance(wc, dict):
+        names |= set(wc.get("filtered_jobs") or {})
+        names |= set(wc.get("cache_success") or [])
+    return names
+
+
+def _artifact_provider_map(workflow):
+    provider = {}
+    for job in workflow.jobs:
+        for artifact_name in getattr(job, "provides", None) or []:
+            provider[artifact_name] = job.name
+    return provider
+
+
+def _dep_job_names(job, provider_map, all_job_names):
+    """Resolve a job's requires/run_after to the set of job names it depends on
+    (requires may name an artifact → its producing job, or a job directly)."""
+    names = set()
+    for req in getattr(job, "requires", None) or []:
+        if req in provider_map:
+            names.add(provider_map[req])
+        elif req in all_job_names:
+            names.add(req)
+    for ra in getattr(job, "run_after", None) or []:
+        if ra in all_job_names:
+            names.add(ra)
+    return names
+
+
+def _write_hb_pointer(heartbeat_s3_key, phase):
+    """Point the controller's Heartbeat at the current member's key + phase."""
+    from ..settings import Settings
+
+    try:
+        Path(Settings.TEMP_DIR).mkdir(parents=True, exist_ok=True)
+        with open(
+            Path(Settings.TEMP_DIR) / _HB_POINTER_NAME, "w", encoding="utf-8"
+        ) as f:
+            json.dump({"heartbeat_s3_key": heartbeat_s3_key, "phase": phase}, f)
+    except Exception as e:
+        print(f"  [warn] could not write heartbeat pointer: {type(e).__name__}: {e}")
+
+
+def _clear_hb_pointer():
+    from ..settings import Settings
+
+    try:
+        (Path(Settings.TEMP_DIR) / _HB_POINTER_NAME).unlink()
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"  [warn] could not clear heartbeat pointer: {type(e).__name__}: {e}")
+
+
+def _wait_external_deps(
+    s3, bucket, state_key, external_deps, member_name, hb_key, always_run=False
+):
+    """Block until every external (non-cortage) dep of a member reaches a terminal
+    state, polling runs/<run_id>/state.json. Returns one of:
+      "ok"         — all deps success/skipped (a FAILURE marked non_blocking counts
+                     as success-equivalent, matching WorkflowState.get_ready);
+      "dep_failed" — a dep ended in a blocking failure/cancelled: the orchestrator
+                     cancels this member via cascade, so the caller just skips it;
+      "timeout"    — the stall exceeded Settings.CORTAGE_MAX_STALL_SEC with deps
+                     still pending: the orchestrator has NOT cancelled it, so the
+                     caller must publish a terminal failure for it.
+    No-op → "ok" when there are no external deps. While stalled it keeps the
+    heartbeat pointer on this member with a phase naming what it waits on, so the
+    controller's heartbeat surfaces the stall.
+
+    `always_run` members (e.g. Finish Workflow) must run regardless of how the
+    DAG ends: a failed/cancelled dep no longer yields "dep_failed" (it counts as
+    settled), and the stall never times out — the member waits until every dep is
+    terminal, then runs. This matches the orchestrator never cancelling an
+    always_run job.
+    """
+    if not external_deps:
+        return "ok"
+    from ..settings import Settings
+
+    deadline = time.time() + max(1, int(Settings.CORTAGE_MAX_STALL_SEC))
+    # Same handoff-reactivity knob the orchestrator's wait() uses: when an
+    # external dep finalizes mid-interval the member resumes within one poll.
+    # Each poll is a single GET of the run's state.json, so a shorter interval
+    # is a cost (not rate-limit) lever even with many heads stalling at once.
+    poll_interval = int(getattr(Settings, "WAIT_POLL_INTERVAL_S", 2) or 2)
+    while True:
+        jobs = _load_state_jobs(s3, bucket, state_key)
+        pending = []
+        for dep in external_deps:
+            info = jobs.get(dep) or {}
+            status = str(info.get("status", "")).lower()
+            if status in _DEP_SUCCESS_STATUSES:
+                continue
+            # An advisory failure (do_not_block_pipeline_on_failure) is treated as
+            # success-equivalent for dep resolution, exactly like get_ready does.
+            if status == "failure" and info.get("non_blocking"):
+                continue
+            if status in _DEP_FAIL_STATUSES:
+                if always_run:
+                    # A dep ended in failure/cancelled, but this member runs
+                    # regardless — count the dep as settled and keep waiting on
+                    # the rest.
+                    continue
+                print(
+                    f"Cortage: member [{member_name}] external dep [{dep}] is "
+                    f"[{status}] — the cortage cannot proceed"
+                )
+                return "dep_failed"
+            pending.append(dep)
+        if not pending:
+            return "ok"
+        if not always_run and time.time() >= deadline:
+            print(
+                f"Cortage: member [{member_name}] stall timed out after "
+                f"{Settings.CORTAGE_MAX_STALL_SEC}s waiting on {pending}"
+            )
+            return "timeout"
+        waited = int(time.time() - (deadline - Settings.CORTAGE_MAX_STALL_SEC))
+        print(
+            f"Cortage: member [{member_name}] stalling on {pending} "
+            f"({waited}s elapsed)"
+        )
+        _write_hb_pointer(
+            hb_key, phase=f"stalling: waiting on {','.join(pending)} ({waited}s)"
+        )
+        time.sleep(poll_interval)
+
+
+def _member_task(task, member_name, run_id, bucket, carried_env):
+    """A per-member copy of the head task: same event/ci_config/snapshot, but the
+    member's own job_name, deterministic heartbeat/final keys, and the environment
+    handed off from the previous member. check_run_id is dropped (the orchestrator
+    owns the member's check; the job just loses a self-link)."""
+    norm = _normalize_job_name_for_s3(member_name)
+    member_task = dict(task)
+    member_task["job_name"] = member_name
+    member_task["heartbeat_s3_bucket"] = bucket
+    member_task["heartbeat_s3_key"] = f"runs/{run_id}/{norm}/heartbeat.json"
+    member_task["final_state_s3_bucket"] = bucket
+    member_task["final_state_s3_key"] = f"runs/{run_id}/{norm}/final.json"
+    member_task["check_run_id"] = None
+    if carried_env is not None:
+        member_task["environment"] = carried_env
+    return member_task
+
+
+def _run_cortage_chain(task, workflow, start_name, gh_token=None, timestamp=False):
+    """Run a cortage from the dispatched entry job (``start_name``) through the tail
+    on this one runner, reusing the shared checkout/ci_tmp with no clean in between.
+    ``start_name`` is the head on the normal path, or a later member when the head
+    was cache/filter-skipped and that member became the chain entry. Returns the max
+    exit code across the members that actually ran."""
+    from ..settings import Settings
+
+    full_chain = workflow.get_cortage_chain(workflow.cortage_head_name(start_name))
+    chain_set = set(full_chain)
+    start_idx = full_chain.index(start_name) if start_name in full_chain else 0
+    members = full_chain[start_idx:]
+    print(
+        f"Cortage entry [{start_name}] driving members {' -> '.join(members)} "
+        f"(full chain: {' -> '.join(full_chain)})"
+    )
+
+    run_id = task.get("run_id") or ""
+    bucket = (
+        task.get("final_state_s3_bucket")
+        or task.get("cancel_s3_bucket")
+        or Settings.S3_ARTIFACT_BUCKET
+    )
+    state_key = task.get("state_s3_key") or f"runs/{run_id}/state.json"
+    s3 = _s3_client()
+    provider_map = _artifact_provider_map(workflow)
+    all_job_names = {j.name for j in workflow.jobs}
+
+    failed_or_skipped = set()
+    overall_rc = 0
+    carried_env = task.get("environment")
+
+    for member_name in members:
+        is_entry = member_name == start_name
+        member = _resolve_job(workflow, member_name)
+        if member is None:
+            print(f"ERROR: cortage member [{member_name}] not found — aborting chain")
+            overall_rc = 1
+            break
+        member_task = (
+            task
+            if is_entry
+            else _member_task(task, member_name, run_id, bucket, carried_env)
+        )
+
+        # Resume: a member already finalized on a prior runner (infra redelivery
+        # re-runs the entry task). Do NOT re-run it — whether it succeeded OR failed
+        # — and restore its environment so the next member inherits
+        # WORKFLOW_CONFIG/JOB_KV_DATA/etc. If it was a BLOCKING failure, record it so
+        # its data-dependents are block-skipped, exactly as the orchestrator cascades
+        # (re-running it could flip it to success and wrongly unblock them). A
+        # re-run instead deletes final.json (_reset_job), so reset members are not
+        # seen here and do re-run.
+        done = _load_final(s3, bucket, member_task["final_state_s3_key"])
+        if done is not None:
+            env = done.get("environment")
+            if isinstance(env, dict):
+                carried_env = env
+            if _payload_is_blocking_failure(done):
+                failed_or_skipped.add(member_name)
+                print(
+                    f"Cortage: member [{member_name}] already finalized as a "
+                    f"blocking failure — not re-running; its dependents will be skipped"
+                )
+            else:
+                print(
+                    f"Cortage: member [{member_name}] already finalized "
+                    f"(rc={int(done.get('rc', 1))}) — skipping"
+                )
+            continue
+
+        # Config Workflow marked this member cache-hit/filtered: do NOT run it. Its
+        # outputs (for a cache hit) live in S3, so downstream members fetch them via
+        # the normal artifact path. Two authoritative sources, checked per member:
+        #   - the freshly carried WORKFLOW_CONFIG (available the instant Config
+        #     Workflow — possibly the cortage entry — finishes, with no orchestrator
+        #     lag); and
+        #   - state.json reloaded each iteration (skips the orchestrator has applied).
+        state_jobs = _load_state_jobs(s3, bucket, state_key)
+        config_skipped = _config_skipped_names(carried_env)
+        if (
+            member_name in config_skipped
+            or str(state_jobs.get(member_name, {}).get("status", "")).lower()
+            == "skipped"
+        ):
+            print(
+                f"Cortage: member [{member_name}] is SKIPPED (cache/filter) — not running"
+            )
+            continue
+
+        # An always_run member (e.g. Finish Workflow chained as the cortage tail)
+        # runs regardless of how the DAG ends — it is never blocked by a failed
+        # dep and never skipped, mirroring the orchestrator never cancelling it.
+        always_run = getattr(member, "always_run", False)
+
+        deps = _dep_job_names(member, provider_map, all_job_names)
+        # Req #6: a member whose DATA dep (an earlier member) failed/was-skipped is
+        # blocked; the orchestrator cancels it via cascade, so we just skip it (and
+        # mark it so its own dependents skip too). Members not data-blocked run.
+        blocked_by = (deps & chain_set) & failed_or_skipped
+        if blocked_by and not always_run:
+            print(
+                f"Cortage: member [{member_name}] blocked by failed member(s) "
+                f"{sorted(blocked_by)} — skipping (orchestrator cancels it)"
+            )
+            failed_or_skipped.add(member_name)
+            continue
+
+        if not is_entry:
+            # External (non-cortage) deps weren't a dispatch gate — stall until they
+            # resolve.
+            _write_hb_pointer(member_task["heartbeat_s3_key"], phase="queued")
+            verdict = _wait_external_deps(
+                s3,
+                bucket,
+                state_key,
+                sorted(deps - chain_set),
+                member_name,
+                member_task["heartbeat_s3_key"],
+                always_run=always_run,
+            )
+            if verdict == "dep_failed":
+                # The orchestrator cancels this member via cascade — just skip it.
+                failed_or_skipped.add(member_name)
+                continue
+            if verdict == "timeout":
+                # The dep is still pending, so the orchestrator has NOT cancelled the
+                # member: publish a terminal failure so it doesn't hang on the
+                # liveness timeout, and fail the chain for its dependents.
+                _write_terminal_failure(
+                    s3,
+                    member_task,
+                    f"Cortage member stalled longer than "
+                    f"{Settings.CORTAGE_MAX_STALL_SEC}s waiting on external "
+                    f"dependencies {sorted(deps - chain_set)}",
+                )
+                failed_or_skipped.add(member_name)
+                overall_rc = max(overall_rc, 1)
+                continue
+            _write_hb_pointer(member_task["heartbeat_s3_key"], phase="running_job")
+
+        rc = _run_single(
+            member_task, workflow, member, gh_token=gh_token, local=False, timestamp=timestamp
+        )
+        overall_rc = max(overall_rc, rc)
+        # Only a BLOCKING failure blocks downstream members: a member whose Result
+        # sets do_not_block_pipeline_on_failure is success-equivalent to the
+        # orchestrator (get_ready), which makes its dependents ready — so we must
+        # not block-skip them. Match that here (an unreadable Result → treat as
+        # blocking, the safe default).
+        if rc != 0 and _is_blocking_failure(member_name):
+            failed_or_skipped.add(member_name)
+        # Hand this member's environment.json off to the next member (WORKFLOW_CONFIG,
+        # JOB_KV_DATA, ...), mirroring how the orchestrator relays env between jobs.
+        snapshot = _read_env_file()
+        if snapshot is not None:
+            carried_env = snapshot
+
+    _clear_hb_pointer()
+    return overall_rc

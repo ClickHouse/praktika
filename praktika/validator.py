@@ -325,6 +325,7 @@ class Validator:
             cls.validate_file_paths_in_digest_configs(workflow)
             cls.validate_dockers(workflow)
             cls.validate_job_names(workflow)
+            cls.validate_cortages(workflow)
 
             if workflow.event == Workflow.Event.SCHEDULE:
                 cls.evaluate_check(
@@ -599,6 +600,104 @@ class Validator:
                     workflow_name=workflow.name,
                 )
             names_lower[job_name_lower] = job.name
+
+    @classmethod
+    def validate_cortages(cls, workflow: Workflow.Config):
+        """
+        Validate "cortage" chains (Job.Config.attach_to). A cortage is a linked
+        list of jobs pinned to one runner and run back-to-back. See
+        docs/cortage-jobs.md.
+
+        Errors (fatal): cortage on GH_ACTIONS; attach_to to a missing job or to
+        self; two jobs attaching to the same predecessor (fork); a cycle in the
+        attach_to links; a dependency cycle once the chain's execution-order edges
+        are added (a deadlock).
+
+        Warnings (non-fatal print): a member whose runs_on differs from the
+        cortage's effective runs_on; promote_runs_on on a job that is in no cortage.
+        """
+        from .mangle import _cortage_structural_errors
+        from .native_jobs import _native_job_names
+
+        jobs_by_name = {job.name: job for job in workflow.jobs}
+        attached_jobs = [j for j in workflow.jobs if getattr(j, "attached_to", "")]
+        any_promote = any(
+            getattr(j, "promote_runs_on", False) for j in workflow.jobs
+        )
+        if not attached_jobs and not any_promote:
+            return
+
+        # Cortage is a native-engine concept: on GH_ACTIONS every job runs on its
+        # own GitHub-hosted runner, so colocation is meaningless. Reject outright.
+        if workflow.engine == Workflow.Engine.GH_ACTIONS:
+            for job in workflow.jobs:
+                cls.evaluate_check(
+                    not getattr(job, "attached_to", "")
+                    and not getattr(job, "promote_runs_on", False),
+                    f"Job [{job.name}] uses attach_to()/promote_runs_on, which is "
+                    f"not supported on the '{Workflow.Engine.GH_ACTIONS}' engine: "
+                    f"cortages are native-engine only (each GH job runs on its own "
+                    f"runner).",
+                    workflow.name,
+                    job.name,
+                )
+            return
+
+        # Structural checks (existence, self-attach, fork, attach-cycle, dependency
+        # deadlock) are shared with mangle via _cortage_structural_errors. Here
+        # (pre-mangle) Praktika-native targets aren't in `jobs` yet, so pass them as
+        # valid extras; mangle re-runs the same checks post-mangle on the fully
+        # materialized graph, which is the authoritative pass for native jobs and
+        # applied cortage_links.
+        for msg in _cortage_structural_errors(
+            workflow.name, workflow.jobs, _native_job_names()
+        ):
+            cls.evaluate_check(False, msg, workflow.name)
+
+        # --- Non-fatal warnings ---
+        successor = {job.attached_to: job.name for job in attached_jobs}
+        member_names = {job.name for job in attached_jobs}
+        in_cortage = member_names | set(successor.keys())
+
+        for job in workflow.jobs:
+            if getattr(job, "promote_runs_on", False) and job.name not in in_cortage:
+                print(
+                    f"WARNING: Workflow [{workflow.name}], job [{job.name}]: "
+                    f"promote_runs_on=True has no effect — this job is not part of "
+                    f"any cortage (nothing attaches to it and it attaches to "
+                    f"nothing)."
+                )
+
+        for head_name in successor:
+            head_job = jobs_by_name.get(head_name)
+            # A chain whose head (or any node) is a Praktika-native job isn't fully
+            # materialized at validation time; its effective runs_on is resolved on
+            # the mangled workflow, so skip the advisory runs_on-mismatch warning.
+            if head_job is None:
+                continue
+            if getattr(head_job, "attached_to", ""):
+                continue  # middle of a chain, not a head
+            chain_names = [head_name]
+            cur = head_name
+            while cur in successor:
+                cur = successor[cur]
+                chain_names.append(cur)
+            if any(nm not in jobs_by_name for nm in chain_names):
+                continue
+            effective = head_job.runs_on
+            for nm in chain_names:
+                if getattr(jobs_by_name[nm], "promote_runs_on", False):
+                    effective = jobs_by_name[nm].runs_on
+            for nm in chain_names:
+                if jobs_by_name[nm].runs_on != effective:
+                    print(
+                        f"WARNING: Workflow [{workflow.name}], cortage headed by "
+                        f"[{head_name}]: job [{nm}] runs_on "
+                        f"{jobs_by_name[nm].runs_on} differs from the cortage's "
+                        f"effective runs_on {effective} (the last promoted member, "
+                        f"else the head); it is ignored — the whole chain runs on "
+                        f"{effective}."
+                    )
 
     @classmethod
     def evaluate_check(cls, check_ok, message, workflow_name, job_name=""):

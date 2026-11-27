@@ -151,6 +151,13 @@ class HtmlRunnerHooks:
             if job.name in parsed_jobs
         }
         summary_result.add_ext_key_value("job_requires", job_requires)
+        # Cortage chains (jobs colocated on one runner, run back-to-back in
+        # order). Each entry is an ordered [head, m2, ..., tail] job-name list.
+        # Kept on the summary ext — like job_requires — so the report timeline
+        # can highlight a whole chain when any member is hovered. Empty list
+        # when the workflow declares no cortages (native engine only).
+        cortages = _workflow.get_cortage_chains()
+        summary_result.add_ext_key_value("cortages", cortages)
         info = Info()
         report_url_current_sha = info.get_report_url(latest=False)
         summary_result.add_ext_key_value("pr_title", info.pr_title).add_ext_key_value("git_branch", info.git_branch).add_ext_key_value("report_url", report_url_current_sha).add_ext_key_value(

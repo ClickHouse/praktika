@@ -729,6 +729,7 @@ class Heartbeat:
         status="running",
         fields=None,
         log=None,
+        pointer_file=None,
     ):
         self._s3 = s3_client
         self._bucket = bucket
@@ -740,6 +741,46 @@ class Heartbeat:
         self._thread = None
         self._log = log or logging.getLogger(__name__)
         self._lock = threading.Lock()
+        # Cortage: the job runner writes this pointer file naming the current
+        # member's heartbeat key (+ phase) so the heartbeat follows it, giving
+        # per-member heartbeats from the one controller writer. Absent for normal
+        # jobs → the task's own key is used.
+        self._pointer_file = pointer_file
+        # Beat immediately when the pointer flips to a new member's key, so a
+        # short cortage member (run back-to-back on the shared runner, possibly
+        # finishing within one _interval) still gets a heartbeat under its own key
+        # and the orchestrator can flip it QUEUED -> RUNNING. Poll the pointer on a
+        # short tick while keeping the steady write cadence at _interval.
+        self._last_key = None
+        self._last_beat_ts = 0.0
+        self._poll = min(self._interval, 5)
+
+    def set_pointer_file(self, path):
+        self._pointer_file = path
+
+    def _resolve_target(self):
+        """Return (key, extra_fields): the cortage pointer's member key + phase
+        when the pointer file is present and valid, else the task's own key."""
+        key = self._key
+        extra = {}
+        pf = self._pointer_file
+        if pf:
+            try:
+                with open(pf, "r", encoding="utf-8") as f:
+                    ptr = json.load(f)
+                hk = ptr.get("heartbeat_s3_key")
+                if hk:
+                    key = hk
+                    phase = ptr.get("phase")
+                    if phase:
+                        extra["phase"] = phase
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                self._log.warning(
+                    "heartbeat pointer read failed: %s: %s", type(e).__name__, e
+                )
+        return key, extra
 
     def start(self):
         self._beat()
@@ -760,21 +801,29 @@ class Heartbeat:
 
     def _beat(self):
         try:
+            key, extra = self._resolve_target()
             with self._lock:
                 body = {"ts": time.time(), "status": self._status}
                 body.update(self._fields)
+            body.update(extra)
             self._s3.put_object(
                 Bucket=self._bucket,
-                Key=self._key,
+                Key=key,
                 Body=json.dumps(body).encode(),
                 ContentType="application/json",
             )
+            self._last_key = key
+            self._last_beat_ts = time.time()
         except Exception as e:
             self._log.warning("heartbeat put failed: %s: %s", type(e).__name__, e)
 
     def _run(self):
-        while not self._stop.wait(self._interval):
-            self._beat()
+        # Short poll so a pointer flip (new cortage member) is beaten promptly;
+        # otherwise beat at the steady _interval cadence.
+        while not self._stop.wait(self._poll):
+            key, _ = self._resolve_target()
+            if key != self._last_key or (time.time() - self._last_beat_ts) >= self._interval:
+                self._beat()
 
     def update(self, *, status=None, **fields):
         with self._lock:

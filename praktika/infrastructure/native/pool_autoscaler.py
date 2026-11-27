@@ -32,7 +32,7 @@ class PoolAutoscaler:
         asg_name: str = ""
         capacity_reserve: int = 0
         # Fraction (0, 1] of the outstanding demand gap closed per autoscaler
-        # iteration. 0.3 (default) is the gradual ramp; 1.0 covers the whole gap
+        # iteration. 0.8 (default) closes most of the gap; 1.0 covers the whole gap
         # at once. See lambda_pool_autoscaler._calculate_desired_capacity.
         scale_coefficient: float = DEFAULT_SCALE_COEFFICIENT
         ext: Dict[str, Any] = field(default_factory=dict)

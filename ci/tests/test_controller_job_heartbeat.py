@@ -16,6 +16,10 @@ class _FakeHeartbeat:
         phase = fields.get("phase", "?")
         self.events.append(f"heartbeat.update:{phase}")
 
+    def set_pointer_file(self, path):
+        # Cortage heartbeat pointer; no-op for the fake.
+        pass
+
     def stop(self):
         self.events.append("heartbeat.stop")
 
