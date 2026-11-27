@@ -567,17 +567,25 @@ def _config_workflow(workflow: Workflow.Config, job_name) -> Result:
     files = []
     env = _Environment.get()
 
-    # Ensure the local repository has full history (not a shallow clone).
-    # Some Praktika features require complete git metadata, such as:
+    # Optionally ensure the local repository has full history (not a shallow
+    # clone). Off by default to save wallclock; opt in per workflow with
+    # Workflow.Config.ext["enable_git_history"] = True. Needed only by features
+    # that require complete git metadata, such as:
     # - all authors who contributed to the PR
     # - the original commit messages before GitHub's ephemeral merge commit
-    commands = [
-        "git rev-parse --is-shallow-repository | grep -q true && git fetch --unshallow --prune --no-recurse-submodules --filter=tree:0 origin HEAD ||:",
-    ]
-    if env.BASE_BRANCH and env.PR_NUMBER:
-        commands.append(
-            f"git fetch --prune --no-recurse-submodules --filter=tree:0 origin {env.BASE_BRANCH} ||:"
-        )
+    if workflow.ext.get("enable_git_history"):
+        commands = [
+            "git rev-parse --is-shallow-repository | grep -q true && git fetch --unshallow --prune --no-recurse-submodules --filter=tree:0 origin HEAD ||:",
+        ]
+        if env.BASE_BRANCH and env.PR_NUMBER:
+            commands.append(
+                f"git fetch --prune --no-recurse-submodules --filter=tree:0 origin {env.BASE_BRANCH} ||:"
+            )
+    else:
+        # No fetch, but keep a result so the downstream results[-1].is_ok()
+        # short-circuit guards always have a prior step to read.
+        print("Skip repo unshallow / base-branch fetch (ext.enable_git_history not set)")
+        commands = []
     results = [
         Result.from_commands_run(
             name="repo unshallow",
